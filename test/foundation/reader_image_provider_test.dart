@@ -2,9 +2,9 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/foundation/image_provider/reader_image.dart';
+import 'package:venera_plus/foundation/image_provider/reader_image.dart';
 import 'package:flutter/painting.dart';
-import 'package:venera_next/network/images.dart';
+import 'package:venera_plus/network/images.dart';
 
 void main() {
   test('reader image processing waits for future result', () async {

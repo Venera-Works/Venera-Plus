@@ -1,21 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:venera_next/components/appbar.dart';
-import 'package:venera_next/components/button.dart';
-import 'package:venera_next/components/menu.dart';
-import 'package:venera_next/components/message.dart';
-import 'package:venera_next/components/scroll.dart';
-import 'package:venera_next/components/select.dart';
-import 'package:venera_next/features/history/history.dart';
-import 'package:venera_next/features/image_favorites/image_favorites_item.dart';
-import 'package:venera_next/features/image_favorites/type.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/consts.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/extensions.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/foundation/widget_utils.dart';
+import 'package:venera_plus/components/appbar.dart';
+import 'package:venera_plus/components/button.dart';
+import 'package:venera_plus/components/menu.dart';
+import 'package:venera_plus/components/message.dart';
+import 'package:venera_plus/components/scroll.dart';
+import 'package:venera_plus/components/select.dart';
+import 'package:venera_plus/features/history/history.dart';
+import 'package:venera_plus/features/image_favorites/image_favorites_item.dart';
+import 'package:venera_plus/features/image_favorites/type.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/consts.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/extensions.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/widget_utils.dart';
 
 class ImageFavoritesPage extends StatefulWidget {
   const ImageFavoritesPage({super.key, this.initialKeyword});

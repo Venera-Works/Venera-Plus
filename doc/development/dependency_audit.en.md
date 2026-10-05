@@ -2,13 +2,13 @@
 
 中文版本：[dependency_audit.zh.md](dependency_audit.zh.md) · [Governance](dependencies.en.md) · [Machine-Readable Inventory](git_dependencies.json)
 
-This document records the provenance review, customization rationale, and maintenance responsibilities for VeneraNext's current Git dependencies. The complete commit SHAs, repository URLs, package paths, and statuses are maintained in the machine-readable inventory `doc/development/git_dependencies.json`.
+This document records the provenance review, customization rationale, and maintenance responsibilities for VeneraPlus's current Git dependencies. The complete commit SHAs, repository URLs, package paths, and statuses are maintained in the machine-readable inventory `doc/development/git_dependencies.json`.
 
 ## Completed Governance Changes
 
 - **Removal of `flutter_to_debian`**: Debian packaging has been replaced with the standalone `debian/build.py` script that invokes the host system `dpkg-deb` utility directly, outputting to `build/linux/{x64,arm64}/release/debian`. The transitive dependency `mime_type`, used exclusively by the old package, was removed. CI no longer requires `dart pub global activate -s git flutter_to_debian`.
 - **Machine-Readable Inventory and Automated Checker**: Added `doc/development/git_dependencies.json` and `tool/check_git_dependencies.dart`. The code analysis workflow runs this checker after locked dependencies are retrieved, strictly verifying URLs, refs, resolved refs, package paths, and lockfile consistency for all direct and transitive Git packages.
-- **Clear Provenance and Responsibility Boundaries**: This project maintains its own dependency strategy and `miludeshiji` repository identity, preserving `venera-app` repository URLs with pinned commits. The `maintained-fork` label in the inventory indicates retained custom branches rather than external maintenance by this project; the maintainer of this fork is responsible for pin review and runtime compatibility.
+- **Clear Provenance and Responsibility Boundaries**: This project maintains its own dependency strategy and `VeneraPlus` independent project identity (repository `Venera-Plus`), preserving `venera-app` repository URLs with pinned commits. The `maintained-fork` label in the inventory indicates retained custom branches rather than external maintenance by this project; the maintainers of this project are responsible for pin review and runtime compatibility.
 
 ## Review Findings for Each Git Dependency
 

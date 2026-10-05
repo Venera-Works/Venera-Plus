@@ -4,7 +4,7 @@
 
 ## 简介
 
-VeneraNext 支持从本地目录、漫画压缩包、PDF 和图片型 EPUB 导入漫画。导入后的内容会统一存放为本地图片漫画，以复用现有阅读模式、进度记录和拆分双页等能力。
+VeneraPlus 支持从本地目录、漫画压缩包、PDF 和图片型 EPUB 导入漫画。导入后的内容会统一存放为本地图片漫画，以复用现有阅读模式、进度记录和拆分双页等能力。
 
 支持的漫画图片扩展名包括 `jpg`、`jpeg`、`jpe`、`png`、`webp`、`gif` 和 `avif`。
 
@@ -62,7 +62,7 @@ comic_directory
 
 ## 压缩包
 
-VeneraNext 支持从压缩包导入漫画。
+VeneraPlus 支持从压缩包导入漫画。
 
 压缩包适合作为导入、导出、归档、迁移和分发格式，应符合 [Comic Book Archive](https://en.wikipedia.org/wiki/Comic_book_archive_file) 格式。
 
@@ -124,7 +124,7 @@ VeneraNext 支持从压缩包导入漫画。
 
 WebDAV 漫画库是在线阅读渠道，和本地导入导出、WebDAV CBZ 归档是不同能力。
 
-在线阅读只读取远端目录图片，应用会按需列目录和加载图片，不会把远端 CBZ/ZIP/7Z 当作在线预览内容。可以直接使用普通图片目录，也可以把 VeneraNext 导出的单本 CBZ 解压后放到 WebDAV，以保留标题、作者、标签和章节信息。
+在线阅读只读取远端目录图片，应用会按需列目录和加载图片，不会把远端 CBZ/ZIP/7Z 当作在线预览内容。可以直接使用普通图片目录，也可以把 VeneraPlus（或旧版 VeneraNext）导出的单本 CBZ 解压后放到 WebDAV，以保留标题、作者、标签和章节信息。
 
 “WebDAV 漫画库”设置中的“同步漫画库配置”开关默认关闭。启用后，DataSync/Appdata 的 `.venera` 数据会包含漫画库地址、用户名、密码、远程路径、自动更新开关和更新间隔；接收设备也必须在本地启用该开关才会导入这些字段。凭据会存储在远程 `.venera` 文件中，只应在可信的 WebDAV 和账号上启用。
 
@@ -192,7 +192,7 @@ Bangumi 绑定按漫画库身份隔离；身份由规范化的服务地址、用
 
 ### CBZ 解压增强模式
 
-VeneraNext 导出的单本 CBZ 解压后通常是扁平图片目录：
+VeneraPlus（及旧版 VeneraNext）导出的单本 CBZ 解压后通常是扁平图片目录：
 
 ```text
 /venera_comics/
@@ -238,7 +238,7 @@ VeneraNext 导出的单本 CBZ 解压后通常是扁平图片目录：
 
 章节范围必须按顺序排列、不得重叠、不得反向，并且不能超过根目录实际页面数。`cover.*` 不计入页面编号。元数据允许存在额外字段，以便后续扩展；当前不会从元数据读取远端 URL、脚本或本地绝对路径。
 
-`metadata.json` 使用 UTF-8 编码，文件名匹配不区分大小写。`ComicInfo.xml` 会随 CBZ 导出保留，用于其他漫画阅读器兼容；VeneraNext WebDAV 漫画库当前以 `metadata.json` 为增强信息来源。
+`metadata.json` 使用 UTF-8 编码，文件名匹配不区分大小写。`ComicInfo.xml` 会随 CBZ 导出保留，用于其他漫画阅读器兼容；VeneraPlus WebDAV 漫画库当前以 `metadata.json` 为增强信息来源。
 
 如果元数据文件缺失，连接 Bangumi 后会先按上述保守规则尝试自动刮削；无法匹配时回退普通目录模式。如果文件已经存在但无法读取、JSON 损坏、字段类型错误或章节范围不合法，自动刮削不会覆盖该文件，漫画仍会按可解析内容或普通目录模式显示。用户明确绑定 Bangumi 条目后，若文件仍是可解析的 JSON 对象，条件合并可以修复标题、作者、简介和标签，并尽量保留结构合法的 `chapters`；无法解析的文件不会被静默替换。
 

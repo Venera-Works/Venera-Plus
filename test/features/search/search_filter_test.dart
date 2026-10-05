@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/search/search.dart';
+import 'package:venera_plus/features/search/search.dart';
 
 void main() {
   group('applySearchLanguageFilter', () {

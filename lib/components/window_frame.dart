@@ -4,10 +4,10 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/consts.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/widget_utils.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/consts.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/widget_utils.dart';
 import 'package:window_manager/window_manager.dart';
 
 const _kTitleBarHeight = 36.0;
@@ -183,7 +183,7 @@ class _WindowBrand extends StatelessWidget {
   Widget build(BuildContext context) {
     final foreground = dark ? Colors.white : Colors.black;
     final title = Text(
-      'VeneraNext',
+      'VeneraPlus',
       style: TextStyle(fontSize: 13, color: foreground),
       overflow: TextOverflow.ellipsis,
       maxLines: 1,
@@ -198,7 +198,7 @@ class _WindowBrand extends StatelessWidget {
     return Align(
       alignment: Alignment.centerLeft,
       child: Semantics(
-        label: 'VeneraNext',
+        label: 'VeneraPlus',
         child: ConstrainedBox(
           constraints: const BoxConstraints(minWidth: 32),
           child: Row(

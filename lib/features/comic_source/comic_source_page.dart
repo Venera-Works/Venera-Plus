@@ -3,25 +3,25 @@ import 'dart:io' as io;
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:url_launcher/url_launcher_string.dart';
-import 'package:venera_next/components/appbar.dart';
-import 'package:venera_next/components/button.dart';
-import 'package:venera_next/components/code.dart';
-import 'package:venera_next/components/message.dart';
-import 'package:venera_next/components/pop_up_widget.dart';
-import 'package:venera_next/components/scroll.dart';
-import 'package:venera_next/components/select.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/features/comic_source/comic_source_manager.dart';
-import 'package:venera_next/features/comic_source/source.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/network/app_dio.dart';
-import 'package:venera_next/network/cookie_jar.dart';
-import 'package:venera_next/routing/webview.dart';
-import 'package:venera_next/foundation/file_interaction.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/foundation/widget_utils.dart';
+import 'package:venera_plus/components/appbar.dart';
+import 'package:venera_plus/components/button.dart';
+import 'package:venera_plus/components/code.dart';
+import 'package:venera_plus/components/message.dart';
+import 'package:venera_plus/components/pop_up_widget.dart';
+import 'package:venera_plus/components/scroll.dart';
+import 'package:venera_plus/components/select.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/features/comic_source/comic_source_manager.dart';
+import 'package:venera_plus/features/comic_source/source.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/network/app_dio.dart';
+import 'package:venera_plus/network/cookie_jar.dart';
+import 'package:venera_plus/routing/webview.dart';
+import 'package:venera_plus/foundation/file_interaction.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/widget_utils.dart';
 
 import 'parser.dart';
 import 'source_translation.dart';
@@ -395,7 +395,7 @@ class _BodyState extends State<_Body> {
 
   void help() {
     launchUrlString(
-      "https://github.com/miludeshiji/Venera-Next/blob/main/doc/api/comic_source.zh.md",
+      "https://github.com/Venera-Works/Venera-Plus/blob/main/doc/api/comic_source.zh.md",
     );
   }
 
@@ -578,7 +578,7 @@ class _ComicSourceListState extends State<_ComicSourceList> {
                     TextButton(
                       onPressed: () {
                         launchUrlString(
-                          "https://github.com/miludeshiji/Venera-Next/blob/main/doc/api/comic_source.zh.md",
+                          "https://github.com/Venera-Works/Venera-Plus/blob/main/doc/api/comic_source.zh.md",
                         );
                       },
                       child: Text("Help".tl),

@@ -1,19 +1,19 @@
 import 'package:flutter/material.dart';
-import 'package:venera_next/components/appbar.dart';
-import 'package:venera_next/components/button.dart';
-import 'package:venera_next/components/gesture.dart';
-import 'package:venera_next/components/image.dart';
-import 'package:venera_next/components/loading.dart';
-import 'package:venera_next/components/rich_comment_content.dart';
-import 'package:venera_next/components/scroll.dart';
-import 'package:venera_next/components/side_bar.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/image_provider/cached_image.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/foundation/widget_utils.dart';
-import 'package:venera_next/foundation/res.dart';
+import 'package:venera_plus/components/appbar.dart';
+import 'package:venera_plus/components/button.dart';
+import 'package:venera_plus/components/gesture.dart';
+import 'package:venera_plus/components/image.dart';
+import 'package:venera_plus/components/loading.dart';
+import 'package:venera_plus/components/rich_comment_content.dart';
+import 'package:venera_plus/components/scroll.dart';
+import 'package:venera_plus/components/side_bar.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/image_provider/cached_image.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/widget_utils.dart';
+import 'package:venera_plus/foundation/res.dart';
 
 bool shouldBlockComment(Comment comment) {
   var blockedWords = appdata.settings["blockedCommentWords"] as List;

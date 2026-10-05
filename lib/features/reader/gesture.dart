@@ -1,16 +1,16 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:venera_next/components/menu.dart';
-import 'package:venera_next/features/reader/clipboard_image.dart';
-import 'package:venera_next/features/reader/reader_page.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/file_interaction.dart';
-import 'package:venera_next/foundation/file_type.dart';
-import 'package:venera_next/foundation/global_state.dart';
-import 'package:venera_next/foundation/translations.dart';
+import 'package:venera_plus/components/menu.dart';
+import 'package:venera_plus/features/reader/clipboard_image.dart';
+import 'package:venera_plus/features/reader/reader_page.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/file_interaction.dart';
+import 'package:venera_plus/foundation/file_type.dart';
+import 'package:venera_plus/foundation/global_state.dart';
+import 'package:venera_plus/foundation/translations.dart';
 
 class ReaderGestureDetector extends StatefulWidget {
   const ReaderGestureDetector({super.key, required this.child});

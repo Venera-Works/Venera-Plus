@@ -5,22 +5,22 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_saf/flutter_saf.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sqlite3/sqlite3.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/features/comic_storage/comic_storage.dart';
-import 'package:venera_next/foundation/comic_type.dart';
-import 'package:venera_next/features/favorites/favorites.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/foundation/sqlite_connection.dart';
-import 'package:venera_next/features/local_comics/download.dart';
-import 'package:venera_next/features/reader/reader.dart';
-import 'package:venera_next/foundation/file_interaction.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/comic_storage/comic_storage.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/features/favorites/favorites.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/sqlite_connection.dart';
+import 'package:venera_plus/features/local_comics/download.dart';
+import 'package:venera_plus/features/reader/reader.dart';
+import 'package:venera_plus/foundation/file_interaction.dart';
 
-import 'package:venera_next/foundation/translations.dart';
+import 'package:venera_plus/foundation/translations.dart';
 import 'local_storage_guard.dart';
 import 'import_export/document_import.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/features/history/history.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/features/history/history.dart';
 
 export 'local_comic_image.dart';
 

@@ -4,17 +4,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:url_launcher/url_launcher_string.dart';
-import 'package:venera_next/components/appbar.dart';
-import 'package:venera_next/components/button.dart';
-import 'package:venera_next/components/message.dart';
-import 'package:venera_next/components/scroll.dart';
-import 'package:venera_next/features/settings/setting_components.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/foundation/widget_utils.dart';
-import 'package:venera_next/network/app_dio.dart';
+import 'package:venera_plus/components/appbar.dart';
+import 'package:venera_plus/components/button.dart';
+import 'package:venera_plus/components/message.dart';
+import 'package:venera_plus/components/scroll.dart';
+import 'package:venera_plus/features/settings/setting_components.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/widget_utils.dart';
+import 'package:venera_plus/network/app_dio.dart';
 
 class AboutSettings extends StatefulWidget {
   const AboutSettings({super.key});
@@ -54,7 +54,7 @@ class _AboutSettingsState extends State<AboutSettings> {
             const SizedBox(height: 8),
             Text("V${App.version}", style: const TextStyle(fontSize: 16)),
             Text(
-              "VeneraNext is a free and open-source app for comic reading.".tl,
+              "VeneraPlus is a free and open-source app for comic reading.".tl,
             ),
             const SizedBox(height: 8),
           ],
@@ -91,7 +91,7 @@ class _AboutSettingsState extends State<AboutSettings> {
           title: const Text("Github"),
           trailing: const Icon(Icons.open_in_new),
           onTap: () {
-            launchUrlString("https://github.com/miludeshiji/Venera-Next");
+            launchUrlString("https://github.com/Venera-Works/Venera-Plus");
           },
         ).toSliver(),
       ],
@@ -192,8 +192,8 @@ Future<String?> _fetchLatestReleaseVersion({
 }) async {
   var res = await AppDio().get(
     includePrerelease
-        ? "https://api.github.com/repos/miludeshiji/Venera-Next/releases?per_page=20"
-        : "https://api.github.com/repos/miludeshiji/Venera-Next/releases/latest",
+        ? "https://api.github.com/repos/Venera-Works/Venera-Plus/releases?per_page=20"
+        : "https://api.github.com/repos/Venera-Works/Venera-Plus/releases/latest",
   );
   if (res.statusCode == 200) {
     var data = res.data is String ? jsonDecode(res.data) : res.data;
@@ -230,7 +230,7 @@ Future<void> checkUpdateUi([
                 onPressed: () {
                   Navigator.pop(context);
                   launchUrlString(
-                    "https://github.com/miludeshiji/Venera-Next/releases",
+                    "https://github.com/Venera-Works/Venera-Plus/releases",
                   );
                 },
                 child: Text("Update".tl),

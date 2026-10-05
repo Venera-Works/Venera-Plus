@@ -2,12 +2,12 @@ import 'dart:convert';
 import 'package:archive/archive_io.dart' as archive_io;
 import 'package:enough_convert/enough_convert.dart';
 import 'package:flutter_7zip/flutter_7zip.dart';
-import 'package:venera_next/features/comic_storage/comic_storage.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/features/local_comics/local.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/foundation/file_type.dart';
-import 'package:venera_next/foundation/file_system.dart';
+import 'package:venera_plus/features/comic_storage/comic_storage.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/features/local_comics/local.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/file_type.dart';
+import 'package:venera_plus/foundation/file_system.dart';
 import 'package:zip_flutter/zip_flutter.dart';
 import 'document_import.dart';
 

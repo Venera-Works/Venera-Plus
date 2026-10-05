@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:venera_next/components/appbar.dart';
-import 'package:venera_next/components/scroll.dart';
-import 'package:venera_next/features/history/history_manager.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/translations.dart';
+import 'package:venera_plus/components/appbar.dart';
+import 'package:venera_plus/components/scroll.dart';
+import 'package:venera_plus/features/history/history_manager.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/translations.dart';
 
 class ReadingStatsPage extends StatefulWidget {
   const ReadingStatsPage({super.key});

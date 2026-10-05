@@ -20,7 +20,7 @@ class DebianPackageTest(unittest.TestCase):
         header = bytearray(20)
         header[:6] = b"\x7fELF\x02\x01"
         header[18:20] = (62 if arch == "x64" else 183).to_bytes(2, "little")
-        (bundle / "venera-next").write_bytes(header)
+        (bundle / "venera-plus").write_bytes(header)
         (bundle / "lib/libflutter_linux_gtk.so").write_bytes(b"flutter fixture")
         (bundle / "lib/plugin.so").write_bytes(b"plugin fixture")
         (bundle / "data/icudtl.dat").write_bytes(b"icu fixture")
@@ -33,7 +33,7 @@ class DebianPackageTest(unittest.TestCase):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
                 bundle = self.bundle(root, "x64")
-                binary = bundle / "venera-next"
+                binary = bundle / "venera-plus"
                 header = bytearray(binary.read_bytes())
                 if kind == "class":
                     header[4] = 1
@@ -65,7 +65,7 @@ class DebianPackageTest(unittest.TestCase):
     def test_build_failure_preserves_previous_artifact(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            artifact = root / "venera-next_2.2.1_amd64.deb"
+            artifact = root / "venera-plus_2.2.1_amd64.deb"
             artifact.write_bytes(b"previous")
 
             def failed_build(command, **kwargs):
@@ -76,7 +76,7 @@ class DebianPackageTest(unittest.TestCase):
                 with self.assertRaises(subprocess.CalledProcessError):
                     debian.package_bundle(self.bundle(root, "x64"), root, "x64", "2.2.1+17")
             self.assertEqual(artifact.read_bytes(), b"previous")
-            self.assertEqual(list(root.glob(".venera-deb-*")), [])
+            self.assertEqual(list(root.glob(".venera-plus-deb-*")), [])
 
     def test_invalid_version_cannot_replace_previous_artifact(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -108,16 +108,15 @@ class DebianPackageTest(unittest.TestCase):
                 self.assertIn(f"Architecture: {expected}\n", control)
                 self.assertIn("Version: 2.2.1\n", control)
                 self.assertIn("Depends: libwebkit2gtk-4.1-0, libgtk-3-0\n", control)
-                self.assertIn("Maintainer: miludeshiji/Venera-Next <https://github.com/miludeshiji/Venera-Next>\n", control)
                 unpacked = root / "unpacked"
                 subprocess.run(["dpkg-deb", "--extract", str(package), str(unpacked)], check=True)
-                installed = unpacked / "usr/local/lib/venera-next"
+                installed = unpacked / "usr/local/lib/venera-plus"
                 debian.validate_bundle(installed, arch)
                 self.assertEqual((installed / "lib/plugin.so").read_bytes(), b"plugin fixture")
                 self.assertEqual((installed / "data/flutter_assets/fixture.txt").read_text(), "asset fixture")
-                self.assertTrue((installed / "venera-next").stat().st_mode & 0o111)
-                desktop = (unpacked / "usr/share/applications/venera-next.desktop").read_text()
-                self.assertIn("Exec=/usr/local/lib/venera-next/venera-next %U\n", desktop)
+                self.assertTrue((installed / "venera-plus").stat().st_mode & 0o111)
+                desktop = (unpacked / "usr/share/applications/venera-plus.desktop").read_text()
+                self.assertIn("Exec=/usr/local/lib/venera-plus/venera-plus %U\n", desktop)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/bangumi/bangumi.dart';
+import 'package:venera_plus/features/bangumi/bangumi.dart';
 
 void main() {
   group('BangumiApi', () {

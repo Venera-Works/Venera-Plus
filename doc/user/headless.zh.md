@@ -1,15 +1,15 @@
-# VeneraNext 无头命令模式
+# VeneraPlus 无头命令模式
 
 英文版本：[headless.en.md](headless.en.md)
 
-VeneraNext 的无头命令模式允许从命令行运行部分关键功能，适合自动化任务或与其他工具集成。本文档说明当前可用命令和输出格式。
+VeneraPlus 的无头命令模式允许从命令行运行部分关键功能，适合自动化任务或与其他工具集成。本文档说明当前可用命令和输出格式。
 
 ## 使用方式
 
-运行 VeneraNext 可执行文件时添加 `--headless` 参数，并跟随需要执行的命令。
+运行 VeneraPlus 可执行文件时添加 `--headless` 参数（Linux 命令为 `venera-plus`，Windows 为 `VeneraPlus.exe`），并跟随需要执行的命令。
 
 ```bash
-venera-next --headless <command> [subcommand] [options]
+venera-plus --headless <command> [subcommand] [options]
 ```
 
 ## 全局选项
@@ -28,7 +28,7 @@ venera-next --headless <command> [subcommand] [options]
 **示例：**
 
 ```bash
-venera-next --headless webdav up
+venera-plus --headless webdav up
 ```
 
 ### `updatescript`
@@ -40,7 +40,7 @@ venera-next --headless webdav up
 **示例：**
 
 ```bash
-venera-next --headless updatescript all
+venera-plus --headless updatescript all
 ```
 
 **输出格式：**
@@ -98,10 +98,10 @@ venera-next --headless updatescript all
 
 ```bash
 # 更新全部追更
-venera-next --headless updatesubscribe
+venera-plus --headless updatesubscribe
 
 # 更新单个漫画
-venera-next --headless updatesubscribe --update-comic-by-id-type "comic-id" "source-key"
+venera-plus --headless updatesubscribe --update-comic-by-id-type "comic-id" "source-key"
 ```
 
 ## 输出格式

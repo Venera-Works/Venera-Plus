@@ -4,28 +4,28 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:url_launcher/url_launcher_string.dart';
-import 'package:venera_next/components/appbar.dart';
-import 'package:venera_next/components/button.dart';
-import 'package:venera_next/components/message.dart';
-import 'package:venera_next/components/pop_up_widget.dart';
-import 'package:venera_next/components/scroll.dart';
-import 'package:venera_next/features/bangumi/bangumi.dart';
-import 'package:venera_next/features/history/history.dart';
-import 'package:venera_next/features/local_comics/local_comics.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/features/settings/data_sync_schedule_fields.dart';
-import 'package:venera_next/features/settings/setting_components.dart';
-import 'package:venera_next/features/settings/webdav_connection_fields.dart';
-import 'package:venera_next/features/sync/sync.dart';
-import 'package:venera_next/features/webdav_library/webdav_library.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/cache_manager.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/file_interaction.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/foundation/widget_utils.dart';
+import 'package:venera_plus/components/appbar.dart';
+import 'package:venera_plus/components/button.dart';
+import 'package:venera_plus/components/message.dart';
+import 'package:venera_plus/components/pop_up_widget.dart';
+import 'package:venera_plus/components/scroll.dart';
+import 'package:venera_plus/features/bangumi/bangumi.dart';
+import 'package:venera_plus/features/history/history.dart';
+import 'package:venera_plus/features/local_comics/local_comics.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/settings/data_sync_schedule_fields.dart';
+import 'package:venera_plus/features/settings/setting_components.dart';
+import 'package:venera_plus/features/settings/webdav_connection_fields.dart';
+import 'package:venera_plus/features/sync/sync.dart';
+import 'package:venera_plus/features/webdav_library/webdav_library.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/cache_manager.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/file_interaction.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/widget_utils.dart';
 
 class AppSettings extends StatefulWidget {
   const AppSettings({super.key});
@@ -394,7 +394,7 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                                       icon: const Icon(Icons.open_in_new),
                                       onPressed: () {
                                         launchUrlString(
-                                          "https://github.com/miludeshiji/Venera-Next/blob/main/lib/foundation/appdata.dart#L335",
+                                          "https://github.com/Venera-Works/Venera-Plus/blob/main/lib/foundation/appdata.dart#L335",
                                         );
                                       },
                                     ),

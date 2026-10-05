@@ -2,7 +2,7 @@
 
 English version: [CONTRIBUTING.en.md](CONTRIBUTING.en.md)
 
-感谢你关注 VeneraNext。本仓库只维护阅读器本体，不维护、提供或排查任何漫画源。
+感谢你关注 VeneraPlus。本仓库现已公开托管于 Venera-Works 组织，只维护阅读器本体，不维护、提供或排查任何漫画源。
 
 ## 可以提交什么
 
@@ -15,6 +15,8 @@ English version: [CONTRIBUTING.en.md](CONTRIBUTING.en.md)
 不要提交源站内容、搜索结果、具体作品可用性、章节缺失、图片可用性或版权问题。此类问题应反馈给对应扩展、源站或网络服务提供者。
 
 ## 开发要求
+> **注意**：未经用户明确允许，禁止运行任何应用构建（包括 `flutter build`、`flutter run`、Gradle/CMake/MSBuild 编译及打包入口）；未经许可仅可进行不触发构建的静态检查。
+
 
 先使用仓库指定的 Flutter 版本，并从锁文件解析依赖：
 
@@ -27,6 +29,7 @@ flutter pub get --enforce-lockfile
 ```bash
 python .github/scripts/check_structure_imports.py
 python -m unittest discover -s .github/scripts/tests -p "test_*.py"
+dart tool/check_git_dependencies.dart
 flutter analyze --no-pub
 flutter test --no-pub
 git diff --check

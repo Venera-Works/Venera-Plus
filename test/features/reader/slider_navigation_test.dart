@@ -4,20 +4,20 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
-import 'package:venera_next/components/custom_slider.dart';
-import 'package:venera_next/components/message.dart';
-import 'package:venera_next/features/comic_source/models.dart';
-import 'package:venera_next/features/favorites/favorites_manager.dart';
-import 'package:venera_next/features/history/history.dart';
-import 'package:venera_next/features/local_comics/local_comics.dart';
-import 'package:venera_next/features/reader/images.dart';
-import 'package:venera_next/features/reader/reader_page.dart';
-import 'package:venera_next/features/reader/scaffold.dart';
-import 'package:venera_next/features/sync/data_sync.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/comic_type.dart';
-import 'package:venera_next/foundation/log.dart';
+import 'package:venera_plus/components/custom_slider.dart';
+import 'package:venera_plus/components/message.dart';
+import 'package:venera_plus/features/comic_source/models.dart';
+import 'package:venera_plus/features/favorites/favorites_manager.dart';
+import 'package:venera_plus/features/history/history.dart';
+import 'package:venera_plus/features/local_comics/local_comics.dart';
+import 'package:venera_plus/features/reader/images.dart';
+import 'package:venera_plus/features/reader/reader_page.dart';
+import 'package:venera_plus/features/reader/scaffold.dart';
+import 'package:venera_plus/features/sync/data_sync.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/foundation/log.dart';
 
 void main() {
   for (final rapid in [false, true]) {

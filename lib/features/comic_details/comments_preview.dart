@@ -1,14 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:sliver_tools/sliver_tools.dart';
-import 'package:venera_next/components/layout.dart';
-import 'package:venera_next/components/rich_comment_content.dart';
-import 'package:venera_next/features/comic_details/action_button.dart';
-import 'package:venera_next/features/comic_details/comments_page.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/image_provider/cached_image.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/foundation/widget_utils.dart';
+import 'package:venera_plus/components/layout.dart';
+import 'package:venera_plus/components/rich_comment_content.dart';
+import 'package:venera_plus/features/comic_details/action_button.dart';
+import 'package:venera_plus/features/comic_details/comments_page.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/image_provider/cached_image.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/widget_utils.dart';
 
 class ComicCommentsPreview extends StatefulWidget {
   const ComicCommentsPreview({

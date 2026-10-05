@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:venera_next/components/button.dart';
-import 'package:venera_next/components/pop_up_widget.dart';
-import 'package:venera_next/features/bangumi/bangumi_api.dart';
-import 'package:venera_next/features/bangumi/bangumi_service.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/foundation/widget_utils.dart';
+import 'package:venera_plus/components/button.dart';
+import 'package:venera_plus/components/pop_up_widget.dart';
+import 'package:venera_plus/features/bangumi/bangumi_api.dart';
+import 'package:venera_plus/features/bangumi/bangumi_service.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/widget_utils.dart';
 
 Future<void> _saveBangumiSettings() => appdata.saveData();
 

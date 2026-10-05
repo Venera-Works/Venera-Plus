@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:venera_next/components/loading.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/features/history/history.dart';
-import 'package:venera_next/features/local_comics/local_comics.dart';
-import 'package:venera_next/features/reader/reader_page.dart';
-import 'package:venera_next/foundation/comic_type.dart';
-import 'package:venera_next/foundation/res.dart';
+import 'package:venera_plus/components/loading.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/history/history.dart';
+import 'package:venera_plus/features/local_comics/local_comics.dart';
+import 'package:venera_plus/features/reader/reader_page.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/foundation/res.dart';
 
 class ReaderWithLoading extends StatefulWidget {
   const ReaderWithLoading({

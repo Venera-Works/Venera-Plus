@@ -6,31 +6,31 @@ import 'package:flutter/painting.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_saf/flutter_saf.dart';
 import 'package:rhttp/rhttp.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/cache_manager.dart';
-import 'package:venera_next/foundation/comic_type.dart';
-import 'package:venera_next/features/comic_details/comic_details.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/features/comic_storage/comic_storage.dart';
-import 'package:venera_next/features/comic_widgets/comic_widgets.dart';
-import 'package:venera_next/features/favorites/favorites.dart';
-import 'package:venera_next/features/history/history.dart';
-import 'package:venera_next/features/local_comics/local_comics.dart';
-import 'package:venera_next/features/settings/settings.dart';
-import 'package:venera_next/features/sync/sync.dart';
-import 'package:venera_next/features/webdav_library/webdav_library.dart';
-import 'package:venera_next/foundation/image_provider/cached_image.dart';
-import 'package:venera_next/foundation/js_engine.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/network/cookie_jar.dart';
-import 'package:venera_next/features/follow_updates/follow_updates.dart';
-import 'package:venera_next/routing/app_links.dart';
-import 'package:venera_next/routing/handle_text_share.dart';
-import 'package:venera_next/foundation/opencc.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/features/bangumi/bangumi.dart';
-import 'package:venera_next/features/reader/reader.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/cache_manager.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/features/comic_details/comic_details.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/comic_storage/comic_storage.dart';
+import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
+import 'package:venera_plus/features/favorites/favorites.dart';
+import 'package:venera_plus/features/history/history.dart';
+import 'package:venera_plus/features/local_comics/local_comics.dart';
+import 'package:venera_plus/features/settings/settings.dart';
+import 'package:venera_plus/features/sync/sync.dart';
+import 'package:venera_plus/features/webdav_library/webdav_library.dart';
+import 'package:venera_plus/foundation/image_provider/cached_image.dart';
+import 'package:venera_plus/foundation/js_engine.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/network/cookie_jar.dart';
+import 'package:venera_plus/features/follow_updates/follow_updates.dart';
+import 'package:venera_plus/routing/app_links.dart';
+import 'package:venera_plus/routing/handle_text_share.dart';
+import 'package:venera_plus/foundation/opencc.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/features/bangumi/bangumi.dart';
+import 'package:venera_plus/features/reader/reader.dart';
 
 extension _FutureInit<T> on Future<T> {
   /// Prevent unhandled exception
@@ -253,7 +253,7 @@ Future<void> init() async {
   };
   if (App.isWindows) {
     // Report to the monitor thread that the app is running
-    // https://github.com/miludeshiji/Venera-Next/issues
+    // https://github.com/Venera-Works/Venera-Plus/issues
     Timer.periodic(const Duration(seconds: 1), (_) {
       const methodChannel = MethodChannel('venera/method_channel');
       methodChannel.invokeMethod("heartBeat");

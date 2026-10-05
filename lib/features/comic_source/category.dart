@@ -1,6 +1,6 @@
 import 'dart:math' as math;
 
-import 'package:venera_next/foundation/js_engine.dart';
+import 'package:venera_plus/foundation/js_engine.dart';
 
 import 'models.dart';
 

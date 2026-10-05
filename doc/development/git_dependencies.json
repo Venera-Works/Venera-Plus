@@ -98,6 +98,6 @@
       }
     }
   ],
-  "scope": "Static inventory adapted to Venera-Next retained sources; upstream validation is not fork runtime verification.",
-  "responsibility": "Venera-Next maintainers review pins and compatibility; maintained-fork means retained third-party fork, not a fork owned or maintained by this repository."
+  "scope": "Static inventory adapted to VeneraPlus retained sources; upstream validation is not fork runtime verification.",
+  "responsibility": "VeneraPlus maintainers review pins and compatibility; maintained-fork means retained third-party fork, not a fork owned or maintained by this repository."
 }

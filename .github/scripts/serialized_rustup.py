@@ -28,7 +28,7 @@ def main() -> int:
         exec_rustup(real_rustup, invoked_as, args)
         return 0
 
-    lock_path = Path(os.environ.get("RUSTUP_LOCK_FILE", "/tmp/venera-rustup.lock"))
+    lock_path = Path(os.environ.get("RUSTUP_LOCK_FILE", "/tmp/venera-plus-rustup.lock"))
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("w") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)

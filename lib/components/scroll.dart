@@ -3,9 +3,9 @@ import 'dart:async';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/widget_utils.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/widget_utils.dart';
 
 import 'consts.dart';
 

@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/comic_details/comic_details.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/comic_details/comic_details.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
 
 void main() {
   test(

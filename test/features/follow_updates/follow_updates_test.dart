@@ -1,9 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/foundation/comic_type.dart';
-import 'package:venera_next/features/favorites/favorites.dart';
-import 'package:venera_next/features/follow_updates/follow_updates.dart';
-import 'package:venera_next/foundation/log.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/features/favorites/favorites.dart';
+import 'package:venera_plus/features/follow_updates/follow_updates.dart';
+import 'package:venera_plus/foundation/log.dart';
 
 void main() {
   const sourceKey = 'follow_updates_test_source';

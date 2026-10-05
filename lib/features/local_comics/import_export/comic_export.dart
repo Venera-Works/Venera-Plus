@@ -1,9 +1,9 @@
 import 'dart:convert';
 import 'dart:isolate';
 
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/features/local_comics/local.dart';
-import 'package:venera_next/foundation/file_interaction.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/features/local_comics/local.dart';
+import 'package:venera_plus/foundation/file_interaction.dart';
 import 'package:zip_flutter/zip_flutter.dart';
 
 /// 漫画导出元信息

@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:photo_view/photo_view.dart';
-import 'package:venera_next/features/reader/gallery_coordinator.dart';
-import 'package:venera_next/features/reader/gallery_page_plan.dart';
+import 'package:venera_plus/features/reader/gallery_coordinator.dart';
+import 'package:venera_plus/features/reader/gallery_page_plan.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

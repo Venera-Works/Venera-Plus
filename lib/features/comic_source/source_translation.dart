@@ -1,4 +1,4 @@
-import 'package:venera_next/foundation/app.dart';
+import 'package:venera_plus/foundation/app.dart';
 
 import 'source.dart';
 

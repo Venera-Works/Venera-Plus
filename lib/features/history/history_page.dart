@@ -1,17 +1,17 @@
 import 'package:flutter/material.dart';
-import 'package:venera_next/components/appbar.dart';
-import 'package:venera_next/components/button.dart';
-import 'package:venera_next/components/flyout.dart';
-import 'package:venera_next/components/menu.dart';
-import 'package:venera_next/components/message.dart';
-import 'package:venera_next/components/scroll.dart';
-import 'package:venera_next/features/comic_widgets/comic_widgets.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/foundation/comic_type.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/features/history/history.dart';
-import 'package:venera_next/foundation/translations.dart';
+import 'package:venera_plus/components/appbar.dart';
+import 'package:venera_plus/components/button.dart';
+import 'package:venera_plus/components/flyout.dart';
+import 'package:venera_plus/components/menu.dart';
+import 'package:venera_plus/components/message.dart';
+import 'package:venera_plus/components/scroll.dart';
+import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/features/history/history.dart';
+import 'package:venera_plus/foundation/translations.dart';
 
 class HistoryPage extends StatefulWidget {
   const HistoryPage({super.key});

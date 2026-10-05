@@ -3,17 +3,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
-import 'package:venera_next/components/effects.dart';
-import 'package:venera_next/components/menu.dart';
-import 'package:venera_next/components/message.dart';
-import 'package:venera_next/features/history/history.dart';
-import 'package:venera_next/features/reader/reader.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/file_interaction.dart';
-import 'package:venera_next/foundation/file_type.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/foundation/widget_utils.dart';
+import 'package:venera_plus/components/effects.dart';
+import 'package:venera_plus/components/menu.dart';
+import 'package:venera_plus/components/message.dart';
+import 'package:venera_plus/features/history/history.dart';
+import 'package:venera_plus/features/reader/reader.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/file_interaction.dart';
+import 'package:venera_plus/foundation/file_type.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/widget_utils.dart';
 
 class ImageFavoritesPhotoView extends StatefulWidget {
   const ImageFavoritesPhotoView({

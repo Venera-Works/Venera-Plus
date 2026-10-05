@@ -3,13 +3,13 @@ import 'dart:ffi';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/features/comic_source/source_repositories.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/js_engine.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/network/request_scope.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/comic_source/source_repositories.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/js_engine.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/network/request_scope.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

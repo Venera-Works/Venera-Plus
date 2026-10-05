@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/reader/reader.dart';
+import 'package:venera_plus/features/reader/reader.dart';
 
 const _portrait = [
   'DeviceOrientation.portraitUp',

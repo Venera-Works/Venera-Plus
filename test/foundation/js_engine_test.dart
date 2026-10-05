@@ -1,14 +1,14 @@
 import 'package:flutter_qjs/flutter_qjs.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/foundation/js_engine.dart';
-import 'package:venera_next/foundation/js_websocket.dart';
+import 'package:venera_plus/foundation/js_engine.dart';
+import 'package:venera_plus/foundation/js_websocket.dart';
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:io';
 
-import 'package:venera_next/foundation/log.dart';
+import 'package:venera_plus/foundation/log.dart';
 
 void main() {
   test('read-only source retry recognizes malformed JSON responses', () {

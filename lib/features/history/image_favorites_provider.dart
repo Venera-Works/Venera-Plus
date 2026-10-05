@@ -2,14 +2,14 @@ import 'dart:async' show Future, StreamController;
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/foundation/comic_type.dart';
-import 'package:venera_next/features/local_comics/local_comics.dart';
-import 'package:venera_next/foundation/image_provider/base_image_provider.dart';
-import 'package:venera_next/network/images.dart';
-import 'package:venera_next/foundation/file_system.dart';
-import 'package:venera_next/features/history/image_favorites_models.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/features/local_comics/local_comics.dart';
+import 'package:venera_plus/foundation/image_provider/base_image_provider.dart';
+import 'package:venera_plus/network/images.dart';
+import 'package:venera_plus/foundation/file_system.dart';
+import 'package:venera_plus/features/history/image_favorites_models.dart';
 import 'image_favorites_provider.dart' as image_provider;
 
 class ImageFavoritesProvider

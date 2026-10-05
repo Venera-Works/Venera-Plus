@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/network/request_scope.dart';
+import 'package:venera_plus/network/request_scope.dart';
 
 void main() {
   test('cancel reaches child HTTP token and suppresses late results', () async {

@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/foundation/channel.dart';
+import 'package:venera_plus/foundation/channel.dart';
 
 void main() {
   test("1-1-1", () async {

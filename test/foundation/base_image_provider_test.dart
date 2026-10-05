@@ -4,8 +4,8 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/foundation/image_provider/base_image_provider.dart';
-import 'package:venera_next/foundation/log.dart';
+import 'package:venera_plus/foundation/image_provider/base_image_provider.dart';
+import 'package:venera_plus/foundation/log.dart';
 
 class _TestImage extends BaseImageProvider<_TestImage> {
   _TestImage({this.emptyCount = 1});

@@ -2,19 +2,19 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:venera_next/components/button.dart';
-import 'package:venera_next/components/gesture.dart';
-import 'package:venera_next/components/image.dart';
-import 'package:venera_next/components/menu.dart';
-import 'package:venera_next/components/message.dart';
-import 'package:venera_next/components/select.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/extensions.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/foundation/widget_utils.dart';
+import 'package:venera_plus/components/button.dart';
+import 'package:venera_plus/components/gesture.dart';
+import 'package:venera_plus/components/image.dart';
+import 'package:venera_plus/components/menu.dart';
+import 'package:venera_plus/components/message.dart';
+import 'package:venera_plus/components/select.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/extensions.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/widget_utils.dart';
 
 import 'rating.dart';
 

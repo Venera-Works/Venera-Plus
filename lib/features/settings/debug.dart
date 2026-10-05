@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
-import 'package:venera_next/components/appbar.dart';
-import 'package:venera_next/components/scroll.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/features/settings/logs.dart';
-import 'package:venera_next/features/settings/setting_components.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/js_engine.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/foundation/widget_utils.dart';
+import 'package:venera_plus/components/appbar.dart';
+import 'package:venera_plus/components/scroll.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/settings/logs.dart';
+import 'package:venera_plus/features/settings/setting_components.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/js_engine.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/widget_utils.dart';
 
 class DebugPage extends StatefulWidget {
   const DebugPage({super.key});

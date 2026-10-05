@@ -1,6 +1,18 @@
 # 更新日志
 
-本项目遵循语义化版本，记录 fork 后的主要变更。
+本项目遵循语义化版本，记录项目的主要变更。
+
+## v2.2.3
+
+### 变更
+
+- **项目品牌迁移与全新独立安装身份 (VeneraPlus)**：
+  - 应用名称正式确认为 `VeneraPlus`，代码仓库托管于 Venera-Works 组织的 `Venera-Works/Venera-Plus`（默认分支 `main`，发布版本为 `2.2.3+19`），不再自称 VeneraNext 非官方 fork 发行版。
+  - 更换全新品牌 Logo 与全平台应用图标（忠实采用黑底白色 V 图案）。
+  - 应用安装身份与包标识全新独立：Android applicationId / iOS&macOS bundle ID / Linux GTK APPLICATION_ID 统一为 `com.github.veneraworks.veneraplus`；Windows CompanyName 为 `com.github.veneraworks`，ProductName 为 `VeneraPlus`，可执行文件为 `VeneraPlus.exe`，数据目录统一在 `com.github.veneraworks/VeneraPlus` 下；Windows 安装器分配独立 AppId（x64 `4F42C5DE-6674-479D-BB65-CBFC27A41210`，ARM64 `2A8A3BBE-F860-4D85-AB06-33C8EB51C2B9`）。
+  - **新旧版本完全独立与数据不自动迁移**：新版与旧版 Venera / VeneraNext 互为独立应用，支持并存安装；新版不自动读取、搬迁、复制或删除旧版本地数据与安装目录。用户如需迁移旧版数据，可通过旧版应用导出 `.venera` 数据备份并在新版中手动导入。
+  - Dart package 包名迁移为 `venera_plus`。保留 `.venera`/`.venera-comics` 归档格式、`venera/...` 内部通道协议及既有默认远端路径；仅本次不改变对应格式与通道协议，不保证全部旧版数据与配置无条件兼容。
+  - **历史版权来源与开源致谢保留**：坚决保留原项目（`venera-app/venera`）与历史分支（`CyrilPeng/Venera-Next`、`miludeshiji/Venera-Next`）的版权来源、历史事实与开源致谢；保留历史 CHANGELOG 记录及第三方依赖真实 Git 来源与固定 commit SHA。
 
 ## v2.2.2
 

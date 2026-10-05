@@ -1,7 +1,7 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/file_interaction.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/file_interaction.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

@@ -3,8 +3,8 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/appdata.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
 
 void main() {
   late Directory fallbackDataDir;
@@ -485,145 +485,6 @@ void main() {
     expect(backupData['settings']['proxy'], 'first');
     expect(backupData['searchHistory'], ['first']);
   });
-
-  test(
-    'migrates legacy Windows company directory when the new directory is empty',
-    () async {
-      final baseDir = Directory.systemTemp.createTempSync(
-        'venera-appdata-migration-',
-      );
-      addTearDown(() {
-        if (baseDir.existsSync()) {
-          baseDir.deleteSync(recursive: true);
-        }
-      });
-
-      final legacyDir = Directory(
-        p.join(baseDir.path, 'CyrilPeng_venera-next', 'VeneraNext'),
-      )..createSync(recursive: true);
-      File(p.join(legacyDir.path, 'appdata.json')).writeAsStringSync('legacy');
-      final legacySubDir = Directory(p.join(legacyDir.path, 'comic_source'))
-        ..createSync();
-      File(
-        p.join(legacySubDir.path, 'source.json'),
-      ).writeAsStringSync('source');
-
-      final currentDir = Directory(
-        p.join(baseDir.path, 'com.github.miludeshiji', 'VeneraNext'),
-      )..createSync(recursive: true);
-
-      await App.migrateLegacyWindowsPathForTesting(currentDir.path);
-
-      expect(
-        File(p.join(currentDir.path, 'appdata.json')).readAsStringSync(),
-        'legacy',
-      );
-      expect(
-        File(
-          p.join(currentDir.path, 'comic_source', 'source.json'),
-        ).readAsStringSync(),
-        'source',
-      );
-    },
-  );
-
-  test(
-    'does not overwrite current files while completing a partial migration',
-    () async {
-      final baseDir = Directory.systemTemp.createTempSync(
-        'venera-appdata-migration-',
-      );
-      addTearDown(() {
-        if (baseDir.existsSync()) {
-          baseDir.deleteSync(recursive: true);
-        }
-      });
-
-      final legacyDir = Directory(
-        p.join(baseDir.path, 'CyrilPeng_venera-next', 'VeneraNext'),
-      )..createSync(recursive: true);
-      File(p.join(legacyDir.path, 'appdata.json')).writeAsStringSync('legacy');
-
-      final currentDir = Directory(
-        p.join(baseDir.path, 'com.github.miludeshiji', 'VeneraNext'),
-      )..createSync(recursive: true);
-      File(
-        p.join(currentDir.path, 'appdata.json'),
-      ).writeAsStringSync('current');
-
-      await App.migrateLegacyWindowsPathForTesting(currentDir.path);
-
-      expect(
-        File(p.join(currentDir.path, 'appdata.json')).readAsStringSync(),
-        'current',
-      );
-    },
-  );
-
-  test(
-    'migrates missing data even when the current directory is not empty',
-    () async {
-      final baseDir = Directory.systemTemp.createTempSync(
-        'venera-appdata-migration-',
-      );
-      addTearDown(() {
-        if (baseDir.existsSync()) {
-          baseDir.deleteSync(recursive: true);
-        }
-      });
-
-      final legacyDir = Directory(
-        p.join(baseDir.path, 'CyrilPeng_venera-next', 'VeneraNext'),
-      )..createSync(recursive: true);
-      File(p.join(legacyDir.path, 'appdata.json')).writeAsStringSync('legacy');
-
-      final currentDir = Directory(
-        p.join(baseDir.path, 'com.github.miludeshiji', 'VeneraNext'),
-      )..createSync(recursive: true);
-      File(p.join(currentDir.path, 'logs.txt')).writeAsStringSync('new log');
-
-      await App.migrateLegacyWindowsPathForTesting(currentDir.path);
-
-      expect(
-        File(p.join(currentDir.path, 'appdata.json')).readAsStringSync(),
-        'legacy',
-      );
-      expect(
-        File(p.join(currentDir.path, 'logs.txt')).readAsStringSync(),
-        'new log',
-      );
-    },
-  );
-
-  test(
-    'migrates data from the original Windows application identity',
-    () async {
-      final baseDir = Directory.systemTemp.createTempSync(
-        'venera-appdata-migration-',
-      );
-      addTearDown(() {
-        if (baseDir.existsSync()) {
-          baseDir.deleteSync(recursive: true);
-        }
-      });
-
-      final legacyDir = Directory(
-        p.join(baseDir.path, 'com.github.wgh136', 'venera'),
-      )..createSync(recursive: true);
-      File(p.join(legacyDir.path, 'appdata.json')).writeAsStringSync('legacy');
-
-      final currentDir = Directory(
-        p.join(baseDir.path, 'com.github.miludeshiji', 'VeneraNext'),
-      )..createSync(recursive: true);
-
-      await App.migrateLegacyWindowsPathForTesting(currentDir.path);
-
-      expect(
-        File(p.join(currentDir.path, 'appdata.json')).readAsStringSync(),
-        'legacy',
-      );
-    },
-  );
 
   test(
     'recovers appdata from backup without deleting the invalid file',

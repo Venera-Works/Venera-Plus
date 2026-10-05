@@ -1,14 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:sliver_tools/sliver_tools.dart';
-import 'package:venera_next/components/button.dart';
-import 'package:venera_next/components/gesture.dart';
-import 'package:venera_next/components/image.dart';
-import 'package:venera_next/components/loading.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/foundation/consts.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/image_provider/cached_image.dart';
-import 'package:venera_next/foundation/translations.dart';
+import 'package:venera_plus/components/button.dart';
+import 'package:venera_plus/components/gesture.dart';
+import 'package:venera_plus/components/image.dart';
+import 'package:venera_plus/components/loading.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/foundation/consts.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/image_provider/cached_image.dart';
+import 'package:venera_plus/foundation/translations.dart';
 
 class ComicThumbnails extends StatefulWidget {
   const ComicThumbnails({

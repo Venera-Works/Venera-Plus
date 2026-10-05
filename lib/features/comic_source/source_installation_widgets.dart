@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:venera_next/components/message.dart';
-import 'package:venera_next/components/pop_up_widget.dart';
-import 'package:venera_next/foundation/translations.dart';
+import 'package:venera_plus/components/message.dart';
+import 'package:venera_plus/components/pop_up_widget.dart';
+import 'package:venera_plus/foundation/translations.dart';
 
 import 'comic_source_manager.dart';
 import 'source_installation.dart';

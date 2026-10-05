@@ -1,8 +1,8 @@
 import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/material.dart';
-import 'package:venera_next/foundation/edge_back_gesture.dart';
-import 'package:venera_next/foundation/app.dart';
+import 'package:venera_plus/foundation/edge_back_gesture.dart';
+import 'package:venera_plus/foundation/app.dart';
 
 const double _kBackGestureWidth = 24.0;
 const int _kMaxDroppedSwipePageForwardAnimationTime = 800;

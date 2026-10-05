@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:venera_next/components/appbar.dart';
-import 'package:venera_next/components/code.dart';
-import 'package:venera_next/foundation/translations.dart';
+import 'package:venera_plus/components/appbar.dart';
+import 'package:venera_plus/components/code.dart';
+import 'package:venera_plus/foundation/translations.dart';
 
 class SourceScriptEditor extends StatefulWidget {
   const SourceScriptEditor({

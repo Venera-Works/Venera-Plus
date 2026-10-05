@@ -208,7 +208,7 @@ void TestStartupLog(const std::filesystem::path& directory) {
 }  // namespace
 
 int main() {
-  const auto unique_name = L"VeneraNext-startup-test-" +
+  const auto unique_name = L"VeneraPlus-startup-test-" +
                            std::to_wstring(GetCurrentProcessId());
   const auto directory = std::filesystem::temp_directory_path() / unique_name;
   Check(!std::filesystem::exists(directory), "test directory must be new");

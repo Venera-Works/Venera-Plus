@@ -227,7 +227,7 @@ def main() -> None:
     depends = _required_list(config, "depends")
 
     desktop_content = _desktop_file(
-        display_name="VeneraNext",
+        display_name="VeneraPlus",
         description=description,
         package_name=package_name,
         categories=categories,

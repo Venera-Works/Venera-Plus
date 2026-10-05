@@ -5,10 +5,10 @@ import 'package:flex_seed_scheme/flex_seed_scheme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
-import 'package:venera_next/app_runtime/app_runtime.dart';
-import 'package:venera_next/app_shell/app_shell.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/foundation/file_interaction.dart';
+import 'package:venera_plus/app_runtime/app_runtime.dart';
+import 'package:venera_plus/app_shell/app_shell.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/file_interaction.dart';
 import 'package:window_manager/window_manager.dart';
 import 'components/gesture.dart';
 import 'components/js_ui.dart';
@@ -243,7 +243,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
           tertiary = light.tertiary;
         }
         return MaterialApp(
-          title: "VeneraNext",
+          title: "VeneraPlus",
           home: home,
           debugShowCheckedModeBanner: false,
           theme: getTheme(primary, secondary, tertiary, Brightness.light),

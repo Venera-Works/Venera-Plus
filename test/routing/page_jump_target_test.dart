@@ -1,9 +1,9 @@
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/routing/page_jump_target.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/routing/page_jump_target.dart';
 
 class _FakeBuildContext extends Fake implements BuildContext {}
 

@@ -4,9 +4,9 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as image;
-import 'package:venera_next/features/reader/layout_detection.dart';
-import 'package:venera_next/foundation/comic_layout.dart';
-import 'package:venera_next/network/images.dart';
+import 'package:venera_plus/features/reader/layout_detection.dart';
+import 'package:venera_plus/foundation/comic_layout.dart';
+import 'package:venera_plus/network/images.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/reader/reader.dart';
+import 'package:venera_plus/features/reader/reader.dart';
 
 void main() {
   test(

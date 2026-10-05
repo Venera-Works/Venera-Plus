@@ -2,8 +2,8 @@ import 'dart:async';
 import 'package:fake_async/fake_async.dart';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/reader/remote_progress.dart';
-import 'package:venera_next/foundation/res.dart';
+import 'package:venera_plus/features/reader/remote_progress.dart';
+import 'package:venera_plus/foundation/res.dart';
 
 void main() {
   group('RemoteProgressTracker', () {

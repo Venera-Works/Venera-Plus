@@ -4,16 +4,16 @@ import 'dart:isolate';
 
 import 'package:flutter/foundation.dart';
 import 'package:sqlite3/sqlite3.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/foundation/comic_type.dart';
-import 'package:venera_next/features/favorites/favorites.dart';
-import 'package:venera_next/features/history/history.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/network/cookie_jar.dart';
-import 'package:venera_next/foundation/extensions.dart';
-import 'package:venera_next/foundation/file_system.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/features/favorites/favorites.dart';
+import 'package:venera_plus/features/history/history.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/network/cookie_jar.dart';
+import 'package:venera_plus/foundation/extensions.dart';
+import 'package:venera_plus/foundation/file_system.dart';
 import 'package:zip_flutter/zip_flutter.dart';
 
 FutureOr<void> Function()? _appDataSettingsChangedHandler;

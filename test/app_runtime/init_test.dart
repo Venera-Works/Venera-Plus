@@ -1,9 +1,9 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/app_runtime/app_runtime.dart';
-import 'package:venera_next/features/bangumi/bangumi.dart';
-import 'package:venera_next/foundation/appdata.dart';
+import 'package:venera_plus/app_runtime/app_runtime.dart';
+import 'package:venera_plus/features/bangumi/bangumi.dart';
+import 'package:venera_plus/foundation/appdata.dart';
 
 void main() {
   group('runtime sources after settings import', () {

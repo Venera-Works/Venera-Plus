@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:syntax_highlight/syntax_highlight.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/widget_utils.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/widget_utils.dart';
 
 class CodeEditor extends StatefulWidget {
   const CodeEditor({super.key, this.initialValue, this.onChanged});

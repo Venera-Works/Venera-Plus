@@ -1,4 +1,4 @@
-import 'package:venera_next/foundation/extensions.dart';
+import 'package:venera_plus/foundation/extensions.dart';
 
 enum ImageFavoriteSortType {
   title("Title"),

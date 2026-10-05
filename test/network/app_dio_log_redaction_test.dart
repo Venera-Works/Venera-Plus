@@ -1,8 +1,8 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/network/app_dio.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/network/app_dio.dart';
 
 class _TestRequestHandler extends RequestInterceptorHandler {
   RequestOptions? result;
@@ -55,7 +55,7 @@ void main() {
           'x-id': 'device-123',
           'X-API-KEY': 'api-key-999',
           'x-access-token': 'secret-lowercase',
-          'User-Agent': 'VeneraNext/2.0',
+          'User-Agent': 'VeneraPlus/2.0',
           'Accept': 'application/json',
         },
       );
@@ -74,7 +74,7 @@ void main() {
       expect(logContent, contains('x-id: <redacted>'));
       expect(logContent, contains('X-API-KEY: <redacted>'));
       expect(logContent, contains('x-access-token: <redacted>'));
-      expect(logContent, contains('User-Agent: VeneraNext/2.0'));
+      expect(logContent, contains('User-Agent: VeneraPlus/2.0'));
       expect(logContent, contains('Accept: application/json'));
       expect(logContent, isNot(contains('secret-lowercase')));
     });

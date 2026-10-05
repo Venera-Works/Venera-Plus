@@ -3,17 +3,17 @@ import 'dart:isolate';
 
 import 'package:flutter/foundation.dart';
 import 'package:sqlite3/sqlite3.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/foundation/comic_type.dart';
-import 'package:venera_next/foundation/history_contract.dart';
-import 'package:venera_next/features/favorites/favorites.dart';
-import 'package:venera_next/features/history/image_favorites.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/foundation/sqlite_connection.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/throttled_task_runner.dart';
-import 'package:venera_next/foundation/translations.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/foundation/history_contract.dart';
+import 'package:venera_plus/features/favorites/favorites.dart';
+import 'package:venera_plus/features/history/image_favorites.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/sqlite_connection.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/throttled_task_runner.dart';
+import 'package:venera_plus/foundation/translations.dart';
 
 class History implements Comic {
   HistoryType type;

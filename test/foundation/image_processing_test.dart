@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/foundation/image_processing.dart';
+import 'package:venera_plus/foundation/image_processing.dart';
 
 void main() {
   test('image script scheduler limits concurrent tasks', () async {

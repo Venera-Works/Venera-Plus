@@ -1,17 +1,17 @@
 import 'package:flutter/material.dart';
-import 'package:venera_next/components/gesture.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/foundation/widget_utils.dart';
-import 'package:venera_next/features/history/history.dart';
-import 'package:venera_next/features/settings/about.dart';
-import 'package:venera_next/features/settings/appearance.dart';
-import 'package:venera_next/features/settings/local_favorites.dart';
-import 'package:venera_next/features/settings/debug.dart';
-import 'package:venera_next/features/settings/network.dart';
-import 'package:venera_next/features/settings/explore_settings.dart';
-import 'package:venera_next/features/settings/app.dart';
-import 'package:venera_next/features/settings/reader.dart';
+import 'package:venera_plus/components/gesture.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/widget_utils.dart';
+import 'package:venera_plus/features/history/history.dart';
+import 'package:venera_plus/features/settings/about.dart';
+import 'package:venera_plus/features/settings/appearance.dart';
+import 'package:venera_plus/features/settings/local_favorites.dart';
+import 'package:venera_plus/features/settings/debug.dart';
+import 'package:venera_plus/features/settings/network.dart';
+import 'package:venera_plus/features/settings/explore_settings.dart';
+import 'package:venera_plus/features/settings/app.dart';
+import 'package:venera_plus/features/settings/reader.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({this.initialPage = -1, super.key});

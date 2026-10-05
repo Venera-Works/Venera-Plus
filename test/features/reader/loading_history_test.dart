@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/history/history.dart';
-import 'package:venera_next/features/reader/reader_page.dart';
+import 'package:venera_plus/features/history/history.dart';
+import 'package:venera_plus/features/reader/reader_page.dart';
 
 void main() {
   test(

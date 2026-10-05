@@ -1,7 +1,7 @@
 /*
-VeneraNext JavaScript Library
+VeneraPlus JavaScript Library
 
-This library provides a set of APIs for interacting with the VeneraNext app.
+This library provides a set of APIs for interacting with the VeneraPlus app.
 */
 
 /**
@@ -1252,9 +1252,9 @@ function Comment({userName, avatar, content, time, replyCount, id, isLiked, scor
  * Header Resolution & User-Agent Fallback Contract:
  * - Source headers take precedence: Headers explicitly provided by the comic source have highest priority.
  * - Case-insensitive header matching: HTTP header names are case-insensitive (e.g. `User-Agent`, `user-agent`).
- *   If any casing of `User-Agent` is specified in `headers`, VeneraNext preserves the source-specified UA and will
+ *   If any casing of `User-Agent` is specified in `headers`, VeneraPlus preserves the source-specified UA and will
  *   NOT overwrite or duplicate it with the default User-Agent.
- * - Default UA fallback: When `headers` is missing, empty, or does not include any `User-Agent`, VeneraNext falls
+ * - Default UA fallback: When `headers` is missing, empty, or does not include any `User-Agent`, VeneraPlus falls
  *   back to adding `user-agent: webUA`.
  * - Parsed headers are normalized into a new mutable map. Invalid non-map headers types will throw an exception.
  *

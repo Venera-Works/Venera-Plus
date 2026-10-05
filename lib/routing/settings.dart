@@ -1,4 +1,4 @@
-export 'package:venera_next/features/settings/settings.dart'
+export 'package:venera_plus/features/settings/settings.dart'
     show
         ReaderSettings,
         setCategoryPagesWidget,

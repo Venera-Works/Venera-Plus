@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as path;
-import 'package:venera_next/features/local_comics/import_export/import_export.dart';
-import 'package:venera_next/foundation/file_system.dart';
+import 'package:venera_plus/features/local_comics/import_export/import_export.dart';
+import 'package:venera_plus/foundation/file_system.dart';
 
 void main() {
   group('EPUB import parser', () {
@@ -130,7 +130,7 @@ void main() {
       }
     });
 
-    test('reads the layout produced by the VeneraNext EPUB exporter', () {
+    test('reads the layout produced by the VeneraPlus EPUB exporter', () {
       final temp = Directory.systemTemp.createTempSync('epub_import_');
       final root = Directory(FilePath.join(temp.path, 'book'))..createSync();
       try {

@@ -2,12 +2,12 @@ import 'dart:async' show Future;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_qjs/flutter_qjs.dart';
-import 'package:venera_next/foundation/file_system.dart';
-import 'package:venera_next/foundation/js_engine.dart';
-import 'package:venera_next/network/images.dart';
+import 'package:venera_plus/foundation/file_system.dart';
+import 'package:venera_plus/foundation/js_engine.dart';
+import 'package:venera_plus/network/images.dart';
 import 'base_image_provider.dart';
 import 'reader_image.dart' as image_provider;
-import 'package:venera_next/foundation/appdata.dart';
+import 'package:venera_plus/foundation/appdata.dart';
 
 final Object _imageProcessingCanceled = Object();
 

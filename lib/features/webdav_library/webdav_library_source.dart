@@ -6,15 +6,15 @@ import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 
 import 'package:flutter/foundation.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/features/comic_storage/comic_storage.dart';
-import 'package:venera_next/features/webdav_library/webdav_library_cache.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/extensions.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/foundation/res.dart';
-import 'package:venera_next/foundation/throttled_task_runner.dart';
-import 'package:venera_next/network/webdav.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/comic_storage/comic_storage.dart';
+import 'package:venera_plus/features/webdav_library/webdav_library_cache.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/extensions.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/res.dart';
+import 'package:venera_plus/foundation/throttled_task_runner.dart';
+import 'package:venera_plus/network/webdav.dart';
 import 'package:webdav_client/webdav_client.dart' hide File;
 
 typedef WebDavLibraryMetadataScraper =

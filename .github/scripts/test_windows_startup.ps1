@@ -14,33 +14,23 @@ $ErrorActionPreference = 'Stop'
 if (-not $IsWindows -or $env:GITHUB_ACTIONS -ne 'true') {
     throw 'Full application startup tests require a disposable GitHub Actions Windows runner.'
 }
-if (@(Get-Process -Name VeneraNext -ErrorAction SilentlyContinue).Count -ne 0) {
-    throw 'VeneraNext is already running. Refusing to touch existing processes.'
+if (@(Get-Process -Name 'VeneraPlus' -ErrorAction SilentlyContinue).Count -ne 0) {
+    throw 'VeneraPlus is already running. Refusing to touch existing processes.'
 }
-foreach ($appId in @('{E3F34B80-C5E4-467A-8069-B9D7FD6D3258}', '{D1481C7B-AF51-470F-BDAA-DA23A7E73632}')) {
+foreach ($appId in @('{4F42C5DE-6674-479D-BB65-CBFC27A41210}', '{2A8A3BBE-F860-4D85-AB06-33C8EB51C2B9}')) {
     foreach ($hive in 'HKLM:', 'HKCU:') {
         foreach ($subkey in 'SOFTWARE', 'SOFTWARE\WOW6432Node') {
             $key = "$hive\$subkey\Microsoft\Windows\CurrentVersion\Uninstall\${appId}_is1"
             if (Test-Path -LiteralPath $key) {
-                throw "An existing VeneraNext installation was found ($appId). Use a fresh runner."
+                throw "An existing VeneraPlus installation was found ($appId). Use a fresh runner."
             }
         }
     }
 }
-if (Test-Path -LiteralPath 'C:\Program Files (x86)\Venera') {
-    throw 'A legacy Venera installation was found. Use a fresh runner.'
-}
 foreach ($root in $env:APPDATA, $env:LOCALAPPDATA) {
-    foreach ($relative in @(
-        'com.github.miludeshiji\VeneraNext',
-        'com.github.cyrilpeng\VeneraNext',
-        'CyrilPeng_venera-next\VeneraNext',
-        'CyrilPeng_venera-next\venera',
-        'com.github.wgh136\venera'
-    )) {
-        if (Test-Path -LiteralPath (Join-Path $root $relative)) {
-            throw "Existing app data was found: $relative. Use a fresh runner."
-        }
+    $relative = 'com.github.veneraworks\VeneraPlus'
+    if (Test-Path -LiteralPath (Join-Path $root $relative)) {
+        throw "Existing app data was found: $relative. Use a fresh runner."
     }
 }
 
@@ -51,7 +41,7 @@ if (-not $output.StartsWith($workspace, [StringComparison]::OrdinalIgnoreCase)) 
 }
 $testRoot = Join-Path $output ([Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
-$startupLog = Join-Path $env:LOCALAPPDATA 'com.github.miludeshiji\VeneraNext\logs\windows-startup.log'
+$startupLog = Join-Path $env:LOCALAPPDATA 'com.github.veneraworks\VeneraPlus\logs\windows-startup.log'
 $appPath = $null
 $uninstaller = $null
 $started = [Collections.Generic.List[Diagnostics.Process]]::new()
@@ -129,7 +119,7 @@ try {
     if ($PSCmdlet.ParameterSetName -eq 'Installer') {
         $installerPath = (Resolve-Path -LiteralPath $Installer).Path
         $installDir = Join-Path $testRoot 'installed'
-        $appPath = Join-Path $installDir 'VeneraNext.exe'
+        $appPath = Join-Path $installDir 'VeneraPlus.exe'
         $uninstaller = Join-Path $installDir 'unins000.exe'
         $installLog = Join-Path $testRoot 'installer.log'
         $setup = Start-Process -FilePath $installerPath -WindowStyle Hidden -PassThru `
@@ -139,9 +129,9 @@ try {
         $null = $setup.Handle
         Wait-ForExit $setup 180 0
         Start-Sleep -Seconds 2
-        if (@(Get-Process -Name VeneraNext -ErrorAction SilentlyContinue).Count -ne 0 -or
+        if (@(Get-Process -Name 'VeneraPlus' -ErrorAction SilentlyContinue).Count -ne 0 -or
             (Test-Path -LiteralPath $startupLog)) {
-            throw 'Silent installation unexpectedly started VeneraNext.'
+            throw 'Silent installation unexpectedly started VeneraPlus.'
         }
         Write-Output 'PASS: silent installation did not start the application.'
     } else {
@@ -187,7 +177,7 @@ try {
     Get-ChildItem -LiteralPath (Split-Path -Parent $appPath) -File |
         Where-Object { $_.Extension -in '.exe', '.dll' } |
         ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $brokenDir }
-    $broken = Start-TestProcess (Join-Path $brokenDir 'VeneraNext.exe') 'missing-data'
+    $broken = Start-TestProcess (Join-Path $brokenDir 'VeneraPlus.exe') 'missing-data'
     Wait-ForExit $broken 30 -ExpectFailure
     if (-not (Has-StartupEvent $broken.Id 'Creating Flutter engine and view')) {
         throw 'A failing startup did not leave native diagnostics.'
@@ -200,7 +190,7 @@ try {
     # Only stop handles started by this test, plus an installer-launched instance
     # whose executable path belongs to this fresh test installation.
     if ($uninstaller -and $appPath) {
-        Get-Process -Name VeneraNext -ErrorAction SilentlyContinue |
+        Get-Process -Name 'VeneraPlus' -ErrorAction SilentlyContinue |
             Where-Object { $_.Path -eq $appPath } |
             ForEach-Object { $started.Add($_) }
     }

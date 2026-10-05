@@ -3,9 +3,9 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show immutable, visibleForTesting;
 import 'package:flutter_qjs/flutter_qjs.dart';
-import 'package:venera_next/foundation/cache_manager.dart';
-import 'package:venera_next/foundation/consts.dart';
-import 'package:venera_next/foundation/image_processing.dart';
+import 'package:venera_plus/foundation/cache_manager.dart';
+import 'package:venera_plus/foundation/consts.dart';
+import 'package:venera_plus/foundation/image_processing.dart';
 
 import 'app_dio.dart';
 

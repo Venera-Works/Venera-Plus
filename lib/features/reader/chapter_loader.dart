@@ -1,10 +1,10 @@
 import 'dart:io';
 
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/features/local_comics/local_comics.dart';
-import 'package:venera_next/foundation/comic_type.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/foundation/translations.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/local_comics/local_comics.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/translations.dart';
 
 class LocalComicFilesUnavailable implements Exception {
   const LocalComicFilesUnavailable(this.path);

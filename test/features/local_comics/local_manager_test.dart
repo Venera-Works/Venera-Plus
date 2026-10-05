@@ -2,9 +2,9 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite3/sqlite3.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/comic_type.dart';
-import 'package:venera_next/features/local_comics/local_comics.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/features/local_comics/local_comics.dart';
 
 const _testComicType = ComicType(9001);
 

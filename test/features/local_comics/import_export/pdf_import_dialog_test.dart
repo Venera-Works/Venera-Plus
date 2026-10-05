@@ -2,11 +2,11 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/local_comics/import_export/import_export.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/file_interaction.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/foundation/translations.dart';
+import 'package:venera_plus/features/local_comics/import_export/import_export.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/file_interaction.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/translations.dart';
 
 class _Selection extends FileSelection {
   _Selection(String name) : super.androidDocument(uri: name, name: name);

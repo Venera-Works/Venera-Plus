@@ -38,6 +38,7 @@
 
 - [图片增强实验](experiments/image_enhancement.zh.md)
 - [CopyManga 图片请求兼容性技术预研](experiments/copy_manga_compatibility.zh.md)
+- [VeneraPlus 品牌与应用身份迁移计划](experiments/venera_plus_identity_migration.zh.md)
 
 ## 维护原则
 

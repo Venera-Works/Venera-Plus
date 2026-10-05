@@ -1,11 +1,11 @@
 import 'dart:async' show Future;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/features/local_comics/local_comics.dart';
-import 'package:venera_next/network/images.dart';
-import 'package:venera_next/features/history/history_manager.dart';
-import 'package:venera_next/foundation/image_provider/base_image_provider.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/local_comics/local_comics.dart';
+import 'package:venera_plus/network/images.dart';
+import 'package:venera_plus/features/history/history_manager.dart';
+import 'package:venera_plus/foundation/image_provider/base_image_provider.dart';
 import 'history_image_provider.dart' as image_provider;
 
 class HistoryImageProvider

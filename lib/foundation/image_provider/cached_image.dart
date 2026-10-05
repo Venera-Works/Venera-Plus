@@ -2,8 +2,8 @@ import 'dart:async' show Completer, Future, FutureOr;
 import 'dart:collection';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:venera_next/foundation/file_system.dart';
-import 'package:venera_next/network/images.dart';
+import 'package:venera_plus/foundation/file_system.dart';
+import 'package:venera_plus/network/images.dart';
 import 'base_image_provider.dart';
 import 'cached_image.dart' as image_provider;
 

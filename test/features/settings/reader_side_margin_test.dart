@@ -3,11 +3,11 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/settings/reader.dart';
-import 'package:venera_next/features/settings/setting_components.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/translations.dart';
+import 'package:venera_plus/features/settings/reader.dart';
+import 'package:venera_plus/features/settings/setting_components.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/translations.dart';
 
 void main() {
   testWidgets('vertical flow modes expose and persist side margins', (

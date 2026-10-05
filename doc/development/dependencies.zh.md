@@ -2,7 +2,7 @@
 
 English version: [dependencies.en.md](dependencies.en.md)
 
-本文记录 VeneraNext 的直接依赖治理规则，重点说明不来自 pub.dev 的 Git 依赖。`pubspec.lock` 是构建复现依据，但不能替代依赖来源和维护责任说明。
+本文记录 VeneraPlus 的直接依赖治理规则，重点说明不来自 pub.dev 的 Git 依赖。`pubspec.lock` 是构建复现依据，但不能替代依赖来源和维护责任说明。
 
 ## 基本规则
 

@@ -3,8 +3,8 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/foundation/js_websocket.dart';
-import 'package:venera_next/foundation/log.dart';
+import 'package:venera_plus/foundation/js_websocket.dart';
+import 'package:venera_plus/foundation/log.dart';
 
 void main() {
   late HttpServer server;

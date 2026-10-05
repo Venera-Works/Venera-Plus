@@ -2,11 +2,11 @@ import 'dart:async';
 
 import 'package:flutter/widgets.dart';
 import 'package:url_launcher/url_launcher_string.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/features/discovery/discovery.dart';
-import 'package:venera_next/features/search/search.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/log.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/discovery/discovery.dart';
+import 'package:venera_plus/features/search/search.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/log.dart';
 
 String? _parseJumpUrl(dynamic raw) {
   if (raw is! String) return null;

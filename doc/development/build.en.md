@@ -2,9 +2,12 @@
 
 Default Chinese version: [build.zh.md](build.zh.md)
 
-This guide is for developers building, testing, or maintaining VeneraNext from source. For installation and usage, see the root [README](../../README.md).
+This guide is for developers building, testing, or maintaining VeneraPlus (repository `Venera-Plus`) from source. For installation and usage, see the root [README](../../README.md).
 
 ## Prerequisites
+> [!IMPORTANT]
+> **Build Permission Notice**: Application builds (including `flutter build`, `flutter run`, Gradle/CMake/MSBuild compilation, packaging entry points, and tests that implicitly compile) are prohibited without explicit user permission. Only code modifications and non-building static checks are permitted without authorization.
+
 
 - Flutter `3.41.4`
 - Dart `>=3.8.0 <4.0.0`
@@ -25,10 +28,12 @@ flutter --version
 Clone the repository and resolve dependencies from its lock file:
 
 ```bash
-git clone https://github.com/miludeshiji/Venera-Next.git
-cd venera-next
+git clone https://github.com/Venera-Works/Venera-Plus.git
+cd Venera-Plus
 flutter pub get --enforce-lockfile
 ```
+
+> **Note**: The official repository is currently public on GitHub (previously set to private where unauthenticated API requests returned 404); cloning and fetching code is publicly accessible. Official installation packages and releases are subject to the actual state on GitHub Releases; do not infer release status or public update availability solely from source branches.
 
 Do not delete or regenerate `pubspec.lock` without understanding the dependency changes.
 
@@ -166,7 +171,7 @@ Android release workflows require these repository Secrets:
 - `ANDROID_KEYSTORE`: Base64 content of the keystore file
 - `ANDROID_KEY_PROPERTIES`: text content of `key.properties`
 
-As an independent personal fork (miludeshiji), upstream AltStore release automation, repository metadata, and pull-request generation have been completely removed. This repository does not provide a public AltStore source.
+As an independent VeneraPlus project under Venera-Works (repository `Venera-Plus`), upstream AltStore release automation, repository metadata, and pull-request generation have been completely removed. This repository does not provide a public AltStore source.
 
 AI issue checking is disabled by default. After confirming that `API_URL` and `API_KEY` work, set the repository variable `ENABLE_AI_ISSUE_CHECK` to `true`; `ISSUE_CHECK_MODEL` can override the default model. The workflow posts summaries and close recommendations only and never closes an issue automatically.
 

@@ -1,13 +1,15 @@
-# VeneraNext Headless Mode
+# VeneraPlus Headless Mode
 
-VeneraNext's headless mode allows you to run key features from the command line, making it easy to automate tasks and integrate with other tools. This document outlines the available commands and their usage.
+Default Chinese version: [headless.zh.md](headless.zh.md)
+
+VeneraPlus's headless mode allows you to run key features from the command line, making it easy to automate tasks and integrate with other tools. This document outlines the available commands and their usage.
 
 ## How to Use
 
-To activate headless mode, use the `--headless` flag when running the VeneraNext executable, followed by the desired command.
+To activate headless mode, use the `--headless` flag when running the VeneraPlus executable (e.g. `venera-plus` on Linux or `VeneraPlus.exe` on Windows), followed by the desired command.
 
 ```bash
-venera-next --headless <command> [subcommand] [options]
+venera-plus --headless <command> [subcommand] [options]
 ```
 
 ## Global Options
@@ -26,7 +28,7 @@ Manage WebDAV data synchronization.
 **Example:**
 
 ```bash
-venera-next --headless webdav up
+venera-plus --headless webdav up
 ```
 
 ### `updatescript`
@@ -38,7 +40,7 @@ Update comic source scripts.
 **Example:**
 
 ```bash
-venera-next --headless updatescript all
+venera-plus --headless updatescript all
 ```
 
 **Output Format:**
@@ -96,10 +98,10 @@ Update your subscribed comics and retrieve a list of updated comics.
 
 ```bash
 # Update all subscriptions
-venera-next --headless updatesubscribe
+venera-plus --headless updatesubscribe
 
 # Update a single comic
-venera-next --headless updatesubscribe --update-comic-by-id-type "comic-id" "source-key"
+venera-plus --headless updatesubscribe --update-comic-by-id-type "comic-id" "source-key"
 ```
 
 ## Output Format

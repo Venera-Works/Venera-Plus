@@ -3,9 +3,9 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/reader/reader.dart';
-import 'package:venera_next/features/reader/reader_page.dart';
-import 'package:venera_next/foundation/comic_type.dart';
+import 'package:venera_plus/features/reader/reader.dart';
+import 'package:venera_plus/features/reader/reader_page.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
 
 void main() {
   tearDown(() => configureReaderChapterCompletedHandler(null));
