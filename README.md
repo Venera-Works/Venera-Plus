@@ -8,132 +8,107 @@
   ![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)
 </div>
 
-> [!CAUTION]
-> **这是一个由个人/团队独立维护的项目，包含激进改动与实验性调整。**
->
-> 本项目按维护者的设备、数据和使用习惯开发，可能大量使用生成式 AI 参与设计、编码、测试、审查和文档编写，也可能进行范围较大、节奏较快、未经长期验证的激进修改。
->
-> 本项目不保证稳定性、向后兼容性或与历史来源仓库同步，不保证兼容旧版 VeneraNext、Venera、第三方扩展、既有配置、数据文件、备份或其他项目。切换版本、导入数据或连接 WebDAV 前，请自行备份重要数据并确认能够恢复。
+VeneraPlus 是一款支持 Android、iOS、Windows、macOS 和 Linux 的跨平台漫画阅读器。支持多种阅读版式、丰富的本地漫画格式导入、WebDAV 数据同步与远端漫画库、Bangumi 进度与元数据联动，以及灵活的 JavaScript 漫画源扩展。
 
-## 项目定位
+当前最新版本为 [2.2.3](https://github.com/Venera-Works/Venera-Plus/releases/tag/v2.2.3)。预编译安装包以 [GitHub Releases](https://github.com/Venera-Works/Venera-Plus/releases) 实际发布状态为准，完整变更记录请参阅 [更新日志](CHANGELOG.md)。
 
-VeneraPlus 是托管于 [Venera-Works](https://github.com/Venera-Works) 组织（仓库名 `Venera-Plus`）的独立漫画阅读器项目，不再自称 VeneraNext 非官方 fork 发行版或通用下游分支。维护优先级取决于维护者的需求；功能、接口、数据结构和交互可能在没有长期过渡期的情况下发生调整。
+---
 
-本项目采用**全新独立的应用与安装身份**（可与旧版 Venera / VeneraNext 共存），新安装不会自动读取、搬迁、复制或删除旧版数据。如需从旧版迁移配置和阅读历史，请参阅 [VeneraPlus 品牌与应用身份迁移计划](doc/experiments/venera_plus_identity_migration.zh.md)。
+## 核心功能概览
 
-> **仓库可见性与下载说明**：
-> 官方仓库当前为公开仓库（Public；此前曾设为私有并在未鉴权请求时返回 404），克隆与访问代码支持公开访问。正式安装包与版本发布以 GitHub Releases 实际页面状态为准，不能仅从源码分支推断已发布或公网更新可用。
+### 阅读模式与阅读辅助
+- **丰富阅读版式**：支持画廊翻页（单页/双页、支持从左到右与从右到左翻页）、连续滚动（纵向从上到下、横向左右滚动）以及纵向瀑布流模式。
+- **双页自动拆分**：在画廊单图模式下可开启横向大图/跨页自动拆分为两个独立视觉页，并按阅读方向自动调整翻阅顺序。
+- **条漫左右边距**：纵向连续和纵向瀑布流模式支持每侧 0%～30% 边距调节，在大屏设备上避免条漫过宽，图片居中等比缩放。
+- **阅读体验辅助**：支持跨章节无缝阅读、夜间调光/阅读亮度调节、单手操作翻页、图片宽度限制、自动翻页与全屏阅读。
 
-## 历史来源与致谢
+### 本地导入与文档支持
+- **本地目录导入**：支持直接扫描或导入本地漫画文件夹（兼容包含章节子目录或单章节无子目录结构）。
+- **多种压缩包归档**：支持 `.cbz`、`.cb7`、`.zip`、`.7z` 等 Comic Book Archive 格式漫画导入与归档。
+- **PDF 与图片型 EPUB 转换**：
+  - PDF 漫画支持多选批量导入，后台异步队列逐本解析入库，进度可收起并在前台自由浏览其他内容。
+  - 支持固定版式图片型 EPUB 导入，提取栅格图片并在存在有效目录导航时保留分章。
+- **下载扫描与归档恢复**：支持扫描本地存储路径恢复下载记录，支持 `.venera-comics` 漫画归档包导入与导出。
 
-本项目的历史继承谱系为：
+### 收藏、历史、下载与追更
+- **收藏夹管理**：支持自定义收藏夹分类、排序与收藏夹内漫画拖拽排序。
+- **阅读历史与时长**：自动记录阅读进度、上次阅读章节与阅读时长统计。
+- **离线下载管理**：支持章节批量离线下载，提供下载任务队列管理、暂停/恢复与失败重试。
+- **漫画追更检测**：支持已收藏漫画批量更新检查与新章节标记。
 
-```text
-venera-app/venera
-        ↓
-CyrilPeng/Venera-Next
-        ↓
-原 miludeshiji/Venera-Next
-        ↓
-Venera-Works/Venera-Plus（代码仓库，应用名 VeneraPlus）
-```
+### WebDAV 数据同步与远端漫画库
+- **应用数据同步**：
+  - 支持设置、收藏、历史、Cookie 和已安装漫画源扩展的应用数据同步（不包含本地漫画图片文件）。
+  - 提供**手动同步**、**实时同步**（本地修改触发上传，启动/恢复前台检查远端）与**定时同步**（5～360 分钟间隔合并上传）三种模式。
+  - 定时调度由应用进程内计时器驱动（仅在应用运行期间调度，非系统后台保活服务，启动与恢复前台时自动补做到期任务）。
+  - 同步采用整包快照机制；WebDAV 凭据、同步调度模式、本地待同步状态等设备敏感信息严格保留在本地，不随快照上传或被覆盖。
+- **WebDAV 在线漫画库**：
+  - 支持直接将 WebDAV 作为远端漫画书库在线流式阅读，按需拉取目录与图片，无需全量下载。
+  - 支持普通图片目录结构、带有 `metadata.json` 标记的多层目录结构，以及解压后的 CBZ 漫画目录。
+  - 「同步漫画库配置」选项默认独立关闭，仅在可信网络且两端主动开启时随数据快照加密同步。
 
-- 原始项目：[venera-app/venera](https://github.com/venera-app/venera)
-- 历史直接上游：[CyrilPeng/Venera-Next](https://github.com/CyrilPeng/Venera-Next)
-- 早期个人分支：`miludeshiji/Venera-Next`
-- 当前独立项目：[Venera-Works/Venera-Plus](https://github.com/Venera-Works/Venera-Plus)（应用名：VeneraPlus）
+### Bangumi 元数据与阅读进度
+- **账号与条目关联**：支持配置 Bangumi Access Token 关联账号，可在漫画详情页手动搜索并绑定 Bangumi 条目。
+- **WebDAV 自动刮削**：WebDAV 漫画库自动刮削功能默认关闭；按需启用后，可在同步时为缺少元数据的漫画自动匹配 Bangumi 条目并补充标题、作者、简介与标签。
+- **进度单向同步**：漫画阅读完成后可单向更新 Bangumi 条目的阅读状态与卷数/话数进度，支持本地失败重试队列。
 
-感谢原项目和历史维护者的设计、实现与持续开源贡献。本项目中的大量基础能力源自上述项目。
+### JavaScript 漫画源扩展
+- **轻量扩展运行时**：内置 JavaScript 运行时环境，支持通过 JS 脚本扩展更多网络漫画源。
+- **源管理与调试**：支持漫画源仓库订阅、检查更新、本地预览安装、单源调试与安装回滚。
+- **排版与网络适配**：支持漫画源根据阅读器视口排版请求自适应图片尺寸，支持自定义 Header 与 User-Agent 安全回退。
+- *声明：本项目仅提供扩展运行环境与接口规范，不内置、不提供、不维护、不推荐任何第三方漫画源。*
 
-**版权与维护边界声明**：
-- 本项目忠实保留原作者的版权声明与 GPL-3.0 许可证，绝不冒认原项目版权。
-- 历史项目仅作为来源事实记录；本项目独立演进，不承诺与历史来源同步，不向历史 upstream 提交 PR。
-- 本项目的流程与反馈完全面向本仓库；请不要将本项目的改动向原上游项目反馈或索取支持，也不把向 upstream 复现作为本项目的必需支持路径。
+---
 
-## 当前修改与增强
+## 下载与快速入门
 
-当前项目在继承基础能力之上，重点维护和增强了以下能力：
+### 获取应用
+前往 [GitHub Releases](https://github.com/Venera-Works/Venera-Plus/releases) 下载适用于对应平台的安装包或便携包。
 
-- Bangumi 阅读进度同步：使用 Access Token 连接账号、绑定漫画条目，阅读完成单向上传并记录本地重试队列。
-- 条漫左右边距调节：连续与瀑布流阅读器支持左右边距调节，并与图片自适应排版约束（`ComicImageLoadTarget`）及缓存键严格对齐。
-- WebDAV 定时数据同步：支持多档定时同步调度与本地修改合并，规范敏感凭据与本地状态的设备隔离。
-- 后台任务与存储保护：PDF 批量导入异步任务管理与存储锁机制。
+### 数据迁移（可选）
+VeneraPlus 与旧版 Venera / VeneraNext 互为独立应用，可并存安装使用。如需从旧版迁移数据：
+1. 在旧版应用中打开 **设置 → 应用 → 导出应用数据**，导出 `.venera` 数据备份文件。
+2. 在 VeneraPlus 中打开 **设置 → 应用 → 导入应用数据**，选取备份文件恢复收藏与历史。
 
-完整变更见 [CHANGELOG.md](CHANGELOG.md)。
+### 快速上手
+- **本地阅读**：打开「本地」页面，通过导入入口即可导入漫画目录、压缩包（CBZ/ZIP/7Z）或批量导入 PDF。
+- **数据同步**：前往「设置 → 应用 → 数据同步」，配置 WebDAV 服务端信息并选择同步模式。
+- **远端漫画库**：前往「设置 → 应用 → WebDAV 漫画库」配置远端漫画库路径，并在「探索 → WebDAV 漫画库」中在线浏览与阅读。
 
-## 基础能力概览
+---
 
-本项目继承自 Venera 体系的主要阅读器能力，包括：
+## 反馈与支持
 
-- Android、iOS、Windows、Linux 和 macOS 跨平台 Flutter 应用。
-- 画廊、连续和瀑布流等阅读模式，以及跨章节阅读、双页拆分和阅读进度记录。
-- 本地漫画目录及 CBZ、ZIP、7Z、PDF、图片型 EPUB 等导入能力。
-- JavaScript 漫画源扩展运行环境。
-- 收藏、历史、阅读时长、图片收藏、下载和追更。
-- WebDAV 应用数据同步、漫画归档和远端漫画库。
+- **提交问题**：如遇到阅读器本体的缺陷或有功能建议，欢迎在 [GitHub Issues](https://github.com/Venera-Works/Venera-Plus/issues) 提交反馈。提交时请附带系统平台、应用版本、复现步骤及相关日志。
+- **漫画源相关问题**：本仓库只维护阅读器本体，不处理第三方漫画源的图源失效、更新缺失、搜索内容或版权问题。相关问题请向对应漫画源作者或网络服务方反馈。
 
-这里仅列出能力范围，不代表本项目对所有平台、格式、扩展或服务均已完成生产环境长期验证。
+## 文档索引
 
-## 使用与构建
+- **用户使用指南**：
+  - [本地漫画导入指南](doc/user/import_comic.zh.md)
+  - [应用数据同步说明](doc/user/data_sync.zh.md)
+  - [条漫左右边距说明](doc/user/reader_width.zh.md)
+- **开发与贡献**：
+  - [项目完整文档索引](doc/README.md)
+  - [构建与开发指南](doc/development/build.zh.md)
+  - [贡献指南](CONTRIBUTING.md)
 
-本项目不承诺提供持续可用的公开安装包、自动更新或无缝升级支持。建议只在理解风险并完成数据备份后自行构建。
+---
 
-> [!IMPORTANT]
-> **构建权限须知**：未经用户明确允许，禁止运行任何应用构建（包括 `flutter build`、`flutter run`、Gradle/CMake/MSBuild 编译、内部调用构建的打包入口及可能隐式编译的测试）；未经许可仅可进行不触发构建的静态检查。
+## 开发与构建
 
-项目当前要求 Flutter `3.41.4`，依赖必须按锁文件解析：
+本项目基于 **Flutter 3.41.4** 开发。
 
-```bash
-git clone https://github.com/Venera-Works/Venera-Plus.git
-cd Venera-Plus
-flutter pub get --enforce-lockfile
-# 运行应用前须获得用户明确许可：
-# flutter run
-```
+环境准备、依赖锁定、各平台构建步骤与贡献规范请参阅上方的 [构建与开发指南](doc/development/build.zh.md) 及 [贡献指南](CONTRIBUTING.md)。
 
-提交或维护代码前，至少运行：
+---
 
-```bash
-python .github/scripts/check_structure_imports.py
-python -m unittest discover -s .github/scripts/tests -p "test_*.py"
-dart tool/check_git_dependencies.dart
-flutter analyze --no-pub
-flutter test --no-pub
-git diff --check
-```
+## 许可与历史来源致谢
 
-更完整的环境、构建和平台要求见：
+本项目遵循 [GPL-3.0](LICENSE) 许可证开源。
 
-- [构建与开发](doc/development/build.zh.md)
-- [项目结构约定](doc/architecture/project_structure.zh.md)
-- [依赖治理](doc/development/dependencies.zh.md)
-- [VeneraPlus 品牌与应用身份迁移计划](doc/experiments/venera_plus_identity_migration.zh.md)
-- [完整文档索引](doc/README.md)
-- [本地漫画导入说明](doc/user/import_comic.zh.md)
+### 历史来源与致谢
+- [venera-app/venera](https://github.com/venera-app/venera)
+- [CyrilPeng/Venera-Next](https://github.com/CyrilPeng/Venera-Next)
 
-## 反馈范围
-
-可以提交与当前仓库直接相关、能够稳定复现的问题，也可以提交目标明确、范围较小的 Pull Request。但这是独立维护项目：是否处理、何时处理以及是否接受修改均由维护者决定。
-
-请在反馈中提供：
-
-- 当前 commit 或版本；
-- 操作系统和 Flutter/应用环境；
-- 最小复现步骤；
-- 实际结果、预期结果和相关日志。
-
-本仓库不提供、内置、托管、推荐或维护任何漫画源，也不处理源站内容、具体作品可用性、章节缺失、图片失效、账号限制或版权问题。此类问题应反馈给对应扩展、源站或服务提供者。
-
-## 风险与数据
-
-- AI 参与不代表代码已经得到完整人工审计或长期验证。
-- 本项目包含独立修改与激进改动，可能产生语义变化或未发现的问题。
-- WebDAV 同步可能传播配置和数据变更；试用前应保留独立备份。
-- 全新独立安装身份不自动读取或迁移旧版数据；旧版数据迁移需通过手动导出/导入备份完成。
-- 本仓库不对数据丢失、服务不可用、扩展失效或第三方兼容问题承担保证责任。
-
-## 许可
-
-本项目及其衍生修改遵循 [GPL-3.0](LICENSE) 许可。使用、修改和再分发时，请同时遵守原项目、直接上游及所用第三方依赖的许可要求。
-
-软件按现状提供，不附带任何明示或默示担保。
+感谢原项目与历史维护者的架构设计与开源奉献。
