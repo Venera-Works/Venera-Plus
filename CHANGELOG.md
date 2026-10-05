@@ -14,6 +14,10 @@
   - Dart package 包名迁移为 `venera_plus`。保留 `.venera`/`.venera-comics` 归档格式、`venera/...` 内部通道协议及既有默认远端路径；仅本次不改变对应格式与通道协议，不保证全部旧版数据与配置无条件兼容。
   - **历史版权来源与开源致谢保留**：坚决保留原项目（`venera-app/venera`）与历史分支（`CyrilPeng/Venera-Next`、`miludeshiji/Venera-Next`）的版权来源、历史事实与开源致谢；保留历史 CHANGELOG 记录及第三方依赖真实 Git 来源与固定 commit SHA。
 
+- **基础依赖更新与 SQLite v3 架构迁移**：
+  - 将 `sqlite3` 升级至 `3.5.2`，遵循 v3 官方架构改由 Dart build hooks 负责原生二进制分发与构建链接，移除已废弃的 `sqlite3_flutter_libs` 原生插件；数据库操作默认保留 `dispose` 兼容调用。
+  - 同步合并生产依赖组升级：`archive` 升级至 `4.3.0`、`battery_plus` 升级至 `7.1.2`、`dio` 升级至 `5.11.1`、`enough_convert` 升级至 `1.7.1`、`image` 升级至 `4.10.1`。
+
 ## v2.2.2
 
 ### 新增

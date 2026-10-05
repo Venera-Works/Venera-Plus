@@ -73,7 +73,7 @@ git diff --check
 
 CI 会使用 `flutter test --coverage` 生成 `coverage/lcov.info`，在工作流摘要中显示行覆盖率，并上传报告产物。当前覆盖率用于建立可见基线，尚未设置统一硬阈值；涉及关键业务路径的改动仍必须增加针对性测试。
 
-PR 还会运行 `依赖安全审查` 和 `PR 平台冒烟构建`。依赖审查会阻止引入高危或严重漏洞依赖；当改动涉及 Flutter 代码、原生平台目录、依赖、构建脚本或工作流时，平台工作流会执行 Android Debug 和 Windows Debug 构建，文档等不影响构建的改动会跳过这两个平台任务。Dart 格式检查只针对本次修改的 Dart 文件执行，避免历史格式差异阻塞后续贡献。`main` 分支要求 PR 通过代码分析、依赖审查和平台冒烟构建门禁，并禁止直接强推或删除分支。
+PR 还会运行 `依赖安全审查` 和 `PR 平台冒烟构建`。依赖审查会阻止引入高危或严重漏洞依赖；当改动涉及 Flutter 代码、集成测试、原生平台目录、依赖、构建脚本或工作流时，平台工作流会执行 Android Debug（arm64 编译门禁与 x86_64 模拟器环境原生集成测试）和 Windows Debug（应用构建、真实启动脚本与原生集成测试），文档等不影响构建的改动会跳过这两个平台任务。集成测试统一使用 `integration_test/platform_smoke_test.dart`（需显式 `--dart-define=CI_NATIVE_SMOKE=true` 在一次性 CI runner 运行），SQLite 原生加载、旧版本数据库模式迁移、事务写入、重开持久化及数据备份恢复在 suite 临时隔离目录执行，真实 MyApp 启动与首帧截图使用一次性运行器 profile 并断言可见真实历史标题与无未捕获异常。Dart 格式检查覆盖 `lib`、`test` 和 `integration_test`。`main` 分支要求 PR 通过代码分析、依赖审查和平台冒烟构建门禁，并禁止直接强推或删除分支。
 
 涉及发布版本时再运行：
 
@@ -162,7 +162,7 @@ python .github/scripts/release_version.py --check --tag v1.2.3
 
 `pubspec.yaml`、发布 tag 和 `CHANGELOG.md` 版本章节必须与 `release.json` 一致。
 
-`代码分析` 工作流会运行版本与结构检查、Python 脚本测试、修改文件的 Dart 格式检查、`flutter analyze`、完整 Dart 测试及覆盖率汇总。`依赖安全审查` 会检查 PR 新增或升级的依赖，`PR 平台冒烟构建` 会按改动范围验证 Android 和 Windows 编译。`完整构建` 在开始多平台构建前会复用同一质量工作流；手动平台构建和 tag 发布则共同复用 `.github/workflows/build.yml`，避免两套构建定义产生差异。
+`代码分析` 工作流会运行版本与结构检查、Python 脚本测试、Dart 格式检查（`lib`、`test` 与 `integration_test`）、`flutter analyze`、完整 Dart 测试及覆盖率汇总。`依赖安全审查` 会检查 PR 新增或升级的依赖，`PR 平台冒烟构建` 会按改动范围验证 Android 和 Windows 的编译与原生数据库集成测试场景。`完整构建` 在开始多平台构建前会复用同一质量工作流；手动平台构建和 tag 发布则共同复用 `.github/workflows/build.yml`，避免两套构建定义产生差异。
 
 原生平台 CI 构建任务配置了编译与依赖缓存：使用 `sccache` 缓存原生任务中的 Rust 编译及受支持的 Linux CMake 生成器路径下的 C/C++ 编译（未保留 Windows C/C++ 包装器），使用 Cargo 注册表与 Git 下载缓存，以及 Android Gradle 构建缓存。构建步骤在结束时通过 `sccache --show-stats` 打印统计信息，用于确认热缓存命中情况。最终发布包与安装包等产物始终重新构建生成，不会从缓存复用。
 

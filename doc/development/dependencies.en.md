@@ -13,6 +13,11 @@ This document records governance rules for VeneraPlus's direct dependencies, esp
 - Review upstream changes, security advisories, licenses, platform builds, and relevant tests when upgrading.
 - Publishing a fork to pub.dev does not replace security maintenance; a diff audit and upstream synchronization plan are still required.
 
+## Critical Native and Platform Dependency Boundaries
+
+- `sqlite3`: Migrated to 3.5.2 (sqlite3 v3 architecture). v3 relies on Dart build hooks for native binary provisioning and bindings, removing the legacy `sqlite3_flutter_libs` plugin and its native registration paths. Native execution uses bundled precompiled binaries and build hooks rather than system libraries or local overrides.
+- `dynamic_color`: Pinned at 1.8.1. Version 1.9.0 introduced an AGP 8 build regression; version 2.0.2 depends on `material_ui ^1.0.0`, which requires Flutter >= 3.44 / Dart >= 3.12, incompatible with the project's pinned Flutter 3.41.4 / Dart 3.11.1. It is retained at 1.8.1.
+
 ## Current Git Dependencies
 
 | Dependency | Commit | Upstream / license | Immediate reason for retaining the customized repository |

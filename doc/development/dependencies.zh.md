@@ -13,6 +13,11 @@ English version: [dependencies.en.md](dependencies.en.md)
 - 升级依赖时检查上游变更、安全公告、许可证、平台构建和相关测试。
 - 发布到 pub.dev 不能替代安全维护；发布前仍需完成差异审计和上游同步计划。
 
+## 关键原生与平台依赖边界
+
+- `sqlite3`: 迁移至 3.5.2（sqlite3 v3 架构）。v3 改由 Dart build hooks 负责原生二进制分发与构建绑定，移除了旧有插件 `sqlite3_flutter_libs` 及生成的原生注册逻辑。原生执行依赖预编译产物与 build hook，不使用系统全局或自行编译覆盖。
+- `dynamic_color`: 保留 1.8.1。1.9.0 存在 AGP 8 构建回归问题；2.0.2 引入 `material_ui ^1.0.0`，其 SDK 约束要求 Flutter >= 3.44 / Dart >= 3.12，与本项目固定的 Flutter 3.41.4 / Dart 3.11.1 不兼容，因此暂不升级并保持 1.8.1 版本边界。
+
 ## 当前 Git 依赖
 
 | 依赖 | 当前 commit | 上游 / 许可证 | 暂时保留定制仓库的直接原因 |
