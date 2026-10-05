@@ -1,10 +1,10 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:venera_next/features/bangumi/bangumi_api.dart';
-import 'package:venera_next/features/bangumi/bangumi_models.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/log.dart';
+import 'package:venera_plus/features/bangumi/bangumi_api.dart';
+import 'package:venera_plus/features/bangumi/bangumi_models.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/log.dart';
 
 typedef BangumiGatewayFactory = BangumiGateway Function(String token);
 typedef BangumiSettingsSaver = Future<void> Function();

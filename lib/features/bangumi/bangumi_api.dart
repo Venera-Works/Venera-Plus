@@ -1,5 +1,5 @@
-import 'package:venera_next/features/bangumi/bangumi_models.dart';
-import 'package:venera_next/network/app_dio.dart';
+import 'package:venera_plus/features/bangumi/bangumi_models.dart';
+import 'package:venera_plus/network/app_dio.dart';
 
 abstract interface class BangumiGateway {
   Future<BangumiUser> currentUser();

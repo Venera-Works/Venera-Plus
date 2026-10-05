@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/features/favorites/favorites.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/foundation/throttled_task_runner.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/favorites/favorites.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/throttled_task_runner.dart';
 
 const _updateConcurrency = 5;
 const _updateThrottleEvery = 5;

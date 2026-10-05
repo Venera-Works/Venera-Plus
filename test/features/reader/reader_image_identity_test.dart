@@ -2,11 +2,11 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/reader/images.dart';
-import 'package:venera_next/features/reader/reader_page.dart';
-import 'package:venera_next/features/reader/waterfall_flow.dart';
-import 'package:venera_next/foundation/image_provider/reader_image.dart';
-import 'package:venera_next/network/images.dart';
+import 'package:venera_plus/features/reader/images.dart';
+import 'package:venera_plus/features/reader/reader_page.dart';
+import 'package:venera_plus/features/reader/waterfall_flow.dart';
+import 'package:venera_plus/foundation/image_provider/reader_image.dart';
+import 'package:venera_plus/network/images.dart';
 
 void main() {
   group('Reader initial page normalization & calculation pure logic', () {

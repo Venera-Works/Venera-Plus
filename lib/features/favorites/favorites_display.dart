@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:venera_next/components/button.dart';
-import 'package:venera_next/components/menu.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/translations.dart';
+import 'package:venera_plus/components/button.dart';
+import 'package:venera_plus/components/menu.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/translations.dart';
 
 const favoriteDisplayModeKey = 'favoritesDisplayMode';
 const favoriteGalleryColumnsKey = 'favoritesGalleryColumns';

@@ -2,10 +2,10 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/extensions.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/network/app_dio.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/extensions.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/network/app_dio.dart';
 
 import 'parser.dart';
 import 'source.dart';

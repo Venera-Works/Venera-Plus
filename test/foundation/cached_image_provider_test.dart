@@ -3,7 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/foundation/image_provider/cached_image.dart';
+import 'package:venera_plus/foundation/image_provider/cached_image.dart';
 
 void main() {
   test('cached image provider limits concurrent thumbnail loads', () async {

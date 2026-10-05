@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/history/image_favorites_models.dart';
+import 'package:venera_plus/features/history/image_favorites_models.dart';
 
 void main() {
   test('manual cover can be uncollected while auto cover stays protected', () {

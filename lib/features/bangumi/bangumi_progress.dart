@@ -2,14 +2,14 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:venera_next/components/button.dart';
-import 'package:venera_next/components/message.dart';
-import 'package:venera_next/components/pop_up_widget.dart';
-import 'package:venera_next/features/bangumi/bangumi_models.dart';
-import 'package:venera_next/features/bangumi/bangumi_service.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/features/history/history.dart';
-import 'package:venera_next/foundation/translations.dart';
+import 'package:venera_plus/components/button.dart';
+import 'package:venera_plus/components/message.dart';
+import 'package:venera_plus/components/pop_up_widget.dart';
+import 'package:venera_plus/features/bangumi/bangumi_models.dart';
+import 'package:venera_plus/features/bangumi/bangumi_service.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/history/history.dart';
+import 'package:venera_plus/foundation/translations.dart';
 
 class BangumiProgressPanel extends StatefulWidget {
   const BangumiProgressPanel({

@@ -3,13 +3,13 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_qjs/flutter_qjs.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/foundation/comic_type.dart';
-import 'package:venera_next/foundation/js_engine.dart';
-import 'package:venera_next/foundation/res.dart';
-import 'package:venera_next/network/images.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/foundation/js_engine.dart';
+import 'package:venera_plus/foundation/res.dart';
+import 'package:venera_plus/network/images.dart';
 
 void main() {
   setUp(() {

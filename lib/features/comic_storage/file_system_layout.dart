@@ -1,5 +1,5 @@
 import 'package:path/path.dart' as path;
-import 'package:venera_next/foundation/file_system.dart';
+import 'package:venera_plus/foundation/file_system.dart';
 
 import 'comic_file_rules.dart';
 

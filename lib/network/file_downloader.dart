@@ -3,9 +3,9 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dio/io.dart';
-import 'package:venera_next/network/app_dio.dart';
-import 'package:venera_next/network/proxy.dart';
-import 'package:venera_next/foundation/extensions.dart';
+import 'package:venera_plus/network/app_dio.dart';
+import 'package:venera_plus/network/proxy.dart';
+import 'package:venera_plus/foundation/extensions.dart';
 
 class FileDownloader {
   final String url;

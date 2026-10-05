@@ -3,10 +3,10 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart' show compute;
 import 'package:image/image.dart' as image;
 import 'package:pdfrx/pdfrx.dart';
-import 'package:venera_next/features/local_comics/import_export/document_import.dart';
-import 'package:venera_next/features/local_comics/local.dart';
-import 'package:venera_next/features/local_comics/local_storage_guard.dart';
-import 'package:venera_next/foundation/file_system.dart';
+import 'package:venera_plus/features/local_comics/import_export/document_import.dart';
+import 'package:venera_plus/features/local_comics/local.dart';
+import 'package:venera_plus/features/local_comics/local_storage_guard.dart';
+import 'package:venera_plus/foundation/file_system.dart';
 
 const double _pdfRenderScale = 3;
 const int _pdfRenderMaxEdge = 3000;

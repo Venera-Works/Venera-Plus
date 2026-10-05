@@ -2,11 +2,11 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/features/comic_source/source_repositories.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/translations.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/comic_source/source_repositories.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/translations.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

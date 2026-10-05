@@ -3,8 +3,8 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/reader/comic_image.dart';
-import 'package:venera_next/features/reader/gallery_page_plan.dart';
+import 'package:venera_plus/features/reader/comic_image.dart';
+import 'package:venera_plus/features/reader/gallery_page_plan.dart';
 
 Future<ui.Image> createTestUiImage({int width = 120, int height = 80}) async {
   final recorder = ui.PictureRecorder();

@@ -5,8 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/settings/settings.dart';
-import 'package:venera_next/foundation/translations.dart';
+import 'package:venera_plus/features/settings/settings.dart';
+import 'package:venera_plus/foundation/translations.dart';
 
 void main() {
   test('stable users are not notified about prerelease versions', () {
@@ -63,7 +63,7 @@ void main() {
     const changelogFixture =
         '# Venera 2.3.0\n\n'
         '### **核心特性**\n\n'
-        '这是一段包含**加粗片段**与`package:venera_next`行内代码的普通句子说明。\n\n'
+        '这是一段包含**加粗片段**与`package:venera_plus`行内代码的普通句子说明。\n\n'
         '- 一级功能列表项\n'
         '  - 二级嵌套列表项\n'
         '    这是二级列表换行后的续写文本内容\n'
@@ -170,7 +170,7 @@ void main() {
 
         final codeSpan = findTextSpan(
           sentenceSpan,
-          (s) => s.text?.contains('package:venera_next') ?? false,
+          (s) => s.text?.contains('package:venera_plus') ?? false,
         );
         expect(codeSpan, isNotNull);
         expect(codeSpan!.style?.fontFamily, 'monospace');
@@ -227,11 +227,11 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        final lightFinder = findRichTextContaining('package:venera_next');
+        final lightFinder = findRichTextContaining('package:venera_plus');
         expect(lightFinder, findsOneWidget);
         final lightSpan = findTextSpan(
           tester.widget<RichText>(lightFinder).text,
-          (s) => s.text?.contains('package:venera_next') ?? false,
+          (s) => s.text?.contains('package:venera_plus') ?? false,
         );
         expect(lightSpan, isNotNull);
         expect(lightSpan!.style?.fontFamily, 'monospace');
@@ -250,11 +250,11 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        final darkFinder = findRichTextContaining('package:venera_next');
+        final darkFinder = findRichTextContaining('package:venera_plus');
         expect(darkFinder, findsOneWidget);
         final darkSpan = findTextSpan(
           tester.widget<RichText>(darkFinder).text,
-          (s) => s.text?.contains('package:venera_next') ?? false,
+          (s) => s.text?.contains('package:venera_plus') ?? false,
         );
         expect(darkSpan, isNotNull);
         expect(darkSpan!.style?.fontFamily, 'monospace');
@@ -354,7 +354,7 @@ void main() {
         expect(copiedText, contains('核心特性'));
         expect(copiedText, contains('一级功能列表项'));
         expect(copiedText, contains('三级深层列表项'));
-        expect(copiedText, contains('package:venera_next'));
+        expect(copiedText, contains('package:venera_plus'));
         expect(copiedText, isNot(contains('**')));
         expect(copiedText, isNot(contains('`')));
       },

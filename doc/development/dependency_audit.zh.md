@@ -2,13 +2,13 @@
 
 English: [dependency_audit.en.md](dependency_audit.en.md) · [治理规则](dependencies.zh.md) · [机器可读清单](git_dependencies.json)
 
-本文档记录 VeneraNext 当前 Git 依赖的来源审查、定制理由与维护责任。完整 commit、仓库 URL、包路径与状态以机器可读清单 `doc/development/git_dependencies.json` 为准。
+本文档记录 VeneraPlus 当前 Git 依赖的来源审查、定制理由与维护责任。完整 commit、仓库 URL、包路径与状态以机器可读清单 `doc/development/git_dependencies.json` 为准。
 
 ## 已完成的治理变更
 
 - **移除 `flutter_to_debian`**：Debian 打包改用项目独立的 `debian/build.py` 脚本直接调用系统 `dpkg-deb` 工具，输出目录规范为 `build/linux/{x64,arm64}/release/debian`，连带移除仅打包使用的传递依赖 `mime_type`。CI 不再需要 `dart pub global activate -s git flutter_to_debian`。
 - **建立机器可读清单与自动化检查器**：新增 `doc/development/git_dependencies.json` 清单与 `tool/check_git_dependencies.dart`。代码分析工作流在锁定依赖获取后运行检查器，严格校验所有直接依赖、传递 Git 包的 URL、ref、resolved-ref、包路径及锁文件一致性。
-- **明确来源与责任边界**：本项目保持自有依赖策略与 `miludeshiji` 仓库身份，保留 `venera-app` 来源固定 commit，不转向上游个人仓库；清单中的 `maintained-fork` 标识当前保留的定制分支，不代表本项目维护这些外部仓库；本项目维护者负责固定版本（pin）审查与兼容性把关。
+- **明确来源与责任边界**：本项目保持自有依赖策略与 `VeneraPlus` 独立项目身份（代码仓库 `Venera-Plus`），保留 `venera-app` 来源固定 commit，不转向上游个人仓库；清单中的 `maintained-fork` 标识当前保留的定制分支，不代表本项目维护这些外部仓库；本项目维护者负责固定版本（pin）审查与兼容性把关。
 
 ## 每项 Git 依赖的审查结论
 

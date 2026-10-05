@@ -1,10 +1,10 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/foundation/res.dart';
-import 'package:venera_next/features/sync/sync.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/res.dart';
+import 'package:venera_plus/features/sync/sync.dart';
 
 void main() {
   setUp(() {

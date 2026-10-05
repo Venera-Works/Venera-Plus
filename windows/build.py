@@ -54,8 +54,8 @@ def create_portable_zip(version):
     if not WINDOWS_RELEASE_DIR.is_dir():
         raise FileNotFoundError(WINDOWS_RELEASE_DIR)
 
-    zip_path = WINDOWS_BUILD_DIR / f"VeneraNext-{version}-windows.zip"
-    package_dir = WINDOWS_BUILD_DIR / f"VeneraNext-{version}-windows"
+    zip_path = WINDOWS_BUILD_DIR / f"VeneraPlus-{version}-windows.zip"
+    package_dir = WINDOWS_BUILD_DIR / f"VeneraPlus-{version}-windows"
     if zip_path.exists():
         zip_path.unlink()
     if package_dir.exists():
@@ -86,7 +86,7 @@ def ensure_chinese_translation():
 
     request = Request(
         CHINESE_TRANSLATION_URL,
-        headers={"User-Agent": "VeneraNext-Windows-Build"},
+        headers={"User-Agent": "VeneraPlus-Windows-Build"},
     )
     with urlopen(request, timeout=30) as response:
         content = response.read()
@@ -108,7 +108,7 @@ def build_installer(version):
     iss_content = ISS_PATH.read_text(encoding="utf-8")
     rendered = iss_content.replace("{{version}}", version)
     rendered = rendered.replace("{{root_path}}", os.getcwd())
-    installer_path = WINDOWS_BUILD_DIR / f"VeneraNext-{version}-windows-installer.exe"
+    installer_path = WINDOWS_BUILD_DIR / f"VeneraPlus-{version}-windows-installer.exe"
 
     try:
         ISS_PATH.write_text(rendered, encoding="utf-8")

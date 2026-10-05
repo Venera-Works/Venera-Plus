@@ -2,7 +2,7 @@
 
 ## Introduction
 
-VeneraNext can import comics from local directories, comic archives, PDF files,
+VeneraPlus can import comics from local directories, comic archives, PDF files,
 and image-based EPUB files. Imported content is normalized into the existing
 local image-comic layout so all reader modes, progress tracking, and split-spread
 features continue to work.
@@ -68,18 +68,18 @@ The name of directory will be used as comic title. And the name of chapter direc
 
 ## Archive
 
-VeneraNext supports importing comics from archive files.
+VeneraPlus supports importing comics from archive files.
 
 Archive files are intended for import, export, backup, migration, and distribution. They must follow [Comic Book Archive](https://en.wikipedia.org/wiki/Comic_book_archive_file) format.
 
-Currently, VeneraNext supports the following archive formats:
+Currently, VeneraPlus supports the following archive formats:
 - `.cbz`
 - `.cb7`
 - `.zip`
 - `.7z`
 
 An archive may contain images directly, or it may contain one top-level folder.
-If the top-level folder contains chapter folders, VeneraNext imports those
+If the top-level folder contains chapter folders, VeneraPlus imports those
 folders as chapters.
 
 ```text
@@ -135,7 +135,7 @@ Document import never overwrites an existing comic with the same title.
 
 The WebDAV comic library is an online reading channel. It is separate from local import/export and WebDAV CBZ archive backup.
 
-Online reading only reads images from remote directories. The app lists directories and loads images on demand; remote CBZ/ZIP/7Z files are not used for online preview. You can use a plain image directory or extract a single-comic CBZ exported by VeneraNext to WebDAV to preserve its title, author, tags, and chapters.
+Online reading only reads images from remote directories. The app lists directories and loads images on demand; remote CBZ/ZIP/7Z files are not used for online preview. You can use a plain image directory or extract a single-comic CBZ exported by VeneraPlus (or legacy VeneraNext) to WebDAV to preserve its title, author, tags, and chapters.
 
 The **Sync comic library config** switch in WebDAV Comic Library settings is off by default. When enabled, DataSync/Appdata `.venera` files include the library URL, username, password, remote path, automatic-update switch, and update interval. The receiving device must also enable this switch locally before those fields are imported. Credentials are stored in the remote `.venera` file, so enable this only for trusted WebDAV storage and accounts.
 
@@ -203,7 +203,7 @@ Synchronization performs bounded recursive discovery for unmarked nested librari
 
 ### Extracted CBZ Enhanced Mode
 
-A single-comic CBZ exported by VeneraNext normally has a flat image layout after extraction:
+A single-comic CBZ exported by VeneraPlus (or legacy VeneraNext) normally has a flat image layout after extraction:
 
 ```text
 /venera_comics/
@@ -249,7 +249,7 @@ Field rules:
 
 Chapter ranges must be ordered, non-overlapping, non-reversed, and within the actual number of root pages. `cover.*` is not included in page numbering. Extra metadata fields are allowed for forward compatibility. Remote URLs, scripts, and local absolute paths are not read from metadata.
 
-`metadata.json` must use UTF-8; its file name is matched case-insensitively. `ComicInfo.xml` remains in the exported CBZ for compatibility with other readers, while the VeneraNext WebDAV library currently uses `metadata.json` as its enhanced metadata source.
+`metadata.json` must use UTF-8; its file name is matched case-insensitively. `ComicInfo.xml` remains in the exported CBZ for compatibility with other readers, while the VeneraPlus WebDAV library currently uses `metadata.json` as its enhanced metadata source.
 
 When metadata is missing and Bangumi is connected, the app first attempts the conservative automatic match described above and otherwise falls back to plain directory mode. Automatic scraping does not replace an existing file that is unreadable, malformed, has invalid field types, or contains invalid chapter ranges; the comic remains visible using the parseable content or directory fallback. After an explicit Bangumi binding, a conditionally merged update can repair title, author, description, and tags when the file is still a parseable JSON object, while salvaging structurally valid `chapters`. An unparseable file is never silently replaced.
 

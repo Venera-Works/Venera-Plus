@@ -5,10 +5,10 @@ import 'dart:typed_data';
 import 'package:flutter_qjs/flutter_qjs.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite3/sqlite3.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/consts.dart';
-import 'package:venera_next/foundation/cache_manager.dart';
-import 'package:venera_next/network/images.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/consts.dart';
+import 'package:venera_plus/foundation/cache_manager.dart';
+import 'package:venera_plus/network/images.dart';
 
 bool _sqliteAvailable() {
   try {

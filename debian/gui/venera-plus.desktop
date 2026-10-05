@@ -1,9 +1,9 @@
 [Desktop Entry]
-Name=VeneraNext
-GenericName=VeneraNext
-Comment=VeneraNext
+Name=VeneraPlus
+GenericName=VeneraPlus
+Comment=VeneraPlus
 Terminal=false
 Type=Application
 Categories=Utility
 Keywords=Flutter;comic;images;
-Icon=venera-next
+Icon=venera-plus

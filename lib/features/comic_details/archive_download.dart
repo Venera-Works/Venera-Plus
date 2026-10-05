@@ -1,5 +1,5 @@
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/foundation/res.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/foundation/res.dart';
 
 Future<Res<List<ArchiveInfo>>> loadArchiveOptions(
   ArchiveDownloader downloader,

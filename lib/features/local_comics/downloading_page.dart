@@ -1,14 +1,14 @@
 import 'package:flutter/material.dart';
-import 'package:venera_next/components/button.dart';
-import 'package:venera_next/components/menu.dart';
-import 'package:venera_next/components/pop_up_widget.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/image_provider/cached_image.dart';
-import 'package:venera_next/features/local_comics/download.dart';
-import 'package:venera_next/features/local_comics/local.dart';
-import 'package:venera_next/foundation/file_system.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/foundation/widget_utils.dart';
+import 'package:venera_plus/components/button.dart';
+import 'package:venera_plus/components/menu.dart';
+import 'package:venera_plus/components/pop_up_widget.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/image_provider/cached_image.dart';
+import 'package:venera_plus/features/local_comics/download.dart';
+import 'package:venera_plus/features/local_comics/local.dart';
+import 'package:venera_plus/foundation/file_system.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/widget_utils.dart';
 
 class DownloadingPage extends StatefulWidget {
   const DownloadingPage({super.key});

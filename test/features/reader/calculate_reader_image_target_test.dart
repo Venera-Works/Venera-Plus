@@ -3,11 +3,11 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/reader/comic_image.dart';
-import 'package:venera_next/features/reader/images.dart';
-import 'package:venera_next/features/reader/reader.dart';
-import 'package:venera_next/features/reader/reader_page.dart';
-import 'package:venera_next/network/images.dart';
+import 'package:venera_plus/features/reader/comic_image.dart';
+import 'package:venera_plus/features/reader/images.dart';
+import 'package:venera_plus/features/reader/reader.dart';
+import 'package:venera_plus/features/reader/reader_page.dart';
+import 'package:venera_plus/network/images.dart';
 
 void main() {
   const viewport = Size(1000, 1600);

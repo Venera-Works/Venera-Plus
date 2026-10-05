@@ -1,5 +1,5 @@
 import 'package:flutter_qjs/flutter_qjs.dart';
-import 'package:venera_next/foundation/js_engine.dart';
+import 'package:venera_plus/foundation/js_engine.dart';
 
 import 'models.dart';
 

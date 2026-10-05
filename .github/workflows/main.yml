@@ -179,7 +179,7 @@ jobs:
           install .github/scripts/serialized_rustup.py "$HOME/.cargo/bin/rustup"
           chmod +x "$HOME/.cargo/bin/rustup"
           echo "RUSTUP_REAL_BINARY=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
-          echo "RUSTUP_LOCK_FILE=$RUNNER_TEMP/venera-rustup.lock" >> "$GITHUB_ENV"
+          echo "RUSTUP_LOCK_FILE=$RUNNER_TEMP/venera-plus-rustup.lock" >> "$GITHUB_ENV"
       - run: flutter pub get --enforce-lockfile
       - name: 构建 iOS 应用
         run: |
@@ -202,12 +202,12 @@ jobs:
           mkdir -p build/ios/iphoneos/Payload
           mv build/ios/iphoneos/Runner.app build/ios/iphoneos/Payload
           cd build/ios/iphoneos/
-          zip -r VeneraNext-ios.ipa Payload
+          zip -r VeneraPlus-ios.ipa Payload
       - name: 将版本号写入文件名
         run: |
           APP_VERSION=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | tr -d '\r\n')
           mkdir -p result
-          mv build/ios/iphoneos/VeneraNext-ios.ipa "result/VeneraNext-ios-$APP_VERSION.ipa"
+          mv build/ios/iphoneos/VeneraPlus-ios.ipa "result/VeneraPlus-ios-$APP_VERSION.ipa"
       - name: sccache 统计
         if: ${{ always() && steps.sccache.outcome == 'success' }}
         run: sccache --show-stats
@@ -408,8 +408,8 @@ jobs:
       - name: 校验 Windows 构建产物
         shell: pwsh
         run: |
-          $zip = @(Get-ChildItem -Path build/windows -File -Filter 'VeneraNext-*-windows.zip')
-          $installer = @(Get-ChildItem -Path build/windows -File -Filter 'VeneraNext-*-windows-installer.exe')
+          $zip = @(Get-ChildItem -Path build/windows -File -Filter 'VeneraPlus-*-windows.zip')
+          $installer = @(Get-ChildItem -Path build/windows -File -Filter 'VeneraPlus-*-windows-installer.exe')
           if ($zip.Count -ne 1) { throw "应当恰好生成一个 Windows zip，实际为 $($zip.Count)。" }
           if ($installer.Count -ne 1) { throw "应当恰好生成一个 Windows 安装包，实际为 $($installer.Count)。" }
           $artifacts = @($zip + $installer)
@@ -427,9 +427,9 @@ jobs:
             if ($badEntries.Count -gt 0) {
               throw "Windows zip 包含 $expectedRoot/ 之外的文件：$($badEntries.FullName -join ', ')"
             }
-            $exeEntry = @($archive.Entries | Where-Object { $_.FullName -eq "$expectedRoot/VeneraNext.exe" })
+            $exeEntry = @($archive.Entries | Where-Object { $_.FullName -eq "$expectedRoot/VeneraPlus.exe" })
             if ($exeEntry.Count -ne 1) {
-              throw "Windows zip 未包含 $expectedRoot/VeneraNext.exe"
+              throw "Windows zip 未包含 $expectedRoot/VeneraPlus.exe"
             }
           } finally {
             $archive.Dispose()
@@ -443,8 +443,8 @@ jobs:
         with:
           name: windows_build
           path: |
-            build/windows/VeneraNext-*-windows.zip
-            build/windows/VeneraNext-*-windows-installer.exe
+            build/windows/VeneraPlus-*-windows.zip
+            build/windows/VeneraPlus-*-windows-installer.exe
           if-no-files-found: error
 
   Upload_Windows:
@@ -466,8 +466,8 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          zips=(outputs/VeneraNext-*-windows.zip)
-          installers=(outputs/VeneraNext-*-windows-installer.exe)
+          zips=(outputs/VeneraPlus-*-windows.zip)
+          installers=(outputs/VeneraPlus-*-windows-installer.exe)
           (( ${#zips[@]} == 1 )) || { echo "Windows zip 数量异常：${#zips[@]}" >&2; exit 1; }
           (( ${#installers[@]} == 1 )) || { echo "Windows installer 数量异常：${#installers[@]}" >&2; exit 1; }
           files=("${zips[@]}" "${installers[@]}")
@@ -530,7 +530,7 @@ jobs:
           sudo rm -rf build/linux/arch/src
           sudo rm -rf build/linux/arch/PKGBUILD
           sudo rm -rf build/linux/arch/Dockerfile
-          rm -f build/linux/arch/venera-next-debug-*.pkg.tar.zst
+          rm -f build/linux/arch/venera-plus-debug-*.pkg.tar.zst
       - name: 校验 Linux x64 构建产物
         run: |
           set -euo pipefail
@@ -733,7 +733,7 @@ jobs:
           set -u
           for path in pubspec.yaml CHANGELOG.md; do
             if ! curl --fail --silent --show-error \
-              "https://purge.jsdelivr.net/gh/miludeshiji/Venera-Next@main/${path}" \
+              "https://purge.jsdelivr.net/gh/Venera-Works/Venera-Plus@main/${path}" \
               | jq '.status'; then
               echo "::warning::清理 ${path} 的 jsDelivr 缓存失败，不影响 Release 已完成状态。"
             fi

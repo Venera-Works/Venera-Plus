@@ -1,20 +1,20 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:venera_next/components/message.dart';
-import 'package:venera_next/components/window_frame.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/features/favorites/favorites.dart';
-import 'package:venera_next/features/history/history.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/foundation/res.dart';
-import 'package:venera_next/network/webdav.dart';
-import 'package:venera_next/features/sync/app_data_transfer.dart';
-import 'package:venera_next/foundation/extensions.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/foundation/file_system.dart';
+import 'package:venera_plus/components/message.dart';
+import 'package:venera_plus/components/window_frame.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/favorites/favorites.dart';
+import 'package:venera_plus/features/history/history.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/res.dart';
+import 'package:venera_plus/network/webdav.dart';
+import 'package:venera_plus/features/sync/app_data_transfer.dart';
+import 'package:venera_plus/foundation/extensions.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/file_system.dart';
 
 enum _DataSyncTask { upload, download }
 

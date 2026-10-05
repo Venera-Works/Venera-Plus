@@ -4,12 +4,12 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/components/side_bar.dart';
-import 'package:venera_next/features/bangumi/bangumi.dart';
-import 'package:venera_next/features/comic_source/models.dart';
-import 'package:venera_next/features/history/history.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/translations.dart';
+import 'package:venera_plus/components/side_bar.dart';
+import 'package:venera_plus/features/bangumi/bangumi.dart';
+import 'package:venera_plus/features/comic_source/models.dart';
+import 'package:venera_plus/features/history/history.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/translations.dart';
 
 void main() {
   late _Gateway gateway;

@@ -1,6 +1,6 @@
 import 'package:dio/dio.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/consts.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/consts.dart';
 
 class CloudflareException implements DioException {
   final String url;

@@ -1,11 +1,11 @@
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/res.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/features/local_comics/local_comics.dart';
-import 'package:venera_next/features/local_comics/import_export/import_export.dart';
-import 'package:venera_next/features/local_comics/local_storage_guard.dart';
-import 'package:venera_next/foundation/file_system.dart';
-import 'package:venera_next/network/webdav.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/res.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/features/local_comics/local_comics.dart';
+import 'package:venera_plus/features/local_comics/import_export/import_export.dart';
+import 'package:venera_plus/features/local_comics/local_storage_guard.dart';
+import 'package:venera_plus/foundation/file_system.dart';
+import 'package:venera_plus/network/webdav.dart';
 import 'package:webdav_client/webdav_client.dart' hide File;
 
 /// WebDAV archive backup configuration for local comic CBZ files.

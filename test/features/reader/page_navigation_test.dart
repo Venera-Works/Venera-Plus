@@ -1,9 +1,9 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/reader/reader_page.dart';
-import 'package:venera_next/foundation/comic_type.dart';
-import 'package:venera_next/foundation/log.dart';
+import 'package:venera_plus/features/reader/reader_page.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/foundation/log.dart';
 
 void main() {
   test('a completed replacement releases an unfinished animation', () async {

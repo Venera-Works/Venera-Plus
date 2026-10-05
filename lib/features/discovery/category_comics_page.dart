@@ -1,12 +1,12 @@
 import "package:flutter/material.dart";
-import "package:venera_next/components/appbar.dart";
-import "package:venera_next/components/loading.dart";
-import "package:venera_next/components/select.dart";
-import "package:venera_next/features/comic_widgets/comic_widgets.dart";
-import "package:venera_next/features/comic_source/comic_source.dart";
-import "package:venera_next/foundation/context.dart";
-import "package:venera_next/foundation/translations.dart";
-import "package:venera_next/foundation/widget_utils.dart";
+import "package:venera_plus/components/appbar.dart";
+import "package:venera_plus/components/loading.dart";
+import "package:venera_plus/components/select.dart";
+import "package:venera_plus/features/comic_widgets/comic_widgets.dart";
+import "package:venera_plus/features/comic_source/comic_source.dart";
+import "package:venera_plus/foundation/context.dart";
+import "package:venera_plus/foundation/translations.dart";
+import "package:venera_plus/foundation/widget_utils.dart";
 
 class CategoryComicsPage extends StatefulWidget {
   const CategoryComicsPage({

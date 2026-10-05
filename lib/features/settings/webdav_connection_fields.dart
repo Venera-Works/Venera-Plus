@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:venera_next/foundation/translations.dart';
+import 'package:venera_plus/foundation/translations.dart';
 
 class WebDavConnectionControllers {
   WebDavConnectionControllers({

@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:ui' as ui;
 
-import 'package:venera_next/foundation/comic_layout.dart';
-import 'package:venera_next/foundation/file_system.dart';
-import 'package:venera_next/network/images.dart';
+import 'package:venera_plus/foundation/comic_layout.dart';
+import 'package:venera_plus/foundation/file_system.dart';
+import 'package:venera_plus/network/images.dart';
 
 /// Reads encoded image dimensions without decoding full comic bitmaps.
 /// Network requests share the reader's downloader and disk cache.

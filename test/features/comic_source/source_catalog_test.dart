@@ -3,7 +3,7 @@ import 'dart:convert';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/comic_source/source_repositories.dart';
+import 'package:venera_plus/features/comic_source/source_repositories.dart';
 
 void main() {
   const repository = SourceRepository(

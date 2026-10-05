@@ -1,20 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
-import 'package:venera_next/components/gesture.dart';
-import 'package:venera_next/components/image.dart';
-import 'package:venera_next/components/menu.dart';
-import 'package:venera_next/features/comic_details/comic_details.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/features/history/history.dart';
-import 'package:venera_next/features/image_favorites/image_favorites_gallery_page.dart';
-import 'package:venera_next/features/image_favorites/image_favorites_photo_view.dart';
-import 'package:venera_next/features/reader/reader.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/consts.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/foundation/widget_utils.dart';
+import 'package:venera_plus/components/gesture.dart';
+import 'package:venera_plus/components/image.dart';
+import 'package:venera_plus/components/menu.dart';
+import 'package:venera_plus/features/comic_details/comic_details.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/history/history.dart';
+import 'package:venera_plus/features/image_favorites/image_favorites_gallery_page.dart';
+import 'package:venera_plus/features/image_favorites/image_favorites_photo_view.dart';
+import 'package:venera_plus/features/reader/reader.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/consts.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/widget_utils.dart';
 
 class ImageFavoritesItem extends StatefulWidget {
   const ImageFavoritesItem({

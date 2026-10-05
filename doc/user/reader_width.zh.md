@@ -13,7 +13,7 @@ English: [reader_width.en.md](reader_width.en.md)
 
 ## 与自适应排版约束（target）对齐
 
-在 VeneraNext 中，边距缩减不仅调整视图渲染尺寸，还会同步更新图片请求的自适应排版约束：
+在 VeneraPlus 中，边距缩减不仅调整视图渲染尺寸，还会同步更新图片请求的自适应排版约束：
 
 - 当漫画源的 `comic.onImageLoad` 接收第四个参数 `target` 时，`ComicImageLoadTarget.logicalWidth` 反映的是扣除左右边距后的**实际有效排版宽度**（而不是未缩放的屏幕宽度）。
 - 阅读器内部的显示尺寸、图片缓存 key、预加载 target 与 PhotoView 视口保持严格一致，避免缩小显示后仍以超宽原图请求或解码，保证内存与网络效率。

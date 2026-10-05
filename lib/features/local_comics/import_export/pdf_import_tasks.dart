@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:venera_next/foundation/file_interaction.dart';
+import 'package:venera_plus/foundation/file_interaction.dart';
 
 import 'document_import.dart';
 import 'pdf_import_batch.dart';

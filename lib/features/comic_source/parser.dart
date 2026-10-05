@@ -3,13 +3,13 @@ import 'dart:collection';
 import 'dart:convert';
 
 import 'package:flutter_qjs/flutter_qjs.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/extensions.dart';
-import 'package:venera_next/foundation/file_system.dart';
-import 'package:venera_next/foundation/js_engine.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/foundation/res.dart';
-import 'package:venera_next/foundation/translations.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/extensions.dart';
+import 'package:venera_plus/foundation/file_system.dart';
+import 'package:venera_plus/foundation/js_engine.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/res.dart';
+import 'package:venera_plus/foundation/translations.dart';
 
 import 'category.dart';
 import 'comic_type_bridge.dart';

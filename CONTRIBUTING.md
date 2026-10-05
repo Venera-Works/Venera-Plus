@@ -2,7 +2,7 @@
 
 English version: [CONTRIBUTING.en.md](CONTRIBUTING.en.md)
 
-感谢你关注 VeneraNext。本仓库只维护阅读器本体，不维护、提供或排查任何漫画源。
+感谢你关注 VeneraPlus。本项目只维护阅读器本体，不维护、提供或排查任何漫画源。
 
 ## 可以提交什么
 
@@ -27,6 +27,7 @@ flutter pub get --enforce-lockfile
 ```bash
 python .github/scripts/check_structure_imports.py
 python -m unittest discover -s .github/scripts/tests -p "test_*.py"
+dart tool/check_git_dependencies.dart
 flutter analyze --no-pub
 flutter test --no-pub
 git diff --check

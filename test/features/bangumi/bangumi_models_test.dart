@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/bangumi/bangumi.dart';
-import 'package:venera_next/foundation/appdata.dart';
+import 'package:venera_plus/features/bangumi/bangumi.dart';
+import 'package:venera_plus/foundation/appdata.dart';
 
 void main() {
   group('BangumiTitleProgressParser', () {

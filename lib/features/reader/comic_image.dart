@@ -3,11 +3,11 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
-import 'package:venera_next/features/reader/gesture.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/global_state.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/features/reader/gallery_page_plan.dart';
+import 'package:venera_plus/features/reader/gesture.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/global_state.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/features/reader/gallery_page_plan.dart';
 
 class ComicImage extends StatefulWidget {
   /// Modified from flutter Image

@@ -1,4 +1,4 @@
-package com.github.miludeshiji.veneranext
+package com.github.veneraworks.veneraplus
 
 import android.Manifest
 import android.app.Activity
@@ -467,7 +467,7 @@ class MainActivity : FlutterFragmentActivity() {
             if(tmp.exists()) {
                 tmp.delete()
             }
-            Log.i("VeneraNext", "copy file (${fileName}) to ${tmp.absolutePath}")
+            Log.i("VeneraPlus", "copy file (${fileName}) to ${tmp.absolutePath}")
             Thread {
                 try {
                     contentResolver.openInputStream(uri)?.use { input ->

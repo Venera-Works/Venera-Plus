@@ -1,22 +1,22 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:venera_next/components/appbar.dart';
-import 'package:venera_next/components/gesture.dart';
-import 'package:venera_next/components/message.dart';
-import 'package:venera_next/components/scroll.dart';
-import 'package:venera_next/components/select.dart';
-import 'package:venera_next/features/comic_widgets/comic_widgets.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/features/favorites/favorites.dart';
-import 'package:venera_next/features/comic_details/comic_details.dart';
-import 'package:venera_next/features/sync/sync.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/foundation/global_state.dart';
-import 'package:venera_next/foundation/widget_utils.dart';
-import 'package:venera_next/features/follow_updates/follow_updates_manager.dart';
+import 'package:venera_plus/components/appbar.dart';
+import 'package:venera_plus/components/gesture.dart';
+import 'package:venera_plus/components/message.dart';
+import 'package:venera_plus/components/scroll.dart';
+import 'package:venera_plus/components/select.dart';
+import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/features/favorites/favorites.dart';
+import 'package:venera_plus/features/comic_details/comic_details.dart';
+import 'package:venera_plus/features/sync/sync.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/global_state.dart';
+import 'package:venera_plus/foundation/widget_utils.dart';
+import 'package:venera_plus/features/follow_updates/follow_updates_manager.dart';
 
 class FollowUpdatesWidget extends StatefulWidget {
   const FollowUpdatesWidget({super.key});

@@ -4,10 +4,10 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/widgets.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/js_engine.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/foundation/res.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/js_engine.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/res.dart';
 
 import 'category.dart';
 import 'favorites.dart';

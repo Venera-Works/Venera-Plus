@@ -2,9 +2,12 @@
 
 English version: [build.en.md](build.en.md)
 
-本文面向准备从源码构建、测试或维护 VeneraNext 的开发者。安装和使用说明请阅读仓库根目录的 [README](../../README.md)。
+本文面向准备从源码构建、测试或维护 VeneraPlus（代码仓库 `Venera-Plus`）的开发者。安装和使用说明请阅读仓库根目录的 [README](../../README.md)。
 
 ## 环境要求
+> [!IMPORTANT]
+> **构建权限须知**：未经用户明确允许，禁止运行任何应用构建（包括 `flutter build`、`flutter run`、Gradle/CMake/MSBuild 编译、内部调用构建的打包入口及可能隐式编译的测试）；未经许可仅可进行代码修正和不触发构建的静态检查。
+
 
 - Flutter `3.41.4`
 - Dart `>=3.8.0 <4.0.0`
@@ -25,10 +28,12 @@ flutter --version
 克隆仓库后，使用仓库锁文件获取依赖：
 
 ```bash
-git clone https://github.com/miludeshiji/Venera-Next.git
-cd venera-next
+git clone https://github.com/Venera-Works/Venera-Plus.git
+cd Venera-Plus
 flutter pub get --enforce-lockfile
 ```
+
+> **注意**：官方仓库当前在 GitHub 上为公开仓库（Public；此前曾设为私有并在未鉴权请求时返回 404），克隆与拉取代码可公开访问。正式安装包与版本发布以 GitHub Releases 实际页面状态为准，不能仅从源码分支推断已发布或公网更新可用。
 
 不要在不了解依赖影响的情况下删除或重新生成 `pubspec.lock`。
 
@@ -166,7 +171,7 @@ Android release 工作流需要以下仓库 Secrets：
 - `ANDROID_KEYSTORE`：keystore 文件的 Base64 内容
 - `ANDROID_KEY_PROPERTIES`：`key.properties` 文本内容
 
-本项目为 miludeshiji 个人维护分支，已彻底移除上游 AltStore 自动化发布脚本、仓库元数据及 PR 生成流程，不提供公开发行的 AltStore 源。
+本项目为 Venera-Works 旗下的独立 VeneraPlus 项目（代码仓库 `Venera-Plus`），已彻底移除上游 AltStore 自动化发布脚本、仓库元数据及 PR 生成流程，不提供公开发行的 AltStore 源。
 
 AI Issue 检查默认关闭。仅在确认 `API_URL`、`API_KEY` 可用后，将仓库变量 `ENABLE_AI_ISSUE_CHECK` 设为 `true`；可通过 `ISSUE_CHECK_MODEL` 覆盖默认模型。该流程只发表评论和关闭建议，不会自动关闭 Issue。
 

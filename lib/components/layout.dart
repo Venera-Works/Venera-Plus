@@ -2,7 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
-import 'package:venera_next/foundation/appdata.dart';
+import 'package:venera_plus/foundation/appdata.dart';
 
 class SliverGridViewWithFixedItemHeight extends StatelessWidget {
   const SliverGridViewWithFixedItemHeight({

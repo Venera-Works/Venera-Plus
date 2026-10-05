@@ -1,4 +1,4 @@
-"""Build and package VeneraNext with the system dpkg-deb tool."""
+"""Build and package VeneraPlus with the system dpkg-deb tool."""
 
 import argparse
 from pathlib import Path
@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEBIAN_ARCHES = {"x64": "amd64", "arm64": "arm64"}
 ELF_MACHINES = {"x64": 62, "arm64": 183}
 # Preserve the existing DEB installation directory across upgrades.
-INSTALL_PATH = "usr/local/lib/venera-next"
+INSTALL_PATH = "usr/local/lib/venera-plus"
 
 
 def debian_version(value):
@@ -22,7 +22,7 @@ def debian_version(value):
 
 
 def validate_bundle(bundle, arch):
-    binary = bundle / "venera-next"
+    binary = bundle / "venera-plus"
     with binary.open("rb") as stream:
         header = stream.read(20)
     if (len(header) != 20 or header[:6] != b"\x7fELF\x02\x01"
@@ -40,39 +40,39 @@ def stage_package(bundle, stage, arch, version):
     version = debian_version(version)
     destination = stage / INSTALL_PATH
     shutil.copytree(bundle, destination, symlinks=True)
-    (destination / "venera-next").chmod(0o755)
+    (destination / "venera-plus").chmod(0o755)
     shutil.copyfile(ROOT / "LICENSE", destination / "LICENSE")
     control = stage / "DEBIAN"
     control.mkdir()
     (control / "control").write_text(
-        "Package: venera-next\n"
+        "Package: venera-plus\n"
         f"Version: {version}\n"
         f"Architecture: {DEBIAN_ARCHES[arch]}\n"
         "Section: graphics\nPriority: optional\n"
         "Depends: libwebkit2gtk-4.1-0, libgtk-3-0\n"
-        "Maintainer: miludeshiji/Venera-Next <https://github.com/miludeshiji/Venera-Next>\n"
-        "Description: VeneraNext\n",
+        "Maintainer: Venera-Works/Venera-Plus <https://github.com/Venera-Works/Venera-Plus>\n"
+        "Description: VeneraPlus\n",
         encoding="utf-8",
     )
     applications = stage / "usr/share/applications"
     applications.mkdir(parents=True)
-    desktop = (ROOT / "debian/gui/venera-next.desktop").read_text(encoding="utf-8")
-    (applications / "venera-next.desktop").write_text(
-        desktop.rstrip() + f"\nExec=/{INSTALL_PATH}/venera-next %U\n"
+    desktop = (ROOT / "debian/gui/venera-plus.desktop").read_text(encoding="utf-8")
+    (applications / "venera-plus.desktop").write_text(
+        desktop.rstrip() + f"\nExec=/{INSTALL_PATH}/venera-plus %U\n"
         "MimeType=x-scheme-handler/venera;\n",
         encoding="utf-8",
     )
     icons = stage / "usr/share/icons/hicolor/256x256/apps"
     icons.mkdir(parents=True)
-    shutil.copyfile(ROOT / "debian/gui/venera-next.png", icons / "venera-next.png")
+    shutil.copyfile(ROOT / "debian/gui/venera-plus.png", icons / "venera-plus.png")
 
 
 def package_bundle(bundle, output, arch, version):
     deb_version = debian_version(version)
     output.mkdir(parents=True, exist_ok=True)
-    package = output / f"venera-next_{deb_version}_{DEBIAN_ARCHES[arch]}.deb"
+    package = output / f"venera-plus_{deb_version}_{DEBIAN_ARCHES[arch]}.deb"
     # Stage on the output filesystem so publication is an atomic replacement.
-    with tempfile.TemporaryDirectory(prefix=".venera-deb-", dir=output) as temp:
+    with tempfile.TemporaryDirectory(prefix=".venera-plus-deb-", dir=output) as temp:
         stage = Path(temp) / "package"
         stage_package(bundle, stage, arch, version)
         temporary_package = Path(temp) / package.name

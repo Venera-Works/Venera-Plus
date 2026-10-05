@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 import 'package:sqlite3/sqlite3.dart';
-import 'package:venera_next/foundation/consts.dart';
+import 'package:venera_plus/foundation/consts.dart';
 
 class ImageFavorite {
   final String eid;

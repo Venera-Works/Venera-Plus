@@ -1,6 +1,6 @@
-import 'package:venera_next/foundation/comic_type.dart';
-import 'package:venera_next/foundation/extensions.dart';
-import 'package:venera_next/foundation/history_contract.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/foundation/extensions.dart';
+import 'package:venera_plus/foundation/history_contract.dart';
 
 class Comment {
   final String userName;

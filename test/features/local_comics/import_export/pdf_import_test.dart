@@ -7,14 +7,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as image;
 import 'package:pdfrx/pdfrx.dart';
 import 'package:sqlite3/sqlite3.dart';
-import 'package:venera_next/features/favorites/favorites.dart';
-import 'package:venera_next/features/local_comics/import_export/import_export.dart';
-import 'package:venera_next/features/local_comics/local_comics.dart';
-import 'package:venera_next/features/local_comics/local_storage_guard.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/comic_type.dart';
-import 'package:venera_next/foundation/file_system.dart';
+import 'package:venera_plus/features/favorites/favorites.dart';
+import 'package:venera_plus/features/local_comics/import_export/import_export.dart';
+import 'package:venera_plus/features/local_comics/local_comics.dart';
+import 'package:venera_plus/features/local_comics/local_storage_guard.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/foundation/file_system.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

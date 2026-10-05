@@ -3,8 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/comic_source/source_script_editor.dart';
-import 'package:venera_next/foundation/appdata.dart';
+import 'package:venera_plus/features/comic_source/source_script_editor.dart';
+import 'package:venera_plus/foundation/appdata.dart';
 
 void main() {
   setUp(() {

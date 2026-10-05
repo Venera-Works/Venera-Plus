@@ -1,14 +1,14 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/features/history/history.dart';
-import 'package:venera_next/features/local_comics/local.dart';
-import 'package:venera_next/features/reader/chapter_loader.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/comic_type.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/foundation/res.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/history/history.dart';
+import 'package:venera_plus/features/local_comics/local.dart';
+import 'package:venera_plus/features/reader/chapter_loader.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/res.dart';
 
 const _key = 'local_chapter_test';
 final _type = ComicType.fromKey(_key);

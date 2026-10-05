@@ -1,18 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher_string.dart';
-import 'package:venera_next/components/button.dart';
-import 'package:venera_next/components/gesture.dart';
-import 'package:venera_next/components/message.dart';
-import 'package:venera_next/components/pop_up_widget.dart';
-import 'package:venera_next/components/select.dart';
-import 'package:venera_next/features/comic_details/comic_details.dart';
-import 'package:venera_next/features/comic_widgets/comic_widgets.dart';
-import 'package:venera_next/features/favorites/favorites.dart';
-import 'package:venera_next/features/sync/sync.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/foundation/widget_utils.dart';
+import 'package:venera_plus/components/button.dart';
+import 'package:venera_plus/components/gesture.dart';
+import 'package:venera_plus/components/message.dart';
+import 'package:venera_plus/components/pop_up_widget.dart';
+import 'package:venera_plus/components/select.dart';
+import 'package:venera_plus/features/comic_details/comic_details.dart';
+import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
+import 'package:venera_plus/features/favorites/favorites.dart';
+import 'package:venera_plus/features/sync/sync.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/widget_utils.dart';
 
 import 'downloading_page.dart';
 import 'import_export/import_export.dart';
@@ -303,7 +303,7 @@ class _ImportComicsWidgetState extends State<_ImportComicsWidget> {
           ),
           onPressed: () {
             launchUrlString(
-              "https://github.com/miludeshiji/Venera-Next/blob/main/doc/user/import_comic.zh.md",
+              "https://github.com/Venera-Works/Venera-Plus/blob/main/doc/user/import_comic.zh.md",
             );
           },
         ).fixWidth(90).paddingRight(8),

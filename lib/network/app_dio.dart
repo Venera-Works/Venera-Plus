@@ -4,10 +4,10 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/services.dart';
 import 'package:rhttp/rhttp.dart' as rhttp;
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/network/cache.dart';
-import 'package:venera_next/network/proxy.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/network/cache.dart';
+import 'package:venera_plus/network/proxy.dart';
 
 import '../foundation/app.dart';
 import 'cloudflare.dart';
@@ -564,7 +564,7 @@ class RHttpAdapter implements HttpClientAdapter {
   ) async {
     if (options.headers['User-Agent'] == null &&
         options.headers['user-agent'] == null) {
-      options.headers['User-Agent'] = "VeneraNext/v${App.version}";
+      options.headers['User-Agent'] = "VeneraPlus/v${App.version}";
     }
 
     final nativeCancelToken = cancelFuture == null ? null : rhttp.CancelToken();

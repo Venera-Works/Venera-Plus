@@ -1,9 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/network/app_dio.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/network/app_dio.dart';
 import 'package:webdav_client/webdav_client.dart';
 
 class WebDavEndpoint {

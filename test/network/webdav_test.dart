@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/network/webdav.dart';
+import 'package:venera_plus/network/webdav.dart';
 
 void main() {
   test('WebDavEndpoint normalizes credentials and builds auth headers', () {

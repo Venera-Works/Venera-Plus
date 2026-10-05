@@ -1,18 +1,18 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
-import 'package:venera_next/components/appbar.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/features/favorites/favorites_manager.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/foundation/widget_utils.dart';
-import 'package:venera_next/features/favorites/favorites_constants.dart';
-import 'package:venera_next/features/favorites/local_favorites_page.dart';
-import 'package:venera_next/features/favorites/network_favorites_page.dart';
-import 'package:venera_next/features/favorites/side_bar.dart';
+import 'package:venera_plus/components/appbar.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/favorites/favorites_manager.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/widget_utils.dart';
+import 'package:venera_plus/features/favorites/favorites_constants.dart';
+import 'package:venera_plus/features/favorites/local_favorites_page.dart';
+import 'package:venera_plus/features/favorites/network_favorites_page.dart';
+import 'package:venera_plus/features/favorites/side_bar.dart';
 
 const _kLeftBarWidth = 256.0;
 

@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/comic_details/archive_download.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/foundation/res.dart';
+import 'package:venera_plus/features/comic_details/archive_download.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/foundation/res.dart';
 
 ArchiveInfo _archive(String id) => ArchiveInfo.fromJson({
   'id': id,

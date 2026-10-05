@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/comic_details/action_button.dart';
+import 'package:venera_plus/features/comic_details/action_button.dart';
 
 Future<void> _pumpActionRow(WidgetTester tester, Widget action) async {
   await tester.pumpWidget(

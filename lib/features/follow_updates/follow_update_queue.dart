@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:venera_next/network/request_scope.dart';
+import 'package:venera_plus/network/request_scope.dart';
 
 /// Keep unrelated sources moving while spacing requests to the same source.
 Future<void> runFollowUpdateTasks<T>(

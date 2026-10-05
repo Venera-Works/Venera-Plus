@@ -1,11 +1,11 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/comic_type.dart';
-import 'package:venera_next/features/local_comics/local_comics.dart';
-import 'package:venera_next/features/sync/sync.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/features/local_comics/local_comics.dart';
+import 'package:venera_plus/features/sync/sync.dart';
 
 void main() {
   setUp(() {

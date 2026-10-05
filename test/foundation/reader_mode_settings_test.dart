@@ -1,8 +1,8 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/foundation/appdata.dart';
-import 'package:venera_next/foundation/comic_layout.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/comic_layout.dart';
 
 void main() {
   final settings = appdata.settings;

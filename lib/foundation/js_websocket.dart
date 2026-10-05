@@ -5,8 +5,8 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/network/proxy.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/network/proxy.dart';
 
 typedef JsWebSocketConnector =
     Future<WebSocket> Function(

@@ -36,7 +36,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   int exit_code;
   {
     FlutterWindow window(project);
-    exit_code = RunWindowsApplication(window, L"VeneraNext");
+    exit_code = RunWindowsApplication(window, L"VeneraPlus");
   }
   ::CoUninitialize();
   return exit_code;

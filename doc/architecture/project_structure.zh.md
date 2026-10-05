@@ -106,7 +106,7 @@ test/features/<domain>/
 每次结构迁移应完成以下检查：
 
 - 使用 `git mv` 保留文件历史。
-- 更新所有 `package:venera_next/...` 和相对 import。
+- 更新所有 `package:venera_plus/...` 和相对 import。
 - 使用 `rg` 确认旧路径没有残留引用。
 - 运行 `python .github/scripts/check_structure_imports.py`，确认没有受限方向的 import/export。
 - 更新 `CHANGELOG.md` 的当前版本 `变更` 小节。

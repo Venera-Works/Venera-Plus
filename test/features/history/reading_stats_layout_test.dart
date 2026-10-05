@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/history/history.dart';
+import 'package:venera_plus/features/history/history.dart';
 
 void main() {
   testWidgets('reading stats summary keeps the tracked label on one line', (

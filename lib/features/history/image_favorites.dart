@@ -4,12 +4,12 @@ import 'dart:isolate';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:sqlite3/sqlite3.dart';
-import 'package:venera_next/features/history/history_manager.dart';
-import 'package:venera_next/features/history/image_favorites_models.dart';
-import 'package:venera_next/features/history/image_favorites_provider.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/extensions.dart';
-import 'package:venera_next/foundation/log.dart';
+import 'package:venera_plus/features/history/history_manager.dart';
+import 'package:venera_plus/features/history/image_favorites_models.dart';
+import 'package:venera_plus/features/history/image_favorites_provider.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/extensions.dart';
+import 'package:venera_plus/foundation/log.dart';
 
 class ImageFavoriteManager with ChangeNotifier {
   Database get _db => HistoryManager().imageFavoritesDatabase;

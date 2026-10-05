@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.github.miludeshiji" "\0"
-            VALUE "FileDescription", "VeneraNext" "\0"
+            VALUE "CompanyName", "com.github.veneraworks" "\0"
+            VALUE "FileDescription", "VeneraPlus" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "VeneraNext" "\0"
-            VALUE "LegalCopyright", "© 2026 github.com/miludeshiji/Venera-Next" "\0"
-            VALUE "OriginalFilename", "VeneraNext.exe" "\0"
-            VALUE "ProductName", "VeneraNext" "\0"
+            VALUE "InternalName", "VeneraPlus" "\0"
+            VALUE "LegalCopyright", "© 2026 github.com/Venera-Works/Venera-Plus" "\0"
+            VALUE "OriginalFilename", "VeneraPlus.exe" "\0"
+            VALUE "ProductName", "VeneraPlus" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

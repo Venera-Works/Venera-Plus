@@ -1,4 +1,4 @@
-import 'package:venera_next/foundation/res.dart';
+import 'package:venera_plus/foundation/res.dart';
 
 import 'models.dart';
 

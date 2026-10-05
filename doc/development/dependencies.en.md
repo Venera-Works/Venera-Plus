@@ -2,7 +2,7 @@
 
 Default Chinese version: [dependencies.zh.md](dependencies.zh.md)
 
-This document records governance rules for VeneraNext's direct dependencies, especially Git dependencies that are not resolved from pub.dev. `pubspec.lock` is part of reproducible builds, but it does not replace documenting dependency provenance and maintenance responsibility.
+This document records governance rules for VeneraPlus's direct dependencies, especially Git dependencies that are not resolved from pub.dev. `pubspec.lock` is part of reproducible builds, but it does not replace documenting dependency provenance and maintenance responsibility.
 
 ## Rules
 

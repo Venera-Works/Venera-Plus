@@ -1,9 +1,9 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:venera_next/foundation/file_interaction.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/network/app_dio.dart';
+import 'package:venera_plus/foundation/file_interaction.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/network/app_dio.dart';
 
 import 'source.dart';
 import 'source_import.dart';

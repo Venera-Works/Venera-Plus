@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/reader/gallery_coordinator.dart';
-import 'package:venera_next/features/reader/gallery_page_plan.dart';
+import 'package:venera_plus/features/reader/gallery_coordinator.dart';
+import 'package:venera_plus/features/reader/gallery_page_plan.dart';
 
 void main() {
   group('Gallery visual order across 3 gallery modes', () {

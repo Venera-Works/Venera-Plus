@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/local_comics/local_storage_guard.dart';
+import 'package:venera_plus/features/local_comics/local_storage_guard.dart';
 
 void main() {
   test(

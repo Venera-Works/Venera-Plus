@@ -1,7 +1,7 @@
 import 'dart:async';
 
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/foundation/log.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/foundation/log.dart';
 
 typedef RemoteProgressErrorHandler =
     void Function(Object error, StackTrace? stackTrace);

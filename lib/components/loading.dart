@@ -3,14 +3,14 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:venera_next/foundation/context.dart';
-import 'package:venera_next/foundation/file_interaction.dart';
-import 'package:venera_next/foundation/log.dart';
-import 'package:venera_next/foundation/res.dart';
-import 'package:venera_next/foundation/translations.dart';
-import 'package:venera_next/foundation/widget_utils.dart';
-import 'package:venera_next/network/cloudflare.dart';
-import 'package:venera_next/routing/cloudflare.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/file_interaction.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/res.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/widget_utils.dart';
+import 'package:venera_plus/network/cloudflare.dart';
+import 'package:venera_plus/routing/cloudflare.dart';
 
 import 'appbar.dart';
 

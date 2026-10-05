@@ -2,10 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:isolate';
 import 'package:flutter_saf/flutter_saf.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/features/local_comics/local.dart';
-import 'package:venera_next/foundation/image_processing.dart';
-import 'package:venera_next/foundation/file_interaction.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/features/local_comics/local.dart';
+import 'package:venera_plus/foundation/image_processing.dart';
+import 'package:venera_plus/foundation/file_interaction.dart';
 import 'package:zip_flutter/zip_flutter.dart';
 
 typedef DecodeImage = Future<Image> Function(Uint8List data);
@@ -295,7 +295,7 @@ class PdfGenerator {
     write('/Author <');
     writeData(_toPdfString(author));
     write('>\n');
-    write('/Producer (VeneraNext v${App.version})\n');
+    write('/Producer (VeneraPlus v${App.version})\n');
     write('/CreationDate (D:${_formatDateTime(DateTime.now())})\n');
     write('>>\nendobj\n\n');
 

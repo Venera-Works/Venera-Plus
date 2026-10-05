@@ -17,7 +17,7 @@ if os.path.exists("build/app-windows.zip"):
 version = str.split(str.split(content, 'version: ')[1], '+')[0]
 
 release_dir = "build/windows/arm64/runner/Release"
-package_name = f"VeneraNext-{version}-windows-arm64"
+package_name = f"VeneraPlus-{version}-windows-arm64"
 package_dir = f"build/windows/{package_name}"
 zip_path = f"build/windows/{package_name}.zip"
 
@@ -50,7 +50,7 @@ if not os.path.exists("windows/ChineseSimplified.isl"):
         "Inno-Setup-Chinese-Simplified-Translation@"
         "1ace6a485174288c7416d0979cc2db1f0990f95a/ChineseSimplified.isl"
     )
-    request = Request(url, headers={"User-Agent": "VeneraNext-Windows-Build"})
+    request = Request(url, headers={"User-Agent": "VeneraPlus-Windows-Build"})
     with urlopen(request, timeout=30) as response:
         content = response.read()
     if not content:

@@ -1,10 +1,10 @@
 import 'package:path/path.dart' as path;
-import 'package:venera_next/features/comic_storage/comic_storage.dart';
-import 'package:venera_next/features/local_comics/import_export/cbz.dart';
-import 'package:venera_next/features/local_comics/import_export/document_import.dart';
-import 'package:venera_next/features/local_comics/local.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/file_interaction.dart';
+import 'package:venera_plus/features/comic_storage/comic_storage.dart';
+import 'package:venera_plus/features/local_comics/import_export/cbz.dart';
+import 'package:venera_plus/features/local_comics/import_export/document_import.dart';
+import 'package:venera_plus/features/local_comics/local.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/file_interaction.dart';
 import 'package:xml/xml.dart';
 
 class EpubImportPage {

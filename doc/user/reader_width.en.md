@@ -13,7 +13,7 @@ In **Settings → Reader** or from the reader's in-session settings panel, selec
 
 ## Alignment with Adaptive Layout Target
 
-In VeneraNext, margin scaling is fully synchronized with the image loading layout constraints:
+In VeneraPlus, margin scaling is fully synchronized with the image loading layout constraints:
 
 - When a comic source's `comic.onImageLoad` inspects the 4th parameter `target`, `ComicImageLoadTarget.logicalWidth` represents the **actual effective constrained width** after side margins are applied (rather than unscaled screen bounds).
 - Display dimensions, image cache identities, preloading targets, and PhotoView viewports remain aligned, avoiding fetching or decoding unnecessarily large images when content is narrowed.

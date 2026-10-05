@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/components/layout.dart';
-import 'package:venera_next/features/comic_source/comic_source.dart';
-import 'package:venera_next/features/comic_widgets/comic_widgets.dart';
-import 'package:venera_next/features/favorites/favorites.dart';
-import 'package:venera_next/foundation/appdata.dart';
+import 'package:venera_plus/components/layout.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
+import 'package:venera_plus/features/favorites/favorites.dart';
+import 'package:venera_plus/foundation/appdata.dart';
 
 void main() {
   test('favorite gallery columns are normalized', () {

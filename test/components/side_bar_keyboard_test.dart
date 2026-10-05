@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/components/pop_up_widget.dart';
-import 'package:venera_next/components/side_bar.dart';
+import 'package:venera_plus/components/pop_up_widget.dart';
+import 'package:venera_plus/components/side_bar.dart';
 
 void main() {
   testWidgets(

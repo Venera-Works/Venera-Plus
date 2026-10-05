@@ -5,7 +5,7 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/network/webdav.dart';
+import 'package:venera_plus/network/webdav.dart';
 
 void main() {
   for (final trailingSlash in ['', '/']) {
@@ -15,7 +15,7 @@ void main() {
         final server = await _CaseSensitiveWebDav.start();
         addTearDown(server.close);
         final client = WebDavEndpoint(
-          url: '${server.url}/VeneraNext$trailingSlash',
+          url: '${server.url}/VeneraPlus$trailingSlash',
           user: '',
           password: '',
         ).createClient();
@@ -32,12 +32,12 @@ void main() {
         await client.remove(name);
 
         expect(server.requests, [
-          'PROPFIND /dav/VeneraNext/',
-          'OPTIONS /dav/VeneraNext/Snapshot.venera',
-          'PUT /dav/VeneraNext/Snapshot.venera',
-          'OPTIONS /dav/VeneraNext/Snapshot.venera',
-          'GET /dav/VeneraNext/Snapshot.venera',
-          'DELETE /dav/VeneraNext/Snapshot.venera',
+          'PROPFIND /dav/VeneraPlus/',
+          'OPTIONS /dav/VeneraPlus/Snapshot.venera',
+          'PUT /dav/VeneraPlus/Snapshot.venera',
+          'OPTIONS /dav/VeneraPlus/Snapshot.venera',
+          'GET /dav/VeneraPlus/Snapshot.venera',
+          'DELETE /dav/VeneraPlus/Snapshot.venera',
         ]);
         expect(server.files, isEmpty);
       },
@@ -50,7 +50,7 @@ void main() {
       final server = await _CaseSensitiveWebDav.start();
       addTearDown(server.close);
       final client = WebDavEndpoint(
-        url: '${server.url}/veneranext',
+        url: '${server.url}/veneraplus',
         user: '',
         password: '',
       ).createClient();
@@ -67,7 +67,7 @@ void main() {
           ),
         ),
       );
-      expect(server.requests, ['PROPFIND /dav/veneranext/']);
+      expect(server.requests, ['PROPFIND /dav/veneraplus/']);
     },
   );
 }
@@ -102,7 +102,7 @@ class _CaseSensitiveWebDav {
     // any directory is denied, including attempts to recreate an existing one.
     if (request.method == 'MKCOL') {
       request.response.statusCode = HttpStatus.forbidden;
-    } else if (!path.startsWith('/dav/VeneraNext/')) {
+    } else if (!path.startsWith('/dav/VeneraPlus/')) {
       request.response.statusCode = HttpStatus.notFound;
     } else {
       switch (request.method) {
@@ -116,7 +116,7 @@ class _CaseSensitiveWebDav {
           );
           request.response.write('''<?xml version="1.0"?>
 <D:multistatus xmlns:D="DAV:"><D:response>
-  <D:href>/dav/VeneraNext/</D:href>
+  <D:href>/dav/VeneraPlus/</D:href>
   <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
     <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
 </D:response></D:multistatus>''');

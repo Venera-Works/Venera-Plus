@@ -2,12 +2,12 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_next/features/settings/settings.dart';
-import 'package:venera_next/features/local_comics/local_comics.dart';
-import 'package:venera_next/features/webdav_library/webdav_library.dart';
-import 'package:venera_next/foundation/app.dart';
-import 'package:venera_next/foundation/cache_manager.dart';
-import 'package:venera_next/foundation/appdata.dart';
+import 'package:venera_plus/features/settings/settings.dart';
+import 'package:venera_plus/features/local_comics/local_comics.dart';
+import 'package:venera_plus/features/webdav_library/webdav_library.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/cache_manager.dart';
+import 'package:venera_plus/foundation/appdata.dart';
 
 void main() {
   testWidgets('settings lists reading statistics as a top-level entry', (
