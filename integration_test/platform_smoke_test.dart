@@ -551,6 +551,7 @@ void main() {
         LocalFavoritesManager.cache = null;
 
         final testFrameworkOnError = FlutterError.onError;
+        final testFrameworkErrorWidgetBuilder = ErrorWidget.builder;
         try {
           try {
             // Execute production init()
@@ -647,14 +648,17 @@ void main() {
           expect(historyTitleFinder, findsOneWidget);
           expect(tester.takeException(), isNull);
         } finally {
-          // Teardown: ensure test framework error handler is restored, unmount
+          // Teardown: ensure test framework handlers are restored, unmount
           // widgets to cancel active listeners before closing managers, and
           // close database managers cleanly.
           FlutterError.onError = testFrameworkOnError;
 
-          await tester.pumpWidget(const SizedBox());
-          await tester.pump();
-
+          try {
+            await tester.pumpWidget(const SizedBox());
+            await tester.pump();
+          } finally {
+            ErrorWidget.builder = testFrameworkErrorWidgetBuilder;
+          }
           await HistoryManager().waitForAsyncWrites();
           HistoryManager().close();
 
