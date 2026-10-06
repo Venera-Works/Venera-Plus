@@ -9,6 +9,8 @@ import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/res.dart';
+import 'package:venera_plus/features/favorites/favorites.dart';
+import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:webdav_client/webdav_client.dart' as dav;
 
@@ -682,19 +684,52 @@ void main() {
     test(
       'explicit download works without ETag but leaves baseline untrusted',
       () async {
-        client.files = [dav.File(name: '10-5.venera')];
-        transport.getEtag = null;
-        var imports = 0;
-        final sync = DataSync();
-        DataSync.debugImport = (_, _) async {
-          imports++;
-          sync.onDataChanged(); // Import-zone notification must not dirty data.
-        };
-        expect((await sync.downloadData(checkVersion: false)).success, isTrue);
-        expect(imports, 1);
-        expect(sync.hasPendingChanges, isFalse);
-        expect(appdata.implicitData['webdavLastSyncedRemoteEtag'], isNull);
-        expect((await sync.syncNow()).error, isTrue);
+        final previousHistory = HistoryManager.cache;
+        final previousFavorites = LocalFavoritesManager.cache;
+        HistoryManager.cache = null;
+        LocalFavoritesManager.cache = null;
+        final historyManager = HistoryManager();
+        final favoritesManager = LocalFavoritesManager();
+        var favoritesInitialized = false;
+        try {
+          await historyManager.init();
+          await favoritesManager.init(reconcileReadingBinding: false);
+          favoritesInitialized = true;
+          try {
+            client.files = [dav.File(name: '10-5.venera')];
+            transport.getEtag = null;
+            var imports = 0;
+            final sync = DataSync();
+            DataSync.debugImport = (_, _) async {
+              imports++;
+              sync.onDataChanged(); // Import-zone notification must not dirty data.
+            };
+            final result = await sync.downloadData(checkVersion: false);
+            expect(result.success, isTrue, reason: result.errorMessage);
+            expect(imports, 1);
+            expect(sync.hasPendingChanges, isFalse);
+            expect(appdata.implicitData['webdavLastSyncedRemoteEtag'], isNull);
+            expect((await sync.syncNow()).error, isTrue);
+          } finally {
+            DataSync.resetForTesting();
+          }
+        } finally {
+          try {
+            if (favoritesInitialized) {
+              await favoritesManager.debugWaitForHashedIdsRefresh();
+              favoritesManager.close();
+            }
+          } finally {
+            try {
+              if (historyManager.isInitialized) {
+                historyManager.close();
+              }
+            } finally {
+              HistoryManager.cache = previousHistory;
+              LocalFavoritesManager.cache = previousFavorites;
+            }
+          }
+        }
       },
     );
 

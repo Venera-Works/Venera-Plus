@@ -12,6 +12,10 @@ import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/res.dart';
 
+const _oldTime = '2026-10-01';
+const _newTime = '2026-10-02';
+const _laterTime = '2026-10-03';
+
 void main() {
   const sourceKey = 'follow_updates_test_source';
 
@@ -142,8 +146,8 @@ void main() {
           await _withLiveFavorites((manager) async {
             final item = _tracked(sourceKey, 'shared');
             manager.createFolder('other');
-            manager.addComic('在读', item, null, 'old');
-            manager.addComic('other', item, null, 'old');
+            manager.addComic('在读', item, null, _oldTime);
+            manager.addComic('other', item, null, _oldTime);
             final first = updateComic(item, '在读');
             await started.future;
             final second = updateComic(item, 'other');
@@ -163,7 +167,7 @@ void main() {
               );
               expect(stored.name, 'Fresh title');
               expect(stored.coverPath, 'fresh.jpg');
-              expect(stored.updateTime, 'new');
+              expect(stored.updateTime, _newTime);
               expect(stored.hasNewUpdate, isTrue);
             }
           });
@@ -179,19 +183,19 @@ void main() {
               sourceKey,
               loadComicInfo: (id) async {
                 requested.add(id);
-                return Res(_details(sourceKey, id, updateTime: 'old'));
+                return Res(_details(sourceKey, id, updateTime: _oldTime));
               },
             ),
           );
           await _withLiveFavorites((manager) async {
             manager.createFolder('other');
             final item = _tracked(sourceKey, 'inside');
-            manager.addComic('在读', item, null, 'old');
+            manager.addComic('在读', item, null, _oldTime);
             manager.addComic(
               'other',
               _tracked(sourceKey, 'outside'),
               null,
-              'old',
+              _oldTime,
             );
             manager.addComic('在读', _tracked('local', 'local'));
             await manager.debugWaitForHashedIdsRefresh();
@@ -235,8 +239,8 @@ void main() {
           await _withLiveFavorites((manager) async {
             manager.createFolder('other');
             final item = _tracked(sourceKey, 'shared');
-            manager.addComic('在读', item, null, 'old');
-            manager.addComic('other', item, null, 'old');
+            manager.addComic('在读', item, null, _oldTime);
+            manager.addComic('other', item, null, _oldTime);
             final first = updateFolder(localAllFolderLabel, true).toList();
             final second = updateFolder(localAllFolderLabel, true).toList();
             final results = await Future.wait([first, second]);
@@ -266,8 +270,18 @@ void main() {
             ),
           );
           await _withLiveFavorites((manager) async {
-            manager.addComic('在读', _tracked(sourceKey, 'first'), null, 'old');
-            manager.addComic('在读', _tracked(sourceKey, 'pending'), null, 'old');
+            manager.addComic(
+              '在读',
+              _tracked(sourceKey, 'first'),
+              null,
+              _oldTime,
+            );
+            manager.addComic(
+              '在读',
+              _tracked(sourceKey, 'pending'),
+              null,
+              _oldTime,
+            );
             final firstCompleted = Completer<void>();
             final allCompleted = Completer<void>();
             final subscription = updateFolder('在读', true).listen(
@@ -312,7 +326,7 @@ void main() {
           );
           await _withLiveFavorites((manager) async {
             final item = _tracked(sourceKey, 'read-race');
-            manager.addComic('在读', item, null, 'old');
+            manager.addComic('在读', item, null, _oldTime);
             final pending = updateComic(item, '在读');
             await started.future;
             manager.markAsRead(item.id, item.type);
@@ -323,10 +337,10 @@ void main() {
               manager
                   .getComicWithUpdatesInfo('在读', item.id, item.type)
                   .updateTime,
-              'new',
+              _newTime,
             );
             expect(manager.hasNewUpdate(item.id, item.type), isFalse);
-            manager.updateUpdateTime('在读', item.id, item.type, 'later');
+            manager.updateUpdateTime('在读', item.id, item.type, _laterTime);
             expect(manager.hasNewUpdate(item.id, item.type), isTrue);
           });
         },
@@ -347,7 +361,7 @@ void main() {
           );
           await _withLiveFavorites((manager) async {
             final item = _tracked(sourceKey, 'stale');
-            manager.addComic('在读', item, null, 'old');
+            manager.addComic('在读', item, null, _oldTime);
             final pending = updateComic(item, '在读');
             await started.future;
             if (replaceDatabase) {
@@ -381,7 +395,7 @@ void main() {
             final item = _tracked(sourceKey, 'remote-only');
             final result = await refreshComic(item);
             expect(result.item?.name, 'Fresh title');
-            expect(result.updateTime, 'new');
+            expect(result.updateTime, _newTime);
             expect(manager.find(item.id, item.type), isEmpty);
             expect(manager.count('在读'), 0);
           });
@@ -463,23 +477,26 @@ FavoriteItemWithUpdateInfo _tracked(String key, String id) =>
         type: ComicType.fromKey(key),
         tags: const [],
       ),
-      'old',
+      _oldTime,
       false,
       null,
     );
 
-ComicDetails _details(String source, String id, {String updateTime = 'new'}) =>
-    ComicDetails.fromJson({
-      'sourceKey': source,
-      'comicId': id,
-      'title': 'Fresh title',
-      'cover': 'fresh.jpg',
-      'subtitle': 'Fresh author',
-      'tags': <String, List<String>>{
-        'genre': ['fresh'],
-      },
-      'updateTime': updateTime,
-    });
+ComicDetails _details(
+  String source,
+  String id, {
+  String updateTime = _newTime,
+}) => ComicDetails.fromJson({
+  'sourceKey': source,
+  'comicId': id,
+  'title': 'Fresh title',
+  'cover': 'fresh.jpg',
+  'subtitle': 'Fresh author',
+  'tags': <String, List<String>>{
+    'genre': ['fresh'],
+  },
+  'updateTime': updateTime,
+});
 
 Future<void> _withLiveFavorites(
   Future<void> Function(LocalFavoritesManager manager) run,

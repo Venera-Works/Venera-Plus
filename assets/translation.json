@@ -842,7 +842,14 @@
     "Folder is empty": "收藏夹为空",
     "Updated @c comics, @e failed": "已更新 @c 本漫画，@e 本失败",
     "Failed to check for updates: @e": "检查更新失败：@e",
-    "Failed to load comics": "加载漫画失败"
+    "Failed to load comics": "加载漫画失败",
+    "@a Comics": "@a 部漫画",
+    "Comic source does not support folders": "漫画源不支持文件夹",
+    "Empty": "空",
+    "Mark as read": "标记为已读",
+    "No Comics": "暂无漫画",
+    "Syncing data...": "正在同步数据...",
+    "UPDATED": "已更新"
   },
   "zh_TW": {
     "Initial sync": "首次同步",
@@ -1687,6 +1694,13 @@
     "Folder is empty": "收藏夾為空",
     "Updated @c comics, @e failed": "已更新 @c 本漫畫，@e 本失敗",
     "Failed to check for updates: @e": "檢查更新失敗：@e",
-    "Failed to load comics": "載入漫畫失敗"
+    "Failed to load comics": "載入漫畫失敗",
+    "@a Comics": "@a 部漫畫",
+    "Comic source does not support folders": "漫畫來源不支援資料夾",
+    "Empty": "空",
+    "Mark as read": "標記為已讀",
+    "No Comics": "暫無漫畫",
+    "Syncing data...": "正在同步資料...",
+    "UPDATED": "已更新"
   }
 }
