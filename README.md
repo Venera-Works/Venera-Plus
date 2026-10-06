@@ -8,9 +8,9 @@
   ![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)
 </div>
 
-VeneraPlus 是一款支持 Android、iOS、Windows、macOS 和 Linux 的跨平台漫画阅读器。支持多种阅读版式、丰富的本地漫画格式导入、WebDAV 数据同步与远端漫画库、Bangumi 进度与元数据联动，以及灵活的 JavaScript 漫画源扩展。
+VeneraPlus 是一款支持 Android、iOS、Windows和 Linux 的跨平台漫画阅读器。支持多种阅读版式、丰富的本地漫画格式导入、WebDAV 数据同步与远端漫画库、Bangumi 进度与元数据联动，以及灵活的 JavaScript 漫画源扩展。
 
-当前最新版本为 [2.2.3](https://github.com/Venera-Works/Venera-Plus/releases/tag/v2.2.3)。预编译安装包以 [GitHub Releases](https://github.com/Venera-Works/Venera-Plus/releases) 实际发布状态为准，完整变更记录请参阅 [更新日志](CHANGELOG.md)。
+最新版本 [下载](https://github.com/Venera-Works/Venera-Plus/releases/latest)。预编译安装包以 [Releases](https://github.com/Venera-Works/Venera-Plus/releases) 实际发布状态为准，完整变更记录请参阅 [更新日志](CHANGELOG.md)。
 
 ---
 
