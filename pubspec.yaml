@@ -23,7 +23,7 @@ dependencies:
   dio: ^5.11.1
   html: ^0.15.7
   pointycastle: ^4.0.0
-  url_launcher: ^6.3.2
+  url_launcher: ^6.3.3
   path: ^1.9.0
   photo_view:
     git:
