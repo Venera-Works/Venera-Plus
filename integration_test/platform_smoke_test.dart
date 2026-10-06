@@ -60,6 +60,7 @@ void main() {
     App.cachePath = (Directory(
       '${suiteTempDir.path}/suite_cache',
     )..createSync(recursive: true)).path;
+    await appdata.init();
   });
 
   tearDownAll(() {
