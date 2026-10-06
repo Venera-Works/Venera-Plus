@@ -5,7 +5,6 @@ import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/features/follow_updates/follow_updates.dart';
-import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 
 import 'init.dart';
@@ -44,14 +43,30 @@ Future<void> runHeadlessMode(List<String> args) async {
     case 'webdav':
       if (subCommand == 'up') {
         cliPrint({'status': 'running', 'message': 'Uploading WebDAV data...'});
-        await DataSync().uploadData();
+        await DataSync().waitForSync();
+        final result = await DataSync().uploadData();
+        if (result.error) {
+          cliPrint({
+            'status': 'error',
+            'message': result.errorMessage ?? 'Upload failed.',
+          });
+          exit(1);
+        }
         cliPrint({'status': 'success', 'message': 'Upload complete.'});
       } else if (subCommand == 'down') {
         cliPrint({
           'status': 'running',
           'message': 'Downloading WebDAV data...',
         });
-        await DataSync().downloadData();
+        await DataSync().waitForSync();
+        final result = await DataSync().downloadData();
+        if (result.error) {
+          cliPrint({
+            'status': 'error',
+            'message': result.errorMessage ?? 'Download failed.',
+          });
+          exit(1);
+        }
         cliPrint({'status': 'success', 'message': 'Download complete.'});
       } else {
         cliPrint({
@@ -128,111 +143,132 @@ Future<void> runHeadlessMode(List<String> args) async {
       }
       break;
     case 'updatesubscribe':
-      cliPrint({
-        'status': 'running',
-        'message': 'Updating subscribed comics...',
-      });
-      var folder = appdata.settings["followUpdatesFolder"];
-      if (folder == null) {
-        cliPrint({
-          'status': 'error',
-          'message': 'Follow updates folder is not configured.',
-        });
-        exit(1);
-      }
-
-      var updateIndex = args.indexOf('--update-comic-by-id-type');
-      if (updateIndex != -1) {
-        var id = args[updateIndex + 1];
-        var type = args[updateIndex + 2];
-        var comics = LocalFavoritesManager().getComicsWithUpdatesInfo(folder);
-        var comic = comics.firstWhere(
-          (c) => c.id == id && c.type.sourceKey == type,
-        );
-
-        var result = await updateComic(comic, folder);
-
-        Map<String, dynamic> data = {
-          'current': 1,
-          'total': 1,
-          'comic': {
-            'id': comic.id,
-            'name': comic.name,
-            'coverUrl': comic.coverPath,
-            'author': comic.author,
-            'type': comic.type.sourceKey,
-            'updateTime': comic.updateTime,
-            'tags': comic.tags,
-          },
-        };
-
-        var message = 'Progress';
-        if (result.errorMessage != null) {
-          message = 'ProgressError';
-          data['error'] = result.errorMessage;
-        }
-
-        cliPrint({'status': 'running', 'message': message, 'data': data});
-
+      try {
         cliPrint({
           'status': 'running',
-          'message': 'Update check complete.',
-          'data': {
-            'total': 1,
-            'updated': result.updated ? 1 : 0,
-            'errors': result.errorMessage != null ? 1 : 0,
-          },
+          'message': 'Updating subscribed comics...',
         });
+        await DataSync().waitForDownload();
+        var folder = LocalFavoritesManager().readingFolder;
+        if (folder == null) {
+          cliPrint({
+            'status': 'error',
+            'message': 'Reading folder is not configured.',
+          });
+          exit(1);
+        }
 
-        await Future.delayed(const Duration(milliseconds: 500));
-        var json = await getUpdatedComicsAsJson(folder);
-        cliPrint({
-          'status': result.errorMessage != null ? 'error' : 'success',
-          'message': 'Updated comics list.',
-          'data': jsonDecode(json),
-        });
-      } else {
-        int total = 0;
-        int updated = 0;
-        int errors = 0;
-        await for (var progress in updateFolder(folder, true)) {
-          total = progress.total;
-          updated = progress.updated;
-          errors = progress.errors;
+        var updateIndex = args.indexOf('--update-comic-by-id-type');
+        if (updateIndex != -1) {
+          if (updateIndex + 2 >= args.length) {
+            cliPrint({
+              'status': 'error',
+              'message': 'Comic id and type are required.',
+            });
+            exit(1);
+          }
+          var id = args[updateIndex + 1];
+          var type = args[updateIndex + 2];
+          var comics = LocalFavoritesManager().getComicsWithUpdatesInfo(folder);
+          var comic = comics
+              .where((c) => c.id == id && c.type.sourceKey == type)
+              .firstOrNull;
+          if (comic == null) {
+            cliPrint({
+              'status': 'error',
+              'message': 'Comic is not in the Reading folder.',
+            });
+            exit(1);
+          }
+
+          var result = await updateComic(comic, folder);
+
           Map<String, dynamic> data = {
-            'current': progress.current,
-            'total': progress.total,
+            'current': 1,
+            'total': 1,
+            'comic': {
+              'id': comic.id,
+              'name': comic.name,
+              'coverUrl': comic.coverPath,
+              'author': comic.author,
+              'type': comic.type.sourceKey,
+              'updateTime': comic.updateTime,
+              'tags': comic.tags,
+            },
           };
-          if (progress.comic != null) {
-            data['comic'] = {
-              'id': progress.comic!.id,
-              'name': progress.comic!.name,
-              'coverUrl': progress.comic!.coverPath,
-              'author': progress.comic!.author,
-              'type': progress.comic!.type.sourceKey,
-              'updateTime': progress.comic!.updateTime,
-              'tags': progress.comic!.tags,
-            };
-          }
+
           var message = 'Progress';
-          if (progress.errorMessage != null) {
+          if (result.errorMessage != null) {
             message = 'ProgressError';
-            data['error'] = progress.errorMessage;
+            data['error'] = result.errorMessage;
           }
+
           cliPrint({'status': 'running', 'message': message, 'data': data});
+
+          cliPrint({
+            'status': 'running',
+            'message': 'Update check complete.',
+            'data': {
+              'total': 1,
+              'updated': result.updated ? 1 : 0,
+              'errors': result.errorMessage != null ? 1 : 0,
+            },
+          });
+
+          var json = await getUpdatedComicsAsJson(folder);
+          cliPrint({
+            'status': result.errorMessage != null ? 'error' : 'success',
+            'message': 'Updated comics list.',
+            'data': jsonDecode(json),
+          });
+          if (result.errorMessage != null) exit(1);
+        } else {
+          int total = 0;
+          int updated = 0;
+          int errors = 0;
+          await for (var progress in updateFolder(folder, true)) {
+            total = progress.total;
+            updated = progress.updated;
+            errors = progress.errors;
+            Map<String, dynamic> data = {
+              'current': progress.current,
+              'total': progress.total,
+            };
+            if (progress.comic != null) {
+              data['comic'] = {
+                'id': progress.comic!.id,
+                'name': progress.comic!.name,
+                'coverUrl': progress.comic!.coverPath,
+                'author': progress.comic!.author,
+                'type': progress.comic!.type.sourceKey,
+                'updateTime': progress.comic!.updateTime,
+                'tags': progress.comic!.tags,
+              };
+            }
+            var message = 'Progress';
+            if (progress.errorMessage != null) {
+              message = 'ProgressError';
+              data['error'] = progress.errorMessage;
+            }
+            cliPrint({'status': 'running', 'message': message, 'data': data});
+          }
+          cliPrint({
+            'status': 'running',
+            'message': 'Update check complete.',
+            'data': {'total': total, 'updated': updated, 'errors': errors},
+          });
+          var json = await getUpdatedComicsAsJson(folder);
+          cliPrint({
+            'status': errors > 0 ? 'error' : 'success',
+            'message': 'Updated comics list.',
+            'data': jsonDecode(json),
+          });
+          if (errors > 0) exit(1);
         }
-        cliPrint({
-          'status': 'running',
-          'message': 'Update check complete.',
-          'data': {'total': total, 'updated': updated, 'errors': errors},
-        });
-        await Future.delayed(const Duration(milliseconds: 500));
-        var json = await getUpdatedComicsAsJson(folder);
-        cliPrint({
-          'status': errors > 0 ? 'error' : 'success',
-          'message': 'Updated comics list.',
-          'data': jsonDecode(json),
-        });
+      } catch (error, stack) {
+        Log.error('Headless updates', error, stack);
+        cliPrint({'status': 'error', 'message': error.toString()});
+        exit(1);
       }
       break;
     default:

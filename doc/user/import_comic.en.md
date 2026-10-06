@@ -7,6 +7,9 @@ and image-based EPUB files. Imported content is normalized into the existing
 local image-comic layout so all reader modes, progress tracking, and split-spread
 features continue to work.
 
+Local comic management is located under `Settings` -> `Local`. Imported comics
+can be browsed and read directly in the `Explore` -> `Local` tab.
+
 Supported comic image extensions are `jpg`, `jpeg`, `jpe`, `png`, `webp`,
 `gif`, and `avif`.
 
@@ -15,7 +18,7 @@ Supported comic image extensions are `jpg`, `jpeg`, `jpe`, `png`, `webp`,
 If you migrated the app and kept the local download folder but lost `local.db`,
 you can restore the local database by scanning the current local path.
 
-- Open `Local` -> `Import` -> `Restore local downloads`.
+- Open `Settings` -> `Local` -> `Import` -> `Restore local downloads`.
 - The app scans the current local storage path and rebuilds entries.
 - It does not copy files or add favorites.
 - Duplicates (same title or directory) are skipped.
@@ -99,14 +102,14 @@ chapter is used as the cover.
 
 ## PDF and Image-based EPUB
 
-Open `Local` -> `Import` and select either a PDF comic file or an image-based
+Open `Settings` -> `Local` -> `Import` and select either a PDF comic file or an image-based
 EPUB file. Both formats are converted into app-managed local image comics during
 import; the original document is not streamed by the reader.
 
 ### PDF
 
-- Open `Local` -> `Import` -> `PDF comic files` to select one or more PDFs. Each file becomes a separate comic, and the destination favorites folder is selected once for the batch.
-- **Background Task Management**: PDF imports run sequentially in a background queue as app-managed tasks. After starting an import, you can close the progress dialog, return to previous views, or read other comics without interrupting the process. You can reopen the task status dialog from the `Local` page or the Home local comics summary; completed tasks never hijack current navigation.
+- Open `Settings` -> `Local` -> `Import` -> `PDF comic files` to select one or more PDFs. Each file becomes a separate comic, and the destination favorites folder is selected once for the batch.
+- **Background Task Management**: PDF imports run sequentially in a background queue as app-managed tasks. After starting an import, you can close the progress dialog, return to previous views, or read other comics without interrupting the process. You can reopen the task status dialog from the `Settings` -> `Local` page (task icon button or narrow screen overflow menu); completed tasks never hijack current navigation.
 - **Cancellation & Safe Cleanup**: Cancelling stops remaining queued files (queued tasks are disposed immediately without preparation); in-progress rendering or saving finishes safely before cleaning up unfinished directory artifacts. Successfully imported comics are preserved and never rolled back by late cancellations.
 - **Session Boundary & Exit Limits**: Tasks exist only within the current application session. Keep the app alive during import; resuming tasks after application exit or process termination across restarts is not supported. On Android, files that cannot be accessed directly are prepared in temporary storage one by one and released immediately after conversion.
 - **Storage Migration & Directory Ownership Protection**:

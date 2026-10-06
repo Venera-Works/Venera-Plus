@@ -19,7 +19,8 @@ void main() {
         appdata.settings['language'] = 'zh-CN';
         addTearDown(() => appdata.settings['language'] = previous);
         await AppTranslation.init();
-        var mode = DataSyncMode.manual;
+        var direction = SyncDirection.bidirectional;
+        var timing = SyncTiming.manual;
         var minutes = 30;
         await tester.pumpWidget(
           MaterialApp(
@@ -34,9 +35,13 @@ void main() {
                   padding: const EdgeInsets.all(16),
                   child: StatefulBuilder(
                     builder: (context, setState) => DataSyncScheduleFields(
-                      mode: mode,
+                      direction: direction,
+                      timing: timing,
                       minutes: minutes,
-                      onModeChanged: (value) => setState(() => mode = value),
+                      onDirectionChanged: (value) =>
+                          setState(() => direction = value),
+                      onTimingChanged: (value) =>
+                          setState(() => timing = value),
                       onIntervalChanged: (value) =>
                           setState(() => minutes = value),
                     ),
@@ -47,11 +52,14 @@ void main() {
           ),
         );
         expect(find.byType(DropdownButton<int>), findsNothing);
-        await tester.tap(find.byType(DropdownButton<DataSyncMode>));
+        expect(find.byType(DropdownButton<SyncDirection>), findsOneWidget);
+        expect(find.byType(DropdownButton<SyncTiming>), findsOneWidget);
+
+        await tester.tap(find.byType(DropdownButton<SyncTiming>));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('定时同步').last);
+        await tester.tap(find.text('定时').last);
         await tester.pumpAndSettle();
-        expect(mode, DataSyncMode.scheduled);
+        expect(timing, SyncTiming.scheduled);
         expect(find.byType(DropdownButton<int>), findsOneWidget);
         await tester.ensureVisible(find.byType(DropdownButton<int>));
         await tester.tap(find.byType(DropdownButton<int>));

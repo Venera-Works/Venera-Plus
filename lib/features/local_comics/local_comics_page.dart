@@ -227,33 +227,108 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
       buildMultiSelectMenu(),
     ];
 
-    List<Widget> normalActions = [
-      const PdfImportTasksButton(),
-      Tooltip(
-        message: "Search".tl,
-        child: IconButton(
-          icon: const Icon(Icons.search),
-          onPressed: () {
-            setState(() {
-              searchMode = true;
-            });
-          },
+    final isWide = context.width >= 600;
+
+    List<Widget> normalActions;
+    if (isWide) {
+      normalActions = [
+        const PdfImportTasksButton(),
+        Tooltip(
+          message: "Search".tl,
+          child: IconButton(
+            icon: const Icon(Icons.search),
+            onPressed: () {
+              setState(() {
+                searchMode = true;
+              });
+            },
+          ),
         ),
-      ),
-      Tooltip(
-        message: "Sort".tl,
-        child: IconButton(icon: const Icon(Icons.sort), onPressed: sort),
-      ),
-      Tooltip(
-        message: "Downloading".tl,
-        child: IconButton(
-          icon: const Icon(Icons.download),
-          onPressed: () {
-            showPopUpWidget(context, const DownloadingPage());
-          },
+        Tooltip(
+          message: "Sort".tl,
+          child: IconButton(icon: const Icon(Icons.sort), onPressed: sort),
         ),
-      ),
-    ];
+        Tooltip(
+          message: "Downloading".tl,
+          child: IconButton(
+            icon: const Icon(Icons.download),
+            onPressed: () {
+              showPopUpWidget(context, const DownloadingPage());
+            },
+          ),
+        ),
+        if (BackupConfig.fromSettings().isValid)
+          Tooltip(
+            message: "Archive".tl,
+            child: IconButton(
+              icon: const Icon(Icons.archive_outlined),
+              onPressed: () {
+                context.to(() => const ComicArchivePage());
+              },
+            ),
+          ),
+        Tooltip(
+          message: "Import".tl,
+          child: IconButton(
+            icon: const Icon(Icons.add),
+            onPressed: () {
+              showImportComicsDialog(context);
+            },
+          ),
+        ),
+      ];
+    } else {
+      normalActions = [
+        const PdfImportTasksButton(),
+        Tooltip(
+          message: "Search".tl,
+          child: IconButton(
+            icon: const Icon(Icons.search),
+            onPressed: () {
+              setState(() {
+                searchMode = true;
+              });
+            },
+          ),
+        ),
+        Tooltip(
+          message: "Import".tl,
+          child: IconButton(
+            icon: const Icon(Icons.add),
+            onPressed: () {
+              showImportComicsDialog(context);
+            },
+          ),
+        ),
+        MenuButton(
+          entries: [
+            MenuEntry(icon: Icons.sort, text: "Sort".tl, onClick: sort),
+            MenuEntry(
+              icon: Icons.download,
+              text: "Downloading".tl,
+              onClick: () {
+                showPopUpWidget(context, const DownloadingPage());
+              },
+            ),
+            if (BackupConfig.fromSettings().isValid)
+              MenuEntry(
+                icon: Icons.archive_outlined,
+                text: "Archive".tl,
+                onClick: () {
+                  context.to(() => const ComicArchivePage());
+                },
+              ),
+            MenuEntry(
+              icon: Icons.picture_as_pdf_outlined,
+              text: "PDF import tasks".tl,
+              onClick: () {
+                showPdfImportTasksDialog(context: context);
+              },
+            ),
+          ],
+        ),
+      ];
+    }
 
     var body = Scaffold(
       body: SmoothCustomScrollView(
@@ -269,7 +344,7 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
                         multiSelectMode = false;
                         selectedComics.clear();
                       });
-                    } else {
+                    } else if (context.canPop()) {
                       context.pop();
                     }
                   },

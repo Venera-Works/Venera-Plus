@@ -4,6 +4,9 @@ import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 import 'package:venera_plus/features/history/history.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/image_favorites/image_favorites.dart';
+import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/settings/about.dart';
 import 'package:venera_plus/features/settings/appearance.dart';
 import 'package:venera_plus/features/settings/local_favorites.dart';
@@ -39,6 +42,10 @@ class _SettingsPageState extends State<SettingsPage> {
     "Network",
     "About",
     "Debug",
+    "Local",
+    "Comic Source",
+    "Image Favorites",
+    "History",
   ];
 
   final icons = <IconData>[
@@ -51,6 +58,10 @@ class _SettingsPageState extends State<SettingsPage> {
     Icons.public,
     Icons.info,
     Icons.bug_report,
+    Icons.folder,
+    Icons.extension,
+    Icons.photo_library,
+    Icons.history,
   ];
 
   @override
@@ -204,14 +215,16 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget buildRight() {
-    if (currentPage == -1) {
+    final pageIndex = currentPage;
+    if (pageIndex == -1) {
       return const SizedBox();
     }
     return Navigator(
+      key: ValueKey(pageIndex),
       onGenerateRoute: (settings) {
         return PageRouteBuilder(
           pageBuilder: (context, animation, secondaryAnimation) {
-            return _buildSettingsContent(currentPage);
+            return _buildSettingsContent(pageIndex);
           },
           transitionDuration: Duration.zero,
         );
@@ -230,6 +243,10 @@ class _SettingsPageState extends State<SettingsPage> {
       6 => const NetworkSettings(),
       7 => const AboutSettings(),
       8 => const DebugPage(),
+      9 => const LocalComicsPage(),
+      10 => const ComicSourcePage(),
+      11 => const ImageFavoritesPage(),
+      12 => const HistoryPage(),
       _ => throw UnimplementedError(),
     };
   }
@@ -256,6 +273,10 @@ class _SettingsDetailPage extends StatelessWidget {
       6 => const NetworkSettings(),
       7 => const AboutSettings(),
       8 => const DebugPage(),
+      9 => const LocalComicsPage(),
+      10 => const ComicSourcePage(),
+      11 => const ImageFavoritesPage(),
+      12 => const HistoryPage(),
       _ => throw UnimplementedError(),
     };
   }

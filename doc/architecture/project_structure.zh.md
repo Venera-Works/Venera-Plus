@@ -24,20 +24,20 @@
 `features/` 是业务代码的主要归属地。当前功能域包括：
 
 - `bangumi/`：Bangumi Access Token 连接、漫画条目绑定、话/卷进度上传、评分编辑和设备本地失败重试。
-- `comic_source/`：漫画源模型、解析、分类、首页摘要、收藏映射、标签翻译和漫画源翻译等漫画源能力。
+- `comic_source/`：漫画源模型、解析、分类、收藏映射、标签翻译和漫画源管理等漫画源能力。
 - `comic_storage/`：跨本地目录、CBZ 与 WebDAV 复用的漫画归档元数据、图片文件规则和本地文件系统布局识别。
 - `comic_widgets/`：漫画卡片、列表、评分和跨功能域复用的漫画展示组件；内部按列表、卡片、评分等职责拆分，并通过 `comic_widgets.dart` 统一导出。
 - `comic_details/`：漫画详情页及章节、评论、收藏按钮、封面和缩略图等详情页子模块。
-- `discovery/`：探索页、分类页、分类漫画列表和排行榜等浏览发现页面。
-- `favorites/`：本地收藏、网络收藏、收藏夹页面和收藏操作。
-- `follow_updates/`：追更状态、追更检查和追更页面。
-- `history/`：阅读历史、首页历史摘要、图片收藏模型、图片收藏管理和图片收藏 provider。
-- `image_favorites/`：图片收藏页面、首页摘要、图库浏览和图片查看 UI。
-- `local_comics/`：本地漫画库管理、首页本地漫画摘要、下载任务，以及 `import_export/` 下的 CBZ、EPUB、PDF、导入导出工具。
+- `discovery/`：探索页（包含内置本地漫画浏览标签）、分类页、分类漫画列表和排行榜等浏览发现页面。
+- `favorites/`：在读视图（`ReadingFavoritesView`）、本地收藏、网络收藏、收藏夹页面和收藏操作；管理与自动追更共享的唯一“在读”绑定（`readingFolder`）。
+- `follow_updates/`：追更后台检测服务与更新状态管理；追更作为绑定在读的自动服务，不再保留独立页面或首页摘要。
+- `history/`：阅读历史、历史记录页、图片收藏模型、图片收藏管理和图片收藏 provider（历史管理入口位于设置）。
+- `image_favorites/`：图片收藏页面、图库浏览和图片查看 UI（管理入口位于设置）。
+- `local_comics/`：本地漫画库管理、下载任务，以及 `import_export/` 下的 CBZ、EPUB、PDF 导入导出工具（管理入口位于设置，发现页提供本地浏览与阅读）。
 - `reader/`：阅读器页面、手势、章节、图片加载、瀑布流阅读实现，以及图片剪贴板写入、音量键监听等阅读场景专用平台交互。
-- `search/`：首页搜索入口、搜索首页、搜索结果页、聚合搜索页面和搜索查询过滤规则。
-- `settings/`：设置页面、阅读设置、设置页共享控件和各业务域的页面选择设置。
-- `sync/`：WebDAV 数据同步、首页同步状态、应用数据导入导出和本地漫画备份恢复。
+- `search/`：搜索首页、搜索结果页、聚合搜索页面和搜索查询过滤规则。
+- `settings/`：设置页面、阅读设置、设置页共享控件和各业务域的页面选择设置（包含本地、漫画源、图片收藏、历史管理入口）。
+- `sync/`：WebDAV 数据同步、顶栏 `SyncActionButton`、应用数据导入导出和本地漫画备份恢复。
 - `webdav_library/`：WebDAV 漫画库在线阅读源，负责远端目录图片结构的列表、详情和图片加载配置。
 
 新增功能域时，优先采用以下形态：
@@ -53,7 +53,22 @@ test/features/<domain>/
 
 不是每个功能域都必须同时有数据层和页面层；目录边界应以业务归属为准。
 
-外部模块应优先通过功能域入口引用能力，而不是直接依赖功能域内部实现文件。已经建立稳定入口的功能域，应在入口文件中 export 对外类型；例如 Bangumi 同步通过 `features/bangumi/bangumi.dart` 暴露模型、API、服务、设置和进度面板，漫画源功能通过 `features/comic_source/comic_source.dart` 暴露漫画源模型、服务、首页摘要、标签翻译和管理页面，漫画详情页通过 `features/comic_details/comic_details.dart` 暴露 `ComicPage`，浏览发现功能通过 `features/discovery/discovery.dart` 暴露探索页、分类页、分类漫画列表和排行榜，收藏功能通过 `features/favorites/favorites.dart` 暴露收藏管理器和收藏页面，追更功能通过 `features/follow_updates/follow_updates.dart` 暴露追更服务和追更页面，历史功能通过 `features/history/history.dart` 暴露历史管理器、首页摘要、图片收藏 provider 和历史页面，图片收藏功能通过 `features/image_favorites/image_favorites.dart` 暴露图片收藏页面、首页摘要和排序类型，阅读器通过 `features/reader/reader.dart` 暴露阅读页面、加载入口、章节评论页、章节完成事件和瀑布流模型，搜索功能通过 `features/search/search.dart` 暴露首页搜索入口、搜索首页、搜索结果页、聚合搜索页和搜索查询过滤规则，设置功能通过 `features/settings/settings.dart` 暴露设置页、应用设置、探索设置、阅读器设置、外观设置、本地收藏设置、网络设置、日志页、调试页、关于页、更新日志和可复用设置面板，同步功能通过 `features/sync/sync.dart` 暴露数据同步、首页同步状态、数据迁移、漫画备份和漫画归档页面，本地漫画通过 `features/local_comics/local_comics.dart` 暴露本地库、首页摘要、下载任务、本地漫画页面和下载队列弹窗，本地漫画导入导出通过 `features/local_comics/import_export/import_export.dart` 暴露格式工具，WebDAV 漫画库通过 `features/webdav_library/webdav_library.dart` 暴露在线目录图片阅读源。外部页面、路由和测试不应绕过这些入口直接 import 内部实现文件。
+外部模块应优先通过功能域入口引用能力，而不是直接依赖功能域内部实现文件。已经建立稳定入口的功能域，应在入口文件中 export 对外类型：
+- Bangumi 同步通过 `features/bangumi/bangumi.dart` 暴露模型、API、服务、设置和进度面板。
+- 漫画源功能通过 `features/comic_source/comic_source.dart` 暴露漫画源模型、服务、标签翻译和管理页面。
+- 漫画详情页通过 `features/comic_details/comic_details.dart` 暴露 `ComicPage`。
+- 浏览发现功能通过 `features/discovery/discovery.dart` 暴露探索页、分类页、分类漫画列表和排行榜。
+- 收藏功能通过 `features/favorites/favorites.dart` 暴露在读视图（`ReadingFavoritesView`）、收藏管理器和收藏页面。
+- 追更功能通过 `features/follow_updates/follow_updates.dart` 暴露追更后台检测服务。
+- 历史功能通过 `features/history/history.dart` 暴露历史管理器、图片收藏 provider 和历史页面。
+- 图片收藏功能通过 `features/image_favorites/image_favorites.dart` 暴露图片收藏页面和排序类型。
+- 阅读器通过 `features/reader/reader.dart` 暴露阅读页面、加载入口、章节评论页、章节完成事件和瀑布流模型。
+- 搜索功能通过 `features/search/search.dart` 暴露搜索首页、搜索结果页、聚合搜索页和搜索查询过滤规则。
+- 设置功能通过 `features/settings/settings.dart` 暴露设置页、应用设置、探索设置、阅读器设置、外观设置、本地收藏设置、网络设置、日志页、调试页、关于页、更新日志和可复用设置面板。
+- 同步功能通过 `features/sync/sync.dart` 暴露数据同步、顶栏 `SyncActionButton`、数据迁移、漫画备份和漫画归档页面。
+- 本地漫画通过 `features/local_comics/local_comics.dart` 暴露本地库、下载任务、本地漫画页面和下载队列弹窗，通过 `features/local_comics/import_export/import_export.dart` 暴露导入导出工具。
+- WebDAV 漫画库通过 `features/webdav_library/webdav_library.dart` 暴露在线目录图片阅读源。
+外部页面、路由和测试不应绕过这些入口直接 import 内部实现文件。
 
 漫画归档元数据和跨存储介质复用的文件规则统一通过 `features/comic_storage/comic_storage.dart` 暴露；本地漫画、CBZ 和 WebDAV 不应分别复制这些规则，也不应绕过入口直接引用其实现文件。
 
@@ -61,10 +76,9 @@ test/features/<domain>/
 
 `app_shell/` 保留应用级入口和页面编排：
 
-- `main_page.dart`：主导航壳，负责挂载首页、收藏、探索和分类等一级入口。
-- `home_page.dart`：首页编排，只通过各功能域入口组装业务摘要组件。
+- `main_page.dart`：主导航壳，负责挂载首页、收藏、探索和分类等一级入口，统一在顶栏右上角展示同步按钮（`SyncActionButton`）、搜索按钮和设置按钮。
+- `home_page.dart`：首页，直接挂载 `favorites.ReadingFavoritesView` 展示在读漫画并支持下拉刷新，不再平铺杂乱摘要。
 - `auth_page.dart`：应用启动和前后台切换时使用的本地鉴权页面。
-
 应用壳层可以依赖功能域入口；功能域不应反向依赖应用壳层。
 `app_shell.dart` 是壳层对外入口，`main.dart` 等应用组装代码应通过它引用应用级页面；`features/`、`routing/`、`foundation/`、`network/`、`utils/` 和 `components/` 不应依赖 `app_shell/`。
 
@@ -164,24 +178,22 @@ test/features/<domain>/
 设置页面已经纳入稳定入口约束，外部代码应通过 `features/settings/settings.dart` 引用设置页、阅读设置和页面选择设置面板。
 设置功能内部的本地收藏设置、调试页、日志页和设置入口页不应通过 `foundation/app.dart` 间接引用 UI 扩展；仅实际访问 `App` 单例的设置实现文件保留该入口。
 
-图片收藏页面和首页摘要已经纳入稳定入口约束，外部代码应通过 `features/image_favorites/image_favorites.dart` 引用图片收藏 UI。
+图片收藏页面已经纳入稳定入口约束，外部代码应通过 `features/image_favorites/image_favorites.dart` 引用图片收藏 UI。
 图片收藏功能内部的图片查看页应保持独立实现文件，不应重新作为 `image_favorites_page.dart` 的 part。
 图片收藏功能内部的图库页应保持独立实现文件，不应重新作为 `image_favorites_page.dart` 的 part。
 图片收藏功能内部的条目组件应保持独立实现文件，不应重新作为 `image_favorites_page.dart` 的 part。
 
-同步状态首页卡片已经纳入稳定入口约束，外部代码应通过 `features/sync/sync.dart` 引用同步 UI。
+同步功能与操作按钮已经纳入稳定入口约束，外部代码应通过 `features/sync/sync.dart` 引用同步 UI 与能力。
 同步功能内部的漫画归档页不应通过 `foundation/app.dart` 间接引用 UI 扩展；仅实际访问 `App` 单例的同步实现文件保留该入口。
 
-本地漫画页面、下载队列和首页摘要已经纳入稳定入口约束，外部代码应通过 `features/local_comics/local_comics.dart` 引用本地漫画 UI。
+本地漫画页面与下载队列已经纳入稳定入口约束，外部代码应通过 `features/local_comics/local_comics.dart` 引用本地漫画 UI。
 本地漫画下载队列弹窗不应通过 `foundation/app.dart` 间接引用 UI 扩展；仅实际访问 `App` 单例的本地漫画实现文件保留该入口。
 
-漫画源管理页面、首页摘要和标签翻译已经纳入稳定入口约束，外部代码应通过 `features/comic_source/comic_source.dart` 引用漫画源能力。
-漫画源首页摘要不应通过 `foundation/app.dart` 间接引用 UI 扩展；仅实际访问 `App` 单例的漫画源实现文件保留该入口。
+漫画源管理页面和标签翻译已经纳入稳定入口约束，外部代码应通过 `features/comic_source/comic_source.dart` 引用漫画源能力。
 
-历史页面和首页摘要已经纳入稳定入口约束，外部代码应通过 `features/history/history.dart` 引用历史 UI。
-历史首页摘要不应通过 `foundation/app.dart` 间接引用 UI 扩展；仅实际访问 `App` 单例的历史实现文件保留该入口。
+历史页面已经纳入稳定入口约束，外部代码应通过 `features/history/history.dart` 引用历史 UI。
 
-搜索页面、首页入口和搜索查询过滤规则已经纳入稳定入口约束，外部代码应通过 `features/search/search.dart` 引用搜索能力。
+搜索页面和搜索查询过滤规则已经纳入稳定入口约束，外部代码应通过 `features/search/search.dart` 引用搜索能力。
 搜索功能内部的聚合搜索页不应通过 `foundation/app.dart` 间接引用 UI 扩展；仅实际访问 `App` 单例的搜索实现文件保留该入口。
 
 漫画展示组件已经纳入稳定入口约束，外部代码应通过 `features/comic_widgets/comic_widgets.dart` 引用漫画列表、卡片、评分控件和后续拆出的展示组件。

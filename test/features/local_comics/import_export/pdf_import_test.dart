@@ -70,8 +70,11 @@ void main() {
       Future<void> withFavorites(
         Future<void> Function(LocalFavoritesManager favorites) run,
       ) async {
-        final followFolder = appdata.settings['followUpdatesFolder'];
-        final quickFavorite = appdata.settings['quickFavorite'];
+        final previousSettings = Map<String, dynamic>.from(
+          appdata.toJson()['settings'],
+        );
+        final previousFavorites = LocalFavoritesManager.cache;
+        appdata.settings.remove('readingFolder');
         LocalFavoritesManager.cache = null;
         final favorites = LocalFavoritesManager();
         try {
@@ -81,9 +84,10 @@ void main() {
           await favorites.debugWaitForHashedIdsRefresh();
           await appdata.saveData(false);
           favorites.close();
-          LocalFavoritesManager.cache = null;
-          appdata.settings['followUpdatesFolder'] = followFolder;
-          appdata.settings['quickFavorite'] = quickFavorite;
+          LocalFavoritesManager.cache = previousFavorites;
+          (appdata.toJson()['settings'] as Map)
+            ..clear()
+            ..addAll(previousSettings);
         }
       }
 

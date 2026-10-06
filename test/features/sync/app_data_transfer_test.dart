@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
@@ -11,8 +12,20 @@ void main() {
   late String previousDataPath;
   late String previousCachePath;
   late Directory fallbackRoot;
+  late Map<String, dynamic> previousSettings;
+  late Map<String, dynamic> previousImplicit;
+  late List<String> previousSearchHistory;
+  late LocalFavoritesManager? previousFavorites;
+  var initialDataPath = Directory.systemTemp.path;
+  var initialCachePath = Directory.systemTemp.path;
 
   setUpAll(() {
+    try {
+      initialDataPath = App.dataPath;
+    } catch (_) {}
+    try {
+      initialCachePath = App.cachePath;
+    } catch (_) {}
     fallbackRoot = Directory.systemTemp.createTempSync(
       'venera-app-data-transfer-fallback-',
     );
@@ -23,10 +36,15 @@ void main() {
   });
 
   tearDownAll(() {
+    App.dataPath = initialDataPath;
+    App.cachePath = initialCachePath;
     if (fallbackRoot.existsSync()) fallbackRoot.deleteSync(recursive: true);
   });
 
-  setUp(() {
+  setUp(() async {
+    previousSettings = Map<String, dynamic>.from(appdata.toJson()['settings']);
+    previousImplicit = Map<String, dynamic>.from(appdata.implicitData);
+    previousSearchHistory = List.of(appdata.searchHistory);
     previousDataPath = App.dataPath;
     previousCachePath = App.cachePath;
     root = Directory.systemTemp.createTempSync('venera-app-data-transfer-');
@@ -34,6 +52,9 @@ void main() {
     final cacheDir = Directory('${root.path}/cache')..createSync();
     App.dataPath = dataDir.path;
     App.cachePath = cacheDir.path;
+    previousFavorites = LocalFavoritesManager.cache;
+    LocalFavoritesManager.cache = null;
+    await LocalFavoritesManager().init();
     appdata.settings['disableSyncFields'] = '';
     appdata.settings['cacheSize'] = 2048;
     registerAppDataSettingsChangedHandler(null);
@@ -42,11 +63,17 @@ void main() {
     });
   });
 
-  tearDown(() {
+  tearDown(() async {
     configureAppDataArchiveExtractorForTesting(null);
     registerAppDataSettingsChangedHandler(null);
-    appdata.settings['disableSyncFields'] = '';
-    appdata.settings['cacheSize'] = 2048;
+    LocalFavoritesManager.cache?.close();
+    LocalFavoritesManager.cache = previousFavorites;
+    await appdata.writeImplicitData();
+    appdata.settings.replaceAll(previousSettings);
+    appdata.implicitData
+      ..clear()
+      ..addAll(previousImplicit);
+    appdata.searchHistory = previousSearchHistory;
     App.dataPath = previousDataPath;
     App.cachePath = previousCachePath;
     if (root.existsSync()) root.deleteSync(recursive: true);
@@ -90,6 +117,29 @@ void main() {
       await expectLater(importAppData(archive), throwsFormatException);
 
       expect(callbackCount, 0);
+    },
+  );
+
+  test(
+    'staged invalid database rolls back files and reading settings',
+    () async {
+      final previousBinding = appdata.settings['readingFolder'];
+      final folders = LocalFavoritesManager().folderNames.toList();
+      configureAppDataArchiveExtractorForTesting((archive, destination) async {
+        File(
+          '${destination.path}/local_favorite.db',
+        ).writeAsStringSync('not sqlite');
+        File('${destination.path}/appdata.json').writeAsStringSync(
+          jsonEncode({
+            'settings': {'cacheSize': 512, 'readingFolder': 'remote'},
+          }),
+        );
+      });
+      final archive = _createArchive(root, {});
+      await expectLater(importAppData(archive), throwsA(anything));
+      expect(appdata.settings['cacheSize'], 2048);
+      expect(appdata.settings['readingFolder'], previousBinding);
+      expect(LocalFavoritesManager().folderNames, folders);
     },
   );
 }

@@ -22,8 +22,10 @@ venera-plus --headless <command> [subcommand] [options]
 
 管理 WebDAV 数据同步。
 
-- **`webdav up`**：上传本地配置到 WebDAV 服务器。
-- **`webdav down`**：下载并应用 WebDAV 服务器上的远端配置。
+- **`webdav up`**：上传完整本地应用数据快照；仅下载方向下拒绝执行。
+- **`webdav down`**：下载最新远端应用数据快照（双向方向下仅下载更新版本）；仅上传方向下拒绝执行。
+
+命令等待已有同步/配置操作结束，并以非零退出码报告实际操作失败，不能绕过方向限制。下载拒绝有歧义的最新版本，并保护网络等待期间新增的本地修改。整包快照与 ETag 限制见[应用数据同步](data_sync.zh.md)。
 
 **示例：**
 
@@ -89,15 +91,15 @@ venera-plus --headless updatescript all
 
 ### `updatesubscribe`
 
-更新已追更漫画，并返回发生更新的漫画列表。
+使用与主页和自动追踪一致的持久化**在读**收藏角色。命令先等待待处理下载，再解析角色绑定；在读被删除或未绑定时返回错误，不会改扫其他收藏夹。
 
-- **`updatesubscribe`**：检查所有已追更漫画。
-- **`updatesubscribe --update-comic-by-id-type <id> <type>`**：更新指定 `id` 和 `type` 的单个漫画。
+- **`updatesubscribe`**：检查绑定在读收藏夹内的漫画。
+- **`updatesubscribe --update-comic-by-id-type <id> <type>`**：按 `id` 和 `type` 更新该收藏夹中的单个漫画。
 
 **示例：**
 
 ```bash
-# 更新全部追更
+# 更新全部在读漫画
 venera-plus --headless updatesubscribe
 
 # 更新单个漫画

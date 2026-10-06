@@ -5,15 +5,19 @@ import 'package:venera_plus/foundation/translations.dart';
 class DataSyncScheduleFields extends StatelessWidget {
   const DataSyncScheduleFields({
     super.key,
-    required this.mode,
+    required this.direction,
+    required this.timing,
     required this.minutes,
-    required this.onModeChanged,
+    required this.onDirectionChanged,
+    required this.onTimingChanged,
     required this.onIntervalChanged,
   });
 
-  final DataSyncMode mode;
+  final SyncDirection direction;
+  final SyncTiming timing;
   final int minutes;
-  final ValueChanged<DataSyncMode> onModeChanged;
+  final ValueChanged<SyncDirection> onDirectionChanged;
+  final ValueChanged<SyncTiming> onTimingChanged;
   final ValueChanged<int> onIntervalChanged;
 
   @override
@@ -23,34 +27,64 @@ class DataSyncScheduleFields extends StatelessWidget {
       children: [
         InputDecorator(
           decoration: InputDecoration(
-            labelText: 'Sync mode'.tl,
+            labelText: 'Sync Direction'.tl,
             border: const OutlineInputBorder(),
           ),
           child: DropdownButtonHideUnderline(
-            child: DropdownButton<DataSyncMode>(
+            child: DropdownButton<SyncDirection>(
               isExpanded: true,
-              value: mode,
+              value: direction,
               items: [
                 DropdownMenuItem(
-                  value: DataSyncMode.manual,
-                  child: Text('Manual sync'.tl),
+                  value: SyncDirection.bidirectional,
+                  child: Text('Bidirectional'.tl),
                 ),
                 DropdownMenuItem(
-                  value: DataSyncMode.realtime,
-                  child: Text('Real-time sync'.tl),
+                  value: SyncDirection.uploadOnly,
+                  child: Text('Upload only'.tl),
                 ),
                 DropdownMenuItem(
-                  value: DataSyncMode.scheduled,
-                  child: Text('Scheduled sync'.tl),
+                  value: SyncDirection.downloadOnly,
+                  child: Text('Download only'.tl),
                 ),
               ],
               onChanged: (value) {
-                if (value != null) onModeChanged(value);
+                if (value != null) onDirectionChanged(value);
               },
             ),
           ),
         ),
-        if (mode == DataSyncMode.scheduled) ...[
+        const SizedBox(height: 12),
+        InputDecorator(
+          decoration: InputDecoration(
+            labelText: 'Sync Timing'.tl,
+            border: const OutlineInputBorder(),
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<SyncTiming>(
+              isExpanded: true,
+              value: timing,
+              items: [
+                DropdownMenuItem(
+                  value: SyncTiming.manual,
+                  child: Text('Manual'.tl),
+                ),
+                DropdownMenuItem(
+                  value: SyncTiming.realtime,
+                  child: Text('Real-time'.tl),
+                ),
+                DropdownMenuItem(
+                  value: SyncTiming.scheduled,
+                  child: Text('Scheduled'.tl),
+                ),
+              ],
+              onChanged: (value) {
+                if (value != null) onTimingChanged(value);
+              },
+            ),
+          ),
+        ),
+        if (timing == SyncTiming.scheduled) ...[
           const SizedBox(height: 16),
           InputDecorator(
             decoration: InputDecoration(
@@ -78,7 +112,7 @@ class DataSyncScheduleFields extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           Text(
-            'Syncs at the selected interval while the app is running. Overdue syncs run when the app reopens. Local changes are uploaded; otherwise, the server is checked for updates.'
+            'Syncs at the selected interval while the app is running, following the selected direction. Overdue syncs run when the app reopens. Conflicts require an explicit snapshot choice.'
                 .tl,
           ),
         ],

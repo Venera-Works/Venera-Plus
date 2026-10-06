@@ -18,6 +18,10 @@ import 'package:venera_plus/routing/settings.dart';
 import 'package:venera_plus/foundation/extensions.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
+import 'package:venera_plus/components/menu.dart';
+import 'package:venera_plus/components/message.dart';
+import 'package:venera_plus/features/comic_details/comic_details.dart';
+import 'package:venera_plus/features/local_comics/local_comics.dart';
 
 class ExplorePage extends StatefulWidget {
   const ExplorePage({super.key});
@@ -34,19 +38,39 @@ class _ExplorePageState extends State<ExplorePage>
 
   double location = 0;
 
+  static const String localExploreTabKey = '__local__';
+  final GlobalKey<_LocalExplorePageState> _localPageStateKey =
+      GlobalKey<_LocalExplorePageState>();
+
   late List<String> pages;
 
-  void onSettingsChanged() {
+  List<String> _loadPages() {
     var explorePages = List<String>.from(appdata.settings["explore_pages"]);
     var all = ComicSource.all()
         .map((e) => e.explorePages)
         .expand((e) => e.map((e) => e.title))
         .toList();
     explorePages = explorePages.where((e) => all.contains(e)).toList();
-    if (!pages.isEqualTo(explorePages)) {
+    return [localExploreTabKey, ...explorePages];
+  }
+
+  void onSettingsChanged() {
+    var newPages = _loadPages();
+    if (!pages.isEqualTo(newPages)) {
+      final oldIndex = controller.index;
+      final oldPageId = oldIndex >= 0 && oldIndex < pages.length
+          ? pages[oldIndex]
+          : null;
       setState(() {
-        pages = explorePages;
-        controller = TabController(length: pages.length, vsync: this);
+        pages = newPages;
+        int newIndex = oldPageId != null ? pages.indexOf(oldPageId) : 0;
+        if (newIndex == -1) newIndex = 0;
+        controller.dispose();
+        controller = TabController(
+          length: pages.length,
+          initialIndex: newIndex,
+          vsync: this,
+        );
       });
     }
   }
@@ -54,8 +78,16 @@ class _ExplorePageState extends State<ExplorePage>
   void onNaviItemTapped(int index) {
     if (index == 2) {
       int page = controller.index;
-      String currentPageId = pages[page];
-      GlobalState.find<_SingleExplorePageState>(currentPageId).toTop();
+      if (page >= 0 && page < pages.length) {
+        String currentPageId = pages[page];
+        if (currentPageId == localExploreTabKey) {
+          _localPageStateKey.currentState?.toTop();
+        } else {
+          GlobalState.findOrNull<_SingleExplorePageState>(
+            currentPageId,
+          )?.toTop();
+        }
+      }
     }
   }
 
@@ -67,12 +99,7 @@ class _ExplorePageState extends State<ExplorePage>
 
   @override
   void initState() {
-    pages = List<String>.from(appdata.settings["explore_pages"]);
-    var all = ComicSource.all()
-        .map((e) => e.explorePages)
-        .expand((e) => e.map((e) => e.title))
-        .toList();
-    pages = pages.where((e) => all.contains(e)).toList();
+    pages = _loadPages();
     controller = TabController(length: pages.length, vsync: this);
     appdata.settings.addListener(onSettingsChanged);
     NaviPane.of(context).addNaviItemTapListener(onNaviItemTapped);
@@ -95,8 +122,16 @@ class _ExplorePageState extends State<ExplorePage>
 
   void refresh() {
     int page = controller.index;
-    String currentPageId = pages[page];
-    GlobalState.find<_SingleExplorePageState>(currentPageId).refresh();
+    if (page >= 0 && page < pages.length) {
+      String currentPageId = pages[page];
+      if (currentPageId == localExploreTabKey) {
+        _localPageStateKey.currentState?.refresh();
+      } else {
+        GlobalState.findOrNull<_SingleExplorePageState>(
+          currentPageId,
+        )?.refresh();
+      }
+    }
   }
 
   Widget buildFAB() => Material(
@@ -109,42 +144,28 @@ class _ExplorePageState extends State<ExplorePage>
   );
 
   Tab buildTab(String i) {
+    if (i == localExploreTabKey) {
+      return Tab(text: "Local".tl, key: const Key(localExploreTabKey));
+    }
     var comicSource = ComicSource.all().firstWhere(
       (e) => e.explorePages.any((e) => e.title == i),
     );
     return Tab(text: i.ts(comicSource.key), key: Key(i));
   }
 
-  Widget buildBody(String i) =>
-      Material(child: _SingleExplorePage(i, key: PageStorageKey(i)));
-
-  Widget buildEmpty() {
-    var msg = "No Explore Pages".tl;
-    msg += '\n';
-    VoidCallback onTap;
-    if (ComicSource.isEmpty) {
-      msg += "Please add some sources".tl;
-      onTap = () {
-        context.to(() => ComicSourcePage());
-      };
-    } else {
-      msg += "Please check your settings".tl;
-      onTap = addPage;
+  Widget buildBody(String i) {
+    if (i == localExploreTabKey) {
+      return _LocalExplorePage(
+        key: _localPageStateKey,
+        pageStorageKey: const PageStorageKey(localExploreTabKey),
+      );
     }
-    return NetworkError(
-      message: msg,
-      retry: onTap,
-      withAppbar: false,
-      buttonText: "Manage".tl,
-    );
+    return Material(child: _SingleExplorePage(i, key: PageStorageKey(i)));
   }
 
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    if (pages.isEmpty) {
-      return buildEmpty();
-    }
 
     Widget tabBar = Material(
       child: AppTabBar(
@@ -607,4 +628,226 @@ class _MultiPartExplorePageState extends State<_MultiPartExplorePage> {
       yield* _buildExplorePagePart(part, widget.comicSourceKey);
     }
   }
+}
+
+class _LocalExplorePage extends StatefulWidget {
+  const _LocalExplorePage({super.key, required this.pageStorageKey});
+
+  final Key pageStorageKey;
+
+  @override
+  State<_LocalExplorePage> createState() => _LocalExplorePageState();
+}
+
+class _LocalExplorePageState extends State<_LocalExplorePage>
+    with AutomaticKeepAliveClientMixin<_LocalExplorePage> {
+  late List<LocalComic> comics;
+  late LocalSortType sortType;
+  final ScrollController scrollController = ScrollController();
+
+  void update() {
+    if (!mounted) return;
+    setState(() {
+      comics = LocalManager().getComics(sortType);
+    });
+  }
+
+  @override
+  void initState() {
+    var sort = appdata.implicitData["local_sort"] ?? "name";
+    sortType = LocalSortType.fromString(sort);
+    comics = LocalManager().getComics(sortType);
+    LocalManager().addListener(update);
+    super.initState();
+  }
+
+  @override
+  void dispose() {
+    LocalManager().removeListener(update);
+    scrollController.dispose();
+    super.dispose();
+  }
+
+  void refresh() {
+    update();
+  }
+
+  void toTop() {
+    if (scrollController.hasClients) {
+      scrollController.animateTo(
+        scrollController.position.minScrollExtent,
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeInOut,
+      );
+    }
+  }
+
+  void sort() {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return ContentDialog(
+              title: "Sort".tl,
+              content: RadioGroup<LocalSortType>(
+                groupValue: sortType,
+                onChanged: (v) {
+                  setState(() {
+                    sortType = v ?? sortType;
+                  });
+                },
+                child: Column(
+                  children: [
+                    RadioListTile<LocalSortType>(
+                      title: Text("Name".tl),
+                      value: LocalSortType.name,
+                    ),
+                    RadioListTile<LocalSortType>(
+                      title: Text("Date".tl),
+                      value: LocalSortType.timeAsc,
+                    ),
+                    RadioListTile<LocalSortType>(
+                      title: Text("Date Desc".tl),
+                      value: LocalSortType.timeDesc,
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                FilledButton(
+                  onPressed: () {
+                    appdata.implicitData["local_sort"] = sortType.value;
+                    appdata.writeImplicitData();
+                    Navigator.pop(context);
+                    update();
+                  },
+                  child: Text("Confirm".tl),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    return Material(
+      child: RefreshIndicator(
+        onRefresh: () async => update(),
+        child: SmoothCustomScrollView(
+          key: widget.pageStorageKey,
+          controller: scrollController,
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                child: Row(
+                  children: [
+                    Text(
+                      "@a Comics".tlParams({'a': comics.length}),
+                      style: ts.s14.copyWith(
+                        color: context.colorScheme.outline,
+                      ),
+                    ),
+                    const Spacer(),
+                    Tooltip(
+                      message: "Sort".tl,
+                      child: IconButton(
+                        icon: const Icon(Icons.sort, size: 20),
+                        onPressed: sort,
+                      ),
+                    ),
+                    Tooltip(
+                      message: "Import".tl,
+                      child: IconButton(
+                        icon: const Icon(Icons.add, size: 20),
+                        onPressed: () => showImportComicsDialog(context),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (comics.isEmpty)
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.folder_open_outlined,
+                        size: 64,
+                        color: context.colorScheme.outlineVariant,
+                      ),
+                      const SizedBox(height: 16),
+                      Text("No Comics".tl, style: ts.s16),
+                      const SizedBox(height: 16),
+                      FilledButton.icon(
+                        icon: const Icon(Icons.add),
+                        label: Text("Import".tl),
+                        onPressed: () => showImportComicsDialog(context),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            else
+              SliverGridComics(
+                comics: comics,
+                onTap: (c, heroID) {
+                  (c as LocalComic).read();
+                },
+                onLongPressed: (c, heroID) {
+                  context.to(
+                    () => ComicPage(
+                      id: c.id,
+                      sourceKey: c.sourceKey,
+                      cover: c.cover,
+                      title: c.title,
+                      heroID: heroID,
+                    ),
+                  );
+                },
+                menuBuilder: (comic) {
+                  final c = comic as LocalComic;
+                  return [
+                    MenuEntry(
+                      icon: Icons.book,
+                      text: "Read".tl,
+                      onClick: c.read,
+                    ),
+                    MenuEntry(
+                      icon: Icons.info_outline,
+                      text: "Details".tl,
+                      onClick: () {
+                        context.to(
+                          () => ComicPage(
+                            id: c.id,
+                            sourceKey: c.sourceKey,
+                            cover: c.cover,
+                            title: c.title,
+                          ),
+                        );
+                      },
+                    ),
+                  ];
+                },
+              ),
+            SliverPadding(
+              padding: EdgeInsets.only(bottom: context.padding.bottom + 16),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  bool get wantKeepAlive => true;
 }

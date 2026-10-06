@@ -1,0 +1,162 @@
+import 'package:flutter/material.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/features/sync/data_sync.dart';
+import 'package:venera_plus/foundation/translations.dart';
+
+class SyncActionButton extends StatefulWidget {
+  const SyncActionButton({super.key, required this.onConfigure});
+
+  final Future<void> Function() onConfigure;
+
+  @override
+  State<SyncActionButton> createState() => _SyncActionButtonState();
+}
+
+class _SyncActionButtonState extends State<SyncActionButton>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _rotationController;
+  late final DataSync _sync;
+
+  @override
+  void initState() {
+    super.initState();
+    _rotationController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 1),
+    );
+    _sync = DataSync();
+    _sync.addListener(_onSyncStatusChanged);
+    if (_sync.statusSnapshot.isSyncing) {
+      _rotationController.repeat();
+    }
+  }
+
+  @override
+  void dispose() {
+    _sync.removeListener(_onSyncStatusChanged);
+    _rotationController.dispose();
+    super.dispose();
+  }
+
+  void _onSyncStatusChanged() {
+    if (!mounted) return;
+    final isSyncing = _sync.isSyncing;
+    if (isSyncing) {
+      if (!_rotationController.isAnimating) {
+        _rotationController.repeat();
+      }
+    } else {
+      if (_rotationController.isAnimating) {
+        _rotationController.stop();
+        _rotationController.reset();
+      }
+    }
+  }
+
+  Future<void> _handlePressed() async {
+    if (_sync.isSyncing) {
+      context.showMessage(message: 'Sync is currently in progress'.tl);
+      return;
+    }
+    if (!_sync.hasConfiguration) {
+      await widget.onConfigure();
+      return;
+    }
+    if (!_sync.beginInteraction()) return;
+    try {
+      if (!_sync.hasConflict) {
+        final result = await _sync.syncNow();
+        if (!mounted) return;
+        if (!_sync.hasConflict) {
+          context.showMessage(
+            message: result.error
+                ? '${"Sync failed".tl}: ${result.errorMessage?.tl ?? ""}'
+                : 'Sync completed'.tl,
+          );
+          return;
+        }
+      }
+      if (!mounted) return;
+      final keepLocal = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text('Sync Conflict'.tl),
+          content: Text(
+            'Sync needs an explicit snapshot choice. The baseline may be unknown or data may have changed. This replaces data; it does not merge it.'
+                .tl,
+          ),
+          actions: [
+            if (DataSync.direction != SyncDirection.downloadOnly)
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: Text('Upload Local (Overwrite Remote)'.tl),
+              ),
+            if (DataSync.direction != SyncDirection.uploadOnly)
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: Text('Download Remote (Overwrite Local)'.tl),
+              ),
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: Text('Cancel'.tl),
+            ),
+          ],
+        ),
+      );
+      if (keepLocal == null || !mounted) return;
+      final result = await _sync.resolveConflict(keepLocal: keepLocal);
+      if (!mounted) return;
+      context.showMessage(
+        message: result.error
+            ? '${"Sync failed".tl}: ${result.errorMessage?.tl ?? ""}'
+            : 'Sync completed'.tl,
+      );
+    } finally {
+      _sync.endInteraction();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: _sync,
+      builder: (context, _) {
+        final status = _sync.statusSnapshot;
+
+        final IconData iconData;
+        final String tooltip;
+        Color? iconColor;
+
+        if (status.isSyncing) {
+          iconData = Icons.sync;
+          tooltip = 'Syncing data...'.tl;
+        } else if (!status.isConfigured) {
+          iconData = Icons.cloud_off_outlined;
+          tooltip = 'WebDAV is not configured. Please configure it first.'.tl;
+        } else if (status.hasConflict) {
+          iconData = Icons.sync_problem;
+          tooltip = 'Sync Conflict'.tl;
+          iconColor = Theme.of(context).colorScheme.error;
+        } else {
+          iconData = Icons.sync;
+          tooltip = 'Sync Data'.tl;
+        }
+
+        Widget iconWidget = Icon(iconData, color: iconColor);
+
+        if (status.isSyncing) {
+          iconWidget = RotationTransition(
+            turns: _rotationController,
+            child: iconWidget,
+          );
+        }
+
+        return IconButton(
+          icon: iconWidget,
+          tooltip: tooltip,
+          onPressed: _handlePressed,
+        );
+      },
+    );
+  }
+}

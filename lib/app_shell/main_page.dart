@@ -3,6 +3,7 @@ import 'package:venera_plus/features/discovery/discovery.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/search/search.dart';
 import 'package:venera_plus/features/settings/settings.dart';
+import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/translations.dart';
 
@@ -40,7 +41,11 @@ class _MainPageState extends State<MainPage> {
     _observer = NaviObserver();
     _navigatorKey = GlobalKey();
     App.mainNavigatorKey = _navigatorKey;
-    index = int.tryParse(appdata.settings['initialPage'].toString()) ?? 0;
+    final initialPageSetting =
+        int.tryParse(appdata.settings['initialPage'].toString()) ?? 0;
+    index = (initialPageSetting >= 0 && initialPageSetting < _pages.length)
+        ? initialPageSetting
+        : 0;
     super.initState();
   }
 
@@ -87,20 +92,24 @@ class _MainPageState extends State<MainPage> {
         });
       },
       paneActions: [
-        if (index != 0)
-          PaneActionEntry(
-            icon: Icons.search,
-            label: "Search".tl,
-            onTap: () {
+        SyncActionButton(onConfigure: () => showDataSyncSettings(context)),
+        Tooltip(
+          message: "Search".tl,
+          child: IconButton(
+            icon: const Icon(Icons.search),
+            onPressed: () {
               to(() => const SearchPage(), preventDuplicate: true);
             },
           ),
-        PaneActionEntry(
-          icon: Icons.settings,
-          label: "Settings".tl,
-          onTap: () {
-            to(() => const SettingsPage(), preventDuplicate: true);
-          },
+        ),
+        Tooltip(
+          message: "Settings".tl,
+          child: IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: () {
+              to(() => const SettingsPage(), preventDuplicate: true);
+            },
+          ),
         ),
       ],
       pageBuilder: (index) {

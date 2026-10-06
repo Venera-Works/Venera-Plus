@@ -199,9 +199,7 @@ class _AppSettingsState extends State<AppSettings> {
         CallbackSetting(
           key: const Key('data-sync-entry'),
           title: "Data Sync".tl,
-          callback: () async {
-            showPopUpWidget(context, const _WebdavSetting());
-          },
+          callback: () => showDataSyncSettings(context),
           actionTitle: 'Set'.tl,
         ).toSliver(),
         CallbackSetting(
@@ -272,13 +270,27 @@ class _WebdavSetting extends StatefulWidget {
   State<_WebdavSetting> createState() => _WebdavSettingState();
 }
 
+Future<void> showDataSyncSettings(BuildContext context) async {
+  final sync = DataSync();
+  if (!sync.beginInteraction()) {
+    context.showMessage(message: 'Sync is currently in progress'.tl);
+    return;
+  }
+  try {
+    await showPopUpWidget(context, const _WebdavSetting());
+  } finally {
+    sync.endInteraction();
+  }
+}
+
 class _WebdavSettingState extends State<_WebdavSetting> {
   String url = "";
   String user = "";
   String pass = "";
   String disableSync = "";
 
-  DataSyncMode syncMode = DataSyncMode.realtime;
+  SyncDirection syncDirection = SyncDirection.bidirectional;
+  SyncTiming syncTiming = SyncTiming.realtime;
   int syncInterval = 30;
   late final TextEditingController urlController;
   late final TextEditingController userController;
@@ -302,7 +314,8 @@ class _WebdavSettingState extends State<_WebdavSetting> {
       url = configs[0];
       user = configs[1];
       pass = configs[2];
-      syncMode = DataSync.mode;
+      syncDirection = DataSync.direction;
+      syncTiming = DataSync.timing;
     }
     syncInterval = DataSync.intervalMinutes;
     urlController = TextEditingController(text: url);
@@ -413,45 +426,50 @@ class _WebdavSettingState extends State<_WebdavSetting> {
               ),
               const SizedBox(height: 12),
               DataSyncScheduleFields(
-                mode: syncMode,
+                direction: syncDirection,
+                timing: syncTiming,
                 minutes: syncInterval,
-                onModeChanged: (value) => setState(() => syncMode = value),
+                onDirectionChanged: (value) =>
+                    setState(() => syncDirection = value),
+                onTimingChanged: (value) => setState(() => syncTiming = value),
                 onIntervalChanged: (value) =>
                     setState(() => syncInterval = value),
               ),
               const SizedBox(height: 12),
-              if (syncMode != DataSyncMode.manual) ...[
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('Initial sync'.tl),
-                ),
-                RadioGroup<bool>(
-                  groupValue: upload,
-                  onChanged: (value) {
-                    setState(() {
-                      upload = value ?? upload;
-                    });
-                  },
-                  child: Column(
-                    children: [
-                      RadioListTile<bool>(
-                        value: true,
-                        title: Text('Upload'.tl),
-                        contentPadding: EdgeInsets.zero,
-                      ),
-                      RadioListTile<bool>(
-                        value: false,
-                        title: Text('Download'.tl),
-                        contentPadding: EdgeInsets.zero,
-                      ),
-                    ],
+              if (syncTiming != SyncTiming.manual) ...[
+                if (syncDirection == SyncDirection.bidirectional) ...[
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('Initial sync'.tl),
                   ),
-                ),
+                  RadioGroup<bool>(
+                    groupValue: upload,
+                    onChanged: (value) {
+                      setState(() {
+                        upload = value ?? upload;
+                      });
+                    },
+                    child: Column(
+                      children: [
+                        RadioListTile<bool>(
+                          value: true,
+                          title: Text('Upload'.tl),
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                        RadioListTile<bool>(
+                          value: false,
+                          title: Text('Download'.tl),
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ],
               const SizedBox(height: 16),
               AnimatedSize(
                 duration: const Duration(milliseconds: 200),
-                child: syncMode != DataSyncMode.manual
+                child: syncTiming != SyncTiming.manual
                     ? Container(
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
@@ -501,14 +519,19 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                     final testResult = await DataSync().configure(
                       config: clear ? [] : [url.trim(), user, pass],
                       excludedFields: disableSync,
-                      syncMode: syncMode,
+                      direction: syncDirection,
+                      timing: syncTiming,
                       minutes: syncInterval,
-                      initialUpload: upload,
+                      initialUpload: syncDirection == SyncDirection.uploadOnly
+                          ? true
+                          : (syncDirection == SyncDirection.downloadOnly
+                                ? false
+                                : upload),
                     );
                     if (!mounted) return;
                     setState(() => isTesting = false);
                     if (testResult.error) {
-                      context.showMessage(message: testResult.errorMessage!);
+                      context.showMessage(message: testResult.errorMessage!.tl);
                       context.showMessage(message: "Saved Failed".tl);
                     } else {
                       context.showMessage(message: "Saved".tl);

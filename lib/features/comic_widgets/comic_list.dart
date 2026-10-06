@@ -284,6 +284,7 @@ class ComicList extends StatefulWidget {
     this.reloadHandlerCallback,
     this.enablePageStorage = false,
     this.useFavoriteDisplaySettings = false,
+    this.badgeBuilder,
   });
 
   final Future<Res<List<Comic>>> Function(int page)? loadPage;
@@ -307,6 +308,7 @@ class ComicList extends StatefulWidget {
   final bool enablePageStorage;
 
   final bool useFavoriteDisplaySettings;
+  final String? Function(Comic)? badgeBuilder;
 
   @override
   State<ComicList> createState() => ComicListState();
@@ -331,41 +333,62 @@ class ComicListState extends State<ComicList> {
 
   Map<String, dynamic> get state => {
     'maxPage': _maxPage,
-    'data': _data,
+    'data': {
+      for (final entry in _data.entries) entry.key: List<Comic>.of(entry.value),
+    },
     'page': _page,
     'error': _error,
-    'loading': _loading,
+    'loading': Map<int, bool>.of(_loading),
     'nextUrl': _nextUrl,
   };
 
+  String? get error => _error;
+
+  int _generation = 0;
+  int? _activeReloadGeneration;
+  final Map<int, int> _pageLoadGenerations = {};
+
+  final Map<(String, String), Map<String, dynamic>> _metadataOverlays = {};
+
+  List<Comic> _applyOverlays(List<Comic> list) {
+    for (var index = 0; index < list.length; index++) {
+      final comic = list[index];
+      final fields = _metadataOverlays[(comic.sourceKey, comic.id)];
+      if (fields != null) list[index] = _withMetadata(comic, fields);
+    }
+    return list;
+  }
+
+  Comic _withMetadata(Comic comic, Map<String, dynamic> fields) =>
+      Comic.fromJson({
+        ...comic.toJson(),
+        'stars': comic.stars,
+        ...fields,
+      }, comic.sourceKey);
   void restoreState(Map<String, dynamic>? state) {
     if (state == null || !enablePageStorage) {
       return;
     }
     _maxPage = state['maxPage'];
-    _data.clear();
     final data = state['data'];
-    if (data is Map) {
-      for (final entry in data.entries) {
-        final key = entry.key;
-        final value = entry.value;
-        if (key is int && value is Iterable) {
-          _data[key] = List<Comic>.from(value);
+    if (!identical(data, _data)) {
+      _data.clear();
+      if (data is Map) {
+        for (final entry in data.entries) {
+          final key = entry.key;
+          final value = entry.value;
+          if (key is int && value is Iterable) {
+            _data[key] = List<Comic>.from(value);
+          }
         }
       }
     }
     _page = state['page'];
     _error = state['error'];
     _loading.clear();
-    final loading = state['loading'];
-    if (loading is Map) {
-      for (final entry in loading.entries) {
-        if (entry.key is int && entry.value is bool) {
-          _loading[entry.key] = entry.value;
-        }
-      }
-    }
     _nextUrl = state['nextUrl'];
+    _seenCursors.clear();
+    if (_nextUrl != null) _seenCursors.add(_nextUrl!);
   }
 
   void storeState() {
@@ -375,47 +398,269 @@ class ComicListState extends State<ComicList> {
   }
 
   void refresh() {
+    _generation++;
+    _activeReload = null;
+    _activeReloadGeneration = null;
+    _activeCursorFetch = null;
+    _activeCursorGeneration = null;
+    _seenCursors.clear();
+    _isReloading = false;
+    _loading.clear();
+    _pageLoadGenerations.clear();
     _data.clear();
     _page = 1;
     _maxPage = null;
     _error = null;
     _nextUrl = null;
-    _loading.clear();
-    storeState();
-    setState(() {});
+    _metadataOverlays.clear();
+    if (mounted) {
+      storeState();
+      setState(() {});
+    }
   }
 
-  Future<void> reload() async {
-    if (_isReloading) return;
-    if (widget.loadPage == null || _data.isEmpty) {
-      refresh();
-      return;
+  Future<List<Comic>>? _activeReload;
+  bool _activeReloadAll = false;
+  bool _activeReloadReset = false;
+  Future<bool>? _activeCursorFetch;
+  int? _activeCursorGeneration;
+  final Set<String> _seenCursors = {};
+
+  bool _isCurrent(int generation) => mounted && _generation == generation;
+
+  /// Refresh only pages already loaded (or the current initial page).
+  Future<void> reload({bool reset = false}) =>
+      _reload(all: false, reset: reset).then<void>((_) {});
+
+  /// Explicit full-folder refresh used by network favorites, not ordinary lists.
+  Future<List<Comic>> reloadAll({bool reset = false}) =>
+      _reload(all: true, reset: reset);
+
+  Future<List<Comic>> _reload({required bool all, required bool reset}) {
+    if (!mounted) return Future.value(const <Comic>[]);
+    final active = _activeReload;
+    if (active != null && _activeReloadGeneration == _generation) {
+      if ((all && !_activeReloadAll) || (reset && !_activeReloadReset)) {
+        final generation = _generation;
+        return active.then<List<Comic>>(
+          (_) => _isCurrent(generation)
+              ? _reload(all: all, reset: reset)
+              : const <Comic>[],
+        );
+      }
+      return active;
     }
+
+    final generation = ++_generation;
+    _activeReloadGeneration = generation;
+    _activeReloadAll = all;
+    _activeReloadReset = reset;
     _isReloading = true;
-    final pages = _data.keys.toList()..sort();
+    _error = null;
+    _loading.clear();
+    _pageLoadGenerations.clear();
+    _metadataOverlays.clear();
+    setState(() {});
+
+    late Future<List<Comic>> future;
+    future = _performReload(generation, all: all, reset: reset).whenComplete(
+      () {
+        if (_activeReloadGeneration == generation &&
+            identical(_activeReload, future)) {
+          _activeReload = null;
+          _activeReloadGeneration = null;
+          _isReloading = false;
+        }
+        if (_isCurrent(generation)) {
+          storeState();
+          setState(() {});
+        }
+      },
+    );
+    _activeReload = future;
+    return future;
+  }
+
+  Future<List<Comic>> _performReload(
+    int generation, {
+    required bool all,
+    required bool reset,
+  }) async {
     try {
-      final results = await Future.wait([
-        for (final page in pages) widget.loadPage!(page),
-      ]);
-      if (!mounted) return;
-      setState(() {
-        for (var index = 0; index < pages.length; index++) {
-          final result = results[index];
-          if (!result.success) continue;
-          _data[pages[index]] = List<Comic>.from(result.data);
-          if (result.subData is int) {
-            _maxPage = result.subData as int;
+      if (widget.loadPage != null) {
+        return await _reloadPages(generation, all: all, reset: reset);
+      }
+      if (widget.loadNext != null) {
+        return await _reloadCursor(generation, all: all, reset: reset);
+      }
+      if (_isCurrent(generation)) {
+        _error = "Comic source does not support loading favorites".tl;
+      }
+    } catch (error) {
+      if (_isCurrent(generation)) _error = _errorText(error);
+    }
+    return const <Comic>[];
+  }
+
+  String _errorText(Object error) =>
+      (error is StateError ? error.message.toString() : error.toString()).tl;
+
+  void _commitReload(
+    Map<int, List<Comic>> pages, {
+    required int? maxPage,
+    required String? next,
+    required bool reset,
+    Set<String> cursors = const {},
+  }) {
+    _data
+      ..clear()
+      ..addAll(pages);
+    _maxPage = maxPage;
+    _nextUrl = next;
+    _seenCursors
+      ..clear()
+      ..addAll(cursors);
+    _error = null;
+    if (reset) _page = 1;
+    if (_maxPage != null && _page > _maxPage!) _page = _maxPage!;
+    if (_page < 1) _page = 1;
+  }
+
+  Future<List<Comic>> _reloadPages(
+    int generation, {
+    required bool all,
+    required bool reset,
+  }) async {
+    final loader = widget.loadPage!;
+    final pages = <int, List<Comic>>{};
+    final comics = <Comic>[];
+    final seen = <(String, String)>{};
+    final targets = reset
+        ? <int>[1]
+        : (<int>{..._data.keys, _page}.toList()..sort());
+    int? maxPage = all || reset ? null : _maxPage;
+    var targetIndex = 0;
+    var page = all ? 1 : targets.first;
+    while (_isCurrent(generation)) {
+      try {
+        final result = await loader(page);
+        if (!_isCurrent(generation)) return const <Comic>[];
+        if (result.error) {
+          _error =
+              (result.errorMessage ??
+                      "Failed to load page @page".tlParams({
+                        'page': page.toString(),
+                      }))
+                  .tl;
+          return comics;
+        }
+        final reportedMax = result.subData;
+        if (reportedMax is int) {
+          maxPage = reportedMax < 1 ? 1 : reportedMax;
+        }
+        final loaded = List<Comic>.from(result.data);
+        final identities = loaded.map((comic) => (comic.sourceKey, comic.id));
+        if (all &&
+            maxPage == null &&
+            loaded.isNotEmpty &&
+            identities.every(seen.contains)) {
+          _error = "Source repeated previous page results".tl;
+          return comics;
+        }
+        pages[page] = loaded;
+        for (final comic in loaded) {
+          if (seen.add((comic.sourceKey, comic.id))) comics.add(comic);
+        }
+        if (loaded.isEmpty && (reportedMax is! int || maxPage == 1)) {
+          if (reportedMax is! int) maxPage = page > 1 ? page - 1 : 1;
+          if (page == 1) {
+            pages
+              ..clear()
+              ..[1] = <Comic>[];
+            comics.clear();
+          }
+          break;
+        }
+      } catch (error) {
+        if (_isCurrent(generation)) _error = _errorText(error);
+        return comics;
+      }
+      if (all) {
+        if (maxPage != null && page >= maxPage) break;
+        page++;
+      } else {
+        targetIndex++;
+        if (targetIndex >= targets.length) break;
+        page = targets[targetIndex];
+        if (maxPage != null && page > maxPage) break;
+      }
+    }
+    if (!_isCurrent(generation)) return const <Comic>[];
+    if (maxPage != null) {
+      pages.removeWhere((page, _) => page > maxPage!);
+    }
+    _commitReload(pages, maxPage: maxPage, next: null, reset: reset);
+    return comics;
+  }
+
+  Future<List<Comic>> _reloadCursor(
+    int generation, {
+    required bool all,
+    required bool reset,
+  }) async {
+    final loader = widget.loadNext!;
+    final pages = <int, List<Comic>>{};
+    final comics = <Comic>[];
+    final identities = <(String, String)>{};
+    final cursors = <String>{};
+    final loadedThrough = _data.keys.fold<int>(
+      _page,
+      (last, page) => page > last ? page : last,
+    );
+    final limit = reset ? 1 : loadedThrough;
+    String? next;
+    var chunk = 0;
+    while (_isCurrent(generation)) {
+      try {
+        final result = await loader(next);
+        if (!_isCurrent(generation)) return const <Comic>[];
+        if (result.error) {
+          _error =
+              (result.errorMessage ??
+                      "Failed to load chunk @chunk".tlParams({
+                        'chunk': '${chunk + 1}',
+                      }))
+                  .tl;
+          return comics;
+        }
+        final loaded = List<Comic>.from(result.data);
+        final following = result.subData as String?;
+        if (loaded.isNotEmpty || pages.isEmpty || following != null) {
+          pages[++chunk] = loaded;
+          for (final comic in loaded) {
+            if (identities.add((comic.sourceKey, comic.id))) comics.add(comic);
           }
         }
-        final maxPage = _maxPage;
-        if (maxPage != null) {
-          _data.removeWhere((page, _) => page > maxPage);
+        if (following != null && !cursors.add(following)) {
+          _error = "Repeated cursor encountered".tl;
+          return comics;
         }
-      });
-      storeState();
-    } finally {
-      _isReloading = false;
+        next = following;
+        if (next == null || (!all && chunk >= limit)) break;
+      } catch (error) {
+        if (_isCurrent(generation)) _error = _errorText(error);
+        return comics;
+      }
     }
+    if (!_isCurrent(generation)) return const <Comic>[];
+    _commitReload(
+      pages,
+      maxPage: next == null ? chunk : null,
+      next: next,
+      reset: reset,
+      cursors: cursors,
+    );
+    return comics;
   }
 
   @override
@@ -428,6 +673,16 @@ class ComicListState extends State<ComicList> {
     });
   }
 
+  @override
+  void dispose() {
+    _generation++;
+    _activeReload = null;
+    _activeReloadGeneration = null;
+    _activeCursorFetch = null;
+    _activeCursorGeneration = null;
+    super.dispose();
+  }
+
   void remove(Comic c) {
     if (_data[_page] == null || !_data[_page]!.remove(c)) {
       for (var page in _data.values) {
@@ -437,6 +692,52 @@ class ComicListState extends State<ComicList> {
       }
     }
     setState(() {});
+  }
+
+  /// Applies fresh detail fields without replacing remote favorite identifiers,
+  /// ratings, descriptions or pagination metadata with a different comic model.
+  bool updateComicMetadata(
+    String id, {
+    String? sourceKey,
+    String? title,
+    String? cover,
+    String? subtitle,
+    List<String>? tags,
+    String? description,
+    String? favoriteId,
+  }) {
+    if (!mounted) return false;
+    final fields = <String, dynamic>{
+      if (title != null && title.trim().isNotEmpty) 'title': title,
+      if (cover != null && cover.trim().isNotEmpty) 'cover': cover,
+      if (subtitle != null && subtitle.trim().isNotEmpty) 'subTitle': subtitle,
+      if (tags != null && tags.isNotEmpty) 'tags': List<String>.from(tags),
+      if (description != null && description.trim().isNotEmpty)
+        'description': description,
+      if (favoriteId != null && favoriteId.trim().isNotEmpty)
+        'favoriteId': favoriteId,
+    };
+    if (fields.isEmpty) return false;
+    var updated = false;
+    if (sourceKey != null) {
+      _metadataOverlays[(sourceKey, id)] = fields;
+      updated = true;
+    }
+    for (final list in _data.values) {
+      for (var index = 0; index < list.length; index++) {
+        final comic = list[index];
+        if (comic.id == id &&
+            (sourceKey == null || comic.sourceKey == sourceKey)) {
+          list[index] = _withMetadata(comic, fields);
+          _metadataOverlays[(comic.sourceKey, comic.id)] = fields;
+          updated = true;
+        }
+      }
+    }
+    if (updated) {
+      setState(() {});
+    }
+    return updated;
   }
 
   Widget _buildPageSelector() {
@@ -540,69 +841,98 @@ class ComicListState extends State<ComicList> {
   }
 
   Future<void> _loadPage(int page) async {
-    if (widget.loadPage == null && widget.loadNext == null) {
-      _error = "loadPage and loadNext can't be null at the same time";
-      Future.microtask(() {
-        setState(() {});
-      });
-    }
-    if (_data[page] != null || _loading[page] == true) {
+    final generation = _generation;
+    if (!mounted ||
+        _isReloading ||
+        _data.containsKey(page) ||
+        _pageLoadGenerations[page] == generation) {
       return;
     }
+    if (_maxPage != null && page > _maxPage!) return;
     _loading[page] = true;
+    _pageLoadGenerations[page] = generation;
     try {
-      if (widget.loadPage != null) {
-        var res = await widget.loadPage!(page);
-        if (!mounted) return;
-        if (res.success) {
-          if (res.data.isEmpty) {
-            setState(() {
-              _data[page] = <Comic>[];
-              _maxPage ??= page;
-            });
-          } else {
-            setState(() {
-              _data[page] = List<Comic>.from(res.data);
-              if (res.subData != null && res.subData is int) {
-                _maxPage = res.subData;
-              }
-            });
-          }
-        } else {
-          setState(() {
-            _error = res.errorMessage ?? "Unknown error".tl;
-          });
+      final loader = widget.loadPage;
+      if (loader != null) {
+        final result = await Future.sync(() => loader(page));
+        if (!_isCurrent(generation)) return;
+        if (result.error) {
+          throw StateError(result.errorMessage ?? "Unknown error".tl);
+        }
+        _data[page] = _applyOverlays(List<Comic>.from(result.data));
+        if (result.subData is int) {
+          final max = result.subData as int;
+          _maxPage = max < 1 ? 1 : max;
+        } else if (result.data.isEmpty) {
+          _maxPage = page > 1 ? page - 1 : 1;
+        }
+      } else if (widget.loadNext != null) {
+        while (_isCurrent(generation) && !_data.containsKey(page)) {
+          if (_maxPage != null && page > _maxPage!) break;
+          if (!await _fetchNext(generation)) break;
         }
       } else {
-        try {
-          while (_data[page] == null) {
-            await _fetchNext();
-          }
-          if (mounted) {
-            setState(() {});
-          }
-        } catch (e) {
-          if (mounted) {
-            setState(() {
-              _error = e.toString();
-            });
-          }
-        }
+        _error = "Comic source does not support loading favorites".tl;
+        await Future<void>.value();
       }
+      if (_isCurrent(generation) && _maxPage != null && _page > _maxPage!) {
+        _page = _maxPage!;
+      }
+    } catch (error) {
+      if (_isCurrent(generation)) _error = _errorText(error);
     } finally {
-      _loading[page] = false;
-      storeState();
+      if (_pageLoadGenerations[page] == generation) {
+        _loading.remove(page);
+        _pageLoadGenerations.remove(page);
+      }
+      if (_isCurrent(generation)) {
+        storeState();
+        setState(() {});
+      }
     }
   }
 
-  Future<void> _fetchNext() async {
-    var res = await widget.loadNext!(_nextUrl);
-    _data[_data.length + 1] = List<Comic>.from(res.data);
-    if (res.subData == null) {
-      _maxPage = _data.length;
-    } else {
-      _nextUrl = res.subData;
+  Future<bool> _fetchNext(int generation) {
+    final active = _activeCursorFetch;
+    if (active != null && _activeCursorGeneration == generation) {
+      return active;
     }
+    late Future<bool> future;
+    future = _fetchNextChunk(generation).whenComplete(() {
+      if (_activeCursorGeneration == generation &&
+          identical(_activeCursorFetch, future)) {
+        _activeCursorFetch = null;
+        _activeCursorGeneration = null;
+      }
+    });
+    _activeCursorFetch = future;
+    _activeCursorGeneration = generation;
+    return future;
+  }
+
+  Future<bool> _fetchNextChunk(int generation) async {
+    if (!_isCurrent(generation) ||
+        (_maxPage != null && _data.length >= _maxPage!)) {
+      return false;
+    }
+    final result = await widget.loadNext!(_nextUrl);
+    if (!_isCurrent(generation)) return false;
+    if (result.error) {
+      throw StateError(result.errorMessage ?? "Unknown error".tl);
+    }
+    final next = result.subData as String?;
+    if (next != null && !_seenCursors.add(next)) {
+      throw StateError("Repeated cursor encountered".tl);
+    }
+    if (result.data.isNotEmpty || _data.isEmpty || next != null) {
+      final page =
+          _data.keys.fold<int>(0, (last, page) => page > last ? page : last) +
+          1;
+      _data[page] = _applyOverlays(List<Comic>.from(result.data));
+    }
+    _nextUrl = next;
+    if (next == null) _maxPage = _data.length;
+    return true;
   }
 
   @override
@@ -613,11 +943,13 @@ class ComicListState extends State<ComicList> {
 
   Widget buildPagingMode() {
     if (_error != null) {
-      return Column(
-        children: [
-          if (widget.errorLeading != null) widget.errorLeading!,
-          _buildPageSelector(),
-          Expanded(
+      return SmoothCustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          if (widget.errorLeading != null) widget.errorLeading!.toSliver(),
+          _buildSliverPageSelector(),
+          SliverFillRemaining(
+            hasScrollBody: false,
             child: NetworkError(
               withAppbar: false,
               message: _error!,
@@ -625,6 +957,7 @@ class ComicListState extends State<ComicList> {
                 setState(() {
                   _error = null;
                 });
+                unawaited(reload());
               },
             ),
           ),
@@ -633,22 +966,28 @@ class ComicListState extends State<ComicList> {
     }
     if (_data[_page] == null) {
       _loadPage(_page);
-      return Column(
-        children: [
-          if (widget.errorLeading != null) widget.errorLeading!,
-          const Expanded(child: Center(child: CircularProgressIndicator())),
+      return SmoothCustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          if (widget.errorLeading != null) widget.errorLeading!.toSliver(),
+          const SliverFillRemaining(
+            hasScrollBody: false,
+            child: Center(child: CircularProgressIndicator()),
+          ),
         ],
       );
     }
     return SmoothCustomScrollView(
       key: enablePageStorage ? PageStorageKey('scroll$_page') : null,
       controller: widget.controller,
+      physics: const AlwaysScrollableScrollPhysics(),
       slivers: [
         if (widget.leadingSliver != null) widget.leadingSliver!,
         if (_maxPage != 1) _buildSliverPageSelector(),
         SliverGridComics(
           comics: _data[_page] ?? const [],
           menuBuilder: widget.menuBuilder,
+          badgeBuilder: widget.badgeBuilder,
           useFavoriteDisplaySettings: widget.useFavoriteDisplaySettings,
         ),
         if (_data[_page]!.length > 6 && _maxPage != 1)
@@ -660,11 +999,13 @@ class ComicListState extends State<ComicList> {
 
   Widget buildContinuousMode() {
     if (_error != null && _data.isEmpty) {
-      return Column(
-        children: [
-          if (widget.errorLeading != null) widget.errorLeading!,
-          _buildPageSelector(),
-          Expanded(
+      return SmoothCustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          if (widget.errorLeading != null) widget.errorLeading!.toSliver(),
+          _buildSliverPageSelector(),
+          SliverFillRemaining(
+            hasScrollBody: false,
             child: NetworkError(
               withAppbar: false,
               message: _error!,
@@ -672,6 +1013,7 @@ class ComicListState extends State<ComicList> {
                 setState(() {
                   _error = null;
                 });
+                unawaited(reload());
               },
             ),
           ),
@@ -680,21 +1022,27 @@ class ComicListState extends State<ComicList> {
     }
     if (_data[1] == null) {
       _loadPage(1);
-      return Column(
-        children: [
-          if (widget.errorLeading != null) widget.errorLeading!,
-          const Expanded(child: Center(child: CircularProgressIndicator())),
+      return SmoothCustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          if (widget.errorLeading != null) widget.errorLeading!.toSliver(),
+          const SliverFillRemaining(
+            hasScrollBody: false,
+            child: Center(child: CircularProgressIndicator()),
+          ),
         ],
       );
     }
     return SmoothCustomScrollView(
       key: enablePageStorage ? PageStorageKey('scroll$_page') : null,
       controller: widget.controller,
+      physics: const AlwaysScrollableScrollPhysics(),
       slivers: [
         if (widget.leadingSliver != null) widget.leadingSliver!,
         SliverGridComics(
           comics: _data.values.expand((element) => element).toList(),
           menuBuilder: widget.menuBuilder,
+          badgeBuilder: widget.badgeBuilder,
           useFavoriteDisplaySettings: widget.useFavoriteDisplaySettings,
           onLastItemBuild: () {
             if (_error == null &&
@@ -721,6 +1069,7 @@ class ComicListState extends State<ComicList> {
                       setState(() {
                         _error = null;
                       });
+                      unawaited(reload());
                     },
                     child: Text("Retry".tl),
                   ),

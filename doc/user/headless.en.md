@@ -22,8 +22,10 @@ venera-plus --headless <command> [subcommand] [options]
 
 Manage WebDAV data synchronization.
 
-- **`webdav up`**: Uploads your local configuration to the WebDAV server.
-- **`webdav down`**: Downloads and applies the remote configuration from the WebDAV server.
+- **`webdav up`**: Uploads a complete local app-data snapshot. Rejected in download-only direction.
+- **`webdav down`**: Downloads the latest remote app-data snapshot (in bidirectional mode, only a newer version). Rejected in upload-only direction.
+
+Commands wait behind existing sync/configuration work and report the actual operation's error with a nonzero exit code. They cannot bypass direction restrictions. Downloads reject ambiguous latest versions and protect local edits made while waiting for network data. See [App Data Synchronization](data_sync.en.md) for snapshot and ETag limitations.
 
 **Example:**
 
@@ -89,10 +91,10 @@ A summary is provided at the end, detailing the total number of scripts, how man
 
 ### `updatesubscribe`
 
-Update your subscribed comics and retrieve a list of updated comics.
+Checks the same persisted **Reading** favorites role used by Home and automatic tracking. The command waits for pending downloads before resolving the role; a deleted/unbound Reading folder is an error, not a reason to scan another folder.
 
-- **`updatesubscribe`**: Checks all subscribed comics for updates.
-- **`updatesubscribe --update-comic-by-id-type <id> <type>`**: Updates a single comic specified by its `id` and `type`.
+- **`updatesubscribe`**: Checks comics in the bound Reading folder.
+- **`updatesubscribe --update-comic-by-id-type <id> <type>`**: Updates one comic in that folder by `id` and `type`.
 
 **Example:**
 

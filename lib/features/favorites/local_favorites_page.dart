@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -22,12 +23,13 @@ import 'package:venera_plus/features/favorites/favorites_manager.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/reader/reader.dart';
+import 'package:venera_plus/features/follow_updates/follow_updates.dart';
+import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/consts.dart';
 import 'package:venera_plus/foundation/context.dart';
-import 'package:venera_plus/foundation/extensions.dart';
 import 'package:venera_plus/foundation/file_interaction.dart';
 import 'package:venera_plus/foundation/opencc.dart';
 import 'package:venera_plus/foundation/translations.dart';
@@ -81,7 +83,8 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
   LocalFavoritesManager get manager => LocalFavoritesManager();
 
   bool isLoading = false;
-
+  String? loadError;
+  int _loadGeneration = 0;
   late String readFilterSelect;
 
   var searchResults = <FavoriteItem>[];
@@ -104,45 +107,118 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
   }
 
   void updateComics() {
-    if (isLoading) return;
+    unawaited(loadComics());
+  }
+
+  Future<void> loadComics() async {
+    if (!mounted) return;
+    final generation = ++_loadGeneration;
+    final managerGen = manager.generation;
+
     if (isAllFolder) {
-      var totalComics = manager.totalComics;
+      final totalComics = manager.totalComics;
       if (totalComics < _asyncDataFetchLimit) {
         comics = manager.getAllComics();
-      } else {
+        isLoading = false;
+        loadError = null;
+        if (searchMode) updateSearchResult();
+        if (mounted) setState(() {});
+        return;
+      }
+
+      setState(() {
         isLoading = true;
-        manager
-            .getAllComicsAsync()
-            .minTime(const Duration(milliseconds: 200))
-            .then((value) {
-              if (mounted) {
-                setState(() {
-                  isLoading = false;
-                  comics = value;
-                });
-              }
-            });
+        loadError = null;
+      });
+
+      final future = manager.getAllComicsAsync();
+      try {
+        final value = await future;
+        if (mounted &&
+            _loadGeneration == generation &&
+            manager.isCurrentGeneration(managerGen) &&
+            isAllFolder) {
+          setState(() {
+            isLoading = false;
+            comics = value;
+            loadError = null;
+            if (searchMode) updateSearchResult();
+          });
+        }
+      } catch (error, stackTrace) {
+        Log.error("LocalFavoritesPage.loadComics", error, stackTrace);
+        if (mounted &&
+            _loadGeneration == generation &&
+            manager.isCurrentGeneration(managerGen) &&
+            isAllFolder) {
+          setState(() {
+            isLoading = false;
+            comics = [];
+            loadError = "Failed to load comics".tl;
+            if (searchMode) updateSearchResult();
+          });
+          context.showMessage(message: "Failed to load comics".tl);
+        }
       }
     } else {
-      var folderComics = manager.folderComics(widget.folder);
+      if (!manager.existsFolder(widget.folder)) {
+        comics = [];
+        isLoading = false;
+        loadError = null;
+        if (searchMode) updateSearchResult();
+        if (mounted) setState(() {});
+        return;
+      }
+
+      final folderComics = manager.folderComics(widget.folder);
       if (folderComics < _asyncDataFetchLimit) {
         comics = manager.getFolderComics(widget.folder);
-      } else {
+        isLoading = false;
+        loadError = null;
+        if (searchMode) updateSearchResult();
+        if (mounted) setState(() {});
+        return;
+      }
+
+      setState(() {
         isLoading = true;
-        manager
-            .getFolderComicsAsync(widget.folder)
-            .minTime(const Duration(milliseconds: 200))
-            .then((value) {
-              if (mounted) {
-                setState(() {
-                  isLoading = false;
-                  comics = value;
-                });
-              }
-            });
+        loadError = null;
+      });
+
+      final targetFolder = widget.folder;
+      final future = manager.getFolderComicsAsync(targetFolder);
+      try {
+        final value = await future;
+        if (mounted &&
+            _loadGeneration == generation &&
+            manager.isCurrentGeneration(managerGen) &&
+            !isAllFolder &&
+            widget.folder == targetFolder &&
+            manager.existsFolder(targetFolder)) {
+          setState(() {
+            isLoading = false;
+            comics = value;
+            loadError = null;
+            if (searchMode) updateSearchResult();
+          });
+        }
+      } catch (error, stackTrace) {
+        Log.error("LocalFavoritesPage.loadComics", error, stackTrace);
+        if (mounted &&
+            _loadGeneration == generation &&
+            manager.isCurrentGeneration(managerGen) &&
+            !isAllFolder &&
+            widget.folder == targetFolder) {
+          setState(() {
+            isLoading = false;
+            comics = [];
+            loadError = "Failed to load comics".tl;
+            if (searchMode) updateSearchResult();
+          });
+          context.showMessage(message: "Failed to load comics".tl);
+        }
       }
     }
-    setState(() {});
   }
 
   List<FavoriteItem> filterComics(List<FavoriteItem> curComics) {
@@ -234,15 +310,78 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
       networkFolder = null;
     }
     comics = [];
-    updateComics();
+    loadComics();
     LocalFavoritesManager().addListener(updateComics);
     super.initState();
   }
 
   @override
+  void didUpdateWidget(covariant LocalFavoritesPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.folder != widget.folder) {
+      loadComics();
+    }
+  }
+
+  @override
   void dispose() {
-    super.dispose();
     LocalFavoritesManager().removeListener(updateComics);
+    super.dispose();
+  }
+
+  Future<void> _onRefresh() async {
+    int updatedCount = 0;
+    int errorCount = 0;
+    String? lastError;
+    final targetFolder = isAllFolder ? localAllFolderLabel : widget.folder;
+    try {
+      if (!isAllFolder && !LocalFavoritesManager().existsFolder(targetFolder)) {
+        if (mounted) {
+          context.showMessage(message: "Favorite folder no longer exists".tl);
+        }
+        return;
+      }
+      await for (var progress in updateFolder(targetFolder, true)) {
+        updatedCount = progress.updated;
+        errorCount = progress.errors;
+        if (progress.errorMessage != null) {
+          lastError = progress.errorMessage;
+        }
+      }
+      final currentFolder = isAllFolder ? localAllFolderLabel : widget.folder;
+      if (mounted && currentFolder == targetFolder) {
+        if (errorCount > 0 && updatedCount > 0) {
+          context.showMessage(
+            message: "Updated @c comics, @e failed".tlParams({
+              'c': updatedCount,
+              'e': errorCount,
+            }),
+          );
+        } else if (updatedCount > 0) {
+          context.showMessage(
+            message: "Updated @c comics".tlParams({'c': updatedCount}),
+          );
+        } else if (errorCount > 0) {
+          context.showMessage(
+            message: lastError != null && errorCount == 1
+                ? "Failed to check for updates: @e".tlParams({'e': lastError})
+                : "Failed to check for updates".tl,
+          );
+        }
+      }
+    } catch (e, s) {
+      Log.error("LocalFavoritesPage._onRefresh", e, s);
+      if (mounted) {
+        final errorText = e is StateError ? e.message : e.toString();
+        context.showMessage(
+          message: "Failed to check for updates: @e".tlParams({'e': errorText}),
+        );
+      }
+    } finally {
+      if (mounted) {
+        await loadComics();
+      }
+    }
   }
 
   void selectAll() {
@@ -317,6 +456,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
 
     Widget body = SmoothCustomScrollView(
       controller: scrollController,
+      physics: const AlwaysScrollableScrollPhysics(),
       slivers: [
         if (!searchMode && !multiSelectMode)
           SliverAppbar(
@@ -675,12 +815,43 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
               child: const Center(child: CircularProgressIndicator()),
             ),
           )
+        else if (loadError != null)
+          SliverToBoxAdapter(
+            child: SizedBox(
+              height: 200,
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.error_outline,
+                      size: 48,
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      loadError!,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Button.filled(
+                      onPressed: loadComics,
+                      child: Text("Retry".tl),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          )
         else
           SliverGridComics(
             comics: searchMode ? searchResults : filterComics(comics),
             selections: selectedComics,
             useFavoriteDisplaySettings: true,
             menuBuilder: (c) {
+              final item = c as FavoriteItem;
               return [
                 if (!isAllFolder)
                   MenuEntry(
@@ -689,8 +860,8 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                     onClick: () {
                       LocalFavoritesManager().deleteComicWithId(
                         widget.folder,
-                        c.id,
-                        (c as FavoriteItem).type,
+                        item.id,
+                        item.type,
                       );
                     },
                   ),
@@ -702,13 +873,13 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                       if (!multiSelectMode) {
                         multiSelectMode = true;
                       }
-                      if (selectedComics.containsKey(c as FavoriteItem)) {
-                        selectedComics.remove(c);
+                      if (selectedComics.containsKey(item)) {
+                        selectedComics.remove(item);
                         _checkExitSelectMode();
                       } else {
-                        selectedComics[c] = true;
+                        selectedComics[item] = true;
                       }
-                      lastSelectedIndex = comics.indexOf(c);
+                      lastSelectedIndex = comics.indexOf(item);
                     });
                   },
                 ),
@@ -716,7 +887,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                   icon: Icons.download,
                   text: "Download".tl,
                   onClick: () {
-                    downloadComic(c as FavoriteItem);
+                    downloadComic(item);
                     context.showMessage(message: "Download started".tl);
                   },
                 ),
@@ -726,9 +897,19 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                     text: "Read".tl,
                     onClick: () {
                       App.mainNavigatorKey?.currentContext?.to(
-                        () =>
-                            ReaderWithLoading(id: c.id, sourceKey: c.sourceKey),
+                        () => ReaderWithLoading(
+                          id: item.id,
+                          sourceKey: item.sourceKey,
+                        ),
                       );
+                    },
+                  ),
+                if (LocalFavoritesManager().hasNewUpdate(item.id, item.type))
+                  MenuEntry(
+                    icon: Icons.done_all,
+                    text: "Mark as read".tl,
+                    onClick: () {
+                      LocalFavoritesManager().markAsRead(item.id, item.type);
                     },
                   ),
               ];
@@ -736,13 +917,13 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
             onTap: (c, heroID) {
               if (multiSelectMode) {
                 setState(() {
-                  if (selectedComics.containsKey(c as FavoriteItem)) {
+                  if (selectedComics.containsKey(c)) {
                     selectedComics.remove(c);
                     _checkExitSelectMode();
                   } else {
                     selectedComics[c] = true;
                   }
-                  lastSelectedIndex = comics.indexOf(c);
+                  lastSelectedIndex = comics.indexOf(c as FavoriteItem);
                 });
               } else if (appdata.settings["onClickFavorite"] == "viewDetail") {
                 App.mainNavigatorKey?.currentContext?.to(
@@ -797,12 +978,15 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
           ),
       ],
     );
-    body = AppScrollBar(
-      topPadding: 48,
-      controller: scrollController,
-      child: ScrollConfiguration(
-        behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
-        child: body,
+    body = RefreshIndicator(
+      onRefresh: _onRefresh,
+      child: AppScrollBar(
+        topPadding: 48,
+        controller: scrollController,
+        child: ScrollConfiguration(
+          behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+          child: body,
+        ),
       ),
     );
     return PopScope(

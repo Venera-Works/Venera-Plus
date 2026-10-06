@@ -14,20 +14,25 @@ class SmoothCustomScrollView extends StatelessWidget {
     super.key,
     required this.slivers,
     this.controller,
+    this.physics,
   });
 
   final ScrollController? controller;
 
   final List<Widget> slivers;
 
+  final ScrollPhysics? physics;
+
   @override
   Widget build(BuildContext context) {
     return SmoothScrollProvider(
       controller: controller,
-      builder: (context, controller, physics) {
+      builder: (context, controller, providedPhysics) {
         return CustomScrollView(
           controller: controller,
-          physics: physics,
+          physics: physics == null
+              ? providedPhysics
+              : providedPhysics.applyTo(physics),
           slivers: [
             ...slivers,
             SliverPadding(

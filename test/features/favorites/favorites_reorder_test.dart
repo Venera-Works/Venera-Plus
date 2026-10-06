@@ -84,22 +84,29 @@ void main() {
           final directory = Directory.systemTemp.createTempSync(
             'venera-favorite-order-',
           );
-          final previousSettings = {
-            for (final key in [
-              'comicDisplayMode',
-              favoriteDisplayModeKey,
-              favoriteGalleryColumnsKey,
-              'followUpdatesFolder',
-              'quickFavorite',
-              'language',
-            ])
-              key: appdata.settings[key],
-          };
+          final previousSettings = Map<String, dynamic>.from(
+            appdata.toJson()['settings'],
+          );
+          final previousFavorites = LocalFavoritesManager.cache;
+          final previousHistory = HistoryManager.cache;
+          String? previousDataPath;
+          String? previousCachePath;
+          try {
+            previousDataPath = App.dataPath;
+          } on Error {
+            /* Unset late path. */
+          }
+          try {
+            previousCachePath = App.cachePath;
+          } on Error {
+            /* Unset late path. */
+          }
           final previousImplicit = Map<String, dynamic>.from(
             appdata.implicitData,
           );
           App.dataPath = directory.path;
           App.cachePath = directory.path;
+          appdata.settings.remove('readingFolder');
           LocalFavoritesManager.cache = null;
           HistoryManager.cache = null;
           var manager = LocalFavoritesManager();
@@ -131,11 +138,13 @@ void main() {
               manager.close();
               history.close();
             });
-            LocalFavoritesManager.cache = null;
-            HistoryManager.cache = null;
-            for (final entry in previousSettings.entries) {
-              appdata.settings[entry.key] = entry.value;
-            }
+            LocalFavoritesManager.cache = previousFavorites;
+            HistoryManager.cache = previousHistory;
+            (appdata.toJson()['settings'] as Map)
+              ..clear()
+              ..addAll(previousSettings);
+            App.dataPath = previousDataPath ?? Directory.systemTemp.path;
+            App.cachePath = previousCachePath ?? Directory.systemTemp.path;
             appdata.implicitData = previousImplicit;
             directory.deleteSync(recursive: true);
           });

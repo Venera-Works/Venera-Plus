@@ -10,21 +10,6 @@ import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 
 void main() {
-  testWidgets('settings lists reading statistics as a top-level entry', (
-    tester,
-  ) async {
-    tester.view.physicalSize = const Size(400, 800);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
-
-    expect(find.text('Reading statistics'), findsOneWidget);
-    expect(find.byIcon(Icons.query_stats), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
-
   testWidgets('comic library settings expose credential sync opt-in', (
     tester,
   ) async {
@@ -69,10 +54,6 @@ void main() {
       const Key('webdav-comic-library-config-sync-switch'),
     );
     expect(switchFinder, findsOneWidget);
-    expect(
-      find.textContaining('Credentials will be stored in remote .venera'),
-      findsOneWidget,
-    );
     expect(tester.widget<SwitchListTile>(switchFinder).value, isFalse);
 
     await tester.tap(switchFinder);

@@ -168,7 +168,6 @@ Future<void> init() async {
       chapterTitle: event.chapterTitle,
     ),
   );
-  configureComicSourceDataSavedHandler(() async => DataSync().onDataChanged());
   configureRuntimeComicSourcesProvider(
     () => WebDavLibraryConfig.fromSettings().isValid
         ? [WebDavLibrarySource.create()]
@@ -224,7 +223,9 @@ Future<void> init() async {
   } catch (e, s) {
     Log.error("init", "$e\n$s");
   }
+  await _checkOldConfigs();
   final dataSync = DataSync();
+  configureComicSourceDataSavedHandler(() async => dataSync.onDataChanged());
   startBangumiAfterDataSync(
     waitForDownload: dataSync.waitForDownload,
     createInitializer: () => () async {
@@ -238,7 +239,6 @@ Future<void> init() async {
     },
   );
   CacheManager().setLimitSize(appdata.settings['cacheSize']);
-  _checkOldConfigs();
   if (App.isAndroid) {
     handleLinks();
     handleTextShare();
@@ -313,7 +313,7 @@ Future<Uint8List?> _loadLocalCoverFallback(String sourceKey, String id) async {
   return data.isEmpty ? null : data;
 }
 
-void _checkOldConfigs() {
+Future<void> _checkOldConfigs() async {
   if (appdata.settings['searchSources'] == null) {
     appdata.settings['searchSources'] = ComicSource.all()
         .where((e) => e.searchPageData != null)
@@ -321,18 +321,52 @@ void _checkOldConfigs() {
         .toList();
   }
 
-  if (appdata.implicitData['webdavAutoSync'] == null) {
+  if (appdata.implicitData['webdavSyncDirection'] == null ||
+      appdata.implicitData['webdavSyncTiming'] == null ||
+      appdata.implicitData['webdavSyncIntervalMinutes'] == null ||
+      appdata.implicitData.containsKey('webdavSyncMode') ||
+      appdata.implicitData.containsKey('webdavAutoSync')) {
     var webdavConfig = appdata.settings['webdav'];
-    if (webdavConfig is List &&
+    var hasValidConfig =
+        webdavConfig is List &&
         webdavConfig.length == 3 &&
-        webdavConfig.whereType<String>().length == 3) {
-      appdata.implicitData['webdavAutoSync'] = true;
-    } else {
-      appdata.implicitData['webdavAutoSync'] = false;
+        webdavConfig.whereType<String>().length == 3;
+
+    if (appdata.implicitData['webdavSyncDirection'] == null) {
+      appdata.implicitData['webdavSyncDirection'] = 'bidirectional';
     }
-    appdata.writeImplicitData();
+
+    if (appdata.implicitData['webdavSyncTiming'] == null) {
+      final oldMode = appdata.implicitData['webdavSyncMode'];
+      if (oldMode == 'scheduled') {
+        appdata.implicitData['webdavSyncTiming'] = 'scheduled';
+      } else if (oldMode == 'realtime') {
+        appdata.implicitData['webdavSyncTiming'] = 'realtime';
+      } else if (oldMode == 'manual') {
+        appdata.implicitData['webdavSyncTiming'] = 'manual';
+      } else if (appdata.implicitData['webdavAutoSync'] == true) {
+        appdata.implicitData['webdavSyncTiming'] = 'realtime';
+      } else if (appdata.implicitData['webdavAutoSync'] == false) {
+        appdata.implicitData['webdavSyncTiming'] = 'manual';
+      } else {
+        appdata.implicitData['webdavSyncTiming'] = hasValidConfig
+            ? 'realtime'
+            : 'manual';
+      }
+    }
+
+    if (appdata.implicitData['webdavSyncIntervalMinutes'] == null) {
+      appdata.implicitData['webdavSyncIntervalMinutes'] = 30;
+    }
+
+    appdata.implicitData.remove('webdavSyncMode');
+    appdata.implicitData.remove('webdavAutoSync');
+    await appdata.writeImplicitData();
   }
 }
+
+@visibleForTesting
+Future<void> checkOldConfigsForTesting() => _checkOldConfigs();
 
 Future<void> _checkAppUpdates() async {
   var lastCheck = appdata.implicitData['lastCheckUpdate'] ?? 0;

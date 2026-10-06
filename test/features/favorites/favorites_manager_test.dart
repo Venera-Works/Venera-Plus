@@ -7,18 +7,16 @@ import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
-import 'package:venera_plus/features/follow_updates/follow_updates.dart';
 
-FavoriteItem _favorite(String id) {
-  return FavoriteItem(
-    id: id,
-    name: 'Comic $id',
-    coverPath: 'cover-$id.jpg',
-    author: 'Author',
-    type: ComicType.local,
-    tags: const ['tag'],
-  );
-}
+FavoriteItem _favorite(String id, [ComicType type = ComicType.local]) =>
+    FavoriteItem(
+      id: id,
+      name: 'Comic $id',
+      coverPath: 'cover-$id.jpg',
+      author: 'Author',
+      type: type,
+      tags: const ['tag'],
+    );
 
 bool _sqliteAvailable() {
   try {
@@ -30,617 +28,484 @@ bool _sqliteAvailable() {
   }
 }
 
-Future<void> _withFavoritesManager(
-  Future<void> Function(LocalFavoritesManager manager) run,
-) async {
-  final dataDir = Directory.systemTemp.createTempSync('venera-favorites-data-');
-  final cacheDir = Directory.systemTemp.createTempSync(
-    'venera-favorites-cache-',
+void _seedFolder(Database db, String name, {bool translated = false}) {
+  db.execute('''
+    create table "$name" (
+      id text, name text, author text, type int, tags text, cover_path text,
+      time text, display_order int, ${translated ? 'translated_tags text,' : ''}
+      primary key (id, type)
+    );
+  ''');
+  for (var i = 0; i < 2; i++) {
+    db.execute(
+      'insert into "$name" (id, name, author, type, tags, cover_path, time, display_order) '
+      'values (?, ?, ?, ?, ?, ?, ?, ?);',
+      [
+        '$name-$i',
+        'Comic $i',
+        'Author',
+        0,
+        'tag',
+        'cover.jpg',
+        '2026-07-01',
+        2 - i,
+      ],
+    );
+  }
+}
+
+Future<void> _withManager(
+  Future<void> Function(LocalFavoritesManager manager) run, {
+  void Function(Database db)? seed,
+  void Function()? settings,
+}) async {
+  final data = Directory.systemTemp.createTempSync('venera-favorites-data-');
+  final cache = Directory.systemTemp.createTempSync('venera-favorites-cache-');
+  String? previousData;
+  String? previousCache;
+  try {
+    previousData = App.dataPath;
+  } on Error {
+    /* First test may initialize late paths. */
+  }
+  try {
+    previousCache = App.cachePath;
+  } on Error {
+    /* First test may initialize late paths. */
+  }
+  final previousSettings = Map<String, dynamic>.from(
+    appdata.toJson()['settings'],
   );
-  final previousFollowUpdatesFolder = appdata.settings['followUpdatesFolder'];
-  final previousQuickFavorite = appdata.settings['quickFavorite'];
+  final previousSearchHistory = List<String>.from(appdata.searchHistory);
+  final previousManager = LocalFavoritesManager.cache;
   LocalFavoritesManager? manager;
   try {
-    App.dataPath = dataDir.path;
-    App.cachePath = cacheDir.path;
+    App.dataPath = data.path;
+    App.cachePath = cache.path;
     LocalFavoritesManager.cache = null;
-
+    appdata.settings.remove('readingFolder');
+    appdata.settings.remove('followUpdatesFolder');
+    appdata.settings['disableSyncFields'] = '';
+    settings?.call();
+    if (seed != null) {
+      final db = sqlite3.open('${data.path}/local_favorite.db');
+      try {
+        db.execute(
+          'create table folder_order (folder_name text primary key, order_value int);',
+        );
+        db.execute(
+          'create table folder_sync (folder_name text primary key, source_key text, source_folder text);',
+        );
+        seed(db);
+      } finally {
+        db.dispose();
+      }
+    }
     manager = LocalFavoritesManager();
     await manager.init();
     await run(manager);
-    await appdata.saveData(false);
   } finally {
+    await appdata.saveData(false);
     if (manager != null) {
       await manager.debugWaitForHashedIdsRefresh();
-      try {
-        manager.close();
-      } catch (_) {
-        // ignore cleanup failures in partially initialized tests
-      }
+      manager.close();
     }
-    LocalFavoritesManager.cache = null;
-    appdata.settings['followUpdatesFolder'] = previousFollowUpdatesFolder;
-    appdata.settings['quickFavorite'] = previousQuickFavorite;
-    if (dataDir.existsSync()) {
-      dataDir.deleteSync(recursive: true);
-    }
-    if (cacheDir.existsSync()) {
-      cacheDir.deleteSync(recursive: true);
-    }
+    LocalFavoritesManager.cache = previousManager;
+    (appdata.toJson()['settings'] as Map)
+      ..clear()
+      ..addAll(previousSettings);
+    appdata.searchHistory = previousSearchHistory;
+    App.dataPath = previousData ?? Directory.systemTemp.path;
+    App.cachePath = previousCache ?? Directory.systemTemp.path;
+    data.deleteSync(recursive: true);
+    cache.deleteSync(recursive: true);
   }
 }
 
 void main() {
-  test(
-    'init creates tracking folder and selects it for follow updates',
-    () async {
-      final dataDir = Directory.systemTemp.createTempSync(
-        'venera-favorites-data-',
-      );
-      final cacheDir = Directory.systemTemp.createTempSync(
-        'venera-favorites-cache-',
-      );
-      final previousFollowUpdatesFolder =
-          appdata.settings['followUpdatesFolder'];
-      final previousQuickFavorite = appdata.settings['quickFavorite'];
-      addTearDown(() async {
-        await LocalFavoritesManager().debugWaitForHashedIdsRefresh();
-        try {
-          LocalFavoritesManager().close();
-        } catch (_) {
-          // ignore cleanup failures in partially initialized tests
-        }
-        LocalFavoritesManager.cache = null;
-        appdata.settings['followUpdatesFolder'] = previousFollowUpdatesFolder;
-        appdata.settings['quickFavorite'] = previousQuickFavorite;
-        if (dataDir.existsSync()) {
-          dataDir.deleteSync(recursive: true);
-        }
-        if (cacheDir.existsSync()) {
-          cacheDir.deleteSync(recursive: true);
-        }
-      });
-
-      App.dataPath = dataDir.path;
-      App.cachePath = cacheDir.path;
-      LocalFavoritesManager.cache = null;
-      appdata.settings['followUpdatesFolder'] = 'obsolete-folder';
-      appdata.settings['quickFavorite'] = 'obsolete-folder';
-
-      final manager = LocalFavoritesManager();
-      await manager.init();
-
-      expect(
-        manager.folderNames,
-        contains(LocalFavoritesManager.trackingFolderName),
-      );
-      expect(
-        appdata.settings['followUpdatesFolder'],
-        LocalFavoritesManager.trackingFolderName,
-      );
-      expect(
-        appdata.settings['quickFavorite'],
-        LocalFavoritesManager.trackingFolderName,
+  group(
+    'reading role and favorites persistence',
+    () {
+      test(
+        'new database binds canonical reading and initializes update baseline',
+        () async {
+          await _withManager((manager) async {
+            expect(manager.readingFolder, '在读');
+            expect(
+              appdata.settings.containsKey('followUpdatesFolder'),
+              isFalse,
+            );
+            expect(appdata.settings['quickFavorite'], '在读');
+            final comic = _favorite('new');
+            manager.addComic('在读', comic, null, '2026-07-01');
+            expect(
+              manager
+                  .getComicWithUpdatesInfo('在读', comic.id, comic.type)
+                  .updateTime,
+              '2026-07-01',
+            );
+            expect(manager.hasNewUpdate(comic.id, comic.type), isFalse);
+          }, settings: () => appdata.settings['quickFavorite'] = 'missing');
+        },
       );
 
-      final item = _favorite('tracked');
-      manager.addComic(
-        LocalFavoritesManager.trackingFolderName,
-        item,
-        null,
-        '2026-07-02',
-      );
-      final tracked = manager.getComicsWithUpdatesInfo(
-        LocalFavoritesManager.trackingFolderName,
-      );
-
-      expect(tracked, hasLength(1));
-      expect(tracked.single.updateTime, '2026-07-02');
-      expect(tracked.single.hasNewUpdate, isFalse);
-    },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
-  );
-
-  test(
-    'init preserves valid quick favorite folder without creating tracking',
-    () async {
-      final dataDir = Directory.systemTemp.createTempSync(
-        'venera-favorites-data-',
-      );
-      final cacheDir = Directory.systemTemp.createTempSync(
-        'venera-favorites-cache-',
-      );
-      final previousFollowUpdatesFolder =
-          appdata.settings['followUpdatesFolder'];
-      final previousQuickFavorite = appdata.settings['quickFavorite'];
-      addTearDown(() async {
-        await LocalFavoritesManager().debugWaitForHashedIdsRefresh();
-        try {
-          LocalFavoritesManager().close();
-        } catch (_) {
-          // ignore cleanup failures in partially initialized tests
-        }
-        LocalFavoritesManager.cache = null;
-        appdata.settings['followUpdatesFolder'] = previousFollowUpdatesFolder;
-        appdata.settings['quickFavorite'] = previousQuickFavorite;
-        if (dataDir.existsSync()) {
-          dataDir.deleteSync(recursive: true);
-        }
-        if (cacheDir.existsSync()) {
-          cacheDir.deleteSync(recursive: true);
-        }
-      });
-
-      App.dataPath = dataDir.path;
-      App.cachePath = cacheDir.path;
-      LocalFavoritesManager.cache = null;
-      appdata.settings['followUpdatesFolder'] = null;
-      appdata.settings['quickFavorite'] = 'custom';
-
-      final seed = sqlite3.open('${dataDir.path}/local_favorite.db');
-      try {
-        seed.execute("""
-          create table folder_order (
-            folder_name text primary key,
-            order_value int
+      test(
+        'legacy migration preserves comic order, folder order and source mapping',
+        () async {
+          await _withManager(
+            (manager) async {
+              expect(manager.readingFolder, '在读');
+              expect(manager.folderNames, ['other', '在读']);
+              expect(manager.getFolderComics('在读').map((c) => c.id), [
+                '追更-1',
+                '追更-0',
+              ]);
+              expect(manager.findLinked('在读'), ('source', 'remote-folder'));
+              expect(appdata.settings['quickFavorite'], '在读');
+              // Both a pre-migrated table and a later legacy table get update columns.
+              expect(manager.getComicsWithUpdatesInfo('other'), hasLength(2));
+              expect(manager.getComicsWithUpdatesInfo('在读'), hasLength(2));
+            },
+            seed: (db) {
+              _seedFolder(db, 'other', translated: true);
+              _seedFolder(db, '追更');
+              db.execute(
+                "insert into folder_order values ('other', 1), ('追更', 7);",
+              );
+              db.execute(
+                "insert into folder_sync values ('追更', 'source', 'remote-folder');",
+              );
+            },
+            settings: () {
+              appdata.settings['followUpdatesFolder'] = '追更';
+              appdata.settings['quickFavorite'] = '追更';
+            },
           );
-        """);
-        seed.execute("""
-          create table folder_sync (
-            folder_name text primary key,
-            source_key text,
-            source_folder text
+        },
+      );
+
+      test(
+        'coexisting canonical and legacy folders never merge or repoint quick favorite',
+        () async {
+          await _withManager(
+            (manager) async {
+              expect(manager.readingFolder, '在读');
+              expect(manager.getFolderComics('在读').map((c) => c.id), [
+                '在读-1',
+                '在读-0',
+              ]);
+              expect(manager.getFolderComics('追更').map((c) => c.id), [
+                '追更-1',
+                '追更-0',
+              ]);
+              expect(manager.folderNames, ['追更', '在读']);
+              expect(manager.findLinked('追更'), (
+                'legacy-source',
+                'legacy-folder',
+              ));
+              expect(manager.findLinked('在读'), (
+                'reading-source',
+                'reading-folder',
+              ));
+              expect(appdata.settings['quickFavorite'], '追更');
+              await manager.reconcileReadingFolderBinding();
+              expect(appdata.settings['quickFavorite'], '追更');
+            },
+            seed: (db) {
+              _seedFolder(db, '在读');
+              _seedFolder(db, '追更');
+              db.execute(
+                "insert into folder_order values ('追更', 1), ('在读', 2);",
+              );
+              db.execute(
+                "insert into folder_sync values ('追更', 'legacy-source', 'legacy-folder'), ('在读', 'reading-source', 'reading-folder');",
+              );
+            },
+            settings: () {
+              appdata.settings['followUpdatesFolder'] = '追更';
+              appdata.settings['quickFavorite'] = '追更';
+            },
           );
-        """);
-        seed.execute("""
-          create table custom(
-            id text,
-            name TEXT,
-            author TEXT,
-            type int,
-            tags TEXT,
-            cover_path TEXT,
-            time TEXT,
-            display_order int,
-            translated_tags TEXT,
-            primary key (id, type)
+        },
+      );
+
+      test(
+        'custom old tracker is preserved but is not the reading role',
+        () async {
+          await _withManager(
+            (manager) async {
+              expect(manager.readingFolder, '在读');
+              expect(manager.count('custom'), 2);
+              expect(manager.count('在读'), 0);
+              expect(appdata.settings['quickFavorite'], 'custom');
+            },
+            seed: (db) => _seedFolder(db, 'custom'),
+            settings: () {
+              appdata.settings['followUpdatesFolder'] = 'custom';
+              appdata.settings['quickFavorite'] = 'custom';
+            },
           );
-        """);
-      } finally {
-        seed.dispose();
-      }
-
-      final manager = LocalFavoritesManager();
-      await manager.init();
-
-      expect(appdata.settings['followUpdatesFolder'], isNull);
-      expect(appdata.settings['quickFavorite'], 'custom');
-      expect(
-        manager.folderNames,
-        isNot(contains(LocalFavoritesManager.trackingFolderName)),
-      );
-    },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
-  );
-
-  test(
-    'init preserves a custom tracking folder after restart',
-    () async {
-      final dataDir = Directory.systemTemp.createTempSync(
-        'venera-favorites-data-',
-      );
-      final cacheDir = Directory.systemTemp.createTempSync(
-        'venera-favorites-cache-',
-      );
-      final previousFollowUpdatesFolder =
-          appdata.settings['followUpdatesFolder'];
-      final previousQuickFavorite = appdata.settings['quickFavorite'];
-      addTearDown(() async {
-        await appdata.saveData(false);
-        if (LocalFavoritesManager.cache != null) {
-          await LocalFavoritesManager().debugWaitForHashedIdsRefresh();
-          try {
-            LocalFavoritesManager().close();
-          } catch (_) {
-            // ignore cleanup failures in partially initialized tests
-          }
-        }
-        LocalFavoritesManager.cache = null;
-        appdata.settings['followUpdatesFolder'] = previousFollowUpdatesFolder;
-        appdata.settings['quickFavorite'] = previousQuickFavorite;
-        if (dataDir.existsSync()) {
-          dataDir.deleteSync(recursive: true);
-        }
-        if (cacheDir.existsSync()) {
-          cacheDir.deleteSync(recursive: true);
-        }
-      });
-
-      App.dataPath = dataDir.path;
-      App.cachePath = cacheDir.path;
-      LocalFavoritesManager.cache = null;
-
-      final firstManager = LocalFavoritesManager();
-      await firstManager.init();
-      firstManager.createFolder('B');
-      appdata.settings['followUpdatesFolder'] = 'B';
-      firstManager.prepareTableForFollowUpdates('B');
-      firstManager.deleteFolder(LocalFavoritesManager.trackingFolderName);
-      firstManager.close();
-      LocalFavoritesManager.cache = null;
-
-      final secondManager = LocalFavoritesManager();
-      await secondManager.init();
-
-      expect(secondManager.folderNames, ['B']);
-      expect(appdata.settings['followUpdatesFolder'], 'B');
-    },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
-  );
-
-  test(
-    'tracks cached update status for the follow updates folder',
-    () async {
-      final dataDir = Directory.systemTemp.createTempSync(
-        'venera-favorites-data-',
-      );
-      final cacheDir = Directory.systemTemp.createTempSync(
-        'venera-favorites-cache-',
-      );
-      final previousFollowUpdatesFolder =
-          appdata.settings['followUpdatesFolder'];
-      addTearDown(() async {
-        await LocalFavoritesManager().debugWaitForHashedIdsRefresh();
-        try {
-          LocalFavoritesManager().close();
-        } catch (_) {
-          // ignore cleanup failures in partially initialized tests
-        }
-        LocalFavoritesManager.cache = null;
-        appdata.settings['followUpdatesFolder'] = previousFollowUpdatesFolder;
-        if (dataDir.existsSync()) {
-          dataDir.deleteSync(recursive: true);
-        }
-        if (cacheDir.existsSync()) {
-          cacheDir.deleteSync(recursive: true);
-        }
-      });
-
-      App.dataPath = dataDir.path;
-      App.cachePath = cacheDir.path;
-      LocalFavoritesManager.cache = null;
-
-      final manager = LocalFavoritesManager();
-      await manager.init();
-      const folder = LocalFavoritesManager.trackingFolderName;
-      final item = _favorite('updated-comic');
-
-      manager.addComic(folder, item, null, '2026-07-01');
-      expect(manager.hasNewUpdate(item.id, item.type), isFalse);
-
-      manager.updateUpdateTime(folder, item.id, item.type, '2026-07-02');
-      expect(manager.hasNewUpdate(item.id, item.type), isTrue);
-
-      manager.markAsRead(item.id, item.type, notify: false);
-      expect(manager.hasNewUpdate(item.id, item.type), isFalse);
-    },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
-  );
-
-  test(
-    'follow updates preview returns all comics in the tracking folder',
-    () async {
-      await _withFavoritesManager((manager) async {
-        const folder = LocalFavoritesManager.trackingFolderName;
-        final updated = _favorite('updated-preview');
-        final unchanged = _favorite('unchanged-preview');
-
-        manager.addComic(folder, updated, null, '2026-07-01');
-        manager.addComic(folder, unchanged, null, '2026-07-01');
-        manager.updateUpdateTime(
-          folder,
-          updated.id,
-          updated.type,
-          '2026-07-02',
-        );
-
-        final preview = getFollowUpdatesPreviewComics(folder);
-
-        expect(
-          preview.map((comic) => comic.id),
-          unorderedEquals([updated.id, unchanged.id]),
-        );
-        expect(preview.where((comic) => comic.hasNewUpdate), hasLength(1));
-        expect(manager.countUpdates(folder), 1);
-      });
-    },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
-  );
-
-  test(
-    'delete and move operations clear cached follow update status',
-    () async {
-      await _withFavoritesManager((manager) async {
-        const folder = LocalFavoritesManager.trackingFolderName;
-        manager.createFolder('target');
-
-        void addUpdated(FavoriteItem item) {
-          manager.addComic(folder, item, null, '2026-07-01');
-          manager.updateUpdateTime(folder, item.id, item.type, '2026-07-02');
-          expect(manager.hasNewUpdate(item.id, item.type), isTrue);
-        }
-
-        final deleted = _favorite('delete-one');
-        addUpdated(deleted);
-        manager.deleteComicWithId(folder, deleted.id, deleted.type);
-        expect(manager.hasNewUpdate(deleted.id, deleted.type), isFalse);
-
-        final batchDeleted = _favorite('delete-batch');
-        addUpdated(batchDeleted);
-        manager.batchDeleteComics(folder, [batchDeleted]);
-        expect(
-          manager.hasNewUpdate(batchDeleted.id, batchDeleted.type),
-          isFalse,
-        );
-
-        final deletedEverywhere = _favorite('delete-everywhere');
-        addUpdated(deletedEverywhere);
-        manager.batchDeleteComicsInAllFolders([
-          ComicID(deletedEverywhere.type, deletedEverywhere.id),
-        ]);
-        expect(
-          manager.hasNewUpdate(deletedEverywhere.id, deletedEverywhere.type),
-          isFalse,
-        );
-
-        final moved = _favorite('move-one');
-        addUpdated(moved);
-        manager.moveFavorite(folder, 'target', moved.id, moved.type);
-        expect(manager.hasNewUpdate(moved.id, moved.type), isFalse);
-
-        final batchMoved = _favorite('move-batch');
-        addUpdated(batchMoved);
-        manager.batchMoveFavorites(folder, 'target', [batchMoved]);
-        expect(manager.hasNewUpdate(batchMoved.id, batchMoved.type), isFalse);
-      });
-    },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
-  );
-
-  test(
-    'folder delete and rename refresh cached follow update status',
-    () async {
-      await _withFavoritesManager((manager) async {
-        const folder = LocalFavoritesManager.trackingFolderName;
-        final renamed = _favorite('rename-follow');
-
-        manager.addComic(folder, renamed, null, '2026-07-01');
-        manager.updateUpdateTime(
-          folder,
-          renamed.id,
-          renamed.type,
-          '2026-07-02',
-        );
-        expect(manager.hasNewUpdate(renamed.id, renamed.type), isTrue);
-
-        manager.rename(folder, 'renamed-follow');
-
-        expect(appdata.settings['followUpdatesFolder'], 'renamed-follow');
-        expect(manager.hasNewUpdate(renamed.id, renamed.type), isTrue);
-
-        manager.deleteFolder('renamed-follow');
-
-        expect(appdata.settings['followUpdatesFolder'], isNull);
-        expect(manager.hasNewUpdate(renamed.id, renamed.type), isFalse);
-      });
-    },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
-  );
-
-  test(
-    'empty batch favorite operations do not notify listeners',
-    () async {
-      final dataDir = Directory.systemTemp.createTempSync(
-        'venera-favorites-data-',
-      );
-      final cacheDir = Directory.systemTemp.createTempSync(
-        'venera-favorites-cache-',
-      );
-      addTearDown(() async {
-        await LocalFavoritesManager().debugWaitForHashedIdsRefresh();
-        try {
-          LocalFavoritesManager().close();
-        } catch (_) {
-          // ignore cleanup failures in partially initialized tests
-        }
-        LocalFavoritesManager.cache = null;
-        if (dataDir.existsSync()) {
-          dataDir.deleteSync(recursive: true);
-        }
-        if (cacheDir.existsSync()) {
-          cacheDir.deleteSync(recursive: true);
-        }
-      });
-
-      App.dataPath = dataDir.path;
-      App.cachePath = cacheDir.path;
-      LocalFavoritesManager.cache = null;
-
-      final manager = LocalFavoritesManager();
-      await manager.init();
-      manager.createFolder('source');
-      manager.createFolder('target');
-
-      var notifyCount = 0;
-      void listener() {
-        notifyCount++;
-      }
-
-      manager.addListener(listener);
-      addTearDown(() => manager.removeListener(listener));
-
-      manager.batchMoveFavorites('source', 'target', <FavoriteItem>[]);
-      manager.batchCopyFavorites('source', 'target', <FavoriteItem>[]);
-      manager.batchDeleteComics('source', <FavoriteItem>[]);
-      manager.batchDeleteComicsInAllFolders([]);
-
-      expect(notifyCount, 0);
-      expect(manager.count('source'), 0);
-      expect(manager.count('target'), 0);
-    },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
-  );
-
-  test(
-    'batchMoveFavorites notifies after counts are updated',
-    () async {
-      final dataDir = Directory.systemTemp.createTempSync(
-        'venera-favorites-data-',
-      );
-      final cacheDir = Directory.systemTemp.createTempSync(
-        'venera-favorites-cache-',
-      );
-      addTearDown(() async {
-        await LocalFavoritesManager().debugWaitForHashedIdsRefresh();
-        try {
-          LocalFavoritesManager().close();
-        } catch (_) {
-          // ignore cleanup failures in partially initialized tests
-        }
-        LocalFavoritesManager.cache = null;
-        if (dataDir.existsSync()) {
-          dataDir.deleteSync(recursive: true);
-        }
-        if (cacheDir.existsSync()) {
-          cacheDir.deleteSync(recursive: true);
-        }
-      });
-
-      App.dataPath = dataDir.path;
-      App.cachePath = cacheDir.path;
-      LocalFavoritesManager.cache = null;
-
-      final manager = LocalFavoritesManager();
-      await manager.init();
-      manager.createFolder('source');
-      manager.createFolder('target');
-      final first = _favorite('first');
-      final second = _favorite('second');
-      manager.addComic('source', first);
-      manager.addComic('source', second);
-
-      final observedCounts = <(int source, int target)>[];
-      var isBatching = false;
-      void listener() {
-        if (isBatching) {
-          observedCounts.add((
-            manager.folderComics('source'),
-            manager.folderComics('target'),
-          ));
-        }
-      }
-
-      manager.addListener(listener);
-      addTearDown(() => manager.removeListener(listener));
-
-      isBatching = true;
-      manager.batchMoveFavorites('source', 'target', [first, second]);
-      isBatching = false;
-
-      expect(observedCounts, [(0, 2)]);
-      expect(manager.count('source'), 0);
-      expect(manager.count('target'), 2);
-    },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
-  );
-
-  test(
-    'old read later folder survives reload as ordinary folder and is reordered on read while clearing updates',
-    () async {
-      final dataDir = Directory.systemTemp.createTempSync(
-        'venera-favorites-data-',
-      );
-      final cacheDir = Directory.systemTemp.createTempSync(
-        'venera-favorites-cache-',
-      );
-      final previousFollowUpdatesFolder =
-          appdata.settings['followUpdatesFolder'];
-      final previousQuickFavorite = appdata.settings['quickFavorite'];
-      final previousMoveFavoriteAfterRead =
-          appdata.settings['moveFavoriteAfterRead'];
-
-      addTearDown(() async {
-        if (LocalFavoritesManager.cache != null) {
-          await LocalFavoritesManager().debugWaitForHashedIdsRefresh();
-          try {
-            LocalFavoritesManager().close();
-          } catch (_) {
-            // ignore cleanup failures in partially initialized tests
-          }
-        }
-        LocalFavoritesManager.cache = null;
-        appdata.settings['followUpdatesFolder'] = previousFollowUpdatesFolder;
-        appdata.settings['quickFavorite'] = previousQuickFavorite;
-        appdata.settings['moveFavoriteAfterRead'] =
-            previousMoveFavoriteAfterRead;
-        if (dataDir.existsSync()) {
-          dataDir.deleteSync(recursive: true);
-        }
-        if (cacheDir.existsSync()) {
-          cacheDir.deleteSync(recursive: true);
-        }
-      });
-
-      App.dataPath = dataDir.path;
-      App.cachePath = cacheDir.path;
-      LocalFavoritesManager.cache = null;
-
-      const folderName = 'Read later';
-      final first = _favorite('c1');
-      final second = _favorite('c2');
-
-      final setupManager = LocalFavoritesManager();
-      await setupManager.init();
-      setupManager.createFolder(folderName);
-      setupManager.addComic(folderName, first, 1, '2026-07-01');
-      setupManager.addComic(folderName, second, 2, '2026-07-01');
-
-      appdata.settings['followUpdatesFolder'] = folderName;
-      setupManager.prepareTableForFollowUpdates(folderName);
-      setupManager.updateUpdateTime(
-        folderName,
-        second.id,
-        second.type,
-        '2026-07-02',
+        },
       );
 
-      expect(setupManager.hasNewUpdate(second.id, second.type), isTrue);
-      expect(setupManager.countUpdates(folderName), 1);
+      test(
+        'rename follows role, deletion stays unbound, explicit recreation rebinds',
+        () async {
+          await _withManager((manager) async {
+            manager.rename('在读', 'My reading');
+            manager.createFolder('在读');
+            expect(manager.readingFolder, 'My reading');
+            await manager.debugWaitForHashedIdsRefresh();
+            manager.close();
+            await manager.init();
+            expect(manager.readingFolder, 'My reading');
+            manager.deleteFolder('My reading');
+            await manager.reconcileReadingFolderBinding();
+            expect(manager.readingFolder, isNull);
+            await appdata.saveData(false);
+            appdata.settings['readingFolder'] = 'incorrect-memory-value';
+            await appdata.loadDataForTesting(App.dataPath);
+            expect(appdata.settings.containsKey('readingFolder'), isTrue);
+            expect(appdata.settings['readingFolder'], isNull);
+            await manager.debugWaitForHashedIdsRefresh();
+            manager.close();
+            await manager.init();
+            expect(manager.readingFolder, isNull);
+            manager.deleteFolder('在读');
+            manager.createFolder('在读');
+            expect(manager.readingFolder, '在读');
+          });
+        },
+      );
 
-      await setupManager.debugWaitForHashedIdsRefresh();
-      setupManager.close();
-      LocalFavoritesManager.cache = null;
+      test(
+        'database reload does not mutate settings before imported settings reconcile',
+        () async {
+          await _withManager((manager) async {
+            manager.rename('在读', '追更');
+            await manager.debugWaitForHashedIdsRefresh();
+            manager.close();
+            final before = Map<String, dynamic>.from(
+              appdata.toJson()['settings'],
+            );
+            await manager.init(reconcileReadingBinding: false);
+            expect(appdata.toJson()['settings'], before);
+            await appdata.syncData({
+              'settings': {'followUpdatesFolder': '追更'},
+            });
+            expect(appdata.settings.containsKey('readingFolder'), isFalse);
+            await manager.reconcileReadingFolderBinding();
+            expect(manager.readingFolder, '在读');
+            expect(manager.folderNames, ['在读']);
+            expect(manager.folderComics('在读'), 0);
+            expect(
+              appdata.settings.containsKey('followUpdatesFolder'),
+              isFalse,
+            );
+          });
+        },
+      );
 
-      final reloadedManager = LocalFavoritesManager();
-      await reloadedManager.init();
+      test(
+        'failed legacy rename rolls back tables, order and network mapping',
+        () async {
+          await _withManager((manager) async {
+            manager.rename('在读', '追更');
+            manager.linkFolderToNetwork('追更', 'source', 'remote');
+            manager.addComic('追更', _favorite('kept'), 7, 'old');
+            // A dangling order row deliberately makes the metadata rename fail.
+            manager.updateOrder(['在读', '追更']);
+            appdata.settings.remove('readingFolder');
+            appdata.settings['followUpdatesFolder'] = '追更';
+            appdata.settings['quickFavorite'] = '追更';
+            await expectLater(
+              manager.reconcileReadingFolderBinding(),
+              throwsA(isA<SqliteException>()),
+            );
+            expect(manager.folderNames, ['追更']);
+            expect(manager.getFolderComics('追更').single.id, 'kept');
+            expect(manager.findLinked('追更'), ('source', 'remote'));
+            expect(appdata.settings['quickFavorite'], '追更');
+            expect(appdata.settings.containsKey('readingFolder'), isFalse);
+          });
+        },
+      );
 
-      expect(reloadedManager.folderNames, contains(folderName));
-      expect(reloadedManager.count(folderName), 2);
-      expect(reloadedManager.getFolderComics(folderName).map((c) => c.id), [
-        first.id,
-        second.id,
-      ]);
-      expect(reloadedManager.hasNewUpdate(second.id, second.type), isTrue);
+      test(
+        'all-folder identity and unread cache are collision safe even without reading role',
+        () async {
+          await _withManager((manager) async {
+            manager.createFolder('other');
+            manager.deleteFolder('在读');
+            final first = _favorite('a', const ComicType(17));
+            final second = _favorite(
+              'b',
+              ComicType('a'.hashCode ^ 'b'.hashCode ^ 17),
+            );
+            expect(
+              first.id.hashCode ^ first.type.value,
+              second.id.hashCode ^ second.type.value,
+            );
+            manager.addComic('other', first, null, 'old');
+            expect(manager.isExist(second.id, second.type), isFalse);
+            manager.addComic('other', second, null, 'old');
+            await manager.debugWaitForHashedIdsRefresh();
+            expect(manager.totalComics, 2);
+            manager.updateUpdateTime('other', first.id, first.type, 'new');
+            expect(manager.getAllComicsWithUpdatesInfo(), hasLength(2));
+            expect(manager.hasNewUpdate(first.id, first.type), isTrue);
+            expect(manager.hasNewUpdate(second.id, second.type), isFalse);
+            manager.markAsRead(second.id, second.type);
+            expect(manager.hasNewUpdate(first.id, first.type), isTrue);
+          });
+        },
+      );
 
-      appdata.settings['moveFavoriteAfterRead'] = 'start';
-      reloadedManager.onRead(second.id, second.type);
+      test(
+        'same timestamp retains unread until reading clears all memberships',
+        () async {
+          await _withManager((manager) async {
+            manager.createFolder('other');
+            final comic = _favorite('shared');
+            for (final folder in manager.folderNames) {
+              manager.addComic(folder, comic, null, 'old');
+              manager.updateUpdateTime(folder, comic.id, comic.type, 'new');
+              manager.updateUpdateTime(folder, comic.id, comic.type, 'new');
+              expect(
+                manager.hasNewUpdate(comic.id, comic.type, folder),
+                isTrue,
+              );
+            }
+            appdata.settings['moveFavoriteAfterRead'] = 'none';
+            manager.onRead(comic.id, comic.type);
+            for (final folder in manager.folderNames) {
+              manager.updateUpdateTime(folder, comic.id, comic.type, 'new');
+              expect(
+                manager.hasNewUpdate(comic.id, comic.type, folder),
+                isFalse,
+              );
+            }
+          });
+        },
+      );
 
-      expect(reloadedManager.getFolderComics(folderName).map((c) => c.id), [
-        second.id,
-        first.id,
-      ]);
-      expect(reloadedManager.hasNewUpdate(second.id, second.type), isFalse);
-      expect(reloadedManager.countUpdates(folderName), 0);
+      test(
+        'delete operations clear only removed identities from unread cache',
+        () async {
+          await _withManager((manager) async {
+            for (final id in ['one', 'batch', 'all']) {
+              final comic = _favorite(id);
+              manager.addComic('在读', comic, null, 'old');
+              manager.updateUpdateTime('在读', id, comic.type, 'new');
+            }
+            manager.deleteComicWithId('在读', 'one', ComicType.local);
+            manager.batchDeleteComics('在读', [_favorite('batch')]);
+            manager.batchDeleteComicsInAllFolders([
+              ComicID(ComicType.local, 'all'),
+            ]);
+            for (final id in ['one', 'batch', 'all']) {
+              expect(manager.hasNewUpdate(id, ComicType.local), isFalse);
+            }
+          });
+        },
+      );
+
+      test(
+        'moving, copying and adding memberships preserve unread metadata',
+        () async {
+          await _withManager((manager) async {
+            manager.createFolder('moved');
+            manager.createFolder('copied');
+            final comic = _favorite('unread');
+            manager.addComic('在读', comic, null, 'old');
+            manager.updateUpdateTime('在读', comic.id, comic.type, 'new');
+            manager.moveFavorite('在读', 'moved', comic.id, comic.type);
+            manager.batchCopyFavorites('moved', 'copied', [comic]);
+            manager.addComic('在读', comic);
+            for (final folder in manager.folderNames) {
+              final state = manager.getComicWithUpdatesInfo(
+                folder,
+                comic.id,
+                comic.type,
+              );
+              expect(state.updateTime, 'new');
+              expect(state.hasNewUpdate, isTrue);
+            }
+            manager.batchMoveFavorites('moved', 'copied', [comic]);
+            expect(
+              manager.hasNewUpdate(comic.id, comic.type, 'copied'),
+              isTrue,
+            );
+            expect(manager.count('moved'), 0);
+          });
+        },
+      );
+
+      test(
+        'batch no-ops do not notify and moves notify with updated counts',
+        () async {
+          await _withManager((manager) async {
+            manager.createFolder('source');
+            manager.createFolder('target');
+            await manager.debugWaitForHashedIdsRefresh();
+            final first = _favorite('first');
+            final second = _favorite('second');
+            manager.addComic('source', first);
+            manager.addComic('source', second);
+            final observed = <(int, int)>[];
+            void listener() => observed.add((
+              manager.folderComics('source'),
+              manager.folderComics('target'),
+            ));
+            manager.addListener(listener);
+            try {
+              manager.batchMoveFavorites('source', 'target', []);
+              manager.batchCopyFavorites('source', 'target', []);
+              manager.batchDeleteComics('source', []);
+              manager.batchDeleteComicsInAllFolders([]);
+              expect(observed, isEmpty);
+              manager.batchMoveFavorites('source', 'target', [first, second]);
+              expect(observed, [(0, 2)]);
+            } finally {
+              manager.removeListener(listener);
+            }
+          });
+        },
+      );
+
+      test(
+        'reopening keeps custom folder order and unread and reading updates ordering',
+        () async {
+          await _withManager((manager) async {
+            manager.createFolder('Read later');
+            final first = _favorite('c1');
+            final second = _favorite('c2');
+            manager.addComic('Read later', first, 1, 'old');
+            manager.addComic('Read later', second, 2, 'old');
+            manager.updateUpdateTime(
+              'Read later',
+              second.id,
+              second.type,
+              'new',
+            );
+            await manager.debugWaitForHashedIdsRefresh();
+            manager.close();
+            await manager.init();
+            expect(manager.getFolderComics('Read later').map((c) => c.id), [
+              'c1',
+              'c2',
+            ]);
+            expect(manager.hasNewUpdate('c2', ComicType.local), isTrue);
+            appdata.settings['moveFavoriteAfterRead'] = 'start';
+            manager.onRead('c2', ComicType.local);
+            expect(manager.getFolderComics('Read later').map((c) => c.id), [
+              'c2',
+              'c1',
+            ]);
+            expect(manager.hasNewUpdate('c2', ComicType.local), isFalse);
+          });
+        },
+      );
     },
     skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );

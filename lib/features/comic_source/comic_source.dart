@@ -2,7 +2,6 @@ export 'category.dart';
 export 'comic_type_bridge.dart';
 export 'comic_source_manager.dart';
 export 'comic_source_page.dart';
-export 'comic_source_summary.dart';
 export 'favorites.dart';
 export 'image_loading.dart';
 export 'js_bridge.dart';

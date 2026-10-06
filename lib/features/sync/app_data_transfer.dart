@@ -40,6 +40,7 @@ Future<void> _notifyAppDataSettingsChanged() async {
 }
 
 Future<File> exportAppData([bool sync = true]) async {
+  await HistoryManager().waitForAsyncWrites();
   var time = DateTime.now().millisecondsSinceEpoch ~/ 1000;
   var cacheFilePath = FilePath.join(App.cachePath, '$time.venera');
   var cacheFile = File(cacheFilePath);
@@ -72,7 +73,11 @@ Future<File> exportAppData([bool sync = true]) async {
   return cacheFile;
 }
 
-Future<void> importAppData(File file, [bool checkVersion = false]) async {
+Future<void> importAppData(
+  File file, {
+  bool checkVersion = false,
+  void Function()? beforeCommit,
+}) async {
   var cacheDirPath = FilePath.join(App.cachePath, 'temp_data');
   var cacheDir = Directory(cacheDirPath);
   var backupDir = Directory(
@@ -81,11 +86,15 @@ Future<void> importAppData(File file, [bool checkVersion = false]) async {
       '.import_backup_${DateTime.now().microsecondsSinceEpoch}',
     ),
   );
+  final stageDir = Directory('${backupDir.path}_stage');
+  Map<String, dynamic>? previousSettings;
+  List<String>? previousSearchHistory;
   var replacements = <_ImportReplacement>[];
   var reloadHistory = false;
   var reloadLocalFavorites = false;
   var reloadCookies = false;
   var reloadComicSources = false;
+  var databasesReopened = false;
   var success = false;
   var importedSettingsChanged = false;
   var rolledBack = false;
@@ -122,11 +131,38 @@ Future<void> importAppData(File file, [bool checkVersion = false]) async {
     }
 
     backupDir.createSync();
+    stageDir.createSync();
+    // Stage on the destination volume before closing any database. No async
+    // copy or extraction remains between the final guard and file replacement.
+    for (final name in ['history.db', 'local_favorite.db', 'cookie.db']) {
+      final source = cacheDir.joinFile(name);
+      if (source.existsSync()) {
+        await source.copy(FilePath.join(stageDir.path, name));
+      }
+    }
+    final extractedSources = Directory(
+      FilePath.join(cacheDirPath, 'comic_source'),
+    );
+    if (extractedSources.existsSync()) {
+      await copyDirectory(
+        extractedSources,
+        Directory(FilePath.join(stageDir.path, 'comic_source')),
+      );
+    }
+    historyFile = stageDir.joinFile('history.db');
+    localFavoriteFile = stageDir.joinFile('local_favorite.db');
+    cookieFile = stageDir.joinFile('cookie.db');
+    await HistoryManager.cache?.waitForAsyncWrites();
+    beforeCommit?.call();
+    previousSettings = Map<String, dynamic>.from(
+      jsonDecode(jsonEncode(appdata.toJson()['settings'])) as Map,
+    );
+    previousSearchHistory = List<String>.of(appdata.searchHistory);
 
-    if (await historyFile.exists()) {
-      await _closeHistoryManagerForImport();
+    if (historyFile.existsSync()) {
+      _closeHistoryManagerForImport();
       reloadHistory = true;
-      await _replaceFileForImport(
+      _replaceFileForImport(
         source: historyFile,
         targetPath: FilePath.join(App.dataPath, "history.db"),
         backupDir: backupDir,
@@ -134,10 +170,10 @@ Future<void> importAppData(File file, [bool checkVersion = false]) async {
         replacements: replacements,
       );
     }
-    if (await localFavoriteFile.exists()) {
+    if (localFavoriteFile.existsSync()) {
       _closeLocalFavoritesManagerForImport();
       reloadLocalFavorites = true;
-      await _replaceFileForImport(
+      _replaceFileForImport(
         source: localFavoriteFile,
         targetPath: FilePath.join(App.dataPath, "local_favorite.db"),
         backupDir: backupDir,
@@ -145,10 +181,10 @@ Future<void> importAppData(File file, [bool checkVersion = false]) async {
         replacements: replacements,
       );
     }
-    if (await cookieFile.exists()) {
+    if (cookieFile.existsSync()) {
       _closeCookieJarForImport();
       reloadCookies = true;
-      await _replaceFileForImport(
+      _replaceFileForImport(
         source: cookieFile,
         targetPath: FilePath.join(App.dataPath, "cookie.db"),
         backupDir: backupDir,
@@ -156,10 +192,10 @@ Future<void> importAppData(File file, [bool checkVersion = false]) async {
         replacements: replacements,
       );
     }
-    var comicSourceDir = FilePath.join(cacheDirPath, "comic_source");
+    var comicSourceDir = FilePath.join(stageDir.path, "comic_source");
     if (Directory(comicSourceDir).existsSync()) {
       reloadComicSources = true;
-      await _replaceDirectoryForImport(
+      _replaceDirectoryForImport(
         source: Directory(comicSourceDir),
         targetPath: FilePath.join(App.dataPath, "comic_source"),
         backupDir: backupDir,
@@ -168,15 +204,16 @@ Future<void> importAppData(File file, [bool checkVersion = false]) async {
       );
     }
 
-    if (reloadHistory) {
-      await HistoryManager().init();
-    }
-    if (reloadLocalFavorites) {
-      await LocalFavoritesManager().init();
-    }
-    if (reloadCookies) {
-      _openCookieJarForImport();
-    }
+    // Both init methods open their databases synchronously before their first
+    // await in this import mode. Start both before yielding to the event loop.
+    final databaseReloads = <Future<void>>[
+      if (reloadHistory) HistoryManager().init(),
+      if (reloadLocalFavorites)
+        LocalFavoritesManager().init(reconcileReadingBinding: false),
+    ];
+    if (reloadCookies) _openCookieJarForImport();
+    databasesReopened = true;
+    await Future.wait(databaseReloads);
     if (reloadComicSources) {
       await ComicSourceManager().reload();
     }
@@ -185,16 +222,26 @@ Future<void> importAppData(File file, [bool checkVersion = false]) async {
       importedSettingsChanged = importedAppdata["settings"] is Map;
       await appdata.syncData(importedAppdata);
     }
+    await LocalFavoritesManager().reconcileReadingFolderBinding();
     success = true;
   } catch (error, stackTrace) {
     try {
-      await _rollbackImport(
-        replacements: replacements,
-        reloadHistory: reloadHistory,
-        reloadLocalFavorites: reloadLocalFavorites,
-        reloadCookies: reloadCookies,
-        reloadComicSources: reloadComicSources,
-      );
+      try {
+        await _rollbackImport(
+          replacements: replacements,
+          reloadHistory: reloadHistory,
+          reloadLocalFavorites: reloadLocalFavorites,
+          reloadCookies: reloadCookies,
+          reloadComicSources: reloadComicSources,
+          waitForHistoryWrites: databasesReopened,
+        );
+      } finally {
+        if (previousSettings != null) {
+          appdata.settings.replaceAll(previousSettings);
+          appdata.searchHistory = previousSearchHistory!;
+          await appdata.saveData(false);
+        }
+      }
       rolledBack = true;
     } catch (rollbackError, rollbackStackTrace) {
       Log.error(
@@ -206,6 +253,7 @@ Future<void> importAppData(File file, [bool checkVersion = false]) async {
     Error.throwWithStackTrace(error, stackTrace);
   } finally {
     await cacheDir.deleteIgnoreError(recursive: true);
+    await stageDir.deleteIgnoreError(recursive: true);
     if (success || rolledBack) {
       await backupDir.deleteIgnoreError(recursive: true);
     }
@@ -302,26 +350,26 @@ class _ImportReplacement {
   }
 }
 
-Future<void> _replaceFileForImport({
+void _replaceFileForImport({
   required File source,
   required String targetPath,
   required Directory backupDir,
   required String backupName,
   required List<_ImportReplacement> replacements,
-}) async {
+}) {
   var replacement = _ImportReplacement.file(targetPath, backupDir, backupName);
   replacement.backup();
   replacements.add(replacement);
-  await source.copy(targetPath);
+  source.renameSync(targetPath);
 }
 
-Future<void> _replaceDirectoryForImport({
+void _replaceDirectoryForImport({
   required Directory source,
   required String targetPath,
   required Directory backupDir,
   required String backupName,
   required List<_ImportReplacement> replacements,
-}) async {
+}) {
   var replacement = _ImportReplacement.directory(
     targetPath,
     backupDir,
@@ -329,7 +377,7 @@ Future<void> _replaceDirectoryForImport({
   );
   replacement.backup();
   replacements.add(replacement);
-  await copyDirectory(source, Directory(targetPath));
+  source.renameSync(targetPath);
 }
 
 Future<void> _rollbackImport({
@@ -338,9 +386,14 @@ Future<void> _rollbackImport({
   required bool reloadLocalFavorites,
   required bool reloadCookies,
   required bool reloadComicSources,
+  required bool waitForHistoryWrites,
 }) async {
+  final history = HistoryManager.cache;
+  if (waitForHistoryWrites && history != null && history.isInitialized) {
+    await history.waitForAsyncWrites();
+  }
   if (reloadHistory) {
-    await _closeHistoryManagerForImport();
+    _closeHistoryManagerForImport();
   }
   if (reloadLocalFavorites) {
     _closeLocalFavoritesManagerForImport();
@@ -353,27 +406,24 @@ Future<void> _rollbackImport({
     replacement.restore();
   }
 
-  if (reloadHistory) {
-    await HistoryManager().init();
-  }
-  if (reloadLocalFavorites) {
-    await LocalFavoritesManager().init();
-  }
-  if (reloadCookies) {
-    _openCookieJarForImport();
-  }
+  final databaseReloads = <Future<void>>[
+    if (reloadHistory) HistoryManager().init(),
+    if (reloadLocalFavorites)
+      LocalFavoritesManager().init(reconcileReadingBinding: false),
+  ];
+  if (reloadCookies) _openCookieJarForImport();
+  await Future.wait(databaseReloads);
   if (reloadComicSources) {
     await ComicSourceManager().reload();
   }
 }
 
-Future<void> _closeHistoryManagerForImport() async {
+void _closeHistoryManagerForImport() {
   try {
     final manager = HistoryManager.cache;
     if (manager == null) {
       return;
     }
-    await manager.waitForAsyncWrites();
     manager.close();
   } catch (_) {
     // ignore partially initialized managers

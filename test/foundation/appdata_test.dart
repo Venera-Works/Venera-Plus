@@ -326,6 +326,8 @@ void main() {
         appdata.settings['webdavComicLibrarySyncIntervalMinutes'] = 360;
         appdata.settings['webdavComicLibrarySyncEnabled'] = false;
         appdata.implicitData.remove('webdavAutoSync');
+        appdata.implicitData.remove('webdavSyncDirection');
+        appdata.implicitData.remove('webdavSyncTiming');
         if (dataDir.existsSync()) dataDir.deleteSync(recursive: true);
       });
 
@@ -337,6 +339,8 @@ void main() {
         'local-secret',
       ];
       appdata.implicitData['webdavAutoSync'] = false;
+      appdata.implicitData['webdavSyncDirection'] = 'uploadOnly';
+      appdata.implicitData['webdavSyncTiming'] = 'manual';
       appdata.settings['webdavComicLibrary'] = [
         'https://local-library.example/dav',
         'local-user',
@@ -354,6 +358,8 @@ void main() {
           'remote-secret',
         ],
         'webdavAutoSync': true,
+        'webdavSyncDirection': 'downloadOnly',
+        'webdavSyncTiming': 'realtime',
         'webdavComicLibrary': [
           'https://remote-library.example/dav',
           'remote-user',
@@ -376,6 +382,8 @@ void main() {
         'local-secret',
       ]);
       expect(appdata.implicitData['webdavAutoSync'], isFalse);
+      expect(appdata.implicitData['webdavSyncDirection'], 'uploadOnly');
+      expect(appdata.implicitData['webdavSyncTiming'], 'manual');
       expect(appdata.settings['webdavComicLibrary'], [
         'https://local-library.example/dav',
         'local-user',

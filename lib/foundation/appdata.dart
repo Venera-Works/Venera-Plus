@@ -73,6 +73,16 @@ class Appdata with Init {
     "customImageProcessing",
     "webdav",
     "webdavAutoSync",
+    "webdavSyncMode",
+    "webdavSyncDirection",
+    "webdavSyncTiming",
+    "webdavSyncIntervalMinutes",
+    "webdavSyncPending",
+    "webdavSyncLastAttempt",
+    "webdavBaselineTarget",
+    "webdavLastSyncedRemoteFile",
+    "webdavLastSyncedRemoteVersion",
+    "webdavLastSyncedRemoteEtag",
     "webdavProxyEnabled",
     "backupWebdav",
     "backupWebdavPath",
@@ -112,6 +122,12 @@ class Appdata with Init {
       final comicLibrarySyncEnabled =
           this.settings["webdavComicLibrarySyncEnabled"] == true;
 
+      // A legacy snapshot has no role marker. Do not inherit this device's
+      // binding when replacing its favorites database.
+      if (!settings.containsKey('readingFolder') &&
+          !customDisableSync.contains('readingFolder')) {
+        this.settings._data.remove('readingFolder');
+      }
       for (var key in settings.keys) {
         if (key == _obsoleteSetting) continue;
         if (_archiveSyncFields.contains(key)) {
@@ -209,7 +225,8 @@ class Appdata with Init {
       try {
         final decoded = _decodeAppData(await candidate.readAsString());
         for (final entry in decoded.settings.entries) {
-          if (entry.value != null && entry.key != _obsoleteSetting) {
+          if ((entry.value != null || entry.key == 'readingFolder') &&
+              entry.key != _obsoleteSetting) {
             settings[entry.key] = entry.value;
           }
         }
@@ -433,7 +450,6 @@ class Settings with ChangeNotifier {
     'autoAddLanguageFilter': 'none', // none, chinese, english, japanese
     'comicSourceListUrl': "",
     'preloadImageCount': 4,
-    'followUpdatesFolder': null,
     'initialPage': '0',
     'comicListDisplayMode': 'paging', // paging, continuous
     'showPageNumberInReader': true,
@@ -469,6 +485,22 @@ class Settings with ChangeNotifier {
     if (key != "dataVersion") {
       notifyListeners();
     }
+  }
+
+  bool containsKey(String key) => _data.containsKey(key);
+
+  dynamic remove(String key) {
+    if (!_data.containsKey(key)) return null;
+    final value = _data.remove(key);
+    notifyListeners();
+    return value;
+  }
+
+  void replaceAll(Map<String, dynamic> values) {
+    _data
+      ..clear()
+      ..addAll(values);
+    notifyListeners();
   }
 
   void setEnabledComicSpecificSettings(
