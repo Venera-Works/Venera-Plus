@@ -321,7 +321,9 @@ jobs:
       - name: 检查 rust-toolchain.toml
         run: rustup show
       - run: flutter pub get --enforce-lockfile
-      - run: flutter build apk --release --no-pub
+      - run: flutter build apk --release
+      - name: 校验依赖锁文件未变更
+        run: git diff --exit-code -- pubspec.lock
       - name: 清理 Android 签名文件
         if: always()
         run: |
