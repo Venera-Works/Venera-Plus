@@ -45,6 +45,7 @@ class LocalFavoritesPage extends StatefulWidget {
     required this.showFolders,
     required this.onFolderSelected,
     required this.updateFolderList,
+    this.isActive = true,
     super.key,
   });
 
@@ -52,7 +53,7 @@ class LocalFavoritesPage extends StatefulWidget {
   final VoidCallback showFolders;
   final void Function(bool isNetwork, String? folder) onFolderSelected;
   final VoidCallback updateFolderList;
-
+  final bool isActive;
   @override
   State<LocalFavoritesPage> createState() => _LocalFavoritesPageState();
 }
@@ -989,9 +990,13 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
         ),
       ),
     );
+    final canPopScope = widget.isActive
+        ? (!multiSelectMode && !searchMode)
+        : true;
     return PopScope(
-      canPop: !multiSelectMode && !searchMode,
+      canPop: canPopScope,
       onPopInvokedWithResult: (didPop, result) {
+        if (didPop || !widget.isActive) return;
         if (multiSelectMode) {
           setState(() {
             multiSelectMode = false;

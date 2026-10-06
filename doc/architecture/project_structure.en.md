@@ -6,11 +6,11 @@ This document is the English companion for the repository structure rules. The C
 
 ## General Principles
 
-- `app_shell/` contains app shell entry points, such as authentication, home page composition, and the main navigation shell.
+- `app_shell/` contains app shell entry points, such as authentication, home page composition, and the main navigation shell (organizing Home / Library / Explore destinations and the `LibraryPage` container).
 - `app_runtime/` contains runtime assembly, such as startup initialization, update checks, debug reload, and headless command entry points.
 - Business code should be grouped by feature domain under `features/<domain>/`.
 - Do not add new source files under `pages/`; app-level entry points belong in `app_shell/`, and business pages belong in the corresponding feature domain.
-- `foundation/` contains cross-domain application foundations, including app state, initialization protocols, async queues, Dart extensions, constants, logging, localization, file system helpers, image processing, image provider bases, reading-history metadata contracts, platform channels, and shared data infrastructure.
+- `foundation/` contains cross-domain application foundations, including app state, initialization protocols, navigation and startup settings contracts (`navigation_settings.dart`), async queues, Dart extensions, constants, logging, localization, file system helpers, image processing, image provider bases, reading-history metadata contracts, platform channels, and shared data infrastructure.
 - `components/` contains reusable UI components. Components that only serve one business domain should live inside that feature domain.
 - `network/` contains general network, cache, request, and file transfer infrastructure. `network/webdav.dart` owns shared WebDAV endpoints, authentication, client creation, and remote path rules. Business-specific download tasks and API wrappers should remain in their owning feature domain.
 
@@ -23,15 +23,15 @@ This document is the English companion for the repository structure rules. The C
 - `comic_storage/`: archive metadata, image file rules, and local filesystem layout detection shared by local directories, CBZ, and WebDAV.
 - `comic_widgets/`: cross-domain comic display widgets such as cards, lists, and rating controls.
 - `comic_details/`: comic detail page and its chapters, comments, favorites, cover, and thumbnail modules.
-- `discovery/`: explore (with built-in local comics browsing tab), category, category comic list, and ranking pages.
+- `discovery/`: explore and discovery pages (unifying comic source browse and categories views), category comic lists, and ranking pages; standalone `CategoriesPage` is retired in favor of source-bound category exploration.
 - `favorites/`: reading view (`ReadingFavoritesView`), local favorites, network favorites, favorite folders, and favorite actions; manages the unified reading folder (`readingFolder`) binding shared with automatic update checks.
 - `follow_updates/`: background update check service and update state management; updates are integrated into reading folder automatic checks rather than a standalone page or home summary.
-- `history/`: reading history, history page, image favorite models, image favorite manager, and image favorite provider (management entry point in Settings).
-- `image_favorites/`: image favorite page, gallery, and photo view UI (management entry point in Settings).
-- `local_comics/`: local library, downloads, and import/export tools under `import_export/` (management entry point in Settings; local comics are discoverable and readable in Explore).
+- `history/`: reading history, history page, image favorite models, image favorite manager, and image favorite provider (reading record entry point lives in Library).
+- `image_favorites/`: image favorite page, gallery, and photo view UI (display entry point lives in Library).
+- `local_comics/`: local library, downloads, and import/export tools under `import_export/` (browsing and management entry points live in Library).
 - `reader/`: reader page, gestures, chapters, image loading, waterfall flow, clipboard image handling, and reader-only platform interactions.
 - `search/`: search page, result page, aggregate search, and search query filters.
-- `settings/`: settings pages, reader settings, reusable setting controls, and domain-specific settings (including Local, Comic Source, Image Favorites, and History entries).
+- `settings/`: settings pages, reader settings, reusable setting controls, and structured setting destinations (grouped by Reading & Browsing, Sources & Data, and System; personal content moved to Library, obsolete standalone setting classes cleaned up).
 - `sync/`: WebDAV data sync, top bar `SyncActionButton`, app data import/export, and local comic backup/restore.
 - `webdav_library/`: WebDAV comic library online reading source for remote directory image structures.
 
@@ -50,7 +50,7 @@ External modules should prefer stable feature entry files instead of importing i
 - `features/bangumi/bangumi.dart` for Bangumi models, API, service, settings, and progress UI.
 - `features/comic_source/comic_source.dart` for comic source models, service, tag translation, and source management.
 - `features/comic_details/comic_details.dart` for `ComicPage`.
-- `features/discovery/discovery.dart` for explore, category, comic list, and ranking pages.
+- `features/discovery/discovery.dart` for unified `ExplorePage`, category comic list, and ranking pages.
 - `features/favorites/favorites.dart` for `ReadingFavoritesView`, favorites manager, and favorite pages.
 - `features/follow_updates/follow_updates.dart` for background update check services.
 - `features/history/history.dart` for history manager, image favorite provider, and history page.
@@ -58,7 +58,7 @@ External modules should prefer stable feature entry files instead of importing i
 - `features/local_comics/local_comics.dart` for local library, downloads, and import/export tools.
 - `features/reader/reader.dart` for reader capabilities, loading entry, chapter comments, and chapter-completion events.
 - `features/search/search.dart` for search page, result page, aggregate search, and query filters.
-- `features/settings/settings.dart` for settings pages and reusable controls.
+- `features/settings/settings.dart` for `SettingsPage` and structured setting section widgets (including `ReadingSettings`, `AppearanceSettings`, `BrowsingAndFavoritesSettings`, `SourcesAndServicesSettings`, `StorageAndSyncSettings`, `PrivacyAndSecuritySettings`, etc.).
 - `features/sync/sync.dart` for `SyncActionButton` and data synchronization.
 - `features/comic_storage/comic_storage.dart` for archive metadata and file rules.
 - `features/webdav_library/webdav_library.dart` for the WebDAV online comic library source.

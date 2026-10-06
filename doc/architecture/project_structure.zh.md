@@ -4,11 +4,11 @@
 
 ## 总体原则
 
-- `app_shell/` 放应用壳层入口，例如鉴权页、首页编排和主导航壳。
+- `app_shell/` 放应用壳层入口，例如鉴权页、首页编排、主导航壳（包含 Home / Library / Explore 三主导航组织与 `LibraryPage` 书库容器）。
 - `app_runtime/` 放应用运行时组装，例如启动初始化、更新检查、调试重载和无头命令入口。
 - 优先按功能域归集代码。一个功能同时包含状态、数据模型、服务、页面和子组件时，应放在同一个 `features/<domain>/` 下。
 - 不再新增 `pages/` 目录；应用级入口放入 `app_shell/`，业务页面放入对应 `features/<domain>/`。
-- `foundation/` 放跨业务域的应用基础能力，例如应用状态、初始化协议、异步队列、通用 Dart 扩展、常量、日志、本地化、中文转换、文件系统基础工具、文件类型识别、平台文件交互、节流任务调度、图片处理、图片 provider 基类、阅读历史元数据契约、平台连接和通用数据基建。
+- `foundation/` 放跨业务域的应用基础能力，例如应用状态、初始化协议、导航与启动项设置契约（`navigation_settings.dart`）、异步队列、通用 Dart 扩展、常量、日志、本地化、中文转换、文件系统基础工具、文件类型识别、平台文件交互、节流任务调度、图片处理、图片 provider 基类、阅读历史元数据契约、平台连接和通用数据基建。
 - `components/` 放可跨页面复用的 UI 组件。若组件只服务某个业务域，应放回对应的 `features/<domain>/`。
 - `foundation/app.dart` 只作为 `App` 单例入口，不再 re-export `foundation/context.dart` 或 `foundation/widget_utils.dart`。
 - 任何文件若使用 BuildContext、Widget、TextStyle 或 Color 扩展，应显式引用实际使用的 `foundation/context.dart` 或 `foundation/widget_utils.dart`，避免把应用状态入口当作 UI 扩展桶。
@@ -28,15 +28,15 @@
 - `comic_storage/`：跨本地目录、CBZ 与 WebDAV 复用的漫画归档元数据、图片文件规则和本地文件系统布局识别。
 - `comic_widgets/`：漫画卡片、列表、评分和跨功能域复用的漫画展示组件；内部按列表、卡片、评分等职责拆分，并通过 `comic_widgets.dart` 统一导出。
 - `comic_details/`：漫画详情页及章节、评论、收藏按钮、封面和缩略图等详情页子模块。
-- `discovery/`：探索页（包含内置本地漫画浏览标签）、分类页、分类漫画列表和排行榜等浏览发现页面。
+- `discovery/`：发现页（统一漫画源浏览与分类视图）、分类漫画列表和排行榜等浏览发现页面；独立 `CategoriesPage` 已退场，分类内容内聚于统一漫画源探索中。
 - `favorites/`：在读视图（`ReadingFavoritesView`）、本地收藏、网络收藏、收藏夹页面和收藏操作；管理与自动追更共享的唯一“在读”绑定（`readingFolder`）。
 - `follow_updates/`：追更后台检测服务与更新状态管理；追更作为绑定在读的自动服务，不再保留独立页面或首页摘要。
-- `history/`：阅读历史、历史记录页、图片收藏模型、图片收藏管理和图片收藏 provider（历史管理入口位于设置）。
-- `image_favorites/`：图片收藏页面、图库浏览和图片查看 UI（管理入口位于设置）。
-- `local_comics/`：本地漫画库管理、下载任务，以及 `import_export/` 下的 CBZ、EPUB、PDF 导入导出工具（管理入口位于设置，发现页提供本地浏览与阅读）。
+- `history/`：阅读历史、历史记录页、图片收藏模型、图片收藏管理和图片收藏 provider（历史记录阅读入口归入书库）。
+- `image_favorites/`：图片收藏页面、图库浏览和图片查看 UI（展示入口归入书库）。
+- `local_comics/`：本地漫画库管理、下载任务，以及 `import_export/` 下的 CBZ、EPUB、PDF 导入导出工具（浏览与管理入口归入书库）。
 - `reader/`：阅读器页面、手势、章节、图片加载、瀑布流阅读实现，以及图片剪贴板写入、音量键监听等阅读场景专用平台交互。
 - `search/`：搜索首页、搜索结果页、聚合搜索页面和搜索查询过滤规则。
-- `settings/`：设置页面、阅读设置、设置页共享控件和各业务域的页面选择设置（包含本地、漫画源、图片收藏、历史管理入口）。
+- `settings/`：设置页面、阅读设置、设置页共享控件和九大结构化设置页面（按“阅读与浏览”、“来源与数据”、“系统”分组，个人内容移入书库，废弃独立设置类已清理）。
 - `sync/`：WebDAV 数据同步、顶栏 `SyncActionButton`、应用数据导入导出和本地漫画备份恢复。
 - `webdav_library/`：WebDAV 漫画库在线阅读源，负责远端目录图片结构的列表、详情和图片加载配置。
 
@@ -57,14 +57,14 @@ test/features/<domain>/
 - Bangumi 同步通过 `features/bangumi/bangumi.dart` 暴露模型、API、服务、设置和进度面板。
 - 漫画源功能通过 `features/comic_source/comic_source.dart` 暴露漫画源模型、服务、标签翻译和管理页面。
 - 漫画详情页通过 `features/comic_details/comic_details.dart` 暴露 `ComicPage`。
-- 浏览发现功能通过 `features/discovery/discovery.dart` 暴露探索页、分类页、分类漫画列表和排行榜。
+- 浏览发现功能通过 `features/discovery/discovery.dart` 暴露统一探索页 `ExplorePage`、分类漫画列表和排行榜。
 - 收藏功能通过 `features/favorites/favorites.dart` 暴露在读视图（`ReadingFavoritesView`）、收藏管理器和收藏页面。
 - 追更功能通过 `features/follow_updates/follow_updates.dart` 暴露追更后台检测服务。
 - 历史功能通过 `features/history/history.dart` 暴露历史管理器、图片收藏 provider 和历史页面。
 - 图片收藏功能通过 `features/image_favorites/image_favorites.dart` 暴露图片收藏页面和排序类型。
 - 阅读器通过 `features/reader/reader.dart` 暴露阅读页面、加载入口、章节评论页、章节完成事件和瀑布流模型。
 - 搜索功能通过 `features/search/search.dart` 暴露搜索首页、搜索结果页、聚合搜索页和搜索查询过滤规则。
-- 设置功能通过 `features/settings/settings.dart` 暴露设置页、应用设置、探索设置、阅读器设置、外观设置、本地收藏设置、网络设置、日志页、调试页、关于页、更新日志和可复用设置面板。
+- 设置功能通过 `features/settings/settings.dart` 暴露 `SettingsPage` 与结构化设置组件（包括 `ReadingSettings`、`AppearanceSettings`、`BrowsingAndFavoritesSettings`、`SourcesAndServicesSettings`、`StorageAndSyncSettings`、`PrivacyAndSecuritySettings` 等）。
 - 同步功能通过 `features/sync/sync.dart` 暴露数据同步、顶栏 `SyncActionButton`、数据迁移、漫画备份和漫画归档页面。
 - 本地漫画通过 `features/local_comics/local_comics.dart` 暴露本地库、下载任务、本地漫画页面和下载队列弹窗，通过 `features/local_comics/import_export/import_export.dart` 暴露导入导出工具。
 - WebDAV 漫画库通过 `features/webdav_library/webdav_library.dart` 暴露在线目录图片阅读源。

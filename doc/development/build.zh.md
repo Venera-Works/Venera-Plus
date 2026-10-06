@@ -79,7 +79,7 @@ PR 还会运行 `依赖安全审查` 和 `PR 平台冒烟构建`。依赖审查�
 
 由于 Flutter 3.41.4 的 `flutter test` 对设备集成测试的路径识别硬编码为根 `integration_test/` 目录，移动后 Android 与 Windows 均必须使用 `flutter drive` 并显式传入 `--driver=...` 和 `--target=...`（Windows 不可继续通过 `flutter test -d windows` 运行）。测试运行时须显式传入 `--dart-define=CI_NATIVE_SMOKE=true` 作为安全保护开关，该开关严格限制仅在一次性 CI runner 中使用，不鼓励在本地环境直接构建与执行。
 
-原生集成测试在 suite 临时隔离目录中验证 SQLite 原生加载、后台 Isolate、旧版本数据库模式迁移、事务写入、重开持久化及真实数据备份还原；随后启动真实 `MyApp` 初始化并进入首页，点击顶栏设置（Settings）图标，滚动并等待布局刷新后点击历史（History）导航至真实 `HistoryPage`，校验数据库播种的历史标题，全过程使用一次性运行器 profile 并断言无未捕获异常。
+原生集成测试在 suite 临时隔离目录中验证 SQLite 原生加载、后台 Isolate、旧版本数据库模式迁移、事务写入、重开持久化及真实数据备份还原；随后启动真实 `MyApp` 初始化并进入首页，点击主导航书库（Library）图标（紧凑导航栏通过图标定位），等待布局刷新后点击阅读记录（Reading Records）导航至真实历史记录视图，校验数据库播种的历史标题，全过程使用一次性运行器 profile 并断言无未捕获异常。
 
 在截图验证方面，Android 与 Windows 均通过 `binding.reportData` 向宿主端驱动传递截图 Base64 数据与宿主输出路径，由共享驱动统一强校验 PNG 签名与正向尺寸后写入落盘；截图不再由 Windows 应用直接写文件。产物落盘路径默认分别为 Android 的 `build/smoke-artifacts/android_smoke.png` 与 Windows 的 `build/smoke-artifacts/smoke_rendered_frame.png`（Windows CI 环境额外通过 `SMOKE_ARTIFACT_DIR` 指定绝对输出目录）。
 

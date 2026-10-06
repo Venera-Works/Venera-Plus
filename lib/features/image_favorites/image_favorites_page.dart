@@ -18,9 +18,16 @@ import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 
 class ImageFavoritesPage extends StatefulWidget {
-  const ImageFavoritesPage({super.key, this.initialKeyword});
+  const ImageFavoritesPage({
+    super.key,
+    this.initialKeyword,
+    this.isRoot = false,
+    this.isActive = true,
+  });
 
   final String? initialKeyword;
+  final bool isRoot;
+  final bool isActive;
 
   @override
   State<ImageFavoritesPage> createState() => _ImageFavoritesPageState();
@@ -196,6 +203,19 @@ class _ImageFavoritesPageState extends State<ImageFavoritesPage> {
       slivers: [
         if (!searchMode && !multiSelectMode)
           SliverAppbar(
+            leading: widget.isRoot
+                ? const SizedBox.shrink()
+                : (context.canPop()
+                      ? Tooltip(
+                          message: "Back".tl,
+                          child: IconButton(
+                            onPressed: () {
+                              context.pop();
+                            },
+                            icon: const Icon(Icons.arrow_back),
+                          ),
+                        )
+                      : const SizedBox.shrink()),
             title: Text("Image Favorites".tl),
             actions: [
               Tooltip(
@@ -304,9 +324,13 @@ class _ImageFavoritesPageState extends State<ImageFavoritesPage> {
             : scrollWidget,
       ),
     );
+    final canPopScope = widget.isActive
+        ? (!multiSelectMode && !searchMode)
+        : true;
     return PopScope(
-      canPop: !multiSelectMode && !searchMode,
+      canPop: canPopScope,
       onPopInvokedWithResult: (didPop, result) {
+        if (didPop || !widget.isActive) return;
         if (multiSelectMode) {
           setState(() {
             multiSelectMode = false;
@@ -314,8 +338,10 @@ class _ImageFavoritesPageState extends State<ImageFavoritesPage> {
           });
         } else if (searchMode) {
           controller.clear();
-          searchMode = false;
-          updateImageFavorites();
+          setState(() {
+            searchMode = false;
+            updateImageFavorites();
+          });
         }
       },
       child: body,

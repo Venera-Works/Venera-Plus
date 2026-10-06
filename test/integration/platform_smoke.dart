@@ -11,10 +11,10 @@ import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/app_runtime/init.dart';
 import 'package:venera_plus/app_shell/home_page.dart';
 import 'package:venera_plus/app_shell/main_page.dart';
+import 'package:venera_plus/app_shell/library_page.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/sync/sync.dart';
-import 'package:venera_plus/features/settings/settings.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
@@ -603,40 +603,31 @@ void main() {
           expect(find.byType(MyApp), findsOneWidget);
           expect(find.byType(MainPage), findsOneWidget);
           expect(find.byType(HomePage), findsOneWidget);
-          // Real users navigate to Settings from the top bar to access History
-          final settingsButton = find.descendant(
+          // Real users navigate to Library from the main navigation bar to access Reading Records
+          final libraryNavFinder = find.descendant(
             of: find.byType(MainPage),
-            matching: find.byIcon(Icons.settings),
+            matching: find.byIcon(Icons.local_library_outlined),
           );
-          expect(settingsButton, findsOneWidget);
+          expect(libraryNavFinder, findsOneWidget);
 
-          await tester.tap(settingsButton);
+          await tester.tap(libraryNavFinder);
           await tester.pump();
           await tester.pump(const Duration(milliseconds: 500));
 
-          expect(find.byType(SettingsPage), findsOneWidget);
+          expect(find.byType(LibraryPage), findsOneWidget);
 
-          final historyCategoryFinder = find.text('History'.tl);
-          final settingsListFinder = find
-              .descendant(
-                of: find.byType(SettingsPage),
-                matching: find.byType(Scrollable),
-              )
-              .first;
-          await tester.scrollUntilVisible(
-            historyCategoryFinder,
-            100,
-            scrollable: settingsListFinder,
+          final readingRecordsTabFinder = find.descendant(
+            of: find.byType(LibraryPage),
+            matching: find.text('Reading Records'.tl),
           );
+          await tester.ensureVisible(readingRecordsTabFinder);
           await tester.pump();
-          expect(historyCategoryFinder.hitTestable(), findsOneWidget);
+          expect(readingRecordsTabFinder, findsOneWidget);
 
-          await tester.tap(historyCategoryFinder);
+          await tester.tap(readingRecordsTabFinder);
           await tester.pump();
           await tester.pump(const Duration(milliseconds: 500));
-
           expect(find.byType(HistoryPage), findsOneWidget);
-
           final boundary =
               repaintKey.currentContext?.findRenderObject()
                   as RenderRepaintBoundary?;

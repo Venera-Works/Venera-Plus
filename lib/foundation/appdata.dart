@@ -8,6 +8,7 @@ import 'package:venera_plus/foundation/comic_layout.dart';
 import 'package:venera_plus/foundation/file_system.dart';
 import 'package:venera_plus/foundation/init.dart';
 import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/navigation_settings.dart';
 
 class Appdata with Init {
   Appdata._create();
@@ -280,7 +281,9 @@ class Appdata with Init {
     final normalizedSettings = <String, dynamic>{};
     for (final entry in rawSettings.entries) {
       if (entry.key is String && entry.key != _obsoleteSetting) {
-        normalizedSettings[entry.key as String] = entry.value;
+        normalizedSettings[entry.key as String] = entry.key == 'initialPage'
+            ? normalizeStartupPage(entry.value)
+            : entry.value;
       }
     }
 
@@ -450,7 +453,7 @@ class Settings with ChangeNotifier {
     'autoAddLanguageFilter': 'none', // none, chinese, english, japanese
     'comicSourceListUrl': "",
     'preloadImageCount': 4,
-    'initialPage': '0',
+    'initialPage': StartupPage.home.id,
     'comicListDisplayMode': 'paging', // paging, continuous
     'showPageNumberInReader': true,
     'showSingleImageOnFirstPage': false,
@@ -481,6 +484,9 @@ class Settings with ChangeNotifier {
   }
 
   operator []=(String key, dynamic value) {
+    if (key == 'initialPage') {
+      value = normalizeStartupPage(value);
+    }
     _data[key] = value;
     if (key != "dataVersion") {
       notifyListeners();
@@ -500,6 +506,11 @@ class Settings with ChangeNotifier {
     _data
       ..clear()
       ..addAll(values);
+    if (_data.containsKey('initialPage')) {
+      _data['initialPage'] = normalizeStartupPage(_data['initialPage']);
+    } else {
+      _data['initialPage'] = StartupPage.home.id;
+    }
     notifyListeners();
   }
 

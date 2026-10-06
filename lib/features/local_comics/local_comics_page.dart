@@ -23,8 +23,10 @@ import 'package:zip_flutter/zip_flutter.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 
 class LocalComicsPage extends StatefulWidget {
-  const LocalComicsPage({super.key});
+  const LocalComicsPage({super.key, this.isRoot = false, this.isActive = true});
 
+  final bool isRoot;
+  final bool isActive;
   @override
   State<LocalComicsPage> createState() => _LocalComicsPageState();
 }
@@ -331,145 +333,217 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
     }
 
     var body = Scaffold(
-      body: SmoothCustomScrollView(
-        slivers: [
-          if (!searchMode)
-            SliverAppbar(
-              leading: Tooltip(
-                message: multiSelectMode ? "Cancel".tl : "Back".tl,
-                child: IconButton(
-                  onPressed: () {
-                    if (multiSelectMode) {
-                      setState(() {
-                        multiSelectMode = false;
-                        selectedComics.clear();
-                      });
-                    } else if (context.canPop()) {
-                      context.pop();
-                    }
-                  },
-                  icon: multiSelectMode
-                      ? const Icon(Icons.close)
-                      : const Icon(Icons.arrow_back),
-                ),
-              ),
-              title: multiSelectMode
-                  ? Text(selectedComics.length.toString())
-                  : Text("Local".tl),
-              actions: multiSelectMode ? selectActions : normalActions,
-            )
-          else if (searchMode)
-            SliverAppbar(
-              leading: Tooltip(
-                message: multiSelectMode ? "Cancel".tl : "Cancel".tl,
-                child: IconButton(
-                  icon: multiSelectMode
-                      ? const Icon(Icons.close)
-                      : const Icon(Icons.close),
-                  onPressed: () {
-                    if (multiSelectMode) {
-                      setState(() {
-                        multiSelectMode = false;
-                        selectedComics.clear();
-                      });
-                    } else {
-                      setState(() {
-                        searchMode = false;
-                        keyword = "";
-                        update();
-                      });
-                    }
-                  },
-                ),
-              ),
-              title: multiSelectMode
-                  ? Text(selectedComics.length.toString())
-                  : TextField(
-                      autofocus: true,
-                      decoration: InputDecoration(
-                        hintText: "Search".tl,
-                        border: InputBorder.none,
-                      ),
-                      onChanged: (v) {
-                        keyword = v;
-                        update();
-                      },
-                    ),
-              actions: multiSelectMode ? selectActions : null,
-            ),
-          SliverGridComics(
-            comics: comics,
-            selections: selectedComics,
-            onLongPressed: (c, heroID) {
-              setState(() {
-                multiSelectMode = true;
-                selectedComics[c as LocalComic] = true;
-              });
-            },
-            onTap: (c, heroID) {
-              if (multiSelectMode) {
-                setState(() {
-                  if (selectedComics.containsKey(c as LocalComic)) {
-                    selectedComics.remove(c);
-                  } else {
-                    selectedComics[c] = true;
-                  }
-                  if (selectedComics.isEmpty) {
-                    multiSelectMode = false;
-                  }
-                });
-              } else {
-                // prevent dirty data
-                var comic = LocalManager().find(
-                  c.id,
-                  ComicType.fromKey(c.sourceKey),
-                )!;
-                comic.read();
-              }
-            },
-            menuBuilder: (comic) {
-              final c = comic as LocalComic;
-              return [
-                MenuEntry(
-                  icon: Icons.folder_open,
-                  text: "Open Folder".tl,
-                  onClick: () {
-                    openComicFolder(c);
-                  },
-                ),
-                MenuEntry(
-                  icon: Icons.delete,
-                  text: "Delete".tl,
-                  onClick: () {
-                    deleteComics([c]).then((value) {
-                      if (value && multiSelectMode) {
+      body: RefreshIndicator(
+        onRefresh: () async => update(),
+        child: SmoothCustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            if (!searchMode)
+              SliverAppbar(
+                leading: multiSelectMode
+                    ? Tooltip(
+                        message: "Cancel".tl,
+                        child: IconButton(
+                          onPressed: () {
+                            setState(() {
+                              multiSelectMode = false;
+                              selectedComics.clear();
+                            });
+                          },
+                          icon: const Icon(Icons.close),
+                        ),
+                      )
+                    : (widget.isRoot
+                          ? const SizedBox.shrink()
+                          : (context.canPop()
+                                ? Tooltip(
+                                    message: "Back".tl,
+                                    child: IconButton(
+                                      onPressed: () {
+                                        context.pop();
+                                      },
+                                      icon: const Icon(Icons.arrow_back),
+                                    ),
+                                  )
+                                : const SizedBox.shrink())),
+                title: multiSelectMode
+                    ? Text(selectedComics.length.toString())
+                    : Text("Local Comics".tl),
+                actions: multiSelectMode ? selectActions : normalActions,
+              )
+            else if (searchMode)
+              SliverAppbar(
+                leading: Tooltip(
+                  message: multiSelectMode ? "Cancel".tl : "Cancel".tl,
+                  child: IconButton(
+                    icon: multiSelectMode
+                        ? const Icon(Icons.close)
+                        : const Icon(Icons.close),
+                    onPressed: () {
+                      if (multiSelectMode) {
                         setState(() {
                           multiSelectMode = false;
                           selectedComics.clear();
                         });
+                      } else {
+                        setState(() {
+                          searchMode = false;
+                          keyword = "";
+                          update();
+                        });
+                      }
+                    },
+                  ),
+                ),
+                title: multiSelectMode
+                    ? Text(selectedComics.length.toString())
+                    : TextField(
+                        autofocus: true,
+                        decoration: InputDecoration(
+                          hintText: "Search".tl,
+                          border: InputBorder.none,
+                        ),
+                        onChanged: (v) {
+                          keyword = v;
+                          update();
+                        },
+                      ),
+                actions: multiSelectMode ? selectActions : null,
+              ),
+            if (comics.isEmpty)
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.folder_open_outlined,
+                        size: 64,
+                        color: context.colorScheme.outlineVariant,
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        keyword.isNotEmpty
+                            ? "No Comics Found".tl
+                            : "No Comics".tl,
+                        style: const TextStyle(fontSize: 16),
+                      ),
+                      if (keyword.isEmpty) ...[
+                        const SizedBox(height: 16),
+                        FilledButton.icon(
+                          icon: const Icon(Icons.add),
+                          label: Text("Import".tl),
+                          onPressed: () => showImportComicsDialog(context),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              )
+            else
+              SliverGridComics(
+                comics: comics,
+                selections: selectedComics,
+                onLongPressed: (c, heroID) {
+                  setState(() {
+                    multiSelectMode = true;
+                    selectedComics[c as LocalComic] = true;
+                  });
+                },
+                onTap: (c, heroID) {
+                  if (multiSelectMode) {
+                    setState(() {
+                      if (selectedComics.containsKey(c as LocalComic)) {
+                        selectedComics.remove(c);
+                      } else {
+                        selectedComics[c] = true;
+                      }
+                      if (selectedComics.isEmpty) {
+                        multiSelectMode = false;
                       }
                     });
-                  },
-                ),
-                MenuEntry(
-                  icon: Icons.cloud_upload_outlined,
-                  text: "Archive to WebDAV".tl,
-                  onClick: () {
-                    archiveComics([c]);
-                  },
-                ),
-                ...exportActions([c]),
-              ];
-            },
-          ),
-        ],
+                  } else {
+                    // prevent dirty data
+                    var comic = LocalManager().find(
+                      c.id,
+                      ComicType.fromKey(c.sourceKey),
+                    )!;
+                    comic.read();
+                  }
+                },
+                menuBuilder: (comic) {
+                  final c = comic as LocalComic;
+                  return [
+                    MenuEntry(
+                      icon: Icons.menu_book_outlined,
+                      text: "Read".tl,
+                      onClick: () {
+                        var localComic = LocalManager().find(
+                          c.id,
+                          ComicType.fromKey(c.sourceKey),
+                        )!;
+                        localComic.read();
+                      },
+                    ),
+                    MenuEntry(
+                      icon: Icons.info_outline,
+                      text: "Details".tl,
+                      onClick: () {
+                        context.to(
+                          () => ComicPage(
+                            id: c.id,
+                            sourceKey: c.sourceKey,
+                            title: c.title,
+                            cover: c.cover,
+                          ),
+                        );
+                      },
+                    ),
+                    MenuEntry(
+                      icon: Icons.folder_open,
+                      text: "Open Folder".tl,
+                      onClick: () {
+                        openComicFolder(c);
+                      },
+                    ),
+                    MenuEntry(
+                      icon: Icons.delete,
+                      text: "Delete".tl,
+                      onClick: () {
+                        deleteComics([c]).then((value) {
+                          if (value && multiSelectMode) {
+                            setState(() {
+                              multiSelectMode = false;
+                              selectedComics.clear();
+                            });
+                          }
+                        });
+                      },
+                    ),
+                    MenuEntry(
+                      icon: Icons.cloud_upload_outlined,
+                      text: "Archive to WebDAV".tl,
+                      onClick: () {
+                        archiveComics([c]);
+                      },
+                    ),
+                    ...exportActions([c]),
+                  ];
+                },
+              ),
+          ],
+        ),
       ),
     );
 
+    final canPopScope = widget.isActive
+        ? (!multiSelectMode && !searchMode)
+        : true;
     return PopScope(
-      canPop: !multiSelectMode && !searchMode,
+      canPop: canPopScope,
       onPopInvokedWithResult: (didPop, result) {
-        if (didPop) return;
+        if (didPop || !widget.isActive) return;
         if (multiSelectMode) {
           setState(() {
             multiSelectMode = false;

@@ -20,8 +20,9 @@ const _asyncDataFetchLimit = 500;
 
 /// Home page view displaying "在读" (Currently reading) favorites.
 class ReadingFavoritesView extends StatefulWidget {
-  const ReadingFavoritesView({super.key});
+  const ReadingFavoritesView({super.key, this.onOpenHistory});
 
+  final VoidCallback? onOpenHistory;
   @override
   State<ReadingFavoritesView> createState() => _ReadingFavoritesViewState();
 }
@@ -239,6 +240,7 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
 
   @override
   Widget build(BuildContext context) {
+    final onOpenHistory = widget.onOpenHistory;
     Widget sliverContent;
     if (isLoading) {
       sliverContent = const SliverToBoxAdapter(
@@ -299,6 +301,20 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
                   color: Theme.of(context).colorScheme.outline,
                 ),
               ),
+              if (onOpenHistory != null) ...[
+                const SizedBox(height: 16),
+                Button.outlined(
+                  onPressed: onOpenHistory,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.history, size: 18),
+                      const SizedBox(width: 8),
+                      Text("Reading Records".tl),
+                    ],
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -318,6 +334,25 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
         controller: _scrollController,
         physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
+          if (onOpenHistory != null)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                child: Row(
+                  children: [
+                    const Spacer(),
+                    TextButton.icon(
+                      onPressed: onOpenHistory,
+                      icon: const Icon(Icons.history, size: 18),
+                      label: Text("Reading Records".tl),
+                      style: TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           sliverContent,
           SliverPadding(
             padding: EdgeInsets.only(bottom: context.padding.bottom + 16),

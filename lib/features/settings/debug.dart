@@ -9,14 +9,14 @@ import 'package:venera_plus/foundation/js_engine.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 
-class DebugPage extends StatefulWidget {
-  const DebugPage({super.key});
+class AdvancedSettings extends StatefulWidget {
+  const AdvancedSettings({super.key});
 
   @override
-  State<DebugPage> createState() => DebugPageState();
+  State<AdvancedSettings> createState() => AdvancedSettingsState();
 }
 
-class DebugPageState extends State<DebugPage> {
+class AdvancedSettingsState extends State<AdvancedSettings> {
   final controller = TextEditingController();
 
   var result = "";
@@ -25,7 +25,7 @@ class DebugPageState extends State<DebugPage> {
   Widget build(BuildContext context) {
     return SmoothCustomScrollView(
       slivers: [
-        SliverAppbar(title: Text("Debug".tl)),
+        SliverAppbar(title: Text("Advanced and Diagnostics".tl)),
         CallbackSetting(
           title: "Reload Configs".tl,
           actionTitle: "Reload".tl,

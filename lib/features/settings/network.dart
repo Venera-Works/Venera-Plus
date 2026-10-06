@@ -31,13 +31,6 @@ class _NetworkSettingsState extends State<NetworkSettings> {
           title: "DNS Overrides".tl,
           builder: () => const _DNSOverrides(),
         ).toSliver(),
-        SliderSetting(
-          title: "Download Threads".tl,
-          settingsIndex: 'downloadThreads',
-          interval: 1,
-          min: 1,
-          max: 16,
-        ).toSliver(),
       ],
     );
   }

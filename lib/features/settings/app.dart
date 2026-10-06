@@ -27,14 +27,16 @@ import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 
-class AppSettings extends StatefulWidget {
-  const AppSettings({super.key});
+class SourcesAndServicesSettings extends StatefulWidget {
+  const SourcesAndServicesSettings({super.key});
 
   @override
-  State<AppSettings> createState() => _AppSettingsState();
+  State<SourcesAndServicesSettings> createState() =>
+      _SourcesAndServicesSettingsState();
 }
 
-class _AppSettingsState extends State<AppSettings> {
+class _SourcesAndServicesSettingsState
+    extends State<SourcesAndServicesSettings> {
   @override
   Widget build(BuildContext context) {
     final rawBangumiUsername = appdata.settings['bangumiUsername'];
@@ -43,8 +45,73 @@ class _AppSettingsState extends State<AppSettings> {
         : '';
     return SmoothCustomScrollView(
       slivers: [
-        SliverAppbar(title: Text("App".tl)),
-        SettingPartTitle(title: "Data".tl, icon: Icons.storage),
+        SliverAppbar(title: Text("Sources and Services".tl)),
+        SettingPartTitle(
+          title: "Comic Sources".tl,
+          icon: Icons.source_outlined,
+        ),
+        CallbackSetting(
+          title: "Manage Comic Sources".tl,
+          actionTitle: "Open".tl,
+          callback: () {
+            context.to(() => const ComicSourcePage());
+          },
+        ).toSliver(),
+        SettingPartTitle(
+          title: "Online Services".tl,
+          icon: Icons.cloud_outlined,
+        ),
+        CallbackSetting(
+          title: "WebDAV Comic Library".tl,
+          subtitle:
+              "Online reading uses directory image structure only; CBZ is kept for archive backup and restore."
+                  .tl,
+          callback: () async {
+            showPopUpWidget(context, const _WebDavComicLibrarySetting());
+          },
+          actionTitle: 'Set'.tl,
+        ).toSliver(),
+        CallbackSetting(
+          key: const Key('bangumi-settings-entry'),
+          title: 'Bangumi',
+          subtitle: bangumiUsername.isEmpty
+              ? 'Not connected'.tl
+              : bangumiUsername,
+          callback: () async {
+            await showPopUpWidget(
+              context,
+              BangumiSettingsPage(
+                onConnectionChanged: () {
+                  if (BangumiService().isConnected) {
+                    unawaited(WebDavLibrarySource.synchronize());
+                  }
+                  if (mounted) setState(() {});
+                },
+              ),
+            );
+            if (mounted) setState(() {});
+          },
+          actionTitle: 'Set'.tl,
+        ).toSliver(),
+      ],
+    );
+  }
+}
+
+class StorageAndSyncSettings extends StatefulWidget {
+  const StorageAndSyncSettings({super.key});
+
+  @override
+  State<StorageAndSyncSettings> createState() => _StorageAndSyncSettingsState();
+}
+
+class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
+  @override
+  Widget build(BuildContext context) {
+    return SmoothCustomScrollView(
+      slivers: [
+        SliverAppbar(title: Text("Storage and Sync".tl)),
+        SettingPartTitle(title: "Storage".tl, icon: Icons.storage),
         ListTile(
           title: Text("Storage Path for local comics".tl),
           subtitle: Text(LocalManager().path, softWrap: false),
@@ -124,18 +191,32 @@ class _AppSettingsState extends State<AppSettings> {
           },
           actionTitle: 'Set'.tl,
         ).toSliver(),
+        SettingPartTitle(title: "Downloads & Sync".tl, icon: Icons.sync),
         SliderSetting(
-          title: "Auto Clear History".tl,
-          settingsIndex: "historyRetentionDays",
-          interval: 7,
-          min: 0,
-          max: 182,
-          onChanged: () {
-            final retentionDays =
-                (appdata.settings['historyRetentionDays'] as num).round();
-            HistoryManager().clearExpiredHistory(retentionDays);
-          },
+          title: "Download Threads".tl,
+          settingsIndex: 'downloadThreads',
+          interval: 1,
+          min: 1,
+          max: 16,
         ).toSliver(),
+        CallbackSetting(
+          key: const Key('data-sync-entry'),
+          title: "Data Sync".tl,
+          callback: () => showDataSyncSettings(context),
+          actionTitle: 'Set'.tl,
+        ).toSliver(),
+        CallbackSetting(
+          title: "Comic Archive Backup".tl,
+          subtitle: "This is only used for CBZ archive backup and restore.".tl,
+          callback: () async {
+            showPopUpWidget(context, const _BackupWebdavSetting());
+          },
+          actionTitle: 'Set'.tl,
+        ).toSliver(),
+        SettingPartTitle(
+          title: "Backup & Restore".tl,
+          icon: Icons.import_export,
+        ),
         CallbackSetting(
           title: "Export App Data".tl,
           callback: () async {
@@ -174,67 +255,28 @@ class _AppSettingsState extends State<AppSettings> {
           },
           actionTitle: 'Import'.tl,
         ).toSliver(),
-        CallbackSetting(
-          key: const Key('bangumi-settings-entry'),
-          title: 'Bangumi',
-          subtitle: bangumiUsername.isEmpty
-              ? 'Not connected'.tl
-              : bangumiUsername,
-          callback: () async {
-            await showPopUpWidget(
-              context,
-              BangumiSettingsPage(
-                onConnectionChanged: () {
-                  if (BangumiService().isConnected) {
-                    unawaited(WebDavLibrarySource.synchronize());
-                  }
-                  if (mounted) setState(() {});
-                },
-              ),
-            );
-            if (mounted) setState(() {});
-          },
-          actionTitle: 'Set'.tl,
-        ).toSliver(),
-        CallbackSetting(
-          key: const Key('data-sync-entry'),
-          title: "Data Sync".tl,
-          callback: () => showDataSyncSettings(context),
-          actionTitle: 'Set'.tl,
-        ).toSliver(),
-        CallbackSetting(
-          title: "Comic Archive Backup".tl,
-          subtitle: "This is only used for CBZ archive backup and restore.".tl,
-          callback: () async {
-            showPopUpWidget(context, const _BackupWebdavSetting());
-          },
-          actionTitle: 'Set'.tl,
-        ).toSliver(),
-        CallbackSetting(
-          title: "WebDAV Comic Library".tl,
-          subtitle:
-              "Online reading uses directory image structure only; CBZ is kept for archive backup and restore."
-                  .tl,
-          callback: () async {
-            showPopUpWidget(context, const _WebDavComicLibrarySetting());
-          },
-          actionTitle: 'Set'.tl,
-        ).toSliver(),
-        SettingPartTitle(title: "User".tl, icon: Icons.person_outline),
-        SelectSetting(
-          title: "Language".tl,
-          settingKey: "language",
-          optionTranslation: const {
-            "system": "System",
-            "zh-CN": "简体中文",
-            "zh-TW": "繁體中文",
-            "en-US": "English",
-          },
-          onChanged: () {
-            App.forceRebuild();
-          },
-        ).toSliver(),
-        if (!App.isLinux)
+      ],
+    );
+  }
+}
+
+class PrivacyAndSecuritySettings extends StatefulWidget {
+  const PrivacyAndSecuritySettings({super.key});
+
+  @override
+  State<PrivacyAndSecuritySettings> createState() =>
+      _PrivacyAndSecuritySettingsState();
+}
+
+class _PrivacyAndSecuritySettingsState
+    extends State<PrivacyAndSecuritySettings> {
+  @override
+  Widget build(BuildContext context) {
+    return SmoothCustomScrollView(
+      slivers: [
+        SliverAppbar(title: Text("Privacy and Security".tl)),
+        if (!App.isLinux) ...[
+          SettingPartTitle(title: "Security".tl, icon: Icons.security),
           SwitchSetting(
             title: "Authorization Required".tl,
             settingKey: "authorizationRequired",
@@ -258,6 +300,20 @@ class _AppSettingsState extends State<AppSettings> {
               }
             },
           ).toSliver(),
+        ],
+        SettingPartTitle(title: "History".tl, icon: Icons.history),
+        SliderSetting(
+          title: "Auto Clear History".tl,
+          settingsIndex: "historyRetentionDays",
+          interval: 7,
+          min: 0,
+          max: 182,
+          onChanged: () {
+            final retentionDays =
+                (appdata.settings['historyRetentionDays'] as num).round();
+            HistoryManager().clearExpiredHistory(retentionDays);
+          },
+        ).toSliver(),
       ],
     );
   }

@@ -239,6 +239,14 @@ class _ReaderSettingsState extends State<ReaderSettings> {
           comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
           useDeviceSettings: useDeviceSpecificSettings,
         ).toSliver(),
+        if (comicId == null)
+          SwitchSetting(
+            title: "Reverse default chapter order".tl,
+            settingKey: "reverseChapterOrder",
+            onChanged: () {
+              widget.onChanged?.call("reverseChapterOrder");
+            },
+          ).toSliver(),
         SwitchSetting(
           title: 'Split dual pages'.tl,
           subtitle:

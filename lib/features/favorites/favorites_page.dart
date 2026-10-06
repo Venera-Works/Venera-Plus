@@ -17,7 +17,10 @@ import 'package:venera_plus/features/favorites/side_bar.dart';
 const _kLeftBarWidth = 256.0;
 
 class FavoritesPage extends StatefulWidget {
-  const FavoritesPage({super.key});
+  const FavoritesPage({super.key, this.isRoot = false, this.isActive = true});
+
+  final bool isRoot;
+  final bool isActive;
 
   @override
   State<FavoritesPage> createState() => _FavoritesPageState();
@@ -173,6 +176,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
         updateFolderList: () {
           folderList?.updateFolders();
         },
+        isActive: widget.isActive,
       );
     } else {
       var favoriteData = getFavoriteDataOrNull(folder!);

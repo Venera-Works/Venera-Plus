@@ -14,8 +14,10 @@ import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/foundation/translations.dart';
 
 class HistoryPage extends StatefulWidget {
-  const HistoryPage({super.key});
+  const HistoryPage({super.key, this.isRoot = false, this.isActive = true});
 
+  final bool isRoot;
+  final bool isActive;
   @override
   State<HistoryPage> createState() => _HistoryPageState();
 }
@@ -238,9 +240,11 @@ class _HistoryPageState extends State<HistoryPage> {
       ),
     ];
 
+    final canPopScope = widget.isActive ? !multiSelectMode : true;
     return PopScope(
-      canPop: !multiSelectMode,
+      canPop: canPopScope,
       onPopInvokedWithResult: (didPop, result) {
+        if (didPop || !widget.isActive) return;
         if (multiSelectMode) {
           setState(() {
             multiSelectMode = false;
@@ -252,27 +256,35 @@ class _HistoryPageState extends State<HistoryPage> {
         body: SmoothCustomScrollView(
           slivers: [
             SliverAppbar(
-              leading: Tooltip(
-                message: multiSelectMode ? "Cancel".tl : "Back".tl,
-                child: IconButton(
-                  onPressed: () {
-                    if (multiSelectMode) {
-                      setState(() {
-                        multiSelectMode = false;
-                        selectedComics.clear();
-                      });
-                    } else {
-                      context.pop();
-                    }
-                  },
-                  icon: multiSelectMode
-                      ? const Icon(Icons.close)
-                      : const Icon(Icons.arrow_back),
-                ),
-              ),
+              leading: multiSelectMode
+                  ? Tooltip(
+                      message: "Cancel".tl,
+                      child: IconButton(
+                        onPressed: () {
+                          setState(() {
+                            multiSelectMode = false;
+                            selectedComics.clear();
+                          });
+                        },
+                        icon: const Icon(Icons.close),
+                      ),
+                    )
+                  : (widget.isRoot
+                        ? const SizedBox.shrink()
+                        : (context.canPop()
+                              ? Tooltip(
+                                  message: "Back".tl,
+                                  child: IconButton(
+                                    onPressed: () {
+                                      context.pop();
+                                    },
+                                    icon: const Icon(Icons.arrow_back),
+                                  ),
+                                )
+                              : const SizedBox.shrink())),
               title: multiSelectMode
                   ? Text(selectedComics.length.toString())
-                  : Text('History'.tl),
+                  : Text('Reading Records'.tl),
               actions: multiSelectMode ? selectActions : normalActions,
             ),
             SliverGridComics(

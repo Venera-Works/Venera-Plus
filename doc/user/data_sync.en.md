@@ -2,7 +2,7 @@
 
 中文版本：[data_sync.zh.md](data_sync.zh.md)
 
-Navigation: **Settings → App → Data Sync**. Enter your WebDAV directory URL, username, and password. Match the server directory's exact letter case. You can use **Test Connection** to verify directory accessibility.
+Navigation: **Settings → Storage and Sync → Data Sync** (or click the top-bar sync button to guide configuration when not yet configured). Enter your WebDAV directory URL, username, and password. Match the server directory's exact letter case. You can use **Test Connection** to verify directory accessibility.
 
 App data includes settings, favorites, history, cookies, and comic source script files; it does not include local comic images. Comic archive backups and the online WebDAV comic library are configured separately.
 

@@ -1,181 +1,89 @@
 import 'package:flutter/material.dart';
-import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/gesture.dart';
-import 'package:venera_plus/components/loading.dart';
-import 'package:venera_plus/components/pop_up_widget.dart';
-import 'package:venera_plus/foundation/app.dart';
-import 'package:venera_plus/foundation/appdata.dart';
-import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
-import 'package:venera_plus/routing/page_jump_target.dart';
-import 'package:venera_plus/routing/settings.dart';
-import 'package:venera_plus/foundation/extensions.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/global_state.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
+import 'package:venera_plus/routing/page_jump_target.dart';
 
 import 'ranking_page.dart';
 
-class CategoriesPage extends StatefulWidget {
-  const CategoriesPage({super.key});
+class SourceCategoryView extends StatefulWidget {
+  const SourceCategoryView({
+    required this.sourceKey,
+    required this.data,
+    super.key,
+  });
+
+  final String sourceKey;
+  final CategoryData data;
 
   @override
-  State<CategoriesPage> createState() => _CategoriesPageState();
+  State<SourceCategoryView> createState() => SourceCategoryViewState();
 }
 
-class _CategoriesPageState extends State<CategoriesPage>
-    with
-        TickerProviderStateMixin,
-        AutomaticKeepAliveClientMixin<CategoriesPage> {
-  var categories = <String>[];
+class SourceCategoryViewState extends AutomaticGlobalState<SourceCategoryView>
+    with AutomaticKeepAliveClientMixin<SourceCategoryView> {
+  @override
+  Object? get key => 'category:${widget.sourceKey}';
 
-  late TabController controller;
-
-  void onSettingsChanged() {
-    var categories = List.from(
-      appdata.settings["categories"],
-    ).whereType<String>().toList();
-    var allCategories = ComicSource.all()
-        .map((e) => e.categoryData?.key)
-        .where((element) => element != null)
-        .map((e) => e!)
-        .toList();
-    categories = categories
-        .where((element) => allCategories.contains(element))
-        .toList();
-    if (!categories.isEqualTo(this.categories)) {
-      setState(() {
-        this.categories = categories;
-      });
-      controller = TabController(length: categories.length, vsync: this);
+  final ScrollController _scrollController = ScrollController();
+  void toTop() {
+    if (_scrollController.hasClients) {
+      _scrollController.animateTo(
+        _scrollController.position.minScrollExtent,
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeInOut,
+      );
     }
   }
 
   @override
-  void initState() {
-    super.initState();
-    var categories = List.from(
-      appdata.settings["categories"],
-    ).whereType<String>().toList();
-    var allCategories = ComicSource.all()
-        .map((e) => e.categoryData?.key)
-        .where((element) => element != null)
-        .map((e) => e!)
-        .toList();
-    this.categories = categories
-        .where((element) => allCategories.contains(element))
-        .toList();
-    appdata.settings.addListener(onSettingsChanged);
-    controller = TabController(length: categories.length, vsync: this);
+  void refresh() {
+    if (mounted) {
+      setState(() {});
+    }
   }
 
-  void addPage() {
-    showPopUpWidget(App.rootContext, setCategoryPagesWidget());
+  @override
+  void didUpdateWidget(covariant SourceCategoryView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.data != widget.data ||
+        oldWidget.sourceKey != widget.sourceKey) {
+      setState(() {});
+    }
   }
 
   @override
   void dispose() {
+    _scrollController.dispose();
     super.dispose();
-    controller.dispose();
-    appdata.settings.removeListener(onSettingsChanged);
-  }
-
-  Widget buildEmpty() {
-    var msg = "No Category Pages".tl;
-    msg += '\n';
-    VoidCallback onTap;
-    if (ComicSource.isEmpty) {
-      msg += "Please add some sources".tl;
-      onTap = () {
-        context.to(() => ComicSourcePage());
-      };
-    } else {
-      msg += "Please check your settings".tl;
-      onTap = addPage;
-    }
-    return NetworkError(
-      message: msg,
-      retry: onTap,
-      withAppbar: false,
-      buttonText: "Manage".tl,
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    super.build(context);
-    if (categories.isEmpty) {
-      return buildEmpty();
-    }
-
-    return Material(
-      child: Column(
-        children: [
-          AppTabBar(
-            controller: controller,
-            key: PageStorageKey(categories.toString()),
-            tabs: categories.map((e) {
-              String title = e;
-              try {
-                title = getCategoryDataWithKey(e).title;
-              } catch (e) {
-                //
-              }
-              return Tab(text: title, key: Key(e));
-            }).toList(),
-            actionButton: TabActionButton(
-              icon: const Icon(Icons.add),
-              text: "Add".tl,
-              onPressed: addPage,
-            ),
-          ).paddingTop(context.padding.top),
-          Expanded(
-            child: TabBarView(
-              controller: controller,
-              children: categories.map((e) => _CategoryPage(e)).toList(),
-            ),
-          ),
-        ],
-      ),
-    );
   }
 
   @override
   bool get wantKeepAlive => true;
-}
-
-typedef ClickTagCallback = void Function(String, String?);
-
-class _CategoryPage extends StatelessWidget {
-  const _CategoryPage(this.category);
-
-  final String category;
-
-  CategoryData get data => getCategoryDataWithKey(category);
-
-  String findComicSourceKey() {
-    for (var source in ComicSource.all()) {
-      if (source.categoryData?.key == category) {
-        return source.key;
-      }
-    }
-    return "";
-  }
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
+    final categoryData = widget.data;
+
     var children = <Widget>[];
-    if (data.enableRankingPage || data.buttons.isNotEmpty) {
-      children.add(buildTitle(data.title));
+    if (categoryData.enableRankingPage || categoryData.buttons.isNotEmpty) {
+      children.add(buildTitle(categoryData.title));
       children.add(
         Padding(
           padding: const EdgeInsets.fromLTRB(10, 0, 10, 16),
           child: Wrap(
             children: [
-              if (data.enableRankingPage)
+              if (categoryData.enableRankingPage)
                 buildTag("Ranking".tl, () {
-                  context.to(() => RankingPage(categoryKey: data.key));
+                  context.to(() => RankingPage(categoryKey: categoryData.key));
                 }),
-              for (var buttonData in data.buttons)
+              for (var buttonData in categoryData.buttons)
                 buildTag(buttonData.label.tl, buttonData.onTap),
             ],
           ),
@@ -183,7 +91,7 @@ class _CategoryPage extends StatelessWidget {
       );
     }
 
-    for (var part in data.categories) {
+    for (var part in categoryData.categories) {
       if (part.enableRandom) {
         children.add(
           StatefulBuilder(
@@ -204,11 +112,18 @@ class _CategoryPage extends StatelessWidget {
         children.add(buildTags(part.categories));
       }
     }
-    return SingleChildScrollView(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: children,
-      ),
+
+    return SmoothCustomScrollView(
+      key: PageStorageKey('category_${widget.sourceKey}'),
+      controller: _scrollController,
+      slivers: [
+        SliverToBoxAdapter(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: children,
+          ),
+        ),
+      ],
     );
   }
 
@@ -278,6 +193,4 @@ class _CategoryPage extends StatelessWidget {
       ),
     );
   }
-
-  bool get enableTranslation => App.locale.languageCode == 'zh';
 }
