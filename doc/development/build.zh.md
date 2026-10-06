@@ -73,7 +73,7 @@ git diff --check
 
 CI 会使用 `flutter test --coverage` 生成 `coverage/lcov.info`，在工作流摘要中显示行覆盖率，并上传报告产物。当前覆盖率用于建立可见基线，尚未设置统一硬阈值；涉及关键业务路径的改动仍必须增加针对性测试。
 
-PR 还会运行 `依赖安全审查` 和 `PR 平台冒烟构建`。依赖审查会阻止引入高危或严重漏洞依赖；当改动涉及 Flutter 代码、集成测试、原生平台目录、依赖、构建脚本或工作流时，平台工作流会执行 Android Debug（arm64 编译门禁与 x86_64 模拟器环境原生集成测试）和 Windows Debug（应用构建、真实启动脚本与原生集成测试），文档等不影响构建的改动会跳过这两个平台任务。集成测试统一使用 `integration_test/platform_smoke_test.dart`（需显式 `--dart-define=CI_NATIVE_SMOKE=true` 在一次性 CI runner 运行），SQLite 原生加载、旧版本数据库模式迁移、事务写入、重开持久化及数据备份恢复在 suite 临时隔离目录执行，真实 MyApp 启动与首帧截图使用一次性运行器 profile 并断言可见真实历史标题与无未捕获异常。Dart 格式检查覆盖 `lib`、`test` 和 `integration_test`。`main` 分支要求 PR 通过代码分析、依赖审查和平台冒烟构建门禁，并禁止直接强推或删除分支。
+PR 还会运行 `依赖安全审查` 和 `PR 平台冒烟构建`。依赖审查会阻止引入高危或严重漏洞依赖；当改动涉及 Flutter 代码、集成测试、原生平台目录、依赖、构建脚本或工作流时，平台工作流会执行 Android Debug（arm64 编译门禁与 x86_64 模拟器环境原生集成测试）和 Windows Debug（应用构建、真实启动脚本与原生集成测试），文档等不影响构建的改动会跳过这两个平台任务。集成测试统一使用 `integration_test/platform_smoke_test.dart`（需显式 `--dart-define=CI_NATIVE_SMOKE=true` 在一次性 CI runner 运行），SQLite 原生加载、旧版本数据库模式迁移、事务写入、重开持久化及数据备份恢复在 suite 临时隔离目录执行，真实 MyApp 首页启动后点击历史入口导航至真实 HistoryPage、检查数据库种入的历史标题并保存实际页面截图产物，全过程使用一次性运行器 profile 并断言无未捕获异常。Dart 格式检查覆盖 `lib`、`test` 和 `integration_test`。`main` 分支要求 PR 通过代码分析、依赖审查和平台冒烟构建门禁，并禁止直接强推或删除分支。
 
 涉及发布版本时再运行：
 

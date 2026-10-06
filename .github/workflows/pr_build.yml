@@ -66,9 +66,18 @@ jobs:
           cache: true
       - name: 准备 Rust 工具链
         run: |
+          # Cargokit Debug 会追加 x86/x64，且插件分别使用 1.85.1 (rhttp) 与 stable (irondash/super_native)；
+          # 须在 Gradle 并行任务前串行预装全部 3 目标，避免并发执行 rustup target add 产生冲突。
           python3 .github/scripts/prepare_rust_toolchain.py \
             --target aarch64-linux-android \
+            --target i686-linux-android \
             --target x86_64-linux-android
+          rustup target add --toolchain stable \
+            aarch64-linux-android \
+            i686-linux-android \
+            x86_64-linux-android
+          rustup run stable cargo --version
+          rustup target list --toolchain stable --installed
       - uses: actions/setup-java@v6
         with:
           distribution: oracle

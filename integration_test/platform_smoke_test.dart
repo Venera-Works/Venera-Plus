@@ -17,6 +17,7 @@ import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/main.dart';
 import 'package:venera_plus/network/cookie_jar.dart';
 
@@ -549,79 +550,117 @@ void main() {
         HistoryManager.cache = null;
         LocalFavoritesManager.cache = null;
 
-        // Execute production init()
-        await init();
+        final testFrameworkOnError = FlutterError.onError;
+        try {
+          try {
+            // Execute production init()
+            await init();
+          } finally {
+            // Restore Flutter test framework error handler so uncaught
+            // widget/runtime exceptions are not swallowed by the production logger
+            // and live test assertions can observe or fail on real failures.
+            FlutterError.onError = testFrameworkOnError;
+          }
 
-        appdata.implicitData['lastCheckUpdate'] =
-            DateTime.now().millisecondsSinceEpoch;
-        appdata.settings['language'] = 'en-US';
-        appdata.settings['checkUpdateOnStart'] = false;
-        appdata.settings['authorizationRequired'] = false;
-        appdata.settings['initialPage'] = 0;
+          appdata.implicitData['lastCheckUpdate'] =
+              DateTime.now().millisecondsSinceEpoch;
+          appdata.settings['language'] = 'en-US';
+          appdata.settings['checkUpdateOnStart'] = false;
+          appdata.settings['authorizationRequired'] = false;
+          appdata.settings['initialPage'] = 0;
 
-        // Seed a real synthetic history comic with empty cover to verify live UI rendering
-        final smokeHistory = History.fromMap({
-          'type': ComicType.local.value,
-          'id': 'ui-smoke-comic',
-          'title': 'UI Smoke History Comic',
-          'subtitle': 'Smoke Subtitle',
-          'cover': '',
-          'time': DateTime.now().millisecondsSinceEpoch,
-          'ep': 1,
-          'page': 5,
-          'max_page': 20,
-          'readEpisode': <String>['1'],
-          'read_duration_ms': 0,
-        });
-        await HistoryManager().addHistoryAsync(smokeHistory);
-        await HistoryManager().addReadDuration(
-          smokeHistory,
-          const Duration(seconds: 10),
-        );
-        await HistoryManager().waitForAsyncWrites();
+          // Seed a real synthetic history comic with empty cover to verify live UI rendering
+          final smokeHistory = History.fromMap({
+            'type': ComicType.local.value,
+            'id': 'ui-smoke-comic',
+            'title': 'UI Smoke History Comic',
+            'subtitle': 'Smoke Subtitle',
+            'cover': '',
+            'time': DateTime.now().millisecondsSinceEpoch,
+            'ep': 1,
+            'page': 5,
+            'max_page': 20,
+            'readEpisode': <String>['1'],
+            'read_duration_ms': 0,
+          });
+          await HistoryManager().addHistoryAsync(smokeHistory);
+          await HistoryManager().addReadDuration(
+            smokeHistory,
+            const Duration(seconds: 10),
+          );
+          await HistoryManager().waitForAsyncWrites();
 
-        final repaintKey = GlobalKey();
-        await tester.pumpWidget(
-          RepaintBoundary(key: repaintKey, child: const MyApp()),
-        );
+          final repaintKey = GlobalKey();
+          await tester.pumpWidget(
+            RepaintBoundary(key: repaintKey, child: const MyApp()),
+          );
 
-        await tester.pump(const Duration(milliseconds: 500));
+          await tester.pump(const Duration(milliseconds: 500));
 
-        expect(tester.takeException(), isNull);
-        expect(find.byType(MyApp), findsOneWidget);
-        expect(find.byType(MainPage), findsOneWidget);
-        expect(find.byType(HomePage), findsOneWidget);
-        expect(find.text('UI Smoke History Comic'), findsWidgets);
+          expect(tester.takeException(), isNull);
+          expect(find.byType(MyApp), findsOneWidget);
+          expect(find.byType(MainPage), findsOneWidget);
+          expect(find.byType(HomePage), findsOneWidget);
+          expect(find.byType(HistorySummary), findsOneWidget);
 
-        final boundary =
-            repaintKey.currentContext?.findRenderObject()
-                as RenderRepaintBoundary?;
-        expect(boundary, isNotNull);
+          // Real home page HistorySummary uses SimpleComicTile which displays
+          // only the cover thumbnail without comic title. Real users navigate
+          // to HistoryPage to view titles and history entries.
+          final historyEntryFinder = find.descendant(
+            of: find.byType(HistorySummary),
+            matching: find.text('History'.tl),
+          );
+          expect(historyEntryFinder, findsOneWidget);
 
-        final image = await boundary!.toImage(pixelRatio: 1.0);
-        final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-        expect(byteData, isNotNull);
-        final pngBytes = byteData!.buffer.asUint8List();
-        expect(pngBytes.isNotEmpty, isTrue);
+          await tester.tap(historyEntryFinder);
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 500));
 
-        final artifactPath = _resolveArtifactPath();
-        final artifactFile = File(artifactPath);
-        artifactFile.parent.createSync(recursive: true);
-        artifactFile.writeAsBytesSync(pngBytes);
-        expect(artifactFile.existsSync(), isTrue);
-        expect(artifactFile.lengthSync(), greaterThan(0));
+          expect(find.byType(HistoryPage), findsOneWidget);
 
-        // Cleanup
-        await HistoryManager().waitForAsyncWrites();
-        HistoryManager().close();
+          final boundary =
+              repaintKey.currentContext?.findRenderObject()
+                  as RenderRepaintBoundary?;
+          expect(boundary, isNotNull);
 
-        await LocalFavoritesManager().debugWaitForHashedIdsRefresh();
-        LocalFavoritesManager().close();
+          final image = await boundary!.toImage(pixelRatio: 1.0);
+          final byteData = await image.toByteData(
+            format: ui.ImageByteFormat.png,
+          );
+          expect(byteData, isNotNull);
+          final pngBytes = byteData!.buffer.asUint8List();
+          expect(pngBytes.isNotEmpty, isTrue);
 
-        HistoryManager.cache = null;
-        LocalFavoritesManager.cache = null;
-        SingleInstanceCookieJar.instance?.dispose();
-        SingleInstanceCookieJar.instance = null;
+          final artifactPath = _resolveArtifactPath();
+          final artifactFile = File(artifactPath);
+          artifactFile.parent.createSync(recursive: true);
+          artifactFile.writeAsBytesSync(pngBytes);
+          expect(artifactFile.existsSync(), isTrue);
+          expect(artifactFile.lengthSync(), greaterThan(0));
+
+          // Verify the seeded SQLite record's title rendered on HistoryPage
+          expect(find.text('UI Smoke History Comic'), findsWidgets);
+          expect(tester.takeException(), isNull);
+        } finally {
+          // Teardown: ensure test framework error handler is restored, unmount
+          // widgets to cancel active listeners before closing managers, and
+          // close database managers cleanly.
+          FlutterError.onError = testFrameworkOnError;
+
+          await tester.pumpWidget(const SizedBox());
+          await tester.pump();
+
+          await HistoryManager().waitForAsyncWrites();
+          HistoryManager().close();
+
+          await LocalFavoritesManager().debugWaitForHashedIdsRefresh();
+          LocalFavoritesManager().close();
+
+          HistoryManager.cache = null;
+          LocalFavoritesManager.cache = null;
+          SingleInstanceCookieJar.instance?.dispose();
+          SingleInstanceCookieJar.instance = null;
+        }
       },
     );
   });
