@@ -4,7 +4,7 @@
   # VeneraPlus
 
   ![Flutter](https://img.shields.io/badge/Flutter-3.41.4-02569B?logo=flutter&logoColor=white&style=flat-square)
-  [![GitHub](https://img.shields.io/badge/GitHub-Venera--Works%2FVenera--Plus-181717?logo=github&style=flat-square)](https://github.com/Venera-Works/Venera-Plus)
+  [![Release](https://img.shields.io/github/v/release/Venera-Works/Venera-Plus?label=Release&color=10B981&style=flat-square)](https://github.com/Venera-Works/Venera-Plus/releases/latest)
   ![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)
 </div>
 
