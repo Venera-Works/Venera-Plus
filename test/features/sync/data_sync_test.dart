@@ -305,7 +305,7 @@ void main() {
         expect(waitCompleted, isFalse);
 
         uploads.first.complete(const Res(true));
-        await pumpEventQueue();
+        await first;
 
         expect(sync.isUploading, isTrue);
         expect(uploads, hasLength(2));
@@ -374,7 +374,7 @@ void main() {
       expect(waitCompleted, isFalse);
 
       upload.complete(const Res(true));
-      await pumpEventQueue();
+      await uploadFuture;
 
       expect(downloadStarted, isTrue);
       expect(sync.isDownloading, isTrue);

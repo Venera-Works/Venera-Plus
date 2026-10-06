@@ -29,6 +29,9 @@ String _resolveArtifactPath() {
   if (artifactDirDefine.isNotEmpty) {
     return '$artifactDirDefine/smoke_rendered_frame.png';
   }
+  if (Platform.isAndroid) {
+    return 'build/smoke-artifacts/android_smoke.png';
+  }
   return 'build/smoke-artifacts/smoke_rendered_frame.png';
 }
 
@@ -625,7 +628,8 @@ void main() {
             100,
             scrollable: settingsListFinder,
           );
-          expect(historyCategoryFinder, findsOneWidget);
+          await tester.pump();
+          expect(historyCategoryFinder.hitTestable(), findsOneWidget);
 
           await tester.tap(historyCategoryFinder);
           await tester.pump();
@@ -646,18 +650,10 @@ void main() {
           final pngBytes = byteData!.buffer.asUint8List();
           expect(pngBytes.isNotEmpty, isTrue);
 
-          if (Platform.isAndroid) {
-            binding.reportData = <String, dynamic>{
-              'smokeScreenshotPng': base64Encode(pngBytes),
-            };
-          } else {
-            final artifactPath = _resolveArtifactPath();
-            final artifactFile = File(artifactPath);
-            artifactFile.parent.createSync(recursive: true);
-            artifactFile.writeAsBytesSync(pngBytes);
-            expect(artifactFile.existsSync(), isTrue);
-            expect(artifactFile.lengthSync(), greaterThan(0));
-          }
+          binding.reportData = <String, dynamic>{
+            'smokeScreenshotPng': base64Encode(pngBytes),
+            'smokeScreenshotPath': _resolveArtifactPath(),
+          };
 
           // Verify the seeded SQLite record's title rendered on HistoryPage
           // (ComicTile decorates title with "[${comic.maxPage}P]" prefix when maxPage is present)

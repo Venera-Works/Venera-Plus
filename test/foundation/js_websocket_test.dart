@@ -277,28 +277,41 @@ void main() {
     expect(manualProxy, 'PROXY 127.0.0.1:7890');
   });
 
-  test(
-    'unconsumed remote close releases active connection and expires',
-    () async {
-      final serverSocket = Completer<WebSocket>();
-      bridge = JsWebSocketBridge(
-        proxyResolver: () async => null,
-        terminalStateTtl: const Duration(milliseconds: 20),
+  test('unconsumed remote close releases active connection', () async {
+    final serverSocket = Completer<WebSocket>();
+    unawaited(() async {
+      serverSocket.complete(
+        await WebSocketTransformer.upgrade(await server.first),
       );
-      unawaited(() async {
-        serverSocket.complete(
-          await WebSocketTransformer.upgrade(await server.first),
-        );
-      }());
-      await _connect(bridge, server.port);
-      await (await serverSocket.future).close(1000, 'done');
-      await pumpEventQueue();
-      expect(bridge.debugConnectionCount, 0);
-      expect(bridge.debugTerminalStateCount, 1);
-      await Future<void>.delayed(const Duration(milliseconds: 30));
-      expect(bridge.debugTerminalStateCount, 0);
-    },
-  );
+    }());
+    await _connect(bridge, server.port);
+    final socket = await serverSocket.future;
+    final remoteClose = socket.drain<void>();
+    await socket.close(1000, 'done');
+    await remoteClose;
+    expect(bridge.debugConnectionCount, 0);
+    expect(bridge.debugTerminalStateCount, 1);
+  });
+
+  test('unconsumed remote close terminal state expires', () async {
+    final serverSocket = Completer<WebSocket>();
+    bridge = JsWebSocketBridge(
+      proxyResolver: () async => null,
+      terminalStateTtl: const Duration(milliseconds: 20),
+    );
+    unawaited(() async {
+      serverSocket.complete(
+        await WebSocketTransformer.upgrade(await server.first),
+      );
+    }());
+    await _connect(bridge, server.port);
+    final socket = await serverSocket.future;
+    final remoteClose = socket.drain<void>();
+    await socket.close(1000, 'done');
+    await remoteClose;
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    expect(bridge.debugTerminalStateCount, 0);
+  });
 
   test('terminal states are capacity bounded', () async {
     bridge = JsWebSocketBridge(

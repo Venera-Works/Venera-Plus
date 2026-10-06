@@ -91,6 +91,16 @@ Tests should mirror source directories where possible:
 - `lib/features/<domain>/` maps to `test/features/<domain>/`.
 - `lib/foundation/` maps to `test/foundation/`.
 - `lib/network/` maps to `test/network/`.
+- `lib/components/` maps to `test/components/`.
+- `lib/app_runtime/` maps to `test/app_runtime/`.
+- `lib/routing/` maps to `test/routing/`.
+- `tool/` maps to `test/tool/`.
+
+For platform smoke and native integration testing:
+
+- `test/integration/`: platform and native integration scenarios (executed explicitly only; entry files must not end in `_test.dart`, e.g. `platform_smoke.dart`, ensuring isolation from standard `flutter test --coverage` discovery).
+- `test/driver/`: host-side integration test drivers and screenshot/artifact verification (e.g. `platform_smoke_driver.dart`, also without a `_test.dart` suffix).
+- For execution instructions and driver arguments, see the quality checks section in [Build and Development](../development/build.en.md#quality-checks).
 
 When moving source files, move or update the matching tests and fix package imports.
 

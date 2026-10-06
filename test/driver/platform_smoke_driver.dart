@@ -16,6 +16,13 @@ Future<void> main() => integrationDriver(
       );
     }
 
+    final artifactPath = data?['smokeScreenshotPath'];
+    if (artifactPath is! String || artifactPath.isEmpty) {
+      throw StateError(
+        'Missing or invalid smokeScreenshotPath payload in reportData: $artifactPath',
+      );
+    }
+
     final bytes = base64Decode(encoded);
     if (bytes.length < 24) {
       throw StateError(
@@ -41,12 +48,12 @@ Future<void> main() => integrationDriver(
     }
 
     stdout.writeln(
-      'Android smoke screenshot validated: ${width}x$height (${bytes.length} bytes)',
+      'Platform smoke screenshot validated: ${width}x$height (${bytes.length} bytes)',
     );
 
-    final artifactFile = File('build/smoke-artifacts/android_smoke.png');
+    final artifactFile = File(artifactPath);
     artifactFile.parent.createSync(recursive: true);
     artifactFile.writeAsBytesSync(bytes);
-    stdout.writeln('Saved Android smoke screenshot to ${artifactFile.path}');
+    stdout.writeln('Saved platform smoke screenshot to ${artifactFile.path}');
   },
 );

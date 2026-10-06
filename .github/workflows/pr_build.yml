@@ -33,7 +33,7 @@ jobs:
           changed_files="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" --)"
           printf '%s\n' "$changed_files"
           if printf '%s\n' "$changed_files" | grep -Eq \
-            '^(integration_test/|test_driver/|lib/|assets/|android/|windows/|ios/|macos/|linux/|debian/|patch/|\.github/workflows/|\.github/scripts/|pubspec\.yaml$|pubspec\.lock$|rust-toolchain\.toml$|analysis_options\.yaml$)'; then
+            '^(test/integration/|test/driver/|lib/|assets/|android/|windows/|ios/|macos/|linux/|debian/|patch/|\.github/workflows/|\.github/scripts/|pubspec\.yaml$|pubspec\.lock$|rust-toolchain\.toml$|analysis_options\.yaml$)'; then
             echo "platform=true" >> "$GITHUB_OUTPUT"
           else
             echo "platform=false" >> "$GITHUB_OUTPUT"
@@ -117,7 +117,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
           script: |
-            flutter drive --driver=test_driver/platform_smoke_driver.dart --target=integration_test/platform_smoke_test.dart -d emulator-5554 --dart-define=CI_NATIVE_SMOKE=true
+            flutter drive --driver=test/driver/platform_smoke_driver.dart --target=test/integration/platform_smoke.dart -d emulator-5554 --dart-define=CI_NATIVE_SMOKE=true
             test -s build/smoke-artifacts/android_smoke.png
       - name: 上传 Android 冒烟产物
         if: always()
@@ -154,7 +154,7 @@ jobs:
         run: |
           $smokeDir = (Join-Path (Get-Location) 'build\smoke-artifacts')
           New-Item -ItemType Directory -Path $smokeDir -Force | Out-Null
-          flutter test integration_test/platform_smoke_test.dart -d windows "--dart-define=CI_NATIVE_SMOKE=true" "--dart-define=SMOKE_ARTIFACT_DIR=$smokeDir" --timeout 15m
+          flutter drive --driver=test/driver/platform_smoke_driver.dart --target=test/integration/platform_smoke.dart -d windows "--dart-define=CI_NATIVE_SMOKE=true" "--dart-define=SMOKE_ARTIFACT_DIR=$smokeDir" --timeout 900
           $screenshot = Join-Path $smokeDir 'smoke_rendered_frame.png'
           if (-not (Test-Path $screenshot) -or (Get-Item $screenshot).Length -eq 0) {
               throw "Windows smoke screenshot was not generated or is empty: $screenshot"

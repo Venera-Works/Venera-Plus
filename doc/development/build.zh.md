@@ -73,7 +73,37 @@ git diff --check
 
 CI 会使用 `flutter test --coverage` 生成 `coverage/lcov.info`，在工作流摘要中显示行覆盖率，并上传报告产物。当前覆盖率用于建立可见基线，尚未设置统一硬阈值；涉及关键业务路径的改动仍必须增加针对性测试。
 
-PR 还会运行 `依赖安全审查` 和 `PR 平台冒烟构建`。依赖审查会阻止引入高危或严重漏洞依赖；当改动涉及 Flutter 代码、集成测试、原生平台目录、依赖、构建脚本或工作流时，平台工作流会执行 Android Debug（arm64 编译门禁与 x86_64 模拟器环境原生集成测试）和 Windows Debug（应用构建、真实启动脚本与原生集成测试），文档等不影响构建的改动会跳过这两个平台任务。集成测试统一使用 `integration_test/platform_smoke_test.dart`（需显式 `--dart-define=CI_NATIVE_SMOKE=true` 在一次性 CI runner 运行），SQLite 原生加载、旧版本数据库模式迁移、事务写入、重开持久化及数据备份恢复在 suite 临时隔离目录执行，真实 MyApp 首页启动后点击历史入口导航至真实 HistoryPage、检查数据库种入的历史标题，全过程使用一次性运行器 profile 并断言无未捕获异常；截图证明在 Android 上通过官方 `test_driver/platform_smoke_driver.dart` 配合 `reportData` 由宿主驱动强校验 PNG 签名并导出产物，Windows 上通过 `flutter test` 直接保存文件。Dart 格式检查覆盖 `lib`、`test`、`integration_test` 和 `test_driver`。`main` 分支要求 PR 通过代码分析、依赖审查和平台冒烟构建门禁，并禁止直接强推或删除分支。
+PR 还会运行 `依赖安全审查` 和 `PR 平台冒烟构建`。依赖审查会阻止引入高危或严重漏洞依赖；当改动涉及业务代码、原生平台目录、依赖、构建脚本、工作流，或 `test/integration/`、`test/driver/` 原生测试时，平台工作流会执行 Android Debug（arm64 编译门禁与 x86_64 模拟器环境原生集成测试）和 Windows Debug（应用构建、真实启动脚本与原生集成测试）。CI 变更检测精确匹配 `test/integration/` 与 `test/driver/`，不扩大触发范围到所有 `test/`；文档等不影响构建的改动会跳过这两个平台任务。
+
+原生集成测试与驱动已统一收敛至 `test/` 目录：场景入口为 `test/integration/platform_smoke.dart`，宿主端驱动为 `test/driver/platform_smoke_driver.dart`。为避免被日常 `flutter test --coverage` 默认发现与覆盖率统计收集，两个入口刻意省略了 `_test.dart` 后缀；旧根目录 `integration_test/` 与 `test_driver/` 已彻底移除，不保留兼容入口。
+
+由于 Flutter 3.41.4 的 `flutter test` 对设备集成测试的路径识别硬编码为根 `integration_test/` 目录，移动后 Android 与 Windows 均必须使用 `flutter drive` 并显式传入 `--driver=...` 和 `--target=...`（Windows 不可继续通过 `flutter test -d windows` 运行）。测试运行时须显式传入 `--dart-define=CI_NATIVE_SMOKE=true` 作为安全保护开关，该开关严格限制仅在一次性 CI runner 中使用，不鼓励在本地环境直接构建与执行。
+
+原生集成测试在 suite 临时隔离目录中验证 SQLite 原生加载、后台 Isolate、旧版本数据库模式迁移、事务写入、重开持久化及真实数据备份还原；随后启动真实 `MyApp` 初始化并进入首页，点击顶栏设置（Settings）图标，滚动并等待布局刷新后点击历史（History）导航至真实 `HistoryPage`，校验数据库播种的历史标题，全过程使用一次性运行器 profile 并断言无未捕获异常。
+
+在截图验证方面，Android 与 Windows 均通过 `binding.reportData` 向宿主端驱动传递截图 Base64 数据与宿主输出路径，由共享驱动统一强校验 PNG 签名与正向尺寸后写入落盘；截图不再由 Windows 应用直接写文件。产物落盘路径默认分别为 Android 的 `build/smoke-artifacts/android_smoke.png` 与 Windows 的 `build/smoke-artifacts/smoke_rendered_frame.png`（Windows CI 环境额外通过 `SMOKE_ARTIFACT_DIR` 指定绝对输出目录）。
+
+一次性 CI 环境中的显式执行命令如下：
+
+Android（模拟器已就绪）：
+
+```bash
+flutter drive \
+  --driver=test/driver/platform_smoke_driver.dart \
+  --target=test/integration/platform_smoke.dart \
+  -d emulator-5554 \
+  --dart-define=CI_NATIVE_SMOKE=true
+```
+
+Windows（PowerShell，`--timeout` 单位为秒，900 即 15 分钟）：
+
+```powershell
+$smokeDir = (Join-Path (Get-Location) 'build\smoke-artifacts')
+New-Item -ItemType Directory -Path $smokeDir -Force | Out-Null
+flutter drive --driver=test/driver/platform_smoke_driver.dart --target=test/integration/platform_smoke.dart -d windows "--dart-define=CI_NATIVE_SMOKE=true" "--dart-define=SMOKE_ARTIFACT_DIR=$smokeDir" --timeout 900
+```
+
+Dart 格式检查覆盖 `lib` 与 `test`（自动递归覆盖子目录）。`main` 分支要求 PR 通过代码分析、依赖审查和平台冒烟构建门禁，并禁止直接强推或删除分支。
 
 涉及发布版本时再运行：
 
@@ -164,7 +194,7 @@ python .github/scripts/release_version.py --check --tag v1.2.3
 
 `pubspec.yaml`、发布 tag 和 `CHANGELOG.md` 版本章节必须与 `release.json` 一致。
 
-`代码分析` 工作流会运行版本与结构检查、Python 脚本测试、Dart 格式检查（`lib`、`test` 与 `integration_test`）、`flutter analyze`、完整 Dart 测试及覆盖率汇总。`依赖安全审查` 会检查 PR 新增或升级的依赖，`PR 平台冒烟构建` 会按改动范围验证 Android 和 Windows 的编译与原生数据库集成测试场景。`完整构建` 在开始多平台构建前会复用同一质量工作流；手动平台构建和 tag 发布则共同复用 `.github/workflows/build.yml`，避免两套构建定义产生差异。
+`代码分析` 工作流会运行版本与结构检查、Python 脚本测试、Dart 格式检查（`lib` 与 `test`，覆盖子目录）、`flutter analyze`、完整 Dart 测试及覆盖率汇总。`依赖安全审查` 会检查 PR 新增或升级的依赖，`PR 平台冒烟构建` 会按改动范围验证 Android 和 Windows 的编译与原生数据库集成测试场景。`完整构建` 在开始多平台构建前会复用同一质量工作流；手动平台构建和 tag 发布则共同复用 `.github/workflows/build.yml`，避免两套构建定义产生差异。
 
 原生平台 CI 构建任务配置了编译与依赖缓存：使用 `sccache` 缓存原生任务中的 Rust 编译及受支持的 Linux CMake 生成器路径下的 C/C++ 编译（未保留 Windows C/C++ 包装器），使用 Cargo 注册表与 Git 下载缓存，以及 Android Gradle 构建缓存。构建步骤在结束时通过 `sccache --show-stats` 打印统计信息，用于确认热缓存命中情况。最终发布包与安装包等产物始终重新构建生成，不会从缓存复用。
 

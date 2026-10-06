@@ -111,7 +111,17 @@ test/features/<domain>/
 - `lib/features/<domain>/` 对应 `test/features/<domain>/`。
 - `lib/foundation/` 对应 `test/foundation/`。
 - `lib/network/` 对应 `test/network/`。
+- `lib/components/` 对应 `test/components/`。
+- `lib/app_runtime/` 对应 `test/app_runtime/`。
+- `lib/routing/` 对应 `test/routing/`。
+- `tool/` 对应 `test/tool/`。
 - `utils/` 已退场，不再新增对应测试目录；基础工具测试放入 `test/foundation/`，业务工具测试放入对应 `test/features/<domain>/`。
+
+对于平台冒烟与原生集成测试：
+
+- `test/integration/`：平台与原生集成测试场景代码（仅显式执行；入口文件刻意不以 `_test.dart` 结尾，如 `platform_smoke.dart`，避免被常规 `flutter test --coverage` 默认发现与收集）。
+- `test/driver/`：宿主端集成测试驱动与截图/产物强校验（如 `platform_smoke_driver.dart`，入口亦无 `_test.dart` 后缀）。
+- 原生集成测试的具体执行说明与参数参见[构建与开发中的质量检查说明](../development/build.zh.md#质量检查)。
 
 移动源码时，应同步移动或更新对应测试文件，并修正 package import。若当前环境缺少平台依赖导致部分测试跳过，应至少保证相关测试可编译并记录跳过原因。
 
