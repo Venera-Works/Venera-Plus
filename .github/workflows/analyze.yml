@@ -33,7 +33,7 @@ jobs:
       - run: flutter pub get --enforce-lockfile
       - run: dart tool/check_git_dependencies.dart
       - name: 检查 Dart 格式
-        run: dart format --output=none --set-exit-if-changed lib test
+        run: dart format --output=none --set-exit-if-changed lib test integration_test test_driver
       - run: flutter analyze --no-fatal-infos --fatal-warnings
       - run: flutter test --coverage
       - name: 汇总 Dart 覆盖率

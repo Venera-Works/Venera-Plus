@@ -33,20 +33,31 @@ jobs:
           changed_files="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" --)"
           printf '%s\n' "$changed_files"
           if printf '%s\n' "$changed_files" | grep -Eq \
-            '^(lib/|assets/|android/|windows/|ios/|macos/|linux/|debian/|patch/|\.github/workflows/|\.github/scripts/|pubspec\.yaml$|pubspec\.lock$|rust-toolchain\.toml$|analysis_options\.yaml$)'; then
+            '^(integration_test/|test_driver/|lib/|assets/|android/|windows/|ios/|macos/|linux/|debian/|patch/|\.github/workflows/|\.github/scripts/|pubspec\.yaml$|pubspec\.lock$|rust-toolchain\.toml$|analysis_options\.yaml$)'; then
             echo "platform=true" >> "$GITHUB_OUTPUT"
           else
             echo "platform=false" >> "$GITHUB_OUTPUT"
           fi
 
   android:
-    name: Android 冒烟构建
+    name: Android 冒烟构建与原生验证
     needs: changes
     if: ${{ needs.changes.outputs.platform == 'true' }}
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
+      - name: 清理运行器空间以确保原生执行可靠
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost
+      - name: 配置 KVM 权限
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm-udev.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 666 /dev/kvm
+          ls -l /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -55,8 +66,18 @@ jobs:
           cache: true
       - name: 准备 Rust 工具链
         run: |
+          # Cargokit Debug 会追加 x86/x64，且插件分别使用 1.85.1 (rhttp) 与 stable (irondash/super_native)；
+          # 须在 Gradle 并行任务前串行预装全部 3 目标，避免并发执行 rustup target add 产生冲突。
           python3 .github/scripts/prepare_rust_toolchain.py \
-            --target aarch64-linux-android
+            --target aarch64-linux-android \
+            --target i686-linux-android \
+            --target x86_64-linux-android
+          rustup target add --toolchain stable \
+            aarch64-linux-android \
+            i686-linux-android \
+            x86_64-linux-android
+          rustup run stable cargo --version
+          rustup target list --toolchain stable --installed
       - uses: actions/setup-java@v6
         with:
           distribution: oracle
@@ -84,11 +105,31 @@ jobs:
             'storeFile=../debug.keystore' \
             > android/key.properties
       - run: flutter pub get --enforce-lockfile
-      - name: 构建 Android Debug APK
+      - name: 构建 Android Debug APK (arm64)
         run: flutter build apk --debug --target-platform android-arm64
+      - name: 运行 Android 平台冒烟与数据库原生验证
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          script: |
+            flutter drive --driver=test_driver/platform_smoke_driver.dart --target=integration_test/platform_smoke_test.dart -d emulator-5554 --dart-define=CI_NATIVE_SMOKE=true
+            test -s build/smoke-artifacts/android_smoke.png
+      - name: 上传 Android 冒烟产物
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-smoke-artifacts
+          path: build/smoke-artifacts
+          if-no-files-found: error
+          retention-days: 7
 
   windows:
-    name: Windows 冒烟构建
+    name: Windows 冒烟构建与原生验证
     needs: changes
     if: ${{ needs.changes.outputs.platform == 'true' }}
     runs-on: windows-2025
@@ -104,6 +145,30 @@ jobs:
       - run: flutter pub get --enforce-lockfile
       - name: 构建 Windows Debug 应用
         run: flutter build windows --debug
+      - name: 执行 Windows 真实启动脚本验证
+        shell: pwsh
+        run: |
+          .\.github\scripts\test_windows_startup.ps1 -Application build\windows\x64\runner\Debug\VeneraPlus.exe -OutputDirectory build\windows\startup-smoke
+      - name: 执行 Windows 原生数据库与应用场景集成测试
+        shell: pwsh
+        run: |
+          $smokeDir = (Join-Path (Get-Location) 'build\smoke-artifacts')
+          New-Item -ItemType Directory -Path $smokeDir -Force | Out-Null
+          flutter test integration_test/platform_smoke_test.dart -d windows "--dart-define=CI_NATIVE_SMOKE=true" "--dart-define=SMOKE_ARTIFACT_DIR=$smokeDir" --timeout 15m
+          $screenshot = Join-Path $smokeDir 'smoke_rendered_frame.png'
+          if (-not (Test-Path $screenshot) -or (Get-Item $screenshot).Length -eq 0) {
+              throw "Windows smoke screenshot was not generated or is empty: $screenshot"
+          }
+      - name: 上传 Windows 冒烟产物
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-smoke-artifacts
+          path: |
+            build/smoke-artifacts
+            build/windows/startup-smoke
+          if-no-files-found: error
+          retention-days: 7
 
   platform_gate:
     name: 平台冒烟构建门禁

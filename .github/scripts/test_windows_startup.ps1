@@ -85,9 +85,11 @@ function Wait-ForExit(
     }
 }
 
+# WindowStyle must be Normal: Win32 ShowWindow ignores nCmdShow on first call and uses
+# STARTUPINFO.wShowWindow. Passing Hidden suppresses the top-level window and leaves MainWindowHandle as 0.
 function Start-TestProcess([string]$Path, [string]$Name) {
     $process = Start-Process -FilePath $Path -WorkingDirectory $testRoot `
-        -WindowStyle Hidden -PassThru `
+        -WindowStyle Normal -PassThru `
         -RedirectStandardOutput (Join-Path $testRoot "$Name.stdout.log") `
         -RedirectStandardError (Join-Path $testRoot "$Name.stderr.log")
     $started.Add($process)
