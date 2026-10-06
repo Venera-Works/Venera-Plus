@@ -639,7 +639,12 @@ void main() {
           expect(artifactFile.lengthSync(), greaterThan(0));
 
           // Verify the seeded SQLite record's title rendered on HistoryPage
-          expect(find.text('UI Smoke History Comic'), findsWidgets);
+          // (ComicTile decorates title with "[${comic.maxPage}P]" prefix when maxPage is present)
+          final historyTitleFinder = find.descendant(
+            of: find.byType(HistoryPage),
+            matching: find.textContaining(smokeHistory.title),
+          );
+          expect(historyTitleFinder, findsOneWidget);
           expect(tester.takeException(), isNull);
         } finally {
           // Teardown: ensure test framework error handler is restored, unmount
