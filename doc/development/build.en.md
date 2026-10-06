@@ -73,7 +73,37 @@ git diff --check
 
 CI runs `flutter test --coverage`, publishes line coverage in the workflow summary, and uploads `coverage/lcov.info`. Coverage is currently a visible baseline rather than a repository-wide hard threshold. Changes to critical behavior still require focused tests.
 
-Pull requests also run `依赖安全审查` and `PR 平台冒烟构建`. Dependency review blocks newly introduced dependencies with high or critical vulnerabilities. Changes to Flutter code, integration tests, native platform directories, dependencies, build scripts, or workflows run Android Debug (arm64 build gate and x86_64 emulator native integration testing) and Windows Debug (application build, real startup smoke script, and native integration testing); documentation-only changes skip those platform jobs. Integration tests unify under `integration_test/platform_smoke_test.dart` (requiring explicit `--dart-define=CI_NATIVE_SMOKE=true` on disposable CI runners); SQLite native loading, legacy schema migration, transactions, reopen persistence, and backup/restore execute in suite isolated temporary directories, while real MyApp home page startup navigates via the history entry to real HistoryPage to verify database-seeded history titles in the disposable runner profile, asserting the absence of uncaught exceptions; screenshot verification exports via official `test_driver/platform_smoke_driver.dart` and `reportData` with host-validated PNG signatures on Android, and direct file output via `flutter test` on Windows. Dart formatting checks cover `lib`, `test`, `integration_test`, and `test_driver`. The main branch requires code analysis, dependency review, and the platform smoke-build gate to pass, and direct force-pushes or branch deletion are disabled.
+Pull requests also run `依赖安全审查` and `PR 平台冒烟构建`. Dependency review blocks newly introduced dependencies with high or critical vulnerabilities. When changes touch app code, native platform directories, dependencies, build scripts, workflows, or native tests under `test/integration/` or `test/driver/`, the platform workflow runs Android Debug (arm64 compilation gate and x86_64 emulator native integration testing) and Windows Debug (application build, real startup smoke script, and native integration testing). CI change detection precisely matches `test/integration/` and `test/driver/` rather than expanding to all `test/` paths; documentation-only changes skip these platform jobs.
+
+Native integration test scenarios and host drivers are consolidated under `test/`: `test/integration/platform_smoke.dart` serves as the test scenario entry, while `test/driver/platform_smoke_driver.dart` serves as the shared host-side driver. To prevent accidental discovery and coverage collection by standard `flutter test --coverage`, both entry files intentionally omit the `_test.dart` suffix. The legacy root `integration_test/` and `test_driver/` directories have been removed without compatibility shims.
+
+Because Flutter 3.41.4 device integration test recognition in `flutter test` hardcodes the root `integration_test/` directory, both platforms must use `flutter drive` with explicit `--driver=...` and `--target=...` options after the relocation (Windows can no longer run via `flutter test -d windows`). Running native smoke tests requires the explicit safety switch `--dart-define=CI_NATIVE_SMOKE=true`, which is strictly restricted to disposable CI runners; running them in local environments is discouraged.
+
+Within an isolated temporary directory, the suite validates SQLite native loading, background isolates, legacy schema migrations, transaction writes, reopen persistence, and authentic backup/restore. It then starts authentic `MyApp` initialization and the home page, clicks the top-bar settings icon, scrolls and waits for layout refresh before clicking the history entry to reach `HistoryPage`, and verifies database-seeded history titles in the disposable runner profile, asserting that no uncaught exceptions occurred.
+
+Both platforms transmit screenshot Base64 data and host output paths via `binding.reportData` to the shared host driver, which strictly validates PNG signatures and positive dimensions before writing to disk; the Windows application no longer writes screenshot files directly. Artifact output defaults to `build/smoke-artifacts/android_smoke.png` on Android and `build/smoke-artifacts/smoke_rendered_frame.png` on Windows (Windows CI additionally specifies an absolute directory via `SMOKE_ARTIFACT_DIR`).
+
+Explicit copyable `flutter drive` commands for disposable runner environments:
+
+Android (with emulator ready):
+
+```bash
+flutter drive \
+  --driver=test/driver/platform_smoke_driver.dart \
+  --target=test/integration/platform_smoke.dart \
+  -d emulator-5554 \
+  --dart-define=CI_NATIVE_SMOKE=true
+```
+
+Windows (PowerShell, `--timeout` is in seconds, so 900 specifies 15 minutes):
+
+```powershell
+$smokeDir = (Join-Path (Get-Location) 'build\smoke-artifacts')
+New-Item -ItemType Directory -Path $smokeDir -Force | Out-Null
+flutter drive --driver=test/driver/platform_smoke_driver.dart --target=test/integration/platform_smoke.dart -d windows "--dart-define=CI_NATIVE_SMOKE=true" "--dart-define=SMOKE_ARTIFACT_DIR=$smokeDir" --timeout 900
+```
+
+Dart formatting checks cover `lib` and `test` (recursively covering all subdirectories). The `main` branch requires code analysis, dependency review, and the platform smoke-build gate to pass, and direct force-pushes or branch deletion are disabled.
 
 For release-related changes, also run:
 
@@ -164,7 +194,7 @@ python .github/scripts/release_version.py --check --tag v1.2.3
 
 `pubspec.yaml`, the release tag, and the version section in `CHANGELOG.md` must match `release.json`.
 
-The `代码分析` workflow runs version and structure checks, Python script tests, Dart formatting checks across `lib`, `test`, and `integration_test`, `flutter analyze`, the full Dart test suite, and coverage reporting. `依赖安全审查` checks dependencies added or upgraded by a pull request, while `PR 平台冒烟构建` verifies Android and Windows compilation as well as native database integration test scenarios when the changed files can affect platform builds. Before starting multi-platform builds, `完整构建` reuses the same quality workflow. Manual platform builds and tag releases both reuse `.github/workflows/build.yml` so their build definitions cannot drift apart.
+The `代码分析` workflow runs version and structure checks, Python script tests, Dart formatting checks across `lib` and `test` (covering subdirectories), `flutter analyze`, the full Dart test suite, and coverage reporting. `依赖安全审查` checks dependencies added or upgraded by a pull request, while `PR 平台冒烟构建` verifies Android and Windows compilation as well as native database integration test scenarios when the changed files can affect platform builds. Before starting multi-platform builds, `完整构建` reuses the same quality workflow. Manual platform builds and tag releases both reuse `.github/workflows/build.yml` so their build definitions cannot drift apart.
 
 Native CI build jobs configure compilation and dependency caching: `sccache` caches Rust on native jobs and C/C++ on supported Linux CMake generator paths (the Windows C/C++ wrapper was intentionally not retained), Cargo caches registry and Git downloads, and Android jobs reuse the Gradle build cache. Jobs print statistics via `sccache --show-stats` upon completion to verify warm-cache hits. Final release packages and installers are always rebuilt and are never reused from cache.
 
