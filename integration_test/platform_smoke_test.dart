@@ -28,9 +28,6 @@ String _resolveArtifactPath() {
   if (artifactDirDefine.isNotEmpty) {
     return '$artifactDirDefine/smoke_rendered_frame.png';
   }
-  if (Platform.isAndroid) {
-    return '/data/data/com.github.veneraworks.veneraplus/files/smoke_rendered_frame.png';
-  }
   return 'build/smoke-artifacts/smoke_rendered_frame.png';
 }
 
@@ -42,7 +39,7 @@ void main() {
     );
   }
 
-  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
   late Directory suiteTempDir;
   late String originalDataPath;
@@ -632,12 +629,18 @@ void main() {
           final pngBytes = byteData!.buffer.asUint8List();
           expect(pngBytes.isNotEmpty, isTrue);
 
-          final artifactPath = _resolveArtifactPath();
-          final artifactFile = File(artifactPath);
-          artifactFile.parent.createSync(recursive: true);
-          artifactFile.writeAsBytesSync(pngBytes);
-          expect(artifactFile.existsSync(), isTrue);
-          expect(artifactFile.lengthSync(), greaterThan(0));
+          if (Platform.isAndroid) {
+            binding.reportData = <String, dynamic>{
+              'smokeScreenshotPng': base64Encode(pngBytes),
+            };
+          } else {
+            final artifactPath = _resolveArtifactPath();
+            final artifactFile = File(artifactPath);
+            artifactFile.parent.createSync(recursive: true);
+            artifactFile.writeAsBytesSync(pngBytes);
+            expect(artifactFile.existsSync(), isTrue);
+            expect(artifactFile.lengthSync(), greaterThan(0));
+          }
 
           // Verify the seeded SQLite record's title rendered on HistoryPage
           // (ComicTile decorates title with "[${comic.maxPage}P]" prefix when maxPage is present)
