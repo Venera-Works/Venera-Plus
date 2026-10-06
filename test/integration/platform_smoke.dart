@@ -628,7 +628,8 @@ void main() {
             100,
             scrollable: settingsListFinder,
           );
-          expect(historyCategoryFinder, findsOneWidget);
+          await tester.pump();
+          expect(historyCategoryFinder.hitTestable(), findsOneWidget);
 
           await tester.tap(historyCategoryFinder);
           await tester.pump();
