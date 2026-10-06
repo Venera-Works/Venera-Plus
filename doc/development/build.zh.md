@@ -105,8 +105,10 @@ storeFile=../keystore.jks
 
 ```bash
 flutter pub get --enforce-lockfile
-flutter build apk --release --no-pub
+flutter build apk --release
 ```
+
+Flutter 3.41.4 的 Android Release 构建不要添加 `--no-pub`：该参数还会跳过按 Release 模式重新生成插件注册代码，导致 `GeneratedPluginRegistrant.java` 可能仍引用已被发布编译排除的 `integration_test`。保留前置锁文件校验；两个 Android Release 工作流会在构建后检查 `pubspec.lock` 未变化。详见 [Flutter #163774](https://github.com/flutter/flutter/issues/163774)。
 
 构建产物通常位于 `build/app/outputs/apk/release/`。
 

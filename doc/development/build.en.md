@@ -105,8 +105,10 @@ Build the APK:
 
 ```bash
 flutter pub get --enforce-lockfile
-flutter build apk --release --no-pub
+flutter build apk --release
 ```
+
+Do not add `--no-pub` to Android Release builds on Flutter 3.41.4: this flag also skips regenerating plugin registration code for Release mode, which can leave `GeneratedPluginRegistrant.java` referencing `integration_test` that has already been excluded from the release compilation. Keep the preceding lockfile check; both Android Release workflows verify that `pubspec.lock` remains unchanged after building. See [Flutter #163774](https://github.com/flutter/flutter/issues/163774).
 
 Artifacts are normally written to `build/app/outputs/apk/release/`.
 
