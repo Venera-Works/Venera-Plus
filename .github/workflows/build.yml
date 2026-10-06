@@ -15,19 +15,19 @@ on:
       build_macos:
         required: false
         type: boolean
-        default: false
+        default: true
       build_ios:
         required: false
         type: boolean
-        default: false
+        default: true
       build_linux_x64:
         required: false
         type: boolean
-        default: false
+        default: true
       build_linux_arm64:
         required: false
         type: boolean
-        default: false
+        default: true
     secrets:
       ANDROID_KEYSTORE:
         required: false
@@ -49,7 +49,7 @@ on:
         description: '构建 macOS'
         required: true
         type: boolean
-        default: true
+        default: false
       build_ios:
         description: '构建 iOS'
         required: true
@@ -59,12 +59,12 @@ on:
         description: '构建 Linux x64'
         required: true
         type: boolean
-        default: true
+        default: false
       build_linux_arm64:
         description: '构建 Linux ARM64'
         required: true
         type: boolean
-        default: true
+        default: false
 
 concurrency:
   group: build-${{ github.workflow }}-${{ github.repository }}-${{ github.ref }}
