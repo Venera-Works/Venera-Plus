@@ -323,7 +323,7 @@ void main() {
         await historyManager.waitForAsyncWrites();
         historyManager.close();
 
-        await favoritesManager.debugWaitForHashedIdsRefresh();
+        await favoritesManager.waitForPendingReads();
         favoritesManager.close();
 
         HistoryManager.cache = null;
@@ -362,7 +362,7 @@ void main() {
         await reopenedHistory.waitForAsyncWrites();
         reopenedHistory.close();
 
-        await reopenedFavorites.debugWaitForHashedIdsRefresh();
+        await reopenedFavorites.waitForPendingReads();
         reopenedFavorites.close();
 
         HistoryManager.cache = null;
@@ -461,7 +461,7 @@ void main() {
         await historyManager.waitForAsyncWrites();
         historyManager.close();
 
-        await favoritesManager.debugWaitForHashedIdsRefresh();
+        await favoritesManager.waitForPendingReads();
         favoritesManager.close();
 
         HistoryManager.cache = null;
@@ -531,7 +531,7 @@ void main() {
         // Cleanup
         await HistoryManager().waitForAsyncWrites();
         HistoryManager().close();
-        await LocalFavoritesManager().debugWaitForHashedIdsRefresh();
+        await LocalFavoritesManager().waitForPendingReads();
         LocalFavoritesManager().close();
         HistoryManager.cache = null;
         LocalFavoritesManager.cache = null;
@@ -669,7 +669,7 @@ void main() {
           await HistoryManager().waitForAsyncWrites();
           HistoryManager().close();
 
-          await LocalFavoritesManager().debugWaitForHashedIdsRefresh();
+          await LocalFavoritesManager().waitForPendingReads();
           LocalFavoritesManager().close();
 
           HistoryManager.cache = null;

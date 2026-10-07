@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:venera_plus/foundation/sync_records.dart';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import 'package:venera_plus/foundation/app.dart';
@@ -16,6 +17,130 @@ class Appdata with Init {
   final Settings settings = Settings._create();
 
   var searchHistory = <String>[];
+  var _overflowSearchHistory = <String>[];
+  final _searchHistoryOrders = <String, num>{};
+  int _nextSearchHistoryOrder = -1;
+
+  List<String> get fullSearchHistory => [
+    ...searchHistory,
+    ..._overflowSearchHistory,
+  ];
+
+  void setFullSearchHistory(
+    List<String> orderedKeywords, {
+    Map<String, num>? orders,
+  }) {
+    _overflowSearchHistory.clear();
+    searchHistory.clear();
+    _searchHistoryOrders.clear();
+    for (var i = 0; i < orderedKeywords.length; i++) {
+      final keyword = orderedKeywords[i];
+      if (i < 50) {
+        searchHistory.add(keyword);
+      } else {
+        _overflowSearchHistory.add(keyword);
+      }
+      final order = orders == null ? i : orders[keyword];
+      if (order != null) {
+        _searchHistoryOrders[keyword] = order;
+        final next = order.floor() - 1;
+        if (next < _nextSearchHistoryOrder) {
+          _nextSearchHistoryOrder = next;
+        }
+      }
+    }
+    _ensureSearchHistoryOrders();
+  }
+
+  void _ensureSearchHistoryOrders() {
+    final count = searchHistory.length + _overflowSearchHistory.length;
+    var changed = _searchHistoryOrders.length != count;
+    if (_searchHistoryOrders.isEmpty && _nextSearchHistoryOrder == -1) {
+      // Old backups store only a list. Seed it once, never renumber after edits.
+      for (var i = 0; i < count; i++) {
+        final keyword = i < searchHistory.length
+            ? searchHistory[i]
+            : _overflowSearchHistory[i - searchHistory.length];
+        _searchHistoryOrders[keyword] = i;
+      }
+      return;
+    }
+    for (var i = count - 1; i >= 0; i--) {
+      final keyword = i < searchHistory.length
+          ? searchHistory[i]
+          : _overflowSearchHistory[i - searchHistory.length];
+      if (!_searchHistoryOrders.containsKey(keyword)) {
+        _searchHistoryOrders[keyword] = _nextSearchHistoryOrder--;
+        changed = true;
+      }
+    }
+    if (changed) {
+      final live = {...searchHistory, ..._overflowSearchHistory};
+      _searchHistoryOrders.removeWhere((keyword, _) => !live.contains(keyword));
+    }
+  }
+
+  SyncRecords exportSearchHistoryRecords() {
+    _ensureSearchHistoryOrders();
+    return {
+      for (final keyword in searchHistory)
+        syncRecordKey('search', [keyword]): {
+          'order': _searchHistoryOrders[keyword],
+        },
+      for (final keyword in _overflowSearchHistory)
+        syncRecordKey('search', [keyword]): {
+          'order': _searchHistoryOrders[keyword],
+        },
+    };
+  }
+
+  /// Shared by live persistence and isolated legacy readers.
+  static ({Map<String, num> orders, int nextOrder}) decodeSearchHistoryOrder(
+    Map<Object?, Object?> data,
+    List<String> keywords,
+  ) {
+    final rawOrders = data['searchHistoryOrders'];
+    final rawNext = data['nextSearchHistoryOrder'];
+    if (rawNext != null && rawNext is! int) {
+      throw const FormatException(
+        'Next search history order must be an integer',
+      );
+    }
+    var next = rawNext is int && rawNext < -1 ? rawNext : -1;
+    final orders = <String, num>{};
+    if (rawOrders == null) {
+      for (var i = 0; i < keywords.length; i++) {
+        orders[keywords[i]] = i;
+      }
+    } else {
+      if (rawOrders is! Map) {
+        throw const FormatException('Search history orders must be an object');
+      }
+      for (final entry in rawOrders.entries) {
+        if (entry.key is! String ||
+            entry.value is! num ||
+            !(entry.value as num).isFinite) {
+          throw const FormatException('Invalid search history order');
+        }
+      }
+      for (final keyword in keywords) {
+        final order = rawOrders[keyword];
+        if (order is num) {
+          orders[keyword] = order;
+          final floor = order.floor() - 1;
+          if (floor < next) {
+            next = floor;
+          }
+        }
+      }
+      for (var i = keywords.length - 1; i >= 0; i--) {
+        if (!orders.containsKey(keywords[i])) {
+          orders[keywords[i]] = next--;
+        }
+      }
+    }
+    return (orders: orders, nextOrder: next);
+  }
 
   Future<void> _writeQueue = Future.value();
 
@@ -25,37 +150,67 @@ class Appdata with Init {
     _syncDataRequestHandler = handler;
   }
 
-  Future<void> saveData([bool sync = true]) async {
-    await _enqueueWrite(_writeAppData);
+  Future<void> saveData([bool sync = true]) {
     final handler = _syncDataRequestHandler;
     if (sync && handler != null) {
+      // Invalidate an in-flight sync before its commit guard can run. This
+      // notification remains in the caller's zone, including imported writes.
       unawaited(Future.sync(handler));
     }
+    final data = jsonEncode(toJson());
+    final syncJson = jsonDecode(data) as Map<String, dynamic>;
+    final syncSettings = syncJson['settings'] as Map<String, dynamic>;
+    for (final field in getDisabledSyncFields(forExport: true)) {
+      syncSettings.remove(field);
+    }
+    final syncData = jsonEncode(syncJson);
+    return _enqueueWrite(() => _writeAppData(data, syncData));
   }
 
   void addSearchHistory(String keyword) {
+    _ensureSearchHistoryOrders();
+    _searchHistoryOrders[keyword] = _nextSearchHistoryOrder--;
+    _overflowSearchHistory.remove(keyword);
     if (searchHistory.contains(keyword)) {
       searchHistory.remove(keyword);
     }
     searchHistory.insert(0, keyword);
     if (searchHistory.length > 50) {
-      searchHistory.removeLast();
+      final overflow = searchHistory.removeLast();
+      if (!_overflowSearchHistory.contains(overflow)) {
+        _overflowSearchHistory.insert(0, overflow);
+      }
     }
     saveData();
   }
 
   void removeSearchHistory(String keyword) {
     searchHistory.remove(keyword);
+    _overflowSearchHistory.remove(keyword);
+    _searchHistoryOrders.remove(keyword);
     saveData();
   }
 
   void clearSearchHistory() {
     searchHistory.clear();
+    _overflowSearchHistory.clear();
+    _searchHistoryOrders.clear();
     saveData();
   }
 
   Map<String, dynamic> toJson() {
-    return {'settings': settings._data, 'searchHistory': searchHistory};
+    settings._materializeChangedDefaults();
+    _ensureSearchHistoryOrders();
+    return {
+      'settings': settings._data,
+      'searchHistory': searchHistory,
+      if (_overflowSearchHistory.isNotEmpty)
+        'overflowSearchHistory': _overflowSearchHistory,
+      if (_searchHistoryOrders.isNotEmpty)
+        'searchHistoryOrders': _searchHistoryOrders,
+      if (_nextSearchHistoryOrder != -1)
+        'nextSearchHistoryOrder': _nextSearchHistoryOrder,
+    };
   }
 
   List<String> splitField(String merged) {
@@ -95,6 +250,9 @@ class Appdata with Init {
     "webdavComicLibrarySyncEnabled",
     "disableSyncFields",
     "deviceId",
+    "deviceSpecificSettings",
+    "bangumiAccessToken",
+    "bangumiUsername",
     "lastSyncTime",
   };
 
@@ -108,6 +266,134 @@ class Appdata with Init {
   };
 
   static const _obsoleteSetting = "readLaterFolder";
+
+  /// Returns the effective set of forbidden / device-local setting keys.
+  Set<String> getDisabledSyncFields({bool forExport = false}) {
+    final disabled = <String>{
+      ..._disableSync,
+      _obsoleteSetting,
+      'readingFolder',
+    };
+    if (settings["backupWebdavSyncEnabled"] == true) {
+      disabled.removeAll(_archiveSyncFields);
+    }
+    if (settings["webdavComicLibrarySyncEnabled"] == true) {
+      disabled.removeAll(_comicLibrarySyncFields);
+    }
+    final custom = settings["disableSyncFields"];
+    if (custom is String) {
+      disabled.addAll(splitField(custom));
+    }
+    return disabled;
+  }
+
+  /// Checks if a setting key is allowed to be exported or imported via sync.
+  bool isSettingSyncAllowed(String rootKey) {
+    return !getDisabledSyncFields().contains(rootKey);
+  }
+
+  /// Exports settings that are permitted by sync safety policies.
+  Map<String, dynamic> exportSyncSettings() {
+    settings._materializeChangedDefaults();
+    final disabled = getDisabledSyncFields(forExport: true);
+    final result = <String, dynamic>{};
+    for (final entry in settings._data.entries) {
+      if (disabled.contains(entry.key) || entry.key == _obsoleteSetting) {
+        continue;
+      }
+      result[entry.key] = entry.value;
+    }
+    return result;
+  }
+
+  /// Validates known setting roots against their existing default value types.
+  /// Unknown extension settings remain JSON-valued rather than a new allowlist.
+  void validateSyncSetting(String key, Object? value) {
+    Settings.validateValue(key, value);
+  }
+
+  /// Applies a single root setting if permitted.
+  void applySyncSetting(String key, dynamic value) {
+    if (!isSettingSyncAllowed(key) || key == _obsoleteSetting) return;
+    validateSyncSetting(key, value);
+    settings[key] = value;
+  }
+
+  /// Applies a nested setting leaf along [path] if the root key is permitted.
+  void applySyncSettingLeaf(List<String> path, dynamic value) {
+    if (path.isEmpty) return;
+    final rootKey = path.first;
+    if (!isSettingSyncAllowed(rootKey) || rootKey == _obsoleteSetting) return;
+    if (path.length == 1) {
+      applySyncSetting(rootKey, value);
+      return;
+    }
+
+    final current = settings[rootKey];
+    final rootMap = current is Map
+        ? Map<String, dynamic>.from(current)
+        : <String, dynamic>{};
+
+    Map<String, dynamic> cursor = rootMap;
+    for (int i = 1; i < path.length - 1; i++) {
+      final key = path[i];
+      final next = cursor[key];
+      if (next is Map) {
+        final childMap = Map<String, dynamic>.from(next);
+        cursor[key] = childMap;
+        cursor = childMap;
+      } else {
+        final childMap = <String, dynamic>{};
+        cursor[key] = childMap;
+        cursor = childMap;
+      }
+    }
+    cursor[path.last] = value;
+    validateSyncSetting(rootKey, rootMap);
+    settings[rootKey] = rootMap;
+  }
+
+  /// Removes a nested setting leaf along [path] if the root key is permitted.
+  void removeSyncSettingLeaf(List<String> path) {
+    if (path.isEmpty) return;
+    final rootKey = path.first;
+    if (!isSettingSyncAllowed(rootKey) || rootKey == _obsoleteSetting) return;
+    if (path.length == 1) {
+      settings.remove(rootKey);
+      return;
+    }
+    if (!settings.containsKey(rootKey)) return;
+
+    final current = settings[rootKey];
+    if (current is! Map) return;
+    final rootMap = Map<String, dynamic>.from(current);
+    Map<String, dynamic> cursor = rootMap;
+    for (int i = 1; i < path.length - 1; i++) {
+      final key = path[i];
+      final next = cursor[key];
+      if (next is! Map) return;
+      final childMap = Map<String, dynamic>.from(next);
+      cursor[key] = childMap;
+      cursor = childMap;
+    }
+    cursor.remove(path.last);
+    settings[rootKey] = rootMap;
+  }
+
+  /// Returns keys currently set that are eligible for sync export/import.
+  List<String> get syncAllowedSettingKeys {
+    return exportSyncSettings().keys.toList();
+  }
+
+  /// Removes an eligible setting by key, strictly observing safety filtering.
+  void removeSyncSetting(String key) {
+    if (!isSettingSyncAllowed(key) ||
+        key == _obsoleteSetting ||
+        key == 'readingFolder') {
+      return;
+    }
+    settings.remove(key);
+  }
 
   /// Sync data from another device and persist the accepted settings.
   Future<void> syncData(Map<String, dynamic> data) async {
@@ -148,7 +434,13 @@ class Appdata with Init {
         }
       }
     }
-    searchHistory = List.from(data['searchHistory'] ?? []);
+    final keywords = <String>[
+      ...List<String>.from(data['searchHistory'] ?? const <String>[]),
+      ...List<String>.from(data['overflowSearchHistory'] ?? const <String>[]),
+    ];
+    final orderState = decodeSearchHistoryOrder(data, keywords);
+    _nextSearchHistoryOrder = orderState.nextOrder;
+    setFullSearchHistory(keywords, orders: orderState.orders);
     await saveData(false);
   }
 
@@ -162,31 +454,12 @@ class Appdata with Init {
     return next;
   }
 
-  Future<void> _writeAppData() async {
-    var json = toJson();
-    var data = jsonEncode(json);
-    var file = File(FilePath.join(App.dataPath, 'appdata.json'));
-
-    var json4sync = jsonDecode(data) as Map<String, dynamic>;
-    var syncSettings = json4sync["settings"] as Map<String, dynamic>;
-    var disabledSyncFields = <String>{..._disableSync};
-    if (settings["backupWebdavSyncEnabled"] == true) {
-      disabledSyncFields.removeAll(_archiveSyncFields);
-    }
-    if (settings["webdavComicLibrarySyncEnabled"] == true) {
-      disabledSyncFields.removeAll(_comicLibrarySyncFields);
-    }
-    disabledSyncFields.addAll(
-      splitField(settings["disableSyncFields"] as String),
-    );
-    for (var field in disabledSyncFields) {
-      syncSettings.remove(field);
-    }
-    var file4sync = File(FilePath.join(App.dataPath, 'syncdata.json'));
-
+  Future<void> _writeAppData(String data, String syncData) async {
+    final file = File(FilePath.join(App.dataPath, 'appdata.json'));
+    final file4sync = File(FilePath.join(App.dataPath, 'syncdata.json'));
     await Future.wait([
       _writeTextAtomically(file, data),
-      _writeTextAtomically(file4sync, jsonEncode(json4sync)),
+      _writeTextAtomically(file4sync, syncData),
     ]);
   }
 
@@ -225,13 +498,14 @@ class Appdata with Init {
       }
       try {
         final decoded = _decodeAppData(await candidate.readAsString());
-        for (final entry in decoded.settings.entries) {
-          if ((entry.value != null || entry.key == 'readingFolder') &&
-              entry.key != _obsoleteSetting) {
-            settings[entry.key] = entry.value;
-          }
-        }
-        searchHistory = decoded.searchHistory;
+        // Persisted absence is a setting tombstone. Defaults are read-only
+        // fallbacks, not fresh stored values reintroduced at every startup.
+        settings.replaceAll(decoded.settings);
+        _nextSearchHistoryOrder = decoded.nextSearchHistoryOrder;
+        setFullSearchHistory([
+          ...decoded.searchHistory,
+          ...decoded.overflowSearchHistory,
+        ], orders: decoded.searchHistoryOrders);
         loadedFrom = candidate;
         break;
       } catch (error, stackTrace) {
@@ -267,9 +541,14 @@ class Appdata with Init {
     Log.info("Appdata", "Recovered appdata from ${loadedFrom.path}");
   }
 
-  ({Map<String, dynamic> settings, List<String> searchHistory}) _decodeAppData(
-    String content,
-  ) {
+  ({
+    Map<String, dynamic> settings,
+    List<String> searchHistory,
+    List<String> overflowSearchHistory,
+    Map<String, num> searchHistoryOrders,
+    int nextSearchHistoryOrder,
+  })
+  _decodeAppData(String content) {
     final decoded = jsonDecode(content);
     if (decoded is! Map) {
       throw const FormatException('Appdata root must be an object');
@@ -281,9 +560,11 @@ class Appdata with Init {
     final normalizedSettings = <String, dynamic>{};
     for (final entry in rawSettings.entries) {
       if (entry.key is String && entry.key != _obsoleteSetting) {
-        normalizedSettings[entry.key as String] = entry.key == 'initialPage'
+        final value = entry.key == 'initialPage'
             ? normalizeStartupPage(entry.value)
             : entry.value;
+        Settings.validateValue(entry.key as String, value);
+        normalizedSettings[entry.key as String] = value;
       }
     }
 
@@ -291,11 +572,28 @@ class Appdata with Init {
     if (rawSearchHistory != null && rawSearchHistory is! List) {
       throw const FormatException('Appdata searchHistory must be a list');
     }
+    final rawOverflow = decoded['overflowSearchHistory'];
+    if (rawOverflow != null && rawOverflow is! List) {
+      throw const FormatException(
+        'Appdata overflowSearchHistory must be a list',
+      );
+    }
+    final searchHistory = rawSearchHistory == null
+        ? <String>[]
+        : rawSearchHistory.whereType<String>().toList();
+    final overflow = rawOverflow == null
+        ? <String>[]
+        : rawOverflow.whereType<String>().toList();
+    final orderState = decodeSearchHistoryOrder(decoded, [
+      ...searchHistory,
+      ...overflow,
+    ]);
     return (
       settings: normalizedSettings,
-      searchHistory: rawSearchHistory == null
-          ? <String>[]
-          : rawSearchHistory.whereType<String>().toList(),
+      searchHistory: searchHistory,
+      overflowSearchHistory: overflow,
+      searchHistoryOrders: orderState.orders,
+      nextSearchHistoryOrder: orderState.nextOrder,
     );
   }
 
@@ -379,7 +677,12 @@ final appdata = Appdata._create();
 class Settings with ChangeNotifier {
   Settings._create();
 
-  final _data = <String, dynamic>{
+  final _data = _createDefaults();
+  final _readDefaults = <String, dynamic>{};
+
+  static final _defaults = _createDefaults();
+
+  static Map<String, dynamic> _createDefaults() => <String, dynamic>{
     'comicDisplayMode': 'detailed', // detailed, brief
     'comicTileScale': 1.00, // 0.75-1.25
     'favoritesDisplayMode': 'list', // list, gallery
@@ -479,8 +782,62 @@ class Settings with ChangeNotifier {
     'bangumiBindings': <String, Map<String, dynamic>>{},
   };
 
+  static void validateValue(String key, Object? value) {
+    if (!_defaults.containsKey(key)) {
+      jsonEncode(value);
+      return;
+    }
+    final defaultValue = _defaults[key];
+    final bool valid;
+    if (defaultValue == null) {
+      valid = switch (key) {
+        'searchSources' => value == null || value is List,
+        'defaultSearchTarget' ||
+        'quickFavorite' => value == null || value is String,
+        _ => value == null,
+      };
+    } else {
+      valid = switch (defaultValue) {
+        bool() => value is bool,
+        int() => value is int,
+        num() => value is num,
+        String() => value is String,
+        List() => value is List,
+        Map() => value is Map,
+        _ => false,
+      };
+    }
+    if (!valid) {
+      throw FormatException('Invalid value type for setting "$key"');
+    }
+    jsonEncode(value);
+  }
+
   operator [](String key) {
-    return _data[key];
+    if (_data.containsKey(key)) return _data[key];
+    final value = _defaults[key];
+    if (value is! Map && value is! List) return value;
+    return _readDefaults.putIfAbsent(key, () => _copyDefault(value));
+  }
+
+  static dynamic _copyDefault(dynamic value) => switch (value) {
+    Map() => <String, dynamic>{
+      for (final entry in value.entries)
+        entry.key as String: _copyDefault(entry.value),
+    },
+    List() => [for (final item in value) _copyDefault(item)],
+    _ => value,
+  };
+
+  // Existing callers mutate lists returned by [] and then saveData. Promote
+  // only an actual mutation, never a default merely read after a tombstone.
+  void _materializeChangedDefaults() {
+    for (final entry in _readDefaults.entries) {
+      if (!_data.containsKey(entry.key) &&
+          !syncValuesEqual(entry.value, _defaults[entry.key])) {
+        _data[entry.key] = entry.value;
+      }
+    }
   }
 
   operator []=(String key, dynamic value) {
@@ -488,6 +845,7 @@ class Settings with ChangeNotifier {
       value = normalizeStartupPage(value);
     }
     _data[key] = value;
+    _readDefaults.remove(key);
     if (key != "dataVersion") {
       notifyListeners();
     }
@@ -496,6 +854,7 @@ class Settings with ChangeNotifier {
   bool containsKey(String key) => _data.containsKey(key);
 
   dynamic remove(String key) {
+    _readDefaults.remove(key);
     if (!_data.containsKey(key)) return null;
     final value = _data.remove(key);
     notifyListeners();
@@ -503,13 +862,12 @@ class Settings with ChangeNotifier {
   }
 
   void replaceAll(Map<String, dynamic> values) {
+    _readDefaults.clear();
     _data
       ..clear()
       ..addAll(values);
     if (_data.containsKey('initialPage')) {
       _data['initialPage'] = normalizeStartupPage(_data['initialPage']);
-    } else {
-      _data['initialPage'] = StartupPage.home.id;
     }
     notifyListeners();
   }
@@ -519,7 +877,7 @@ class Settings with ChangeNotifier {
     String sourceKey,
     bool enabled,
   ) {
-    final values = _data['comicSpecificSettings']["$comicId@$sourceKey"];
+    final values = this['comicSpecificSettings']["$comicId@$sourceKey"];
     if (values is Map &&
         values.containsKey('readerMode') &&
         !values.containsKey('readerModeOverride')) {
@@ -536,7 +894,7 @@ class Settings with ChangeNotifier {
     if (comicId == null || sourceKey == null) {
       return false;
     }
-    return _data['comicSpecificSettings']["$comicId@$sourceKey"]?["enabled"] ==
+    return this['comicSpecificSettings']["$comicId@$sourceKey"]?["enabled"] ==
         true;
   }
 
@@ -544,7 +902,7 @@ class Settings with ChangeNotifier {
     if (key == 'readerMode') return resolveReaderMode(comicId, sourceKey);
     if (isComicSpecificSettingsEnabled(comicId, sourceKey)) {
       var comicValue =
-          _data['comicSpecificSettings']["$comicId@$sourceKey"]?[key];
+          this['comicSpecificSettings']["$comicId@$sourceKey"]?[key];
       if (comicValue != null) {
         return comicValue;
       }
@@ -553,7 +911,7 @@ class Settings with ChangeNotifier {
   }
 
   String? comicReaderModeOverride(String comicId, String sourceKey) {
-    final values = _data['comicSpecificSettings']["$comicId@$sourceKey"];
+    final values = this['comicSpecificSettings']["$comicId@$sourceKey"];
     if (values is! Map) return null;
     if (values.containsKey('readerModeOverride')) {
       final mode = values['readerModeOverride'];
@@ -580,7 +938,7 @@ class Settings with ChangeNotifier {
   }
 
   ComicLayout comicLayout(String comicId, String sourceKey) {
-    final record = _data['comicLayoutDetections']["$comicId@$sourceKey"];
+    final record = this['comicLayoutDetections']["$comicId@$sourceKey"];
     if (record is! Map || record['version'] != ComicLayoutDetection.version) {
       return ComicLayout.unknown;
     }
@@ -592,7 +950,13 @@ class Settings with ChangeNotifier {
     String sourceKey,
     ComicLayoutDetection detection,
   ) {
-    _data['comicLayoutDetections']["$comicId@$sourceKey"] = {
+    final records =
+        _data.putIfAbsent(
+              'comicLayoutDetections',
+              () => this['comicLayoutDetections'],
+            )
+            as Map;
+    records["$comicId@$sourceKey"] = {
       'layout': detection.layout.name,
       'samples': detection.sampleCount,
       'version': ComicLayoutDetection.version,
@@ -635,15 +999,19 @@ class Settings with ChangeNotifier {
     String key,
     dynamic value,
   ) {
-    (_data['comicSpecificSettings'] as Map<String, dynamic>).putIfAbsent(
-      "$comicId@$sourceKey",
-      () => <String, dynamic>{},
-    )[key] = value;
+    final records =
+        _data.putIfAbsent(
+              'comicSpecificSettings',
+              () => this['comicSpecificSettings'],
+            )
+            as Map<String, dynamic>;
+    records.putIfAbsent("$comicId@$sourceKey", () => <String, dynamic>{})[key] =
+        value;
     notifyListeners();
   }
 
   void resetComicReaderSettings(String key) {
-    (_data['comicSpecificSettings'] as Map).remove(key);
+    (this['comicSpecificSettings'] as Map).remove(key);
     notifyListeners();
   }
 
@@ -652,41 +1020,44 @@ class Settings with ChangeNotifier {
   }
 
   bool isDeviceSpecificSettingsEnabled() {
-    var deviceId = _data['deviceId'] as String;
+    var deviceId = this['deviceId'] as String;
     if (deviceId.isEmpty) {
       return false;
     }
-    return _data['deviceSpecificSettings'][deviceId]?["enabled"] == true;
+    return this['deviceSpecificSettings'][deviceId]?["enabled"] == true;
   }
 
   dynamic getDeviceReaderSetting(String key) {
     if (!isDeviceSpecificSettingsEnabled()) {
-      return _data[key];
+      return this[key];
     }
-    var deviceId = _data['deviceId'] as String;
-    return _data['deviceSpecificSettings'][deviceId]?[key] ?? _data[key];
+    var deviceId = this['deviceId'] as String;
+    return this['deviceSpecificSettings'][deviceId]?[key] ?? this[key];
   }
 
   void setDeviceReaderSetting(String key, dynamic value) {
     var deviceId = _getOrCreateDeviceId();
-    (_data['deviceSpecificSettings'] as Map<String, dynamic>).putIfAbsent(
-      deviceId,
-      () => <String, dynamic>{},
-    )[key] = value;
+    final records =
+        _data.putIfAbsent(
+              'deviceSpecificSettings',
+              () => this['deviceSpecificSettings'],
+            )
+            as Map<String, dynamic>;
+    records.putIfAbsent(deviceId, () => <String, dynamic>{})[key] = value;
     notifyListeners();
   }
 
   void resetDeviceReaderSettings() {
-    var deviceId = _data['deviceId'] as String;
+    var deviceId = this['deviceId'] as String;
     if (deviceId.isEmpty) {
       return;
     }
-    (_data['deviceSpecificSettings'] as Map).remove(deviceId);
+    (this['deviceSpecificSettings'] as Map).remove(deviceId);
     notifyListeners();
   }
 
   String _getOrCreateDeviceId() {
-    var deviceId = _data['deviceId'] as String;
+    var deviceId = this['deviceId'] as String;
     if (deviceId.isNotEmpty) {
       return deviceId;
     }

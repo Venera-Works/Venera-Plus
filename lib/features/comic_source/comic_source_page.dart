@@ -734,7 +734,12 @@ void _addAllPagesWithComicSource(ComicSource source) {
   var explorePages = appdata.settings['explore_pages'];
   var categoryPages = appdata.settings['categories'];
   var networkFavorites = appdata.settings['favorites'];
-  var searchPages = appdata.settings['searchSources'];
+  final searchPages =
+      appdata.settings['searchSources'] ??
+      ComicSource.all()
+          .where((item) => item.searchPageData != null)
+          .map((item) => item.key)
+          .toList();
 
   if (source.explorePages.isNotEmpty) {
     for (var page in source.explorePages) {

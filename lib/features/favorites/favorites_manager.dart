@@ -14,6 +14,9 @@ import 'dart:io';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:uuid/uuid.dart';
+import 'package:venera_plus/foundation/sync_records.dart';
+import 'package:venera_plus/features/favorites/favorite_sync_data.dart';
 
 String _getTimeString(DateTime time) {
   return time.toIso8601String().replaceFirst("T", " ").substring(0, 19);
@@ -236,8 +239,10 @@ class LocalFavoritesManager with ChangeNotifier {
       !_isClosed && generation == _generation;
 
   Future<void>? _hashedIdsRefresh;
+  final _pendingReadJobs = <Future<dynamic>>{};
 
   bool _isClosed = true;
+  bool _databaseOpen = false;
 
   int get totalComics {
     return _hashedIds.length;
@@ -248,7 +253,10 @@ class LocalFavoritesManager with ChangeNotifier {
   }
 
   Future<void> init({bool reconcileReadingBinding = true}) async {
-    _isClosed = false;
+    await waitForPendingReads();
+    if (!_isClosed) {
+      close();
+    }
     _generation++;
     counts = {};
     _dbPath = "${App.dataPath}/local_favorite.db";
@@ -256,47 +264,30 @@ class LocalFavoritesManager with ChangeNotifier {
       await appdata.ensureInit();
     }
     _db = openSqliteDatabase(_dbPath);
-    _db.execute("""
-      create table if not exists folder_order (
-        folder_name text primary key,
-        order_value int
-      );
-    """);
-    _db.execute("""
-      create table if not exists folder_sync (
-        folder_name text primary key,
-        source_key text,
-        source_folder text
-      );
-    """);
+    _databaseOpen = true;
+    _isClosed = false;
+    FavoriteSyncData.ensureFolderMetadataTable(_db);
     final folderNames = _getFolderNamesWithDB();
     for (var folder in folderNames) {
-      var columns = _db.select("""
-        pragma table_info("$folder");
-      """);
-      if (!columns.any((element) => element["name"] == "translated_tags")) {
-        _db.execute("""
-          alter table "$folder"
-          add column translated_tags TEXT;
-        """);
+      FavoriteSyncData.ensureFolderTableSchema(_db, folder);
+      final qf = quoteSqlIdentifier(folder);
+      var unpopulated = _db.select(
+        'SELECT 1 FROM $qf WHERE translated_tags IS NULL LIMIT 1;',
+      );
+      if (unpopulated.isNotEmpty) {
         var comics = getFolderComics(folder);
         for (var comic in comics) {
           var translatedTags = _translateTags(comic.tags);
           _db.execute(
             """
-            update "$folder"
+            update $qf
             set translated_tags = ?
             where id == ? and type == ?;
           """,
             [translatedTags, comic.id, comic.type.value],
           );
         }
-      } else {
-        continue;
       }
-    }
-    for (var folder in folderNames) {
-      prepareTableForFollowUpdates(folder);
     }
     if (reconcileReadingBinding) {
       await reconcileReadingFolderBinding();
@@ -331,14 +322,19 @@ class LocalFavoritesManager with ChangeNotifier {
 
   String? get readingFolder {
     final configured = appdata.settings['readingFolder'];
-    return !_isClosed && configured is String && existsFolder(configured)
-        ? configured
-        : null;
+    if (_isClosed || configured == null) return null;
+    if (configured is String) {
+      if (existsFolder(configured)) return configured;
+      final resolved = getFolderNameById(configured);
+      if (resolved != null && existsFolder(resolved)) return resolved;
+    }
+    return null;
   }
 
   /// Missing key denotes a legacy snapshot; null denotes an intentionally
   /// deleted role. Never reinterpret an arbitrary old tracking folder as reading.
   Future<void> reconcileReadingFolderBinding() async {
+    FavoriteSyncData.ensureFolderMetadataTable(_db);
     final folders = _getFolderNamesWithDB();
     var changed = false;
     if (!appdata.settings.containsKey('readingFolder')) {
@@ -356,9 +352,24 @@ class LocalFavoritesManager with ChangeNotifier {
       changed = true;
     } else {
       final binding = appdata.settings['readingFolder'];
-      if (binding != null && (binding is! String || !existsFolder(binding))) {
-        appdata.settings['readingFolder'] = null;
-        changed = true;
+      if (binding != null) {
+        if (binding is String) {
+          if (existsFolder(binding)) {
+            // Valid existing folder name
+          } else {
+            final resolved = getFolderNameById(binding);
+            if (resolved != null && existsFolder(resolved)) {
+              appdata.settings['readingFolder'] = resolved;
+              changed = true;
+            } else {
+              appdata.settings['readingFolder'] = null;
+              changed = true;
+            }
+          }
+        } else {
+          appdata.settings['readingFolder'] = null;
+          changed = true;
+        }
       }
     }
     if (appdata.settings.containsKey('followUpdatesFolder')) {
@@ -374,15 +385,17 @@ class LocalFavoritesManager with ChangeNotifier {
   }
 
   void close() {
-    if (_isClosed) return;
+    if (_isClosed && !_databaseOpen) return;
     _isClosed = true;
     _generation++;
-    _hashedIdsRefresh = null;
     _hashedIds.clear();
     _updatedIds.clear();
     _readRevisions.clear();
     counts.clear();
-    _db.dispose();
+    if (_databaseOpen) {
+      _db.dispose();
+      _databaseOpen = false;
+    }
   }
 
   void prepareAllFoldersForUpdates() {
@@ -410,9 +423,12 @@ class LocalFavoritesManager with ChangeNotifier {
   }
 
   void _renameTables(String before, String after) {
+    FavoriteSyncData.ensureFolderMetadataTable(_db);
     _db.execute('BEGIN TRANSACTION');
     try {
-      _db.execute('ALTER TABLE "$before" RENAME TO "$after";');
+      _db.execute(
+        'ALTER TABLE ${quoteSqlIdentifier(before)} RENAME TO ${quoteSqlIdentifier(after)};',
+      );
       _db.execute(
         'update folder_order set folder_name = ? where folder_name == ?;',
         [after, before],
@@ -420,6 +436,10 @@ class LocalFavoritesManager with ChangeNotifier {
       _db.execute(
         'update folder_sync set folder_name = ? where folder_name == ?;',
         [after, before],
+      );
+      _db.execute(
+        'update folder_metadata set folder_name = ?, logical_name = ? where folder_name == ?;',
+        [after, after, before],
       );
       _db.execute('COMMIT');
       _generation++;
@@ -437,33 +457,47 @@ class LocalFavoritesManager with ChangeNotifier {
     }
     late Future<void> refresh;
     final generation = _generation;
-    refresh = _initHashedIds(folders, _dbPath).then(
-      (value) {
-        if (_isClosed || !identical(_hashedIdsRefresh, refresh)) {
-          return;
-        }
-        if (generation != _generation) {
-          _refreshHashedIds(folderNames);
-          return;
-        }
-        _hashedIds = value;
-        notifyListeners();
-      },
-      onError: (Object error, StackTrace stackTrace) {
-        if (!_isClosed &&
-            identical(_hashedIdsRefresh, refresh) &&
-            generation != _generation) {
-          _refreshHashedIds(folderNames);
-          return;
-        }
-        Log.error("LocalFavoritesManager", error, stackTrace);
-      },
+    refresh = _trackPendingRead(
+      _initHashedIds(folders, _dbPath).then(
+        (value) {
+          if (_isClosed || !identical(_hashedIdsRefresh, refresh)) {
+            return;
+          }
+          if (generation != _generation) {
+            _refreshHashedIds(folderNames);
+            return;
+          }
+          _hashedIds = value;
+          notifyListeners();
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          if (!_isClosed &&
+              identical(_hashedIdsRefresh, refresh) &&
+              generation != _generation) {
+            _refreshHashedIds(folderNames);
+            return;
+          }
+          Log.error("LocalFavoritesManager", error, stackTrace);
+        },
+      ),
     );
     _hashedIdsRefresh = refresh;
   }
 
-  @visibleForTesting
-  Future<void> debugWaitForHashedIdsRefresh() => _waitForHashedIdsRefresh();
+  Future<void> waitForPendingReads() async {
+    while (_pendingReadJobs.isNotEmpty) {
+      await Future.wait(_pendingReadJobs.toList());
+    }
+  }
+
+  Future<T> _trackPendingRead<T>(Future<T> read) {
+    late final Future<T> tracked;
+    tracked = read.whenComplete(() {
+      _pendingReadJobs.remove(tracked);
+    });
+    _pendingReadJobs.add(tracked);
+    return tracked;
+  }
 
   Future<void> _waitForHashedIdsRefresh() async {
     while (true) {
@@ -476,14 +510,12 @@ class LocalFavoritesManager with ChangeNotifier {
   void refreshUpdateIds() {
     _updatedIds = {};
     for (final folder in folderNames) {
-      var columns = _db.select("""
-        pragma table_info("$folder");
-      """);
+      final qf = quoteSqlIdentifier(folder);
+      var columns = _db.select("pragma table_info($qf);");
       if (columns.any((e) => e["name"] == "has_new_update")) {
-        var rows = _db.select("""
-          select id, type from "$folder"
-          where has_new_update == 1;
-        """);
+        var rows = _db.select(
+          "select id, type from $qf where has_new_update == 1;",
+        );
         for (var row in rows) {
           _updatedIds.add((row["id"] as String, row["type"] as int));
         }
@@ -507,13 +539,12 @@ class LocalFavoritesManager with ChangeNotifier {
     String dbPath,
   ) {
     return Isolate.run(() {
-      var db = openSqliteDatabase(dbPath);
+      final db = openSqliteDatabase(dbPath);
       try {
         var hashedIds = <(String, int), int>{};
         for (var folder in folders) {
-          var rows = db.select("""
-            select id, type from "$folder";
-          """);
+          final qf = quoteSqlIdentifier(folder);
+          var rows = db.select("select id, type from $qf;");
           for (var row in rows) {
             var id = row["id"] as String;
             var type = row["type"] as int;
@@ -531,13 +562,11 @@ class LocalFavoritesManager with ChangeNotifier {
   List<String> find(String id, ComicType type) {
     var res = <String>[];
     for (var folder in folderNames) {
-      var rows = _db.select(
-        """
-        select * from "$folder"
-        where id == ? and type == ?;
-      """,
-        [id, type.value],
-      );
+      final qf = quoteSqlIdentifier(folder);
+      var rows = _db.select("select * from $qf where id == ? and type == ?;", [
+        id,
+        type.value,
+      ]);
       if (rows.isNotEmpty) {
         res.add(folder);
       }
@@ -548,13 +577,11 @@ class LocalFavoritesManager with ChangeNotifier {
   Future<List<String>> findWithModel(FavoriteItem item) async {
     var res = <String>[];
     for (var folder in folderNames) {
-      var rows = _db.select(
-        """
-        select * from "$folder"
-        where id == ? and type == ?;
-      """,
-        [item.id, item.type.value],
-      );
+      final qf = quoteSqlIdentifier(folder);
+      var rows = _db.select("select * from $qf where id == ? and type == ?;", [
+        item.id,
+        item.type.value,
+      ]);
       if (rows.isNotEmpty) {
         res.add(folder);
       }
@@ -562,82 +589,75 @@ class LocalFavoritesManager with ChangeNotifier {
     return res;
   }
 
-  List<String> _getTablesWithDB() {
-    final tables = _db
-        .select("SELECT name FROM sqlite_master WHERE type='table';")
-        .map((element) => element["name"] as String)
-        .toList();
-    return tables;
-  }
-
   List<String> _getFolderNamesWithDB() {
-    final folders = _getTablesWithDB();
-    folders.remove('folder_sync');
-    folders.remove('folder_order');
-    var folderToOrder = <String, int>{};
-    for (var folder in folders) {
-      var res = _db.select(
-        """
-        select * from folder_order
-        where folder_name == ?;
-      """,
-        [folder],
-      );
-      if (res.isNotEmpty) {
-        folderToOrder[folder] = res.first["order_value"];
-      } else {
-        folderToOrder[folder] = 0;
-      }
-    }
-    folders.sort((a, b) {
-      return folderToOrder[a]! - folderToOrder[b]!;
-    });
-    return folders;
+    FavoriteSyncData.ensureFolderMetadataTable(_db);
+    final rows = _db.select('''
+      SELECT folder_name, order_value
+      FROM folder_metadata
+      ORDER BY order_value, folder_name;
+    ''');
+    return rows.map((element) => element["folder_name"] as String).toList();
   }
 
   void updateOrder(List<String> folders) {
-    for (int i = 0; i < folders.length; i++) {
-      _db.execute(
-        """
-        insert or replace into folder_order (folder_name, order_value)
-        values (?, ?);
-      """,
-        [folders[i], i],
-      );
+    FavoriteSyncData.ensureFolderMetadataTable(_db);
+    _db.execute('BEGIN TRANSACTION');
+    try {
+      for (int i = 0; i < folders.length; i++) {
+        _db.execute(
+          """
+          insert or replace into folder_order (folder_name, order_value)
+          values (?, ?);
+        """,
+          [folders[i], i],
+        );
+        _db.execute(
+          """
+          update folder_metadata
+          set order_value = ?
+          where folder_name == ?;
+        """,
+          [i, folders[i]],
+        );
+      }
+      _db.execute('COMMIT');
+    } catch (_) {
+      _db.execute('ROLLBACK');
+      rethrow;
     }
     notifyListeners();
   }
 
   int count(String folderName) {
-    return _db.select("""
-      select count(*) as c
-      from "$folderName"
-    """).first["c"];
+    return _db
+        .select("select count(*) as c from ${quoteSqlIdentifier(folderName)};")
+        .first["c"];
   }
 
   List<String> get folderNames => _getFolderNamesWithDB();
 
   int maxValue(String folder) {
-    return _db.select("""
-        SELECT MAX(display_order) AS max_value
-        FROM "$folder";
-      """).firstOrNull?["max_value"] ??
+    return _db
+            .select(
+              "SELECT MAX(display_order) AS max_value FROM ${quoteSqlIdentifier(folder)};",
+            )
+            .firstOrNull?["max_value"] ??
         0;
   }
 
   int minValue(String folder) {
-    return _db.select("""
-        SELECT MIN(display_order) AS min_value
-        FROM "$folder";
-      """).firstOrNull?["min_value"] ??
+    return _db
+            .select(
+              "SELECT MIN(display_order) AS min_value FROM ${quoteSqlIdentifier(folder)};",
+            )
+            .firstOrNull?["min_value"] ??
         0;
   }
 
   List<FavoriteItem> getFolderComics(String folder) {
-    var rows = _db.select("""
-        select * from "$folder"
-        ORDER BY display_order;
-      """);
+    var rows = _db.select(
+      "select * from ${quoteSqlIdentifier(folder)} ORDER BY display_order;",
+    );
     return rows.map((element) => FavoriteItem.fromRow(element)).toList();
   }
 
@@ -648,10 +668,9 @@ class LocalFavoritesManager with ChangeNotifier {
     return Isolate.run(() {
       var db = openSqliteDatabase(dbPath);
       try {
-        var rows = db.select("""
-          select * from "$folder"
-          ORDER BY display_order;
-        """);
+        var rows = db.select(
+          "select * from ${quoteSqlIdentifier(folder)} ORDER BY display_order;",
+        );
         return rows.map((element) => FavoriteItem.fromRow(element)).toList();
       } finally {
         db.dispose();
@@ -661,15 +680,13 @@ class LocalFavoritesManager with ChangeNotifier {
 
   /// Start a new isolate to get the comics in the folder
   Future<List<FavoriteItem>> getFolderComicsAsync(String folder) {
-    return _getFolderComicsAsync(folder, _dbPath);
+    return _trackPendingRead(_getFolderComicsAsync(folder, _dbPath));
   }
 
   List<FavoriteItem> getAllComics() {
     var res = <FavoriteItem>{};
     for (final folder in folderNames) {
-      var comics = _db.select("""
-        select * from "$folder";
-      """);
+      var comics = _db.select("select * from ${quoteSqlIdentifier(folder)};");
       res.addAll(comics.map((element) => FavoriteItem.fromRow(element)));
     }
     return res.toList();
@@ -684,9 +701,9 @@ class LocalFavoritesManager with ChangeNotifier {
       try {
         var res = <FavoriteItem>{};
         for (final folder in folders) {
-          var comics = db.select("""
-            select * from "$folder";
-          """);
+          var comics = db.select(
+            "select * from ${quoteSqlIdentifier(folder)};",
+          );
           res.addAll(comics.map((element) => FavoriteItem.fromRow(element)));
         }
         return res.toList();
@@ -698,17 +715,13 @@ class LocalFavoritesManager with ChangeNotifier {
 
   /// Start a new isolate to get all the comics
   Future<List<FavoriteItem>> getAllComicsAsync() {
-    return _getAllComicsAsync(folderNames, _dbPath);
+    return _trackPendingRead(_getAllComicsAsync(folderNames, _dbPath));
   }
 
   void addTagTo(String folder, String id, String tag) {
     _db.execute(
-      """
-      update "$folder"
-      set tags = '$tag,' || tags
-      where id == ?
-    """,
-      [id],
+      "update ${quoteSqlIdentifier(folder)} set tags = ? || tags where id == ?;",
+      ['$tag,', id],
     );
     notifyListeners();
   }
@@ -716,9 +729,7 @@ class LocalFavoritesManager with ChangeNotifier {
   List<FavoriteItemWithFolderInfo> allComics() {
     var res = <FavoriteItemWithFolderInfo>[];
     for (final folder in folderNames) {
-      var comics = _db.select("""
-        select * from "$folder";
-      """);
+      var comics = _db.select("select * from ${quoteSqlIdentifier(folder)};");
       res.addAll(
         comics.map(
           (element) =>
@@ -734,7 +745,12 @@ class LocalFavoritesManager with ChangeNotifier {
   }
 
   /// create a folder
-  String createFolder(String name, [bool renameWhenInvalidName = false]) {
+  String createFolder(
+    String name, [
+    bool renameWhenInvalidName = false,
+    String? folderId,
+  ]) {
+    FavoriteSyncData.ensureFolderMetadataTable(_db);
     if (name.isEmpty) {
       if (renameWhenInvalidName) {
         int i = 0;
@@ -758,8 +774,9 @@ class LocalFavoritesManager with ChangeNotifier {
         throw Exception("Folder is existing");
       }
     }
+    final stableId = folderId ?? const Uuid().v4();
     _db.execute("""
-      create table "$name"(
+      create table ${quoteSqlIdentifier(name)}(
         id text,
         name TEXT,
         author TEXT,
@@ -775,6 +792,22 @@ class LocalFavoritesManager with ChangeNotifier {
         primary key (id, type)
       );
     """);
+    final nextOrder = folderNames.length;
+    _db.execute(
+      """
+      insert or replace into folder_metadata (folder_id, folder_name, logical_name, order_value, source_key, source_folder)
+      values (?, ?, ?, ?, null, null);
+    """,
+      [stableId, name, name, nextOrder],
+    );
+    _db.execute(
+      """
+      insert or replace into folder_order (folder_name, order_value)
+      values (?, ?);
+    """,
+      [name, nextOrder],
+    );
+
     counts[name] = 0;
     _generation++;
     if (name == readingFolderName &&
@@ -788,12 +821,21 @@ class LocalFavoritesManager with ChangeNotifier {
   }
 
   void linkFolderToNetwork(String folder, String source, String networkFolder) {
+    FavoriteSyncData.ensureFolderMetadataTable(_db);
     _db.execute(
       """
       insert or replace into folder_sync (folder_name, source_key, source_folder)
       values (?, ?, ?);
     """,
       [folder, source, networkFolder],
+    );
+    _db.execute(
+      """
+      update folder_metadata
+      set source_key = ?, source_folder = ?
+      where folder_name == ?;
+    """,
+      [source, networkFolder, folder],
     );
   }
 
@@ -827,24 +869,20 @@ class LocalFavoritesManager with ChangeNotifier {
   }
 
   bool comicExists(String folder, String id, ComicType type) {
-    var res = _db.select(
-      """
-      select * from "$folder"
-      where id == ? and type == ?;
-    """,
-      [id, type.value],
-    );
+    final qf = quoteSqlIdentifier(folder);
+    var res = _db.select("select * from $qf where id == ? and type == ?;", [
+      id,
+      type.value,
+    ]);
     return res.isNotEmpty;
   }
 
   FavoriteItem getComic(String folder, String id, ComicType type) {
-    var res = _db.select(
-      """
-      select * from "$folder"
-      where id == ? and type == ?;
-    """,
-      [id, type.value],
-    );
+    final qf = quoteSqlIdentifier(folder);
+    var res = _db.select("select * from $qf where id == ? and type == ?;", [
+      id,
+      type.value,
+    ]);
     if (res.isEmpty) {
       throw Exception("Comic not found");
     }
@@ -873,13 +911,11 @@ class LocalFavoritesManager with ChangeNotifier {
     if (!existsFolder(folder)) {
       throw Exception("Folder does not exists");
     }
-    var res = _db.select(
-      """
-      select * from "$folder"
-      where id == ? and type == ?;
-    """,
-      [comic.id, comic.type.value],
-    );
+    final qf = quoteSqlIdentifier(folder);
+    var res = _db.select("select * from $qf where id == ? and type == ?;", [
+      comic.id,
+      comic.type.value,
+    ]);
     if (res.isNotEmpty) {
       return false;
     }
@@ -908,7 +944,7 @@ class LocalFavoritesManager with ChangeNotifier {
     if (order != null) {
       _db.execute(
         """
-        insert into "$folder" (id, name, author, type, tags, cover_path, time, translated_tags, display_order)
+        insert into $qf (id, name, author, type, tags, cover_path, time, translated_tags, display_order)
         values (?, ?, ?, ?, ?, ?, ?, ?, ?);
       """,
         [...params, order],
@@ -916,7 +952,7 @@ class LocalFavoritesManager with ChangeNotifier {
     } else if (appdata.settings['newFavoriteAddTo'] == "end") {
       _db.execute(
         """
-        insert into "$folder" (id, name, author, type, tags, cover_path, time, translated_tags, display_order)
+        insert into $qf (id, name, author, type, tags, cover_path, time, translated_tags, display_order)
         values (?, ?, ?, ?, ?, ?, ?, ?, ?);
       """,
         [...params, maxValue(folder) + 1],
@@ -924,14 +960,14 @@ class LocalFavoritesManager with ChangeNotifier {
     } else {
       _db.execute(
         """
-        insert into "$folder" (id, name, author, type, tags, cover_path, time, translated_tags, display_order)
+        insert into $qf (id, name, author, type, tags, cover_path, time, translated_tags, display_order)
         values (?, ?, ?, ?, ?, ?, ?, ?, ?);
       """,
         [...params, minValue(folder) - 1],
       );
     }
     _db.execute(
-      'update "$folder" set last_update_time = ?, has_new_update = ?, '
+      'update $qf set last_update_time = ?, has_new_update = ?, '
       'last_check_time = ? where id == ? and type == ?;',
       [
         known?.updateTime ?? updateTime,
@@ -960,10 +996,12 @@ class LocalFavoritesManager with ChangeNotifier {
     String id,
     ComicType type,
   ) {
+    final qTarget = quoteSqlIdentifier(target);
+    final qSource = quoteSqlIdentifier(source);
     _db.execute(
-      'update "$target" set has_new_update = '
+      'update $qTarget set has_new_update = '
       'coalesce(has_new_update, 0) | coalesce((select has_new_update '
-      'from "$source" where id == ? and type == ?), 0) '
+      'from $qSource where id == ? and type == ?), 0) '
       'where id == ? and type == ?;',
       [id, type.value, id, type.value],
     );
@@ -982,14 +1020,12 @@ class LocalFavoritesManager with ChangeNotifier {
       throw Exception("Target folder does not exist");
     }
 
+    final qTarget = quoteSqlIdentifier(targetFolder);
+    final qSource = quoteSqlIdentifier(sourceFolder);
     var res = _db.select(
-      """
-    select * from "$targetFolder"
-    where id == ? and type == ?;
-  """,
+      "select * from $qTarget where id == ? and type == ?;",
       [id, type.value],
     );
-
     if (res.isNotEmpty) {
       return;
     }
@@ -998,15 +1034,15 @@ class LocalFavoritesManager with ChangeNotifier {
     try {
       _db.execute(
         '''
-        insert into "$targetFolder" (id, name, author, type, tags, cover_path,
+        insert into $qTarget (id, name, author, type, tags, cover_path,
           time, display_order, translated_tags, last_update_time, has_new_update, last_check_time)
         select id, name, author, type, tags, cover_path,
           time, ?, translated_tags, last_update_time, has_new_update, last_check_time
-        from "$sourceFolder" where id == ? and type == ?;
+        from $qSource where id == ? and type == ?;
         ''',
         [minValue(targetFolder) - 1, id, type.value],
       );
-      _db.execute('delete from "$sourceFolder" where id == ? and type == ?;', [
+      _db.execute('delete from $qSource where id == ? and type == ?;', [
         id,
         type.value,
       ]);
@@ -1038,15 +1074,17 @@ class LocalFavoritesManager with ChangeNotifier {
       return;
     }
 
+    final qTarget = quoteSqlIdentifier(targetFolder);
+    final qSource = quoteSqlIdentifier(sourceFolder);
     _db.execute("BEGIN TRANSACTION");
     var displayOrder = maxValue(targetFolder) + 1;
     try {
       for (var item in items) {
         _db.execute(
           """
-          insert or ignore into "$targetFolder" (id, name, author, type, tags, cover_path, time, display_order, translated_tags, last_update_time, has_new_update, last_check_time)
+          insert or ignore into $qTarget (id, name, author, type, tags, cover_path, time, display_order, translated_tags, last_update_time, has_new_update, last_check_time)
           select id, name, author, type, tags, cover_path, time, ?, translated_tags, last_update_time, has_new_update, last_check_time
-          from "$sourceFolder"
+          from $qSource
           where id == ? and type == ?;
         """,
           [displayOrder, item.id, item.type.value],
@@ -1055,7 +1093,7 @@ class LocalFavoritesManager with ChangeNotifier {
 
         _db.execute(
           """
-          delete from "$sourceFolder"
+          delete from $qSource
           where id == ? and type == ?;
         """,
           [item.id, item.type.value],
@@ -1094,16 +1132,17 @@ class LocalFavoritesManager with ChangeNotifier {
     if (items.isEmpty) {
       return;
     }
-
+    final qTarget = quoteSqlIdentifier(targetFolder);
+    final qSource = quoteSqlIdentifier(sourceFolder);
     _db.execute("BEGIN TRANSACTION");
     var displayOrder = maxValue(targetFolder) + 1;
     try {
       for (var item in items) {
         _db.execute(
           """
-          insert or ignore into "$targetFolder" (id, name, author, type, tags, cover_path, time, display_order, translated_tags, last_update_time, has_new_update, last_check_time)
+          insert or ignore into $qTarget (id, name, author, type, tags, cover_path, time, display_order, translated_tags, last_update_time, has_new_update, last_check_time)
           select id, name, author, type, tags, cover_path, time, ?, translated_tags, last_update_time, has_new_update, last_check_time
-          from "$sourceFolder"
+          from $qSource
           where id == ? and type == ?;
         """,
           [displayOrder, item.id, item.type.value],
@@ -1131,12 +1170,16 @@ class LocalFavoritesManager with ChangeNotifier {
 
   /// delete a folder
   void deleteFolder(String name) {
+    FavoriteSyncData.ensureFolderMetadataTable(_db);
     final wasReadingFolder = readingFolder == name;
     _db.execute('BEGIN TRANSACTION');
     try {
-      _db.execute('drop table "$name";');
+      _db.execute('drop table ${quoteSqlIdentifier(name)};');
       _db.execute('delete from folder_order where folder_name == ?;', [name]);
       _db.execute('delete from folder_sync where folder_name == ?;', [name]);
+      _db.execute('delete from folder_metadata where folder_name == ?;', [
+        name,
+      ]);
       _db.execute('COMMIT');
     } catch (_) {
       _db.execute('ROLLBACK');
@@ -1159,13 +1202,11 @@ class LocalFavoritesManager with ChangeNotifier {
 
   void deleteComicWithId(String folder, String id, ComicType type) {
     LocalFavoriteImageProvider.delete(id, type.value);
-    _db.execute(
-      """
-      delete from "$folder"
-      where id == ? and type == ?;
-    """,
-      [id, type.value],
-    );
+    final qf = quoteSqlIdentifier(folder);
+    _db.execute("delete from $qf where id == ? and type == ?;", [
+      id,
+      type.value,
+    ]);
     _generation++;
     if (counts[folder] != null) {
       counts[folder] = counts[folder]! - 1;
@@ -1183,15 +1224,13 @@ class LocalFavoritesManager with ChangeNotifier {
     }
     _db.execute("BEGIN TRANSACTION");
     try {
+      final qf = quoteSqlIdentifier(folder);
       for (var comic in comics) {
         LocalFavoriteImageProvider.delete(comic.id, comic.type.value);
-        _db.execute(
-          """
-          delete from "$folder"
-          where id == ? and type == ?;
-        """,
-          [comic.id, comic.type.value],
-        );
+        _db.execute("delete from $qf where id == ? and type == ?;", [
+          comic.id,
+          comic.type.value,
+        ]);
       }
       if (counts[folder] != null) {
         counts[folder] = counts[folder]! - comics.length;
@@ -1223,10 +1262,7 @@ class LocalFavoritesManager with ChangeNotifier {
         LocalFavoriteImageProvider.delete(comic.id, comic.type.value);
         for (var folder in folderNames) {
           _db.execute(
-            """
-            delete from "$folder"
-            where id == ? and type == ?;
-          """,
+            "delete from ${quoteSqlIdentifier(folder)} where id == ? and type == ?;",
             [comic.id, comic.type.value],
           );
         }
@@ -1278,11 +1314,7 @@ class LocalFavoritesManager with ChangeNotifier {
     try {
       for (int i = 0; i < newFolder.length; i++) {
         _db.execute(
-          """
-          update "$folder"
-          set display_order = ?
-          where id == ? and type == ?;
-        """,
+          "update ${quoteSqlIdentifier(folder)} set display_order = ? where id == ? and type == ?;",
           [i, newFolder[i].id, newFolder[i].type.value],
         );
       }
@@ -1298,9 +1330,6 @@ class LocalFavoritesManager with ChangeNotifier {
   void rename(String before, String after) {
     if (existsFolder(after)) {
       throw "Name already exists!";
-    }
-    if (after.contains('"')) {
-      throw "Invalid name";
     }
     final wasReadingFolder = readingFolder == before;
     _renameTables(before, after);
@@ -1325,13 +1354,11 @@ class LocalFavoritesManager with ChangeNotifier {
     }
     _acknowledgeRead(id, type);
     for (final folder in folderNames) {
-      var rows = _db.select(
-        """
-        select * from "$folder"
-        where id == ? and type == ?;
-      """,
-        [id, type.value],
-      );
+      final qf = quoteSqlIdentifier(folder);
+      var rows = _db.select("select * from $qf where id == ? and type == ?;", [
+        id,
+        type.value,
+      ]);
       if (rows.isNotEmpty) {
         var newTime = DateTime.now()
             .toIso8601String()
@@ -1340,30 +1367,26 @@ class LocalFavoritesManager with ChangeNotifier {
         String updateLocationSql = "";
         if (appdata.settings['moveFavoriteAfterRead'] == "end") {
           int maxValue =
-              _db.select("""
-            SELECT MAX(display_order) AS max_value
-            FROM "$folder";
-          """).firstOrNull?["max_value"] ??
+              _db
+                  .select("SELECT MAX(display_order) AS max_value FROM $qf;")
+                  .firstOrNull?["max_value"] ??
               0;
           updateLocationSql = "display_order = ${maxValue + 1},";
         } else if (appdata.settings['moveFavoriteAfterRead'] == "start") {
           int minValue =
-              _db.select("""
-            SELECT MIN(display_order) AS min_value
-            FROM "$folder";
-          """).firstOrNull?["min_value"] ??
+              _db
+                  .select("SELECT MIN(display_order) AS min_value FROM $qf;")
+                  .firstOrNull?["min_value"] ??
               0;
           updateLocationSql = "display_order = ${minValue - 1},";
         }
-        var columns = _db.select("""
-          pragma table_info("$folder");
-        """);
+        var columns = _db.select("pragma table_info($qf);");
         final hasUpdateColumn = columns.any(
           (e) => e["name"] == "has_new_update",
         );
         _db.execute(
           """
-            UPDATE "$folder"
+            UPDATE $qf
             SET 
               $updateLocationSql
               ${hasUpdateColumn ? "has_new_update = 0," : ""}
@@ -1383,10 +1406,7 @@ class LocalFavoritesManager with ChangeNotifier {
     keyword = keywordList.first;
     keyword = "%$keyword%";
     var res = _db.select(
-      """
-      SELECT * FROM "$folder" 
-      WHERE name LIKE ? OR author LIKE ? OR tags LIKE ? OR translated_tags LIKE ?;
-    """,
+      "SELECT * FROM ${quoteSqlIdentifier(folder)} WHERE name LIKE ? OR author LIKE ? OR tags LIKE ? OR translated_tags LIKE ?;",
       [keyword, keyword, keyword, keyword],
     );
     var comics = res.map((e) => FavoriteItem.fromRow(e)).toList();
@@ -1416,10 +1436,7 @@ class LocalFavoritesManager with ChangeNotifier {
     for (var table in folderNames) {
       keyword = "%$keyword%";
       var res = _db.select(
-        """
-        SELECT * FROM "$table" 
-        WHERE name LIKE ? OR author LIKE ? OR tags LIKE ? OR translated_tags LIKE ?;
-      """,
+        "SELECT * FROM ${quoteSqlIdentifier(table)} WHERE name LIKE ? OR author LIKE ? OR tags LIKE ? OR translated_tags LIKE ?;",
         [keyword, keyword, keyword, keyword],
       );
       for (var comic in res) {
@@ -1457,11 +1474,7 @@ class LocalFavoritesManager with ChangeNotifier {
 
   void editTags(String id, String folder, List<String> tags) {
     _db.execute(
-      """
-        update "$folder"
-        set tags = ?
-        where id == ?;
-      """,
+      "update ${quoteSqlIdentifier(folder)} set tags = ? where id == ?;",
       [tags.join(","), id],
     );
     notifyListeners();
@@ -1475,15 +1488,11 @@ class LocalFavoritesManager with ChangeNotifier {
   bool hasNewUpdate(String id, ComicType type, [String? folder]) {
     if (folder != null) {
       if (!existsFolder(folder)) return false;
-      var columns = _db.select("""
-        pragma table_info("$folder");
-      """);
+      final qf = quoteSqlIdentifier(folder);
+      var columns = _db.select("pragma table_info($qf);");
       if (!columns.any((e) => e["name"] == "has_new_update")) return false;
       var rows = _db.select(
-        """
-        select 1 from "$folder"
-        where id == ? and type == ? and has_new_update == 1;
-      """,
+        "select 1 from $qf where id == ? and type == ? and has_new_update == 1;",
         [id, type.value],
       );
       return rows.isNotEmpty;
@@ -1494,7 +1503,7 @@ class LocalFavoritesManager with ChangeNotifier {
   void updateInfo(String folder, FavoriteItem comic, [bool notify = true]) {
     _db.execute(
       """
-      update "$folder"
+      update ${quoteSqlIdentifier(folder)}
       set name = ?, author = ?, cover_path = ?, tags = ?, translated_tags = ?
       where id == ? and type == ?;
     """,
@@ -1514,12 +1523,11 @@ class LocalFavoritesManager with ChangeNotifier {
   }
 
   String folderToJson(String folder) {
-    var res = _db.select("""
-      select * from "$folder";
-    """);
+    var res = _db.select("select * from ${quoteSqlIdentifier(folder)};");
     return jsonEncode({
       "info": "Generated by VeneraPlus",
       "name": folder,
+      "folderId": getFolderId(folder),
       "comics": res.map((e) => FavoriteItem.fromRow(e).toJson()).toList(),
     });
   }
@@ -1530,14 +1538,19 @@ class LocalFavoritesManager with ChangeNotifier {
     if (folder == null || folder is! String) {
       throw "Invalid data";
     }
+    final rawFolderId = data["folderId"] as String?;
+    var finalFolderId = rawFolderId;
     if (existsFolder(folder)) {
       int i = 0;
       while (existsFolder("$folder($i)")) {
         i++;
       }
       folder = "$folder($i)";
+      if (finalFolderId != null && getFolderNameById(finalFolderId) != null) {
+        finalFolderId = const Uuid().v4();
+      }
     }
-    createFolder(folder);
+    createFolder(folder, false, finalFolderId);
     for (var comic in data["comics"]) {
       try {
         addComic(folder, FavoriteItem.fromJson(comic));
@@ -1548,28 +1561,7 @@ class LocalFavoritesManager with ChangeNotifier {
   }
 
   void prepareTableForFollowUpdates(String table) {
-    // check if the table has the column "last_update_time" "has_new_update" "last_check_time"
-    var columns = _db.select("""
-      pragma table_info("$table");
-    """);
-    if (!columns.any((element) => element["name"] == "last_update_time")) {
-      _db.execute("""
-        alter table "$table"
-        add column last_update_time TEXT;
-      """);
-    }
-    if (!columns.any((element) => element["name"] == "has_new_update")) {
-      _db.execute("""
-        alter table "$table"
-        add column has_new_update int;
-      """);
-    }
-    if (!columns.any((element) => element["name"] == "last_check_time")) {
-      _db.execute("""
-        alter table "$table"
-        add column last_check_time int;
-      """);
-    }
+    FavoriteSyncData.ensureFolderTableSchema(_db, table);
     refreshUpdateIds();
   }
 
@@ -1581,9 +1573,9 @@ class LocalFavoritesManager with ChangeNotifier {
     bool unread = false,
     bool markNew = true,
   }) {
+    final qf = quoteSqlIdentifier(folder);
     final rows = _db.select(
-      'select last_update_time, has_new_update from "$folder" '
-      'where id == ? and type == ?;',
+      'select last_update_time, has_new_update from $qf where id == ? and type == ?;',
       [id, type.value],
     );
     if (rows.isEmpty) return;
@@ -1593,7 +1585,7 @@ class LocalFavoritesManager with ChangeNotifier {
         rows.first['has_new_update'] == 1 ||
         (markNew && oldTime != null && oldTime != updateTime);
     _db.execute(
-      'update "$folder" set last_update_time = ?, has_new_update = ?, '
+      'update $qf set last_update_time = ?, has_new_update = ?, '
       'last_check_time = ? where id == ? and type == ?;',
       [
         updateTime,
@@ -1608,7 +1600,7 @@ class LocalFavoritesManager with ChangeNotifier {
 
   void updateCheckTime(String folder, String id, ComicType type) {
     _db.execute(
-      'update "$folder" set last_check_time = ? where id == ? and type == ?;',
+      'update ${quoteSqlIdentifier(folder)} set last_check_time = ? where id == ? and type == ?;',
       [DateTime.now().millisecondsSinceEpoch, id, type.value],
     );
   }
@@ -1619,7 +1611,7 @@ class LocalFavoritesManager with ChangeNotifier {
     ComicType type,
   ) {
     final row = _db.select(
-      'select * from "$folder" where id == ? and type == ?;',
+      'select * from ${quoteSqlIdentifier(folder)} where id == ? and type == ?;',
       [id, type.value],
     ).first;
     return FavoriteItemWithUpdateInfo(
@@ -1631,20 +1623,20 @@ class LocalFavoritesManager with ChangeNotifier {
   }
 
   int countUpdates(String folder) {
-    return _db.select("""
-      select count(*) as c from "$folder"
-      where has_new_update == 1;
-    """).first['c'];
+    return _db
+        .select(
+          "select count(*) as c from ${quoteSqlIdentifier(folder)} where has_new_update == 1;",
+        )
+        .first['c'];
   }
 
   List<FavoriteItemWithUpdateInfo> getUpdates(String folder) {
     if (!existsFolder(folder)) {
       return [];
     }
-    var res = _db.select("""
-      select * from "$folder"
-      where has_new_update == 1;
-    """);
+    var res = _db.select(
+      "select * from ${quoteSqlIdentifier(folder)} where has_new_update == 1;",
+    );
     return res
         .map(
           (e) => FavoriteItemWithUpdateInfo(
@@ -1661,9 +1653,7 @@ class LocalFavoritesManager with ChangeNotifier {
     if (!existsFolder(folder)) {
       return [];
     }
-    var res = _db.select("""
-      select * from "$folder";
-    """);
+    var res = _db.select("select * from ${quoteSqlIdentifier(folder)};");
     return res
         .map(
           (e) => FavoriteItemWithUpdateInfo(
@@ -1679,16 +1669,11 @@ class LocalFavoritesManager with ChangeNotifier {
   void markAsRead(String id, ComicType type, {bool notify = true}) {
     _acknowledgeRead(id, type);
     for (final folder in folderNames) {
-      var columns = _db.select("""
-        pragma table_info("$folder");
-      """);
+      final qf = quoteSqlIdentifier(folder);
+      var columns = _db.select("pragma table_info($qf);");
       if (columns.any((e) => e["name"] == "has_new_update")) {
         _db.execute(
-          """
-          update "$folder"
-          set has_new_update = 0
-          where id == ? and type == ?;
-        """,
+          "update $qf set has_new_update = 0 where id == ? and type == ?;",
           [id, type.value],
         );
       }
@@ -1702,5 +1687,76 @@ class LocalFavoritesManager with ChangeNotifier {
   void notifyChanges() {
     refreshUpdateIds();
     notifyListeners();
+  }
+
+  String? getFolderId(String folderName) {
+    if (_isClosed) return null;
+    FavoriteSyncData.ensureFolderMetadataTable(_db);
+    final rows = _db.select(
+      'SELECT folder_id FROM folder_metadata WHERE folder_name = ?;',
+      [folderName],
+    );
+    return rows.isNotEmpty ? rows.first['folder_id'] as String : null;
+  }
+
+  String? getFolderNameById(String folderId) {
+    if (_isClosed) return null;
+    FavoriteSyncData.ensureFolderMetadataTable(_db);
+    final rows = _db.select(
+      'SELECT folder_name FROM folder_metadata WHERE folder_id = ?;',
+      [folderId],
+    );
+    return rows.isNotEmpty ? rows.first['folder_name'] as String : null;
+  }
+
+  String? getFolderLogicalName(String folderName) {
+    if (_isClosed) return null;
+    FavoriteSyncData.ensureFolderMetadataTable(_db);
+    final rows = _db.select(
+      'SELECT logical_name FROM folder_metadata WHERE folder_name = ?;',
+      [folderName],
+    );
+    return rows.isNotEmpty ? rows.first['logical_name'] as String? : null;
+  }
+
+  String? get readingFolderId {
+    final current = readingFolder;
+    return current != null ? getFolderId(current) : null;
+  }
+
+  SyncRecords exportSyncRecords() {
+    FavoriteSyncData.ensureFolderMetadataTable(_db);
+    final currentReading = readingFolder;
+    final rFolderId = currentReading != null
+        ? getFolderId(currentReading)
+        : null;
+    return FavoriteSyncData.readSyncRecords(_db, readingFolderId: rFolderId);
+  }
+
+  void applySyncRecords(SyncRecords records) {
+    FavoriteSyncData.ensureFolderMetadataTable(_db);
+    final currentReading = readingFolder;
+    final currentReadingId = currentReading != null
+        ? getFolderId(currentReading)
+        : null;
+
+    final result = FavoriteSyncData.applyFavoriteSyncRecords(
+      _db,
+      records,
+      currentReadingFolderId: currentReadingId,
+    );
+
+    if (result.readingFolderChanged) {
+      appdata.settings['readingFolder'] = result.newReadingFolderName;
+      appdata.saveData(false);
+    }
+
+    if (result.changed || result.readingFolderChanged) {
+      _generation++;
+      initCounts();
+      refreshHashedIds();
+      refreshUpdateIds();
+      notifyListeners();
+    }
   }
 }

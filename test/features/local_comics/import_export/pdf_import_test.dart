@@ -81,7 +81,7 @@ void main() {
           await favorites.init();
           await run(favorites);
         } finally {
-          await favorites.debugWaitForHashedIdsRefresh();
+          await favorites.waitForPendingReads();
           await appdata.saveData(false);
           favorites.close();
           LocalFavoritesManager.cache = previousFavorites;

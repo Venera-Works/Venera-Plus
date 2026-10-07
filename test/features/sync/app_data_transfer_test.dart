@@ -6,6 +6,7 @@ import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
 
 void main() {
   late Directory root;
@@ -66,7 +67,11 @@ void main() {
   tearDown(() async {
     configureAppDataArchiveExtractorForTesting(null);
     registerAppDataSettingsChangedHandler(null);
-    LocalFavoritesManager.cache?.close();
+    final favorites = LocalFavoritesManager.cache;
+    if (favorites != null) {
+      await favorites.waitForPendingReads();
+      favorites.close();
+    }
     LocalFavoritesManager.cache = previousFavorites;
     await appdata.writeImplicitData();
     appdata.settings.replaceAll(previousSettings);
@@ -123,8 +128,21 @@ void main() {
   test(
     'staged invalid database rolls back files and reading settings',
     () async {
+      const folder = 'preserved-reading-folder';
+      final manager = LocalFavoritesManager();
+      manager.createFolder(folder);
+      appdata.settings['readingFolder'] = folder;
+      final original = FavoriteItem(
+        id: 'preserved-item',
+        name: 'Preserved Favorite',
+        coverPath: 'preserved-cover.jpg',
+        author: 'Original Author',
+        type: ComicType.local,
+        tags: const ['original'],
+      );
+      manager.addComic(folder, original);
       final previousBinding = appdata.settings['readingFolder'];
-      final folders = LocalFavoritesManager().folderNames.toList();
+      final folders = manager.folderNames.toList();
       configureAppDataArchiveExtractorForTesting((archive, destination) async {
         File(
           '${destination.path}/local_favorite.db',
@@ -137,9 +155,16 @@ void main() {
       });
       final archive = _createArchive(root, {});
       await expectLater(importAppData(archive), throwsA(anything));
+      final restored = LocalFavoritesManager();
       expect(appdata.settings['cacheSize'], 2048);
       expect(appdata.settings['readingFolder'], previousBinding);
-      expect(LocalFavoritesManager().folderNames, folders);
+      expect(restored.readingFolder, folder);
+      expect(restored.folderNames, folders);
+      expect(restored.comicExists(folder, original.id, original.type), isTrue);
+      expect(
+        restored.getComic(folder, original.id, original.type).name,
+        original.name,
+      );
     },
   );
 }

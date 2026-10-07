@@ -10,6 +10,8 @@ import 'package:venera_plus/features/history/image_favorites_provider.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/extensions.dart';
 import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/sync_records.dart';
+import 'package:venera_plus/features/history/history_sync_data.dart';
 
 class ImageFavoriteManager with ChangeNotifier {
   Database get _db => HistoryManager().imageFavoritesDatabase;
@@ -24,22 +26,17 @@ class ImageFavoriteManager with ChangeNotifier {
 
   /// 检查表image_favorites是否存在, 不存在则创建
   void init() {
-    _db.execute(
-      "CREATE TABLE IF NOT EXISTS image_favorites ("
-      "id TEXT,"
-      "title TEXT NOT NULL,"
-      "sub_title TEXT,"
-      "author TEXT,"
-      "tags TEXT,"
-      "translated_tags TEXT,"
-      "time int,"
-      "max_page int,"
-      "source_key TEXT NOT NULL,"
-      "image_favorites_ep TEXT NOT NULL,"
-      "other TEXT NOT NULL,"
-      "PRIMARY KEY (id,source_key)"
-      ");",
-    );
+    HistorySyncData.ensureSchema(_db);
+  }
+
+  /// 导出图片收藏相关的 SyncRecords
+  SyncRecords exportSyncRecords() {
+    return HistorySyncData.readSyncRecords(_db);
+  }
+
+  /// 应用图片收藏相关的 SyncRecords
+  void applySyncRecords(SyncRecords records) {
+    HistoryManager().applySyncRecords(records);
   }
 
   // 做排序和去重的操作

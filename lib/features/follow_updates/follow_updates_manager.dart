@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
@@ -127,6 +128,7 @@ Future<ComicRefreshResult> _refreshComic(
   // Compare current persisted values, never the stale caller's snapshot.
   var unread = false;
   final wasRead = manager.readRevision(comic.id, type) != readRevision;
+  var businessChanged = false;
   for (final folder in memberships) {
     final previous = manager.getComicWithUpdatesInfo(folder, comic.id, type);
     unread = unread || previous.hasNewUpdate;
@@ -136,23 +138,37 @@ Future<ComicRefreshResult> _refreshComic(
         previous.updateTime != updateTime) {
       updated = true;
     }
+    if (previous.name != item.name ||
+        previous.author != item.author ||
+        previous.coverPath != item.coverPath ||
+        !listEquals(previous.tags, item.tags) ||
+        (updateTime != null && previous.updateTime != updateTime)) {
+      businessChanged = true;
+    }
   }
-  for (final folder in memberships) {
-    manager.updateInfo(folder, item, false);
-    if (updateTime != null) {
-      manager.updateUpdateTime(
-        folder,
-        comic.id,
-        type,
-        updateTime,
-        unread: unread || updated,
-        markNew: !wasRead,
-      );
-    } else {
+  if (updated) businessChanged = true;
+  if (businessChanged) {
+    for (final folder in memberships) {
+      manager.updateInfo(folder, item, false);
+      if (updateTime != null) {
+        manager.updateUpdateTime(
+          folder,
+          comic.id,
+          type,
+          updateTime,
+          unread: unread || updated,
+          markNew: !wasRead,
+        );
+      } else {
+        manager.updateCheckTime(folder, comic.id, type);
+      }
+    }
+    if (memberships.isNotEmpty) manager.notifyChanges();
+  } else {
+    for (final folder in memberships) {
       manager.updateCheckTime(folder, comic.id, type);
     }
   }
-  if (memberships.isNotEmpty) manager.notifyChanges();
   return ComicRefreshResult(updated, null, item: item, updateTime: updateTime);
 }
 

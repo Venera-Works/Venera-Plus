@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:dio/dio.dart';
+import 'package:webdav_client/webdav_client.dart' as dav;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/app.dart';
@@ -30,6 +32,11 @@ void main() {
       DataSync.resetForTesting();
       DataSync.debugDisableWindowCloseHandler = true;
       DataSync.debugNow = clock.now;
+      DataSync.debugExportRecords = () async => {};
+      DataSync.debugApplyRecords = (records, {beforeCommit}) async {
+        beforeCommit?.call();
+      };
+      DataSync.debugClientFactory = (_) => _ScheduleDavClient();
       App.dataPath = directory.path;
       Log.isMuted = true;
       appdata.settings['webdav'] = config;
@@ -43,7 +50,10 @@ void main() {
       final calls = _Calls()..install();
       try {
         await runZoned(
-          () => body(clock, calls),
+          () async {
+            await DataSync().waitForStartupMerge();
+            await body(clock, calls);
+          },
           zoneSpecification: ZoneSpecification(
             createTimer: (self, parent, zone, duration, callback) {
               if (duration == Duration.zero) {
@@ -105,6 +115,7 @@ void main() {
     expect(calls.uploads, 1);
     appdata.implicitData['webdavSyncTiming'] = 'realtime';
     sync.onDataChanged();
+    await clock.elapse(const Duration(milliseconds: 500));
     await sync.waitForSync();
     expect(calls.uploads, 2);
   });
@@ -155,7 +166,6 @@ void main() {
           direction: SyncDirection.uploadOnly,
           timing: SyncTiming.manual,
           minutes: 15,
-          initialUpload: true,
         )).success,
         isTrue,
       );
@@ -168,10 +178,12 @@ void main() {
           direction: SyncDirection.uploadOnly,
           timing: SyncTiming.scheduled,
           minutes: 15,
-          initialUpload: true,
         )).success,
         isTrue,
       );
+      // Saved configuration queues a separate transfer. Finish that task (and
+      // its disk writes) before advancing the fake wall clock.
+      await sync.waitForSync();
       expect(calls.uploads, 1);
       await clock.elapse(const Duration(minutes: 14));
       expect(calls.uploads, 1);
@@ -190,6 +202,9 @@ void main() {
         .add(const Duration(days: 1))
         .millisecondsSinceEpoch;
     final sync = DataSync();
+    // The shared fixture has already completed startup. Re-evaluate the changed
+    // persisted timestamp through the same resume/startup scheduler entrypoint.
+    sync.checkForAutomaticSync();
     await sync.waitForSync();
     expect(calls.uploads, 1);
     sync.dispose();
@@ -249,4 +264,16 @@ class _Calls {
       return const Res(true);
     };
   }
+}
+
+class _ScheduleDavClient extends dav.Client {
+  _ScheduleDavClient()
+    : super(
+        uri: 'https://example.com/dav/',
+        c: dav.WdDio(),
+        auth: dav.Auth(user: 'user', pwd: 'password'),
+      );
+
+  @override
+  Future<void> ping([CancelToken? cancelToken]) async {}
 }

@@ -34,7 +34,7 @@ class _AggregatedSearchPageState extends State<AggregatedSearchPage> {
         .where((e) => e.searchPageData != null)
         .map((e) => e.key)
         .toList();
-    var settings = appdata.settings['searchSources'] as List;
+    final settings = (appdata.settings['searchSources'] as List?) ?? all;
     var sources = <String>[];
     for (var source in settings) {
       if (all.contains(source)) {

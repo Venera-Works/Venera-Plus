@@ -14,6 +14,8 @@ import 'package:venera_plus/foundation/sqlite_connection.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/throttled_task_runner.dart';
 import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/sync_records.dart';
+import 'package:venera_plus/features/history/history_sync_data.dart';
 
 class History implements Comic {
   HistoryType type;
@@ -93,21 +95,20 @@ class History implements Comic {
   History.fromRow(Row row)
     : type = HistoryType(row["type"]),
       time = DateTime.fromMillisecondsSinceEpoch(row["time"]),
-      title = row["title"],
-      subtitle = row["subtitle"],
-      cover = row["cover"],
+      title = row["title"] ?? '',
+      subtitle = row["subtitle"] ?? '',
+      cover = row["cover"] ?? '',
       ep = row["ep"],
       page = row["page"],
       id = row["id"],
       readEpisode = Set<String>.from(
-        (row["readEpisode"] as String)
+        (row["readEpisode"] as String? ?? '')
             .split(',')
             .where((element) => element != ""),
       ),
       maxPage = row["max_page"],
       group = row["chapter_group"],
-      readDurationMs = (row["read_duration_ms"] as num).round();
-
+      readDurationMs = ((row["read_duration_ms"] as num?) ?? 0).round();
   @override
   bool operator ==(Object other) {
     return other is History && type == other.type && id == other.id;
@@ -173,8 +174,10 @@ class HistoryManager with ChangeNotifier {
 
   int get length => _db.select("select count(*) from history;").first[0] as int;
 
-  /// Cache of history ids. Improve the performance of find operation.
-  Map<String, bool>? _cachedHistoryIds;
+  static String _historyKey(String id, ComicType type) => "${type.value}:$id";
+
+  /// Cache of history keys (type:id). Improves the performance of find operations.
+  Map<String, bool>? _cachedHistoryKeys;
 
   /// Cache records recently modified by the app. Improve the performance of listeners.
   final cachedHistories = <String, History>{};
@@ -187,33 +190,7 @@ class HistoryManager with ChangeNotifier {
     }
     _dbPath = "${App.dataPath}/history.db";
     _db = openSqliteDatabase(_dbPath);
-
-    _db.execute("""
-        create table if not exists history  (
-          id text primary key,
-          title text,
-          subtitle text,
-          cover text,
-          time int,
-          type int,
-          ep int,
-          page int,
-          readEpisode text,
-          max_page int,
-          chapter_group int,
-          read_duration_ms integer not null default 0
-        );
-      """);
-
-    var columns = _db.select("PRAGMA table_info(history);");
-    if (!columns.any((element) => element["name"] == "chapter_group")) {
-      _db.execute("alter table history add column chapter_group int;");
-    }
-    if (!columns.any((element) => element["name"] == "read_duration_ms")) {
-      _db.execute(
-        "alter table history add column read_duration_ms integer not null default 0;",
-      );
-    }
+    HistorySyncData.ensureSchema(_db);
 
     notifyListeners();
     ImageFavoriteManager().init();
@@ -224,8 +201,8 @@ class HistoryManager with ChangeNotifier {
   }
 
   static const _insertHistorySql = """
-        insert or replace into history (id, title, subtitle, cover, time, type, ep, page, readEpisode, max_page, chapter_group)
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        insert or replace into history (id, title, subtitle, cover, time, type, ep, page, readEpisode, max_page, chapter_group, read_duration_ms)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       """;
 
   static const _updateHistorySql = """
@@ -297,7 +274,10 @@ class HistoryManager with ChangeNotifier {
         item.type.value,
       ]);
       if (db.updatedRows == 0) {
-        db.execute(_insertHistorySql, _historyValues(item));
+        db.execute(_insertHistorySql, [
+          ..._historyValues(item),
+          item.readDurationMs,
+        ]);
       }
     });
   }
@@ -322,6 +302,7 @@ class HistoryManager with ChangeNotifier {
     return Isolate.run(() {
       var db = openSqliteDatabase(dbPath);
       try {
+        db.execute('PRAGMA busy_timeout = 5000;');
         _writeHistory(db, newItem);
       } finally {
         db.dispose();
@@ -337,6 +318,7 @@ class HistoryManager with ChangeNotifier {
     return Isolate.run(() {
       var db = openSqliteDatabase(dbPath);
       try {
+        db.execute('PRAGMA busy_timeout = 5000;');
         _writeReadDuration(db, item, durationMs);
       } finally {
         db.dispose();
@@ -385,13 +367,14 @@ class HistoryManager with ChangeNotifier {
   }
 
   void _cacheHistory(History newItem) {
-    if (_cachedHistoryIds == null) {
+    final key = _historyKey(newItem.id, newItem.type);
+    if (_cachedHistoryKeys == null) {
       updateCache();
     } else {
-      _cachedHistoryIds![newItem.id] = true;
+      _cachedHistoryKeys![key] = true;
     }
-    cachedHistories[newItem.id] = newItem;
-    if (cachedHistories.length > 10) {
+    cachedHistories[key] = newItem;
+    if (cachedHistories.length > 20) {
       cachedHistories.remove(cachedHistories.keys.first);
     }
   }
@@ -468,29 +451,34 @@ class HistoryManager with ChangeNotifier {
   }
 
   void updateCache() {
-    _cachedHistoryIds = {};
+    _cachedHistoryKeys = {};
     var res = _db.select("""
-        select id from history;
+        select id, type from history;
       """);
     for (var element in res) {
-      _cachedHistoryIds![element["id"] as String] = true;
+      final key = _historyKey(
+        element["id"] as String,
+        ComicType(element["type"] as int),
+      );
+      _cachedHistoryKeys![key] = true;
     }
     for (var key in cachedHistories.keys.toList()) {
-      if (!_cachedHistoryIds!.containsKey(key)) {
+      if (!_cachedHistoryKeys!.containsKey(key)) {
         cachedHistories.remove(key);
       }
     }
   }
 
   History? find(String id, ComicType type) {
-    if (_cachedHistoryIds == null) {
+    if (_cachedHistoryKeys == null) {
       updateCache();
     }
-    if (!_cachedHistoryIds!.containsKey(id)) {
+    final key = _historyKey(id, type);
+    if (!_cachedHistoryKeys!.containsKey(key)) {
       return null;
     }
-    if (cachedHistories.containsKey(id)) {
-      return cachedHistories[id];
+    if (cachedHistories.containsKey(key)) {
+      return cachedHistories[key];
     }
 
     var res = _db.select(
@@ -503,7 +491,37 @@ class HistoryManager with ChangeNotifier {
     if (res.isEmpty) {
       return null;
     }
-    return History.fromRow(res.first);
+    final item = History.fromRow(res.first);
+    cachedHistories[key] = item;
+    return item;
+  }
+
+  /// Exports sync records for history, historyChapter, and imageFavorite domains.
+  ///
+  /// Awaits all pending asynchronous history writes before reading.
+  Future<SyncRecords> exportSyncRecords() async {
+    await waitForAsyncWrites();
+    return HistorySyncData.readSyncRecords(_db);
+  }
+
+  /// Transactionally applies incoming sync records for history, historyChapter,
+  /// and imageFavorite domains.
+  ///
+  /// Preserves metadata for child records when parent history is deleted,
+  /// updates caches, and notifies listeners.
+  void applySyncRecords(SyncRecords records) {
+    final result = HistorySyncData.applySyncRecords(_db, records);
+    if (!result.hasChanges) {
+      return;
+    }
+    if (result.historyChanged) {
+      cachedHistories.clear();
+      updateCache();
+      notifyListeners();
+    }
+    if (result.imageFavoritesChanged) {
+      ImageFavoriteManager().notifyChanges();
+    }
   }
 
   List<History> getAll() {

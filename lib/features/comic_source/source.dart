@@ -45,6 +45,16 @@ void configureComicSourceDataSavedHandler(
   _comicSourceDataSavedHandler = handler;
 }
 
+// Replacements share the complete session and its write queue. Callbacks which
+// still hold the old source object must write to the same live session.
+class _SourceSession {
+  Map<String, dynamic> data = {};
+  int revision = 0;
+  String persistedSnapshot = '{}';
+  Future<void>? activeSave;
+  String? pendingSnapshot;
+}
+
 class ComicSource {
   static List<ComicSource> all() => _comicSourceListResolver?.call() ?? [];
 
@@ -97,7 +107,19 @@ class ComicSource {
   final Map<String, dynamic> Function(String imageKey)?
   getThumbnailLoadingConfig;
 
-  var data = <String, dynamic>{};
+  _SourceSession _session = _SourceSession();
+
+  Map<String, dynamic> get data => _session.data;
+
+  set data(Map<String, dynamic> value) {
+    _session.data = value;
+    _session.revision++;
+  }
+
+  /// Keeps callbacks to an older source attached to its current atomic session.
+  void shareSessionWith(ComicSource previous) {
+    _session = previous._session;
+  }
 
   bool get isLogged => data["account"] != null;
 
@@ -147,88 +169,94 @@ class ComicSource {
   final ReplyCommentFunc? replyCommentFunc;
 
   Future<void> loadData() async {
-    var file = File("${App.dataPath}/comic_source/$key.data");
-    if (await file.exists()) {
-      data = Map.from(jsonDecode(await file.readAsString()));
+    final session = _session;
+    final revision = session.revision;
+    final original = jsonEncode(session.data);
+    await waitForDataWrites();
+    final dirty = jsonEncode(session.data) != session.persistedSnapshot;
+    final file = File("${App.dataPath}/comic_source/$key.data");
+    final loaded = await file.exists()
+        ? jsonDecode(await file.readAsString())
+        : <String, dynamic>{};
+    if (loaded is! Map) {
+      throw FormatException('Source session "$key" must be a JSON object');
+    }
+    // Comparing the whole map also protects nested changes made without a
+    // save request yet. Never stitch an old account into a different session.
+    if (identical(session, _session) &&
+        session.revision == revision &&
+        jsonEncode(session.data) == original &&
+        !dirty) {
+      session.data = Map<String, dynamic>.from(loaded);
+      session.persistedSnapshot = jsonEncode(session.data);
+      session.revision++;
     }
   }
 
-  Future<void>? _activeSave;
-  Future<void>? _pendingSave;
+  Future<void> waitForDataWrites() async {
+    while (_session.activeSave != null) {
+      await _session.activeSave;
+    }
+  }
+
   bool _stagingData = false;
-  bool _stagedSave = false;
+  String? _stagedSnapshot;
 
   void stageDataWrites() => _stagingData = true;
 
   Future<void> commitDataWrites() async {
-    if (_stagedSave) {
-      // Publish initialized data only after a complete write. A broken draft
-      // or failed write must leave the previous credentials intact.
-      final file = File('${App.dataPath}/comic_source/$key.data');
-      final temporary = File('${file.path}.update');
-      try {
-        await temporary.writeAsString(jsonEncode(data), flush: true);
-        await temporary.rename(file.path);
-      } finally {
-        if (await temporary.exists()) await temporary.delete();
-      }
-      _stagedSave = false;
-      final sync = _comicSourceDataSavedHandler?.call();
-      if (sync != null) unawaited(sync);
+    await waitForDataWrites();
+    while (_stagedSnapshot != null) {
+      final snapshot = _stagedSnapshot!;
+      _stagedSnapshot = null;
+      await _writeData(snapshot, suffix: '.update');
+      _session.persistedSnapshot = snapshot;
+      _notifyDataChanged();
     }
     _stagingData = false;
   }
 
-  Future<void> saveData() async {
+  Future<void> saveData() {
+    // Serialize at the request, not when a queued write eventually starts.
+    // A reload can no longer substitute imported data for this user's edit.
+    final snapshot = jsonEncode(data);
+    _session.revision++;
     if (_stagingData) {
-      _stagedSave = true;
-      return;
-    }
-    if (_activeSave != null) {
-      return _schedulePendingSave();
-    }
-    return _startSave();
-  }
-
-  Future<void> _schedulePendingSave() {
-    if (_pendingSave != null) {
+      _stagedSnapshot = snapshot;
       return Future.value();
     }
-    var activeSave = _activeSave!;
-    var pendingSave = activeSave.then(
-      (_) {
-        _pendingSave = null;
-        return _startSave();
-      },
-      onError: (_) {
-        _pendingSave = null;
-        return _startSave();
-      },
-    );
-    _pendingSave = pendingSave;
-    return pendingSave;
+    _notifyDataChanged();
+    _session.pendingSnapshot = snapshot;
+    return _session.activeSave ??= _drainDataWrites(_session);
   }
 
-  Future<void> _startSave() {
-    late Future<void> activeSave;
-    activeSave = _writeData().whenComplete(() {
-      if (identical(_activeSave, activeSave)) {
-        _activeSave = null;
-      }
-    });
-    _activeSave = activeSave;
-    return activeSave;
-  }
-
-  Future<void> _writeData() async {
-    var file = File("${App.dataPath}/comic_source/$key.data");
-    if (!await file.exists()) {
-      await file.create(recursive: true);
-    }
-    await file.writeAsString(jsonEncode(data));
+  void _notifyDataChanged() {
     final sync = _comicSourceDataSavedHandler?.call();
-    if (sync != null) {
-      unawaited(sync);
+    if (sync != null) unawaited(sync);
+  }
+
+  Future<void> _drainDataWrites(_SourceSession session) async {
+    try {
+      while (session.pendingSnapshot != null) {
+        final snapshot = session.pendingSnapshot!;
+        session.pendingSnapshot = null;
+        await _writeData(snapshot);
+        session.persistedSnapshot = snapshot;
+      }
+    } finally {
+      session.activeSave = null;
+    }
+  }
+
+  Future<void> _writeData(String snapshot, {String suffix = '.save'}) async {
+    final file = File("${App.dataPath}/comic_source/$key.data");
+    await file.parent.create(recursive: true);
+    final temporary = File('${file.path}$suffix');
+    try {
+      await temporary.writeAsString(snapshot, flush: true);
+      await temporary.rename(file.path);
+    } finally {
+      if (await temporary.exists()) await temporary.delete();
     }
   }
 

@@ -13,6 +13,108 @@ void cliPrint(Map<String, dynamic> data) {
   print('[CLI PRINT] ${jsonEncode(data)}');
 }
 
+/// The real dispatcher and CLI tests share this command grammar.
+({String action, int argumentIndex}) parseHeadlessSyncCommand(
+  List<String> args,
+  int commandIndex,
+) {
+  if (commandIndex < 0 || commandIndex >= args.length) {
+    throw const FormatException('Missing sync command.');
+  }
+  final grouped = args[commandIndex] == 'webdav';
+  final actionIndex = commandIndex + (grouped ? 1 : 0);
+  if (actionIndex >= args.length ||
+      !(grouped
+              ? const {'up', 'down', 'sync', 'conflicts', 'resolve'}
+              : const {'sync', 'conflicts', 'resolve'})
+          .contains(args[actionIndex])) {
+    throw const FormatException(
+      'Invalid sync command. Use webdav up, down, sync, conflicts, or resolve.',
+    );
+  }
+  return (action: args[actionIndex], argumentIndex: actionIndex + 1);
+}
+
+/// IDs are opaque engine output, including duration-resolution candidates.
+({String recordKey, String field, String candidateId})
+parseHeadlessSyncResolveArguments(List<String> args, int startIndex) {
+  String? recordKey;
+  String? field;
+  String? candidateId;
+  final positional = <String>[];
+  for (var i = startIndex; i < args.length; i++) {
+    final arg = args[i];
+    if (!arg.startsWith('--')) {
+      positional.add(arg);
+      continue;
+    }
+    if (i + 1 >= args.length || args[i + 1].startsWith('--')) {
+      throw FormatException('Missing value for $arg.');
+    }
+    final value = args[++i];
+    switch (arg) {
+      case '--record-key':
+      case '--key':
+        recordKey = value;
+        break;
+      case '--field':
+        field = value;
+        break;
+      case '--candidate-id':
+      case '--candidate':
+        candidateId = value;
+        break;
+      default:
+        throw FormatException('Unknown resolve argument: $arg.');
+    }
+  }
+  if (positional.isNotEmpty) {
+    if (positional.length != 3 ||
+        recordKey != null ||
+        field != null ||
+        candidateId != null) {
+      throw const FormatException(
+        'Use three positional arguments or named resolve arguments, not both.',
+      );
+    }
+    recordKey = positional[0];
+    field = positional[1];
+    candidateId = positional[2];
+  }
+  if (recordKey == null ||
+      field == null ||
+      candidateId == null ||
+      recordKey.isEmpty ||
+      field.isEmpty ||
+      candidateId.isEmpty) {
+    throw const FormatException(
+      'Missing required arguments: record-key, field, and candidate-id are required.',
+    );
+  }
+  return (recordKey: recordKey, field: field, candidateId: candidateId);
+}
+
+/// Never serialize MergeCandidate.toJson here: its value may contain credentials.
+List<Map<String, Object?>> headlessSyncConflictPreviews(
+  List<MergeConflict> conflicts,
+) => [
+  for (final conflict in conflicts)
+    {
+      'recordKey': conflict.recordKey,
+      'field': conflict.field,
+      'candidates': [
+        for (final candidate in conflict.candidates)
+          {
+            'id': candidate.id,
+            'actor': candidate.actor,
+            'counter': candidate.counter,
+            'isDeleted': candidate.isDeleted,
+            'label': candidate.safeLabel,
+          },
+      ],
+    },
+];
+
 Future<void> runHeadlessMode(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   if (args.contains('--ignore-disheadless-log')) {
@@ -41,38 +143,30 @@ Future<void> runHeadlessMode(List<String> args) async {
 
   switch (command) {
     case 'webdav':
-      if (subCommand == 'up') {
-        cliPrint({'status': 'running', 'message': 'Uploading WebDAV data...'});
-        await DataSync().waitForSync();
-        final result = await DataSync().uploadData();
-        if (result.error) {
-          cliPrint({
-            'status': 'error',
-            'message': result.errorMessage ?? 'Upload failed.',
-          });
-          exit(1);
+    case 'sync':
+    case 'conflicts':
+    case 'resolve':
+      try {
+        final parsed = parseHeadlessSyncCommand(args, commandIndex);
+        switch (parsed.action) {
+          case 'up':
+            await _handleWebdavTransfer(upload: true);
+            break;
+          case 'down':
+            await _handleWebdavTransfer(upload: false);
+            break;
+          case 'sync':
+            await _handleWebdavSync();
+            break;
+          case 'conflicts':
+            await _handleWebdavConflicts();
+            break;
+          case 'resolve':
+            await _handleWebdavResolve(args, parsed.argumentIndex);
+            break;
         }
-        cliPrint({'status': 'success', 'message': 'Upload complete.'});
-      } else if (subCommand == 'down') {
-        cliPrint({
-          'status': 'running',
-          'message': 'Downloading WebDAV data...',
-        });
-        await DataSync().waitForSync();
-        final result = await DataSync().downloadData();
-        if (result.error) {
-          cliPrint({
-            'status': 'error',
-            'message': result.errorMessage ?? 'Download failed.',
-          });
-          exit(1);
-        }
-        cliPrint({'status': 'success', 'message': 'Download complete.'});
-      } else {
-        cliPrint({
-          'status': 'error',
-          'message': 'Invalid webdav command. Use "up" or "down".',
-        });
+      } on FormatException catch (error) {
+        cliPrint({'status': 'error', 'message': error.message});
         exit(1);
       }
       break;
@@ -148,6 +242,7 @@ Future<void> runHeadlessMode(List<String> args) async {
           'status': 'running',
           'message': 'Updating subscribed comics...',
         });
+        await DataSync().waitForStartupMerge();
         await DataSync().waitForDownload();
         var folder = LocalFavoritesManager().readingFolder;
         if (folder == null) {
@@ -278,4 +373,100 @@ Future<void> runHeadlessMode(List<String> args) async {
 
   // Exit after command execution
   exit(0);
+}
+
+Future<void> _handleWebdavTransfer({required bool upload}) async {
+  cliPrint({
+    'status': 'running',
+    'message': upload
+        ? 'Uploading WebDAV data...'
+        : 'Downloading WebDAV data...',
+  });
+  await DataSync().waitForStartupMerge();
+  await DataSync().waitForSync();
+  final result = upload
+      ? await DataSync().uploadData()
+      : await DataSync().downloadData();
+  if (result.error) {
+    cliPrint({
+      'status': 'error',
+      'message':
+          result.errorMessage ??
+          (upload ? 'Upload failed.' : 'Download failed.'),
+    });
+    exit(1);
+  }
+  cliPrint({
+    'status': 'success',
+    'message': upload ? 'Upload complete.' : 'Download complete.',
+  });
+}
+
+Future<void> _handleWebdavSync() async {
+  cliPrint({'status': 'running', 'message': 'Syncing WebDAV data...'});
+  await DataSync().waitForStartupMerge();
+  await DataSync().waitForSync();
+  final result = await DataSync().syncData();
+  if (result.error) {
+    cliPrint({
+      'status': 'error',
+      'message': result.errorMessage ?? 'Sync failed.',
+    });
+    exit(1);
+  }
+  final conflicts = DataSync().conflicts;
+  cliPrint({
+    'status': 'success',
+    'message': 'Sync complete.',
+    'data': {
+      'conflictCount': conflicts.length,
+      'hasConflict': conflicts.isNotEmpty,
+    },
+  });
+}
+
+Future<void> _handleWebdavConflicts() async {
+  cliPrint({'status': 'running', 'message': 'Checking sync conflicts...'});
+  await DataSync().waitForStartupMerge();
+  await DataSync().waitForSync();
+  final conflicts = DataSync().conflicts;
+  final sanitizedConflicts = headlessSyncConflictPreviews(conflicts);
+  cliPrint({
+    'status': 'success',
+    'message': 'Sync conflicts retrieved.',
+    'data': {'count': conflicts.length, 'conflicts': sanitizedConflicts},
+  });
+}
+
+Future<void> _handleWebdavResolve(List<String> args, int startIndex) async {
+  final parsed = parseHeadlessSyncResolveArguments(args, startIndex);
+  final recordKey = parsed.recordKey;
+  final field = parsed.field;
+  final candidateId = parsed.candidateId;
+
+  cliPrint({'status': 'running', 'message': 'Resolving sync conflict...'});
+  await DataSync().waitForStartupMerge();
+  await DataSync().waitForSync();
+  final result = await DataSync().resolveConflict(
+    recordKey: recordKey,
+    field: field,
+    candidateId: candidateId,
+  );
+  if (result.error) {
+    cliPrint({
+      'status': 'error',
+      'message': result.errorMessage ?? 'Resolve conflict failed.',
+    });
+    exit(1);
+  }
+  cliPrint({
+    'status': 'success',
+    'message': 'Conflict resolved.',
+    'data': {
+      'recordKey': recordKey,
+      'field': field,
+      'candidateId': candidateId,
+      'remainingConflicts': DataSync().conflicts.length,
+    },
+  });
 }

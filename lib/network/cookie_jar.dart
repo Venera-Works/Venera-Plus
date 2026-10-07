@@ -5,11 +5,38 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/extensions.dart';
+import 'package:venera_plus/foundation/sync_records.dart';
+
+/// Normalizes a cookie domain for sync domain-session grouping.
+/// Removes leading dots and lowercases the domain.
+String normalizeCookieDomain(String domain) {
+  var d = domain.trim().toLowerCase();
+  while (d.startsWith('.')) {
+    d = d.substring(1);
+  }
+  return d;
+}
 
 class CookieJarSql {
   late Database _db;
 
   final String path;
+
+  /// Global callback invoked whenever persistent cookie data changes.
+  static void Function()? onCookiesChanged;
+
+  /// Instance-specific callback invoked whenever persistent cookie data changes.
+  void Function()? onInstanceCookiesChanged;
+
+  /// Registers a neutral global handler for persistent cookie modifications.
+  static void registerCookiesChangedHandler(void Function()? handler) {
+    onCookiesChanged = handler;
+  }
+
+  void _notifyCookiesChanged() {
+    onInstanceCookiesChanged?.call();
+    onCookiesChanged?.call();
+  }
 
   CookieJarSql(this.path) {
     init();
@@ -33,6 +60,7 @@ class CookieJarSql {
 
   void saveFromResponse(Uri uri, List<Cookie> cookies) {
     var current = loadForRequest(uri);
+    var changed = false;
     for (var cookie in cookies) {
       var currentCookie = current.firstWhereOrNull(
         (element) =>
@@ -42,22 +70,34 @@ class CookieJarSql {
       if (currentCookie != null) {
         cookie.domain = currentCookie.domain;
       }
-      _db.execute(
+      final values = [
+        cookie.name,
+        cookie.value,
+        cookie.domain ?? uri.host,
+        cookie.path ?? "/",
+        cookie.expires?.millisecondsSinceEpoch,
+        cookie.secure ? 1 : 0,
+        cookie.httpOnly ? 1 : 0,
+      ];
+      final existing = _db.select(
         '''
-        INSERT OR REPLACE INTO cookies (name, value, domain, path, expires, secure, httpOnly)
-        VALUES (?, ?, ?, ?, ?, ?, ?);
+        SELECT name, value, domain, path, expires, secure, httpOnly FROM cookies
+        WHERE name = ? AND domain = ? AND path = ?;
       ''',
-        [
-          cookie.name,
-          cookie.value,
-          cookie.domain ?? uri.host,
-          cookie.path ?? "/",
-          cookie.expires?.millisecondsSinceEpoch,
-          cookie.secure ? 1 : 0,
-          cookie.httpOnly ? 1 : 0,
-        ],
+        [values[0], values[2], values[3]],
       );
+      if (existing.isNotEmpty &&
+          syncValuesEqual(existing.single.values.toList(), values)) {
+        continue;
+      }
+      _db.execute('''
+        INSERT OR REPLACE INTO cookies
+          (name, value, domain, path, expires, secure, httpOnly)
+        VALUES (?, ?, ?, ?, ?, ?, ?);
+      ''', values);
+      changed = true;
     }
+    if (changed) _notifyCookiesChanged();
   }
 
   List<Cookie> _loadWithDomain(String domain) {
@@ -115,6 +155,9 @@ class CookieJarSql {
       ''',
         [cookie.name, cookie.domain, cookie.path],
       );
+    }
+    if (expires.isNotEmpty) {
+      _notifyCookiesChanged();
     }
 
     return cookies
@@ -179,35 +222,189 @@ class CookieJarSql {
   }
 
   void delete(Uri uri, String name) {
-    var acceptedDomains = _getAcceptedDomains(uri.host);
-    for (var domain in acceptedDomains) {
+    var changed = false;
+    for (var domain in _getAcceptedDomains(uri.host)) {
       _db.execute(
         '''
-        DELETE FROM cookies
-        WHERE name = ? AND domain = ? AND path = ?;
+        DELETE FROM cookies WHERE name = ? AND domain = ? AND path = ?;
       ''',
         [name, domain, uri.path],
       );
+      changed = changed || _db.updatedRows > 0;
     }
+    if (changed) _notifyCookiesChanged();
   }
 
   void deleteUri(Uri uri) {
-    var acceptedDomains = _getAcceptedDomains(uri.host);
-    for (var domain in acceptedDomains) {
-      _db.execute(
-        '''
-        DELETE FROM cookies
-        WHERE domain = ?;
-      ''',
-        [domain],
-      );
+    var changed = false;
+    for (var domain in _getAcceptedDomains(uri.host)) {
+      _db.execute('DELETE FROM cookies WHERE domain = ?;', [domain]);
+      changed = changed || _db.updatedRows > 0;
     }
+    if (changed) _notifyCookiesChanged();
   }
 
   void deleteAll() {
-    _db.execute('''
-      DELETE FROM cookies;
+    _db.execute('DELETE FROM cookies;');
+    if (_db.updatedRows > 0) _notifyCookiesChanged();
+  }
+
+  /// Exports all stored cookies grouped and sorted by normalized domain.
+  Map<String, List<Map<String, Object?>>> exportAllCookiesGroupedByDomain() {
+    final rows = _db.select('''
+      SELECT name, value, domain, path, expires, secure, httpOnly
+      FROM cookies;
     ''');
+    final map = <String, List<Map<String, Object?>>>{};
+    for (final row in rows) {
+      final domain = row['domain'] as String;
+      final normalized = normalizeCookieDomain(domain);
+      final item = <String, Object?>{
+        'name': row['name'] as String,
+        'value': row['value'] as String,
+        'domain': domain,
+        'path': row['path'] as String? ?? '/',
+        'expires': row['expires'] as int?,
+        'secure': (row['secure'] == 1),
+        'httpOnly': (row['httpOnly'] == 1),
+      };
+      map.putIfAbsent(normalized, () => []).add(item);
+    }
+
+    for (final list in map.values) {
+      list.sort((a, b) {
+        final cmpName = (a['name'] as String).compareTo(b['name'] as String);
+        if (cmpName != 0) return cmpName;
+        final cmpPath = ((a['path'] as String?) ?? '').compareTo(
+          (b['path'] as String?) ?? '',
+        );
+        if (cmpPath != 0) return cmpPath;
+        return ((a['domain'] as String?) ?? '').compareTo(
+          (b['domain'] as String?) ?? '',
+        );
+      });
+    }
+    return map;
+  }
+
+  /// Validates ownership before any cookie/session replacement can occur.
+  static List<Map<String, Object?>> validateDomainCookies(
+    String normalizedDomain,
+    List<Map<String, Object?>> cookieRows,
+  ) {
+    final norm = normalizeCookieDomain(normalizedDomain);
+    if (norm.isEmpty || norm != normalizedDomain) {
+      throw const FormatException('Cookie record domain must be normalized');
+    }
+    final result = <Map<String, Object?>>[];
+    final identities = <String>{};
+    for (final row in cookieRows) {
+      final domain = row['domain'];
+      final path = row['path'] ?? '/';
+      final expires = row['expires'];
+      final secure = row['secure'] ?? false;
+      final httpOnly = row['httpOnly'] ?? false;
+      bool validFlag(Object? value) =>
+          value is bool || (value is int && (value == 0 || value == 1));
+      if (row['name'] is! String ||
+          row['value'] is! String ||
+          domain is! String ||
+          normalizeCookieDomain(domain) != norm ||
+          path is! String ||
+          (expires != null && expires is! int) ||
+          !validFlag(secure) ||
+          !validFlag(httpOnly)) {
+        throw FormatException('Invalid cookie row for domain "$norm"');
+      }
+      final identity = syncRecordKey('cookie', [row['name'], domain, path]);
+      if (!identities.add(identity)) {
+        throw FormatException('Duplicate cookie identity for domain "$norm"');
+      }
+      result.add({
+        'name': row['name'],
+        'value': row['value'],
+        'domain': domain,
+        'path': path,
+        'expires': expires,
+        'secure': secure == true || secure == 1,
+        'httpOnly': httpOnly == true || httpOnly == 1,
+      });
+    }
+    result.sort((a, b) {
+      final name = (a['name'] as String).compareTo(b['name'] as String);
+      if (name != 0) return name;
+      final path = (a['path'] as String).compareTo(b['path'] as String);
+      if (path != 0) return path;
+      return (a['domain'] as String).compareTo(b['domain'] as String);
+    });
+    return result;
+  }
+
+  /// Replaces the complete materialized cookie view in one SQLite transaction.
+  /// Equal sessions perform no row writes or change notifications.
+  void applyAllDomainCookies(
+    Map<String, List<Map<String, Object?>>> domains, {
+    bool notify = false,
+    bool replaceAll = true,
+  }) {
+    final validated = {
+      for (final entry in domains.entries)
+        entry.key: validateDomainCookies(entry.key, entry.value),
+    };
+    var changed = false;
+    _db.execute('BEGIN TRANSACTION;');
+    try {
+      final existing = exportAllCookiesGroupedByDomain();
+      final managed = {...validated.keys, if (replaceAll) ...existing.keys};
+      for (final domain in managed) {
+        final next = validated[domain] ?? [];
+        final previous = existing[domain] ?? [];
+        if (syncValuesEqual(previous, next)) continue;
+        for (final physical in previous.map((row) => row['domain']).toSet()) {
+          _db.execute('DELETE FROM cookies WHERE domain = ?;', [physical]);
+        }
+        for (final row in next) {
+          _db.execute(
+            '''
+            INSERT INTO cookies
+              (name, value, domain, path, expires, secure, httpOnly)
+            VALUES (?, ?, ?, ?, ?, ?, ?);
+          ''',
+            [
+              row['name'],
+              row['value'],
+              row['domain'],
+              row['path'],
+              row['expires'],
+              row['secure'] == true ? 1 : 0,
+              row['httpOnly'] == true ? 1 : 0,
+            ],
+          );
+        }
+        changed = true;
+      }
+      _db.execute('COMMIT;');
+    } catch (_) {
+      _db.execute('ROLLBACK;');
+      rethrow;
+    }
+    if (changed && notify) _notifyCookiesChanged();
+  }
+
+  void applyDomainCookies(
+    String normalizedDomain,
+    List<Map<String, Object?>> cookieRows, {
+    bool notify = false,
+  }) {
+    applyAllDomainCookies(
+      {normalizeCookieDomain(normalizedDomain): cookieRows},
+      notify: notify,
+      replaceAll: false,
+    );
+  }
+
+  void deleteDomainCookies(String normalizedDomain, {bool notify = false}) {
+    applyDomainCookies(normalizedDomain, [], notify: notify);
   }
 
   void dispose() {

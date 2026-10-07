@@ -22,16 +22,47 @@ venera-plus --headless <command> [subcommand] [options]
 
 Manage WebDAV data synchronization.
 
-- **`webdav up`**: Uploads a complete local app-data snapshot. Rejected in download-only direction.
-- **`webdav down`**: Downloads the latest remote app-data snapshot (in bidirectional mode, only a newer version). Rejected in upload-only direction.
+- **`webdav sync`**: Runs immediately in the configured direction: bidirectional merges and publishes, upload-only publishes, and download-only merges without publishing. The top-level **`sync`** command does the same.
+- **`webdav up`**: Publishes a full local causal checkpoint without applying remote business data. Rejected in download-only direction. This is not a whole-database upload overwriting the cloud.
+- **`webdav down`**: Merges valid remote checkpoints, retaining local edit candidates, without publishing. Rejected in upload-only direction. This is not forced download overwrite.
+- **`webdav conflicts`**: Reads record/field conflicts currently known locally; it does not fetch new remote content. Top-level **`conflicts`** does the same. To inspect up-to-date remote conflicts, first run synchronization in a direction allowing remote reads.
+- **`webdav resolve`**: Selects an existing candidate for one field of one record. Top-level **`resolve`** does the same. Arguments are described below.
 
-Commands wait behind existing sync/configuration work and report the actual operation's error with a nonzero exit code. They cannot bypass direction restrictions. Downloads reject ambiguous latest versions and protect local edits made while waiting for network data. See [App Data Synchronization](data_sync.en.md) for snapshot and ETag limitations.
+Commands wait for startup recovery and existing sync/configuration work. Actual operation failures report `status: error` and a nonzero exit code; commands cannot bypass direction restrictions. Authentication, network, and application errors are not success, and unfinished work is retained for retry. A later failure does not pretend to undo already committed remote or local changes. See [App Data Synchronization](data_sync.en.md) for protocol, one-time legacy migration, and crash-recovery boundaries.
+
+Successful transfer through `webdav sync` / `sync` outputs `status: success`, with `data.conflictCount` and `data.hasConflict` describing conflicts still requiring attention. **Unresolved candidate conflicts can coexist with success (exit code 0).** Success does not mean every candidate was selected automatically. Successful `up` / `down` messages do not contain conflict lists; query `conflicts` separately.
 
 **Example:**
 
 ```bash
 venera-plus --headless webdav up
 ```
+
+**Resolving individual conflicts:**
+
+```bash
+venera-plus --headless webdav sync
+venera-plus --headless webdav conflicts
+
+# Copy values from the conflicts JSON output into variables; names are illustrative
+venera-plus --headless webdav resolve --record-key "$RECORD_KEY" --field "$FIELD" --candidate-id "$CANDIDATE_ID"
+```
+
+The successful `conflicts` response has `data.count` and a `data.conflicts` array. Each entry contains:
+
+- `recordKey`: The record-key string. Its contents are a JSON-encoded identity array, **not a dot-separated path**. Extract the string with a JSON parser and pass it intact; do not construct your own key or pass the outer JSON escaping as part of the argument.
+- `field`: The field requiring resolution; copy it directly.
+- `candidates`: An array with `id`, `actor`, `counter`, `isDeleted`, and `label` per candidate. The `id` is opaque and may contain special characters. Copy it directly; **do not infer its format from actor/counter**. `isDeleted` marks deletion candidates. `label` is a safe summary, not a raw secret candidate value.
+
+`resolve` requires `--record-key` (alias `--key`), `--field`, and `--candidate-id` (alias `--candidate`). Alternatively, pass exactly three positional arguments in record-key, field, candidate-ID order:
+
+```bash
+venera-plus --headless resolve "$RECORD_KEY" "$FIELD" "$CANDIDATE_ID"
+```
+
+Quote/escape values according to your shell, especially the double quotes inside a record key. The quoted-variable examples above apply to Bash and PowerShell; Windows `cmd.exe` has different variable/escaping syntax. Stale or nonexistent candidates fail; query `conflicts` again.
+
+Success returns `recordKey`, `field`, `candidateId`, and `remainingConflicts` in `data`. Selection creates a new causal edit: bidirectional/upload-only can publish it, while download-only retains it locally for later publication. Upload can fail after the local choice has durably committed; an error does not mean that choice was undone. There is no global keep-local/keep-cloud snapshot selection or force-overwrite option. Manual `.venera` backup/restore remains separate.
 
 ### `updatescript`
 

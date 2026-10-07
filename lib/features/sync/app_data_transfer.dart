@@ -32,12 +32,14 @@ void registerAppDataSettingsChangedHandler(FutureOr<void> Function()? handler) {
   _appDataSettingsChangedHandler = handler;
 }
 
-Future<void> _notifyAppDataSettingsChanged() async {
+Future<void> notifyAppDataSettingsChanged() async {
   final handler = _appDataSettingsChangedHandler;
   if (handler != null) {
     await Future.sync(handler);
   }
 }
+
+Future<void> _notifyAppDataSettingsChanged() => notifyAppDataSettingsChanged();
 
 Future<File> exportAppData([bool sync = true]) async {
   await HistoryManager().waitForAsyncWrites();
@@ -171,7 +173,7 @@ Future<void> importAppData(
       );
     }
     if (localFavoriteFile.existsSync()) {
-      _closeLocalFavoritesManagerForImport();
+      await _closeLocalFavoritesManagerForImport();
       reloadLocalFavorites = true;
       _replaceFileForImport(
         source: localFavoriteFile,
@@ -204,8 +206,8 @@ Future<void> importAppData(
       );
     }
 
-    // Both init methods open their databases synchronously before their first
-    // await in this import mode. Start both before yielding to the event loop.
+    // Start both manager reloads before yielding to the event loop. The
+    // favorites manager waits for pending read jobs before reopening its DB.
     final databaseReloads = <Future<void>>[
       if (reloadHistory) HistoryManager().init(),
       if (reloadLocalFavorites)
@@ -396,7 +398,7 @@ Future<void> _rollbackImport({
     _closeHistoryManagerForImport();
   }
   if (reloadLocalFavorites) {
-    _closeLocalFavoritesManagerForImport();
+    await _closeLocalFavoritesManagerForImport();
   }
   if (reloadCookies) {
     _closeCookieJarForImport();
@@ -430,12 +432,13 @@ void _closeHistoryManagerForImport() {
   }
 }
 
-void _closeLocalFavoritesManagerForImport() {
-  try {
-    LocalFavoritesManager.cache?.close();
-  } catch (_) {
-    // ignore partially initialized managers
+Future<void> _closeLocalFavoritesManagerForImport() async {
+  final manager = LocalFavoritesManager.cache;
+  if (manager == null) {
+    return;
   }
+  await manager.waitForPendingReads();
+  manager.close();
 }
 
 void _closeCookieJarForImport() {

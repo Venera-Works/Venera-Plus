@@ -14,6 +14,8 @@ import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 
+import '../../widget_test_io.dart';
+
 List<String> _comicOrder(WidgetTester tester) {
   final tiles = tester.widgetList<ComicTile>(
     find.descendant(
@@ -132,8 +134,8 @@ void main() {
           addTearDown(() async {
             await tester.pumpWidget(const SizedBox.shrink());
             await tester.pump(const Duration(milliseconds: 300));
-            await tester.runAsync(() async {
-              await manager.debugWaitForHashedIdsRefresh();
+            await runWidgetIo(tester, () async {
+              await manager.waitForPendingReads();
               await appdata.saveData(false);
               manager.close();
               history.close();
@@ -154,7 +156,7 @@ void main() {
           addTearDown(tester.view.resetDevicePixelRatio);
 
           await tester.pump();
-          await tester.runAsync(() async {
+          await runWidgetIo(tester, () async {
             await manager.init();
             await history.init();
             manager.createFolder('Reorder test');
@@ -172,7 +174,7 @@ void main() {
                 i,
               );
             }
-            await manager.debugWaitForHashedIdsRefresh();
+            await manager.waitForPendingReads();
           });
           await tester.pumpWidget(
             MaterialApp(
@@ -266,13 +268,13 @@ void main() {
             expected,
           );
           await tester.pumpWidget(const SizedBox.shrink());
-          await tester.runAsync(() async {
-            await manager.debugWaitForHashedIdsRefresh();
+          await runWidgetIo(tester, () async {
+            await manager.waitForPendingReads();
             manager.close();
             LocalFavoritesManager.cache = null;
             manager = LocalFavoritesManager();
             await manager.init();
-            await manager.debugWaitForHashedIdsRefresh();
+            await manager.waitForPendingReads();
           });
           await tester.pumpWidget(
             MaterialApp(

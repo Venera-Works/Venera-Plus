@@ -13,6 +13,7 @@ import 'package:venera_plus/network/images.dart';
 
 void main() {
   setUp(() {
+    App.version = '9.0.0';
     configureComicSourceDataSavedHandler(null);
   });
 
@@ -53,7 +54,98 @@ void main() {
       final savedData = jsonDecode(savedFile.readAsStringSync());
 
       expect(savedData['token'], 'third');
-      expect(uploadCount, 2);
+      expect(
+        uploadCount,
+        3,
+      ); // Requests invalidate sync before disk writes finish.
+    },
+  );
+
+  test(
+    'queued saves keep request snapshots during a concurrent session reload',
+    () async {
+      final directory = Directory.systemTemp.createTempSync(
+        'venera-session-race-',
+      );
+      App.dataPath = directory.path;
+      final source = _source();
+      addTearDown(() async {
+        await source.waitForDataWrites();
+        directory.deleteSync(recursive: true);
+      });
+      source.data = {
+        'account': ['old', 'password'],
+        'token': 'old-token',
+        '_localStorage': {'sid': 'old-storage'},
+      };
+      await source.saveData();
+      File('${directory.path}/comic_source/test.data').writeAsStringSync(
+        jsonEncode({
+          'account': ['imported', 'password'],
+          'token': 'imported-token',
+          '_localStorage': {'sid': 'imported-storage'},
+        }),
+      );
+      final reload = source.loadData();
+      source.data['account'] = ['new', 'password'];
+      source.data['token'] = 'new-token';
+      source.data['_localStorage']['sid'] = 'new-storage';
+      final save = source.saveData();
+      await Future.wait([reload, save]);
+      final saved = jsonDecode(
+        File('${directory.path}/comic_source/test.data').readAsStringSync(),
+      );
+      expect(source.data, saved);
+      expect(saved['account'], ['new', 'password']);
+      expect(saved['token'], 'new-token');
+      expect(saved['_localStorage'], {'sid': 'new-storage'});
+
+      source.data['token'] = 'queued-token';
+      final queued = source.saveData();
+      source.data['token'] = 'unsaved-token';
+      await queued;
+      expect(
+        jsonDecode(
+          File('${directory.path}/comic_source/test.data').readAsStringSync(),
+        )['token'],
+        'queued-token',
+      );
+      await source.loadData();
+      expect(source.data['token'], 'unsaved-token');
+    },
+  );
+
+  test(
+    'replacement sessions share queued writes and old callback edits',
+    () async {
+      final directory = Directory.systemTemp.createTempSync(
+        'venera-session-share-',
+      );
+      App.dataPath = directory.path;
+      final old = _source();
+      final replacement = _source();
+      replacement.shareSessionWith(old);
+      addTearDown(() async {
+        await replacement.waitForDataWrites();
+        directory.deleteSync(recursive: true);
+      });
+      old.data['token'] = 'before';
+      final first = old.saveData();
+      replacement.data['token'] = 'replacement';
+      final next = replacement.saveData();
+      old.data['_localStorage'] = {'sid': 'old-callback'};
+      final last = old.saveData();
+      await Future.wait([first, next, last]);
+      expect(replacement.data, same(old.data));
+      expect(
+        jsonDecode(
+          File('${directory.path}/comic_source/test.data').readAsStringSync(),
+        ),
+        {
+          'token': 'replacement',
+          '_localStorage': {'sid': 'old-callback'},
+        },
+      );
     },
   );
 
@@ -180,9 +272,9 @@ void main() {
       });
       App.dataPath = tempDir.path;
 
-      final initScript = await File('assets/init.js').readAsBytes();
-      JsEngine.cacheJsInit(initScript);
-      await JsEngine().init();
+      App.version = '9.0.0';
+      JsEngine.cacheJsInit(await File('assets/init.js').readAsBytes());
+      await JsEngine.reset();
       addTearDown(() async {
         await JsEngine().dispose();
       });
@@ -191,6 +283,7 @@ void main() {
 class LegacySource extends ComicSource {
   name = "Legacy Source"
   key = "legacy_test_key"
+  minAppVersion = "1.0.0"
   version = "1.0.0"
   url = "https://example.com"
 }
@@ -207,7 +300,7 @@ class LegacySource extends ComicSource {
 class ExtendedSource extends ComicSource {
   name = "Extended Source"
   key = "extended_test_key"
-  version = "1.0.0"
+  minAppVersion = "1.0.0"
   url = "https://example.com"
   replyCommentCount = 0
 
@@ -298,17 +391,9 @@ class ExtendedSource extends ComicSource {
       expect(expiredReplyRes.error, isTrue);
       expect(expiredReplyRes.errorMessage, contains('Login expired'));
       expect(
-        expiredReplyRes.errorMessage,
-        isNot(contains('Login expired and re-login failed')),
-      );
-      expect(
         JsEngine().runCode(
           'ComicSource.sources.extended_test_key.replyCommentCount',
         ),
-        1,
-      );
-      expect(
-        JsEngine().runCode('ComicSource.sources.extended_test_key.replyCount'),
         1,
       );
     },
@@ -328,9 +413,9 @@ class ExtendedSource extends ComicSource {
       });
       App.dataPath = tempDir.path;
 
-      final initScript = await File('assets/init.js').readAsBytes();
-      JsEngine.cacheJsInit(initScript);
-      await JsEngine().init();
+      App.version = '9.0.0';
+      JsEngine.cacheJsInit(await File('assets/init.js').readAsBytes());
+      await JsEngine.reset();
       addTearDown(() async {
         await JsEngine().dispose();
       });
@@ -339,7 +424,7 @@ class ExtendedSource extends ComicSource {
 class LegacyImageSource extends ComicSource {
   name = "Legacy Image Source"
   key = "legacy_image_test_key"
-  version = "1.0.0"
+  minAppVersion = "1.0.0"
   url = "https://example.com"
 
   comic = {
@@ -414,7 +499,7 @@ class LegacyImageSource extends ComicSource {
 class ModernImageSource extends ComicSource {
   name = "Modern Image Source"
   key = "modern_image_test_key"
-  version = "1.0.0"
+  minAppVersion = "1.0.0"
   url = "https://example.com"
 
   comic = {

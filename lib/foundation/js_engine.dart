@@ -144,6 +144,14 @@ class JsEngine with _JSEngineApi, Init {
     _jsInitCache = jsInit;
   }
 
+  /// Loads only the source API text; never initializes a live runtime/bridge.
+  static Future<String> loadApiDefinitions() async {
+    final cached = _jsInitCache;
+    return cached == null
+        ? await rootBundle.loadString('assets/init.js')
+        : utf8.decode(cached);
+  }
+
   @override
   @protected
   Future<void> doInit() async {
@@ -169,14 +177,9 @@ class JsEngine with _JSEngineApi, Init {
       (setGlobalFunc as JSInvokable)(["sendMessage", _messageReceiver]);
       setGlobalFunc(["appVersion", App.version]);
       setGlobalFunc.free();
-      Uint8List jsInit;
-      if (_jsInitCache != null) {
-        jsInit = _jsInitCache!;
-      } else {
-        var buffer = await rootBundle.load("assets/init.js");
-        jsInit = buffer.buffer.asUint8List();
-      }
-      _engine!.evaluate(utf8.decode(jsInit), name: "<init>");
+      JSRef.freeRecursive(
+        _engine!.evaluate(await loadApiDefinitions(), name: "<init>"),
+      );
     } catch (e, s) {
       Log.error('JS Engine', 'JS Engine Init Error:\n$e\n$s');
     }

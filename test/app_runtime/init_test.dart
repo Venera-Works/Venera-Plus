@@ -87,6 +87,26 @@ void main() {
     ]);
   });
 
+  test('failed sync startup never creates other writing services', () async {
+    var created = false;
+    var downloaded = false;
+    await expectLater(
+      initializeBangumiAfterDataSync(
+        waitForStartup: () async => throw StateError('bad merge state'),
+        waitForDownload: () async {
+          downloaded = true;
+        },
+        createInitializer: () {
+          created = true;
+          return () async {};
+        },
+      ),
+      throwsStateError,
+    );
+    expect(created, isFalse);
+    expect(downloaded, isFalse);
+  });
+
   test('Bangumi startup does not wait for network initialization', () async {
     final initialization = Completer<void>();
     var started = false;

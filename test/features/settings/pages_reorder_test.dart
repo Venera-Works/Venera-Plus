@@ -5,9 +5,13 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_reorderable_grid_view/widgets/reorderable_builder.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/search/search.dart';
 import 'package:venera_plus/features/settings/settings.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
+
+import '../../widget_test_io.dart';
 
 List<String> _pageOrder(WidgetTester tester) {
   final tiles = tester.widgetList<ListTile>(find.byType(ListTile));
@@ -242,6 +246,88 @@ void main() {
         setExplorePagesWidget,
         expected,
       );
+      await tester.pumpWidget(const SizedBox.shrink());
+      await runWidgetIo(tester, () => appdata.saveData(false));
     },
   );
+
+  testWidgets(
+    'nullable search source defaults stay derived and explicit empty stays disabled',
+    (tester) async {
+      final directory = Directory.systemTemp.createTempSync(
+        'venera-search-defaults-',
+      );
+      App.dataPath = directory.path;
+      final previous =
+          jsonDecode(jsonEncode(appdata.toJson()['settings']))
+              as Map<String, dynamic>;
+      final manager = ComicSourceManager();
+      for (final source in [
+        _SearchSource('default_alpha', true),
+        _SearchSource('default_beta', true),
+        _SearchSource('not_searchable', false),
+      ]) {
+        manager.add(source);
+      }
+      addTearDown(() async {
+        await runWidgetIo(tester, () async {
+          for (final key in [
+            'default_alpha',
+            'default_beta',
+            'not_searchable',
+          ]) {
+            manager.remove(key);
+          }
+          appdata.settings.replaceAll(previous);
+          directory.deleteSync(recursive: true);
+        });
+      });
+      appdata.removeSyncSetting('searchSources');
+      await tester.pumpWidget(MaterialApp(home: setSearchSourcesWidget()));
+      await tester.pumpAndSettle();
+      expect(_pageOrder(tester), ['default_alpha', 'default_beta']);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+      expect(appdata.settings.containsKey('searchSources'), isFalse);
+      expect(
+        appdata.exportSyncSettings().containsKey('searchSources'),
+        isFalse,
+      );
+
+      appdata.settings['searchSources'] = null;
+      await tester.pumpWidget(const MaterialApp(home: SearchPage()));
+      await tester.pumpAndSettle();
+      final dynamic state = tester.state(find.byType(SearchPage));
+      expect(state.searchSources, ['default_alpha', 'default_beta']);
+      expect(appdata.settings['searchSources'], isNull);
+      appdata.settings['searchSources'] = <String>[];
+      await tester.pumpAndSettle();
+      expect(state.searchSources, isEmpty);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+      await tester.pumpWidget(MaterialApp(home: setSearchSourcesWidget()));
+      await tester.pumpAndSettle();
+      expect(_pageOrder(tester), isEmpty);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+      expect(appdata.settings['searchSources'], isEmpty);
+      await runWidgetIo(tester, () => appdata.saveData(false));
+    },
+  );
+}
+
+class _SearchSource extends Fake implements ComicSource {
+  _SearchSource(this.key, this.canSearch);
+
+  @override
+  final String key;
+  final bool canSearch;
+
+  @override
+  String get name => key;
+
+  @override
+  SearchPageData? get searchPageData =>
+      canSearch ? const SearchPageData(null, null, null) : null;
 }

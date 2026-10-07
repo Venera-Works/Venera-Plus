@@ -107,7 +107,7 @@ Future<void> _withManager(
   } finally {
     await appdata.saveData(false);
     if (manager != null) {
-      await manager.debugWaitForHashedIdsRefresh();
+      await manager.waitForPendingReads();
       manager.close();
     }
     LocalFavoritesManager.cache = previousManager;
@@ -255,7 +255,7 @@ void main() {
             manager.rename('在读', 'My reading');
             manager.createFolder('在读');
             expect(manager.readingFolder, 'My reading');
-            await manager.debugWaitForHashedIdsRefresh();
+            await manager.waitForPendingReads();
             manager.close();
             await manager.init();
             expect(manager.readingFolder, 'My reading');
@@ -267,7 +267,7 @@ void main() {
             await appdata.loadDataForTesting(App.dataPath);
             expect(appdata.settings.containsKey('readingFolder'), isTrue);
             expect(appdata.settings['readingFolder'], isNull);
-            await manager.debugWaitForHashedIdsRefresh();
+            await manager.waitForPendingReads();
             manager.close();
             await manager.init();
             expect(manager.readingFolder, isNull);
@@ -283,7 +283,7 @@ void main() {
         () async {
           await _withManager((manager) async {
             manager.rename('在读', '追更');
-            await manager.debugWaitForHashedIdsRefresh();
+            await manager.waitForPendingReads();
             manager.close();
             final before = Map<String, dynamic>.from(
               appdata.toJson()['settings'],
@@ -349,7 +349,7 @@ void main() {
             manager.addComic('other', first, null, 'old');
             expect(manager.isExist(second.id, second.type), isFalse);
             manager.addComic('other', second, null, 'old');
-            await manager.debugWaitForHashedIdsRefresh();
+            await manager.waitForPendingReads();
             expect(manager.totalComics, 2);
             manager.updateUpdateTime('other', first.id, first.type, 'new');
             expect(manager.getAllComicsWithUpdatesInfo(), hasLength(2));
@@ -447,7 +447,7 @@ void main() {
           await _withManager((manager) async {
             manager.createFolder('source');
             manager.createFolder('target');
-            await manager.debugWaitForHashedIdsRefresh();
+            await manager.waitForPendingReads();
             final first = _favorite('first');
             final second = _favorite('second');
             manager.addComic('source', first);
@@ -488,7 +488,7 @@ void main() {
               second.type,
               'new',
             );
-            await manager.debugWaitForHashedIdsRefresh();
+            await manager.waitForPendingReads();
             manager.close();
             await manager.init();
             expect(manager.getFolderComics('Read later').map((c) => c.id), [

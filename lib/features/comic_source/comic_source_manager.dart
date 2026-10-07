@@ -192,10 +192,86 @@ class ComicSourceManager with ChangeNotifier, Init {
   Future<void> reload() => _mutate(_reloadSources);
 
   Future<void> _reloadSources() async {
-    _sources.clear();
-    JsEngine().runCode('ComicSource.sources = {};');
-    await doInit();
-    notifyListeners();
+    final previous = {for (final source in _sources) source.key: source};
+    final loaded = <ComicSource>[];
+    final parsers = <ComicSourceParser>[];
+    final directory = Directory('${App.dataPath}/comic_source');
+    try {
+      // Keep the old registry usable throughout asynchronous disk reads.
+      // Its pending saves and complete session maps survive replacement.
+      for (final source in previous.values) {
+        await source.loadData();
+      }
+      await directory.create(recursive: true);
+      final files = await directory
+          .list()
+          .where((entity) => entity is File && entity.path.endsWith('.js'))
+          .toList();
+      if (files.isNotEmpty) {
+        configureComicSourceJsDataBridge();
+        await JsEngine().ensureInit();
+      }
+      for (final entity in files) {
+        final file = entity as File;
+        final script = await file.readAsString();
+        final key = await ComicSourceParser.probeKey(script, file.path);
+        if (key == null || loaded.any((source) => source.key == key)) {
+          throw ComicSourceParseException(
+            'Invalid or duplicate source identity',
+          );
+        }
+        final parser = ComicSourceParser();
+        parsers.add(parser);
+        final source = await parser.parse(
+          script,
+          file.absolute.path,
+          expectedKey: key,
+          replacing: previous.containsKey(key),
+          retainRollback: true,
+        );
+        final old = previous[key];
+        if (old != null) source.shareSessionWith(old);
+        loaded.add(source);
+      }
+      final runtimeSources =
+          _runtimeComicSourcesProvider?.call() ?? const <ComicSource>[];
+      for (final source in runtimeSources) {
+        if (loaded.any((item) => item.key == source.key)) continue;
+        final old = previous[source.key];
+        if (old != null) source.shareSessionWith(old);
+        loaded.add(source);
+      }
+      _sources
+        ..clear()
+        ..addAll(loaded);
+      // Register every replacement before init can use another source.
+      for (final source in loaded.where(
+        (source) => source.filePath.isNotEmpty,
+      )) {
+        await _initializeSource(source);
+        await source.waitForDataWrites();
+      }
+      for (final parser in parsers) {
+        parser.commit();
+      }
+      for (final source in previous.values) {
+        if (source.filePath.isNotEmpty &&
+            !loaded.any((item) => item.key == source.key)) {
+          JsEngine().runCode(
+            'delete ComicSource.sources[${jsonEncode(source.key)}];',
+          );
+        }
+      }
+      notifyListeners();
+    } catch (_) {
+      for (final parser in parsers.reversed) {
+        parser.rollback();
+      }
+      _sources
+        ..clear()
+        ..addAll(previous.values);
+      rethrow;
+    }
   }
 
   Future<void> reloadForDebug() => _mutate(() async {
@@ -411,7 +487,12 @@ class ComicSourceManager with ChangeNotifier, Init {
     var explorePages = appdata.settings['explore_pages'] ?? <String>[];
     var categoryPages = appdata.settings['categories'] ?? <String>[];
     var networkFavorites = appdata.settings['favorites'] ?? <String>[];
-    var searchPages = appdata.settings['searchSources'] ?? <String>[];
+    final searchPages =
+        appdata.settings['searchSources'] ??
+        _sources
+            .where((item) => item.searchPageData != null)
+            .map((item) => item.key)
+            .toList();
 
     if (source.explorePages.isNotEmpty) {
       for (var page in source.explorePages) {

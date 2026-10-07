@@ -1,25 +1,27 @@
 import 'dart:async';
-import 'dart:math';
 
-import 'package:dio/dio.dart';
+import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/window_frame.dart';
-import 'package:venera_plus/foundation/app.dart';
-import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/history/history.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/file_system.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/res.dart';
-import 'package:venera_plus/network/webdav.dart';
-import 'package:venera_plus/features/sync/app_data_transfer.dart';
-import 'package:venera_plus/foundation/extensions.dart';
 import 'package:venera_plus/foundation/translations.dart';
-import 'package:venera_plus/foundation/file_system.dart';
+import 'package:venera_plus/network/cookie_jar.dart';
+import 'package:venera_plus/network/webdav.dart';
 import 'package:webdav_client/webdav_client.dart' as dav;
 
-enum _DataSyncTask { sync, upload, download, configure }
+import 'merge_remote.dart';
+import 'merge_store.dart';
+import 'merge_sync_coordinator.dart';
+
+enum _DataSyncTask { sync, upload, download, configure, resolve }
 
 class _SyncRequest {
   _SyncRequest(this.type, this.run, this.key);
@@ -33,53 +35,6 @@ enum SyncDirection { bidirectional, uploadOnly, downloadOnly }
 
 enum SyncTiming { manual, realtime, scheduled }
 
-enum SyncAction { upload, download, conflict, inSync }
-
-String? _strongEtag(String? value) =>
-    value == null || value.isEmpty || value.startsWith('W/') ? null : value;
-
-class RemoteSnapshot {
-  const RemoteSnapshot({
-    required this.file,
-    required this.name,
-    required this.day,
-    required this.version,
-    required this.eTag,
-  });
-
-  final dav.File file;
-  final String name;
-  final int day;
-  final int version;
-  final String? eTag;
-
-  static RemoteSnapshot? tryParse(dav.File file) {
-    if (file.isDir == true) return null;
-    final name = file.name;
-    if (name == null || !name.endsWith('.venera')) return null;
-    final base = name.substring(0, name.length - '.venera'.length);
-    final parts = base.split('-');
-    if (parts.length != 2) return null;
-    final day = int.tryParse(parts[0]);
-    final version = int.tryParse(parts[1]);
-    if (day == null || version == null) return null;
-    return RemoteSnapshot(
-      file: file,
-      name: name,
-      day: day,
-      version: version,
-      eTag: file.eTag,
-    );
-  }
-}
-
-int compareRemoteSnapshots(RemoteSnapshot a, RemoteSnapshot b) {
-  if (a.version != b.version) {
-    return b.version.compareTo(a.version); // Numerically higher version first
-  }
-  return b.day.compareTo(a.day); // Numerically higher day first
-}
-
 class DataSyncStatusSnapshot {
   const DataSyncStatusSnapshot({
     this.isConfigured = false,
@@ -92,8 +47,7 @@ class DataSyncStatusSnapshot {
     required this.lastSyncTime,
     required this.lastError,
     this.hasConflict = false,
-    this.conflictRemoteFile,
-    this.conflictRemoteVersion,
+    this.conflictCount = 0,
   });
 
   final bool isEnabled;
@@ -106,8 +60,7 @@ class DataSyncStatusSnapshot {
   final int lastSyncTime;
   final String? lastError;
   final bool hasConflict;
-  final String? conflictRemoteFile;
-  final int? conflictRemoteVersion;
+  final int conflictCount;
 
   bool get shouldShow => isConfigured || isEnabled || isSyncing;
 
@@ -127,11 +80,15 @@ class DataSyncStatusSnapshot {
 class DataSync with ChangeNotifier {
   DataSync._() {
     appdata.registerSyncDataRequestHandler(onDataChanged);
+    appdata.settings.addListener(onDataChanged);
     LocalFavoritesManager().addListener(onDataChanged);
     ComicSourceManager().addListener(onDataChanged);
     HistoryManager().addListener(onDataChanged);
     ImageFavoriteManager().addListener(onDataChanged);
-    checkForAutomaticSync(startup: true);
+    CookieJarSql.registerCookiesChangedHandler(onDataChanged);
+
+    unawaited(_initializeStartup());
+
     if (App.isDesktop && !debugDisableWindowCloseHandler) {
       Future.delayed(const Duration(seconds: 1), () {
         final context = App.rootNavigatorKey.currentContext;
@@ -143,9 +100,52 @@ class DataSync with ChangeNotifier {
     }
   }
 
+  static const _importZoneKey = #_dataSyncImporting;
+
+  MergeSyncCoordinator? _coordinator;
+  @visibleForTesting
+  MergeSyncCoordinator? get coordinator => _coordinator;
+
+  final Completer<void> _startupCompleter = Completer<void>();
+  bool _startupReady = false;
+  Object? _startupError;
+  bool _coordinatorNeedsRecovery = true;
+  bool get isReady => _startupReady && !_coordinatorNeedsRecovery;
+
+  Future<void> _initializeStartup() async {
+    try {
+      if (hasConfiguration) {
+        await runZoned(
+          _ensureCoordinatorLoaded,
+          zoneValues: {_importZoneKey: true},
+        );
+        if (_coordinator != null) _startupReady = true;
+      } else {
+        _coordinatorNeedsRecovery = false;
+        _startupReady = true;
+      }
+      checkForAutomaticSync(startup: true);
+    } catch (e, s) {
+      Log.error('DataSync', 'Startup initialization failed: $e\n$s');
+      _startupError = e;
+      _lastError = e.toString();
+      if (!_disposed) notifyListeners();
+    } finally {
+      if (!_startupCompleter.isCompleted) {
+        _startupCompleter.complete();
+      }
+    }
+  }
+
+  /// Waits for startup recovery; never reports a pending endpoint as ready.
+  Future<void> waitForStartupMerge() async {
+    await _startupCompleter.future;
+    if (!isReady) {
+      throw StateError('Sync startup recovery failed: $_startupError');
+    }
+  }
+
   void onDataChanged() {
-    // A zone tags only import-originated notifications, not user edits that
-    // arrive while the network or importer is awaiting I/O.
     if (_disposed || Zone.current[_importZoneKey] == true) return;
     _changeGeneration++;
     if (!hasConfiguration) return;
@@ -165,12 +165,16 @@ class DataSync with ChangeNotifier {
     if (direction != SyncDirection.downloadOnly &&
         isEnabled &&
         timing == SyncTiming.realtime &&
-        !_configuring) {
-      unawaited(syncNow());
+        !_configuring &&
+        isReady) {
+      _debounceTimer?.cancel();
+      _debounceTimer = Timer(const Duration(milliseconds: 500), () {
+        if (!_disposed && isEnabled && timing == SyncTiming.realtime) {
+          unawaited(syncNow());
+        }
+      });
     }
   }
-
-  static final Object _importZoneKey = Object();
 
   bool _interactionActive = false;
   bool beginInteraction() {
@@ -204,38 +208,28 @@ class DataSync with ChangeNotifier {
     return value is int && intervalOptions.contains(value) ? value : 30;
   }
 
+  bool get isConfigured => hasConfiguration;
   bool get hasConfiguration => _validateConfig()?.isValid == true;
 
-  bool get hasPendingChanges =>
-      appdata.implicitData['webdavSyncPending'] == true;
+  bool get hasPendingChanges {
+    if (_coordinator != null && _coordinator!.store.outbox.isNotEmpty) {
+      return true;
+    }
+    return appdata.implicitData['webdavSyncPending'] == true;
+  }
 
   bool get isEnabled => timing != SyncTiming.manual && hasConfiguration;
 
   Timer? _scheduleTimer;
+  Timer? _debounceTimer;
   bool _disposed = false;
   bool _configuring = false;
   int _changeGeneration = 0;
   DateTime? _lastRealtimeCheck;
 
-  bool _hasConflict = false;
-  String? _conflictRemoteFile;
-  int? _conflictRemoteVersion;
-
-  bool get hasConflict => _hasConflict;
-  String? get conflictRemoteFile => _conflictRemoteFile;
-  int? get conflictRemoteVersion => _conflictRemoteVersion;
-
-  void _clearConflict() {
-    if (_hasConflict ||
-        _conflictRemoteFile != null ||
-        _conflictRemoteVersion != null) {
-      _hasConflict = false;
-      _conflictRemoteFile = null;
-      _conflictRemoteVersion = null;
-      _lastError = null;
-      if (!_disposed) notifyListeners();
-    }
-  }
+  List<MergeConflict> get conflicts => _coordinator?.conflicts ?? const [];
+  int get conflictCount => conflicts.length;
+  bool get hasConflict => conflicts.isNotEmpty;
 
   @visibleForTesting
   static DateTime Function()? debugNow;
@@ -246,80 +240,16 @@ class DataSync with ChangeNotifier {
     return '${endpoint.url}#${endpoint.user}';
   }
 
-  @visibleForTesting
-  void debugSetConflict({
-    required String remoteFile,
-    required int remoteVersion,
-  }) {
-    _hasConflict = true;
-    _conflictRemoteFile = remoteFile;
-    _conflictRemoteVersion = remoteVersion;
-    notifyListeners();
-  }
-
-  @visibleForTesting
-  static SyncAction evaluateSyncAction({
-    required bool localHasPending,
-    required int localVersion,
-    required RemoteSnapshot? latestRemote,
-    required String? baselineTarget,
-    required String currentTarget,
-    required String? baselineFile,
-    required int? baselineVersion,
-    required String? baselineEtag,
-    required bool hasRemoteCollision,
-  }) {
-    if (hasRemoteCollision) {
-      return SyncAction.conflict;
-    }
-
-    final isSameTarget =
-        baselineTarget != null && baselineTarget == currentTarget;
-    final effectiveBaselineFile = isSameTarget ? baselineFile : null;
-    final effectiveBaselineVersion = isSameTarget ? baselineVersion : null;
-    final effectiveBaselineEtag = isSameTarget ? baselineEtag : null;
-
-    if (latestRemote == null) {
-      return SyncAction.upload;
-    }
-
-    // A zero version is not proof of an empty local database.
-    if (effectiveBaselineFile == null || effectiveBaselineVersion == null) {
-      return SyncAction.conflict;
-    }
-
-    bool remoteChanged = false;
-    if (latestRemote.name != effectiveBaselineFile) {
-      remoteChanged = true;
-    } else if (latestRemote.version != effectiveBaselineVersion) {
-      remoteChanged = true;
-    } else if (_strongEtag(latestRemote.eTag) == null ||
-        _strongEtag(effectiveBaselineEtag) == null ||
-        latestRemote.eTag != effectiveBaselineEtag) {
-      remoteChanged = true;
-    }
-
-    final localChanged =
-        localHasPending || localVersion > effectiveBaselineVersion;
-
-    if (remoteChanged && localChanged) {
-      return SyncAction.conflict;
-    }
-    if (remoteChanged && !localChanged) {
-      return SyncAction.download;
-    }
-    if (!remoteChanged && localChanged) {
-      return SyncAction.upload;
-    }
-    return SyncAction.inSync;
-  }
-
   /// Called at startup and resume, independently of the home page being mounted.
-  /// Timers only run in this process; overdue checks are caught up on next launch.
   void checkForAutomaticSync({bool startup = false}) {
     _scheduleTimer?.cancel();
     _scheduleTimer = null;
-    if (_disposed || _configuring || !isEnabled || _active != null) return;
+    if (_disposed ||
+        !_startupReady ||
+        _configuring ||
+        !isEnabled ||
+        _active != null)
+      return;
     if (timing == SyncTiming.realtime) {
       if (!startup &&
           _lastRealtimeCheck != null &&
@@ -343,72 +273,71 @@ class DataSync with ChangeNotifier {
     unawaited(syncNow());
   }
 
-  /// Configuration and its confirmed initial transfer occupy the same queue
-  /// as manual, automatic and headless work.
+  /// Prepares a new endpoint without touching business data. Configuration
+  /// persistence commits first; subsequent transfer is a separate queued task.
   Future<Res<bool>> configure({
     required List<String> config,
     required String excludedFields,
     required SyncDirection direction,
     required SyncTiming timing,
     required int minutes,
-    required bool initialUpload,
   }) {
     final draft = List<String>.of(config);
-    final requestedGeneration = _changeGeneration;
     return _enqueue(_DataSyncTask.configure, () async {
       _configuring = true;
       final oldConfig = appdata.settings['webdav'];
       final oldFields = appdata.settings['disableSyncFields'];
-      final oldConflict = (
-        _hasConflict,
-        _conflictRemoteFile,
-        _conflictRemoteVersion,
-      );
-      const keys = [
+      final oldCoordinator = _coordinator;
+      final oldNeedsRecovery = _coordinatorNeedsRecovery;
+      final oldReady = _startupReady;
+      const configKeys = [
         'webdavSyncDirection',
         'webdavSyncTiming',
         'webdavSyncIntervalMinutes',
         'webdavSyncLastAttempt',
         'webdavSyncPending',
-        'webdavBaselineTarget',
-        'webdavLastSyncedRemoteFile',
-        'webdavLastSyncedRemoteVersion',
-        'webdavLastSyncedRemoteEtag',
       ];
-      final previous = {for (final key in keys) key: appdata.implicitData[key]};
-      final generation = _changeGeneration;
+      final oldImplicit = {
+        for (final key in configKeys)
+          if (appdata.implicitData.containsKey(key))
+            key: appdata.implicitData[key],
+      };
+      var mutated = false;
       var committed = false;
       try {
+        MergeSyncCoordinator? prepared;
+        if (draft.isNotEmpty) {
+          if (draft.length != 3) {
+            return const Res.error('Invalid WebDAV configuration format');
+          }
+          final endpoint = WebDavEndpoint(
+            url: draft[0],
+            user: draft[1],
+            password: draft[2],
+          );
+          if (!endpoint.isValid) {
+            return const Res.error('WebDAV URL cannot be empty');
+          }
+          final client = _client(endpoint);
+          await client.ping();
+          final hash = MergeSyncCoordinator.computeEndpointHash(
+            endpoint.url,
+            endpoint.user,
+          );
+          final actor = await MergeSyncCoordinator.getOrCreateActorId();
+          final directory =
+              debugStateDirFactory?.call(hash) ??
+              Directory(FilePath.join(App.dataPath, 'sync_state_$hash'));
+          prepared = _createCoordinator(hash, directory, actor, client);
+          // Validation/reconciliation may touch only endpoint metadata. Pending
+          // business replay and legacy migration wait for the config commit.
+          await prepared.store.load();
+          await prepared.reconcileBackupRecoveryIfNeeded();
+        }
+
+        mutated = true;
         appdata.settings['webdav'] = draft;
         appdata.settings['disableSyncFields'] = excludedFields;
-        final endpoint = _validateConfig();
-        if (draft.isNotEmpty && endpoint?.isValid != true) {
-          return const Res.error('Invalid WebDAV configuration');
-        }
-        final target = endpoint == null ? null : endpointTarget(endpoint);
-        if (draft.isEmpty || previous['webdavBaselineTarget'] != target) {
-          for (final key in keys.where(
-            (key) =>
-                key.startsWith('webdavLastSynced') ||
-                key == 'webdavBaselineTarget',
-          )) {
-            appdata.implicitData.remove(key);
-          }
-        }
-        // Draft direction is private until commit, but its transfer is real
-        // queued work and uses the same generation/baseline accounting.
-        if (draft.isNotEmpty && timing != SyncTiming.manual) {
-          final upload =
-              direction == SyncDirection.uploadOnly ||
-              (direction == SyncDirection.bidirectional && initialUpload);
-          final result = upload
-              ? await _uploadDataNow()
-              : await _downloadDataNow(
-                  checkVersion: false,
-                  expectedGeneration: requestedGeneration,
-                );
-          if (result.error) return result;
-        }
         appdata.implicitData['webdavSyncDirection'] = direction.name;
         appdata.implicitData['webdavSyncTiming'] =
             (draft.isEmpty ? SyncTiming.manual : timing).name;
@@ -416,55 +345,50 @@ class DataSync with ChangeNotifier {
             intervalOptions.contains(minutes) ? minutes : 30;
         appdata.implicitData['webdavSyncLastAttempt'] =
             _now.millisecondsSinceEpoch;
-        if (draft.isEmpty ||
-            (generation == _changeGeneration &&
-                (_uploadApplied || _downloadApplied))) {
-          appdata.implicitData['webdavSyncPending'] = false;
-        }
+        appdata.implicitData['webdavSyncPending'] =
+            prepared?.store.outbox.isNotEmpty ?? false;
         await appdata.saveData(false);
         await appdata.writeImplicitData();
         committed = true;
-        if (draft.isEmpty ||
-            previous['webdavBaselineTarget'] != target ||
-            previous['webdavSyncDirection'] != direction.name ||
-            _uploadApplied ||
-            _downloadApplied) {
-          _clearConflict();
+        _coordinator = prepared;
+        _coordinatorNeedsRecovery = prepared != null;
+        _startupReady = true;
+        _startupError = null;
+        if (prepared != null && timing != SyncTiming.manual) {
+          // Queued behind configure, with the usual import zone/error/status
+          // semantics. A failed transfer does not undo a saved configuration.
+          unawaited(syncNow());
         }
         return const Res(true);
-      } finally {
-        try {
-          if (!committed) {
-            appdata.settings['webdav'] = oldConfig;
-            appdata.settings['disableSyncFields'] = oldFields;
-            for (final key in keys) {
-              final value = previous[key];
-              if (value == null) {
-                appdata.implicitData.remove(key);
-              } else {
-                appdata.implicitData[key] = value;
-              }
+      } catch (error, stack) {
+        Log.error('Data Sync', 'Configure error: $error\n$stack');
+        if (mutated && !committed) {
+          appdata.settings['webdav'] = oldConfig;
+          appdata.settings['disableSyncFields'] = oldFields;
+          for (final key in configKeys) {
+            if (oldImplicit.containsKey(key)) {
+              appdata.implicitData[key] = oldImplicit[key];
+            } else {
+              appdata.implicitData.remove(key);
             }
-            if (_changeGeneration != generation && hasConfiguration) {
-              appdata.implicitData['webdavSyncPending'] = true;
-            }
-            _hasConflict = oldConflict.$1;
-            _conflictRemoteFile = oldConflict.$2;
-            _conflictRemoteVersion = oldConflict.$3;
+          }
+          _coordinator = oldCoordinator;
+          _coordinatorNeedsRecovery = oldNeedsRecovery;
+          _startupReady = oldReady;
+          try {
             await appdata.saveData(false);
             await appdata.writeImplicitData();
-          }
-        } finally {
-          _configuring = false;
-          _lastRealtimeCheck = _now;
-          if (hasPendingChanges &&
-              isEnabled &&
-              DataSync.timing == SyncTiming.realtime &&
-              DataSync.direction != SyncDirection.downloadOnly &&
-              _changeGeneration != generation) {
-            unawaited(syncNow());
+          } catch (restoreError) {
+            return Res.error(
+              '$error; restoring configuration failed: $restoreError',
+            );
           }
         }
+        return Res.error(error.toString());
+      } finally {
+        _configuring = false;
+        _lastRealtimeCheck = _now;
+        if (!_disposed) notifyListeners();
       }
     });
   }
@@ -479,12 +403,15 @@ class DataSync with ChangeNotifier {
 
   bool _canUpload(_SyncRequest request) =>
       request.type == _DataSyncTask.upload ||
-      request.type == _DataSyncTask.configure ||
+      request.type == _DataSyncTask.resolve ||
       (request.type == _DataSyncTask.sync &&
           direction != SyncDirection.downloadOnly);
 
   bool get _hasUploadWork =>
-      (_active != null && _canUpload(_active!)) || _queue.any(_canUpload);
+      direction != SyncDirection.downloadOnly &&
+      ((_active != null && _canUpload(_active!)) ||
+          _queue.any(_canUpload) ||
+          (_coordinator?.store.outbox.isNotEmpty ?? false));
 
   void _showWindowCloseDialog() async {
     showLoadingDialog(
@@ -500,14 +427,22 @@ class DataSync with ChangeNotifier {
 
   Future<void> _waitForUploadBeforeClose() async {
     while (_hasUploadWork) {
-      await _active!.completer.future;
+      if (_active != null) {
+        await _active!.completer.future;
+      } else {
+        break;
+      }
     }
   }
 
   Future<void> waitForDownload() async {
     while ((_active != null && _active!.type != _DataSyncTask.upload) ||
         _queue.any((request) => request.type != _DataSyncTask.upload)) {
-      await _active!.completer.future;
+      if (_active != null) {
+        await _active!.completer.future;
+      } else {
+        break;
+      }
     }
   }
 
@@ -533,13 +468,20 @@ class DataSync with ChangeNotifier {
   static Future<Res<bool>> Function()? debugDownloadOverride;
 
   @visibleForTesting
+  static Future<Res<bool>> Function()? debugSyncOverride;
+
+  @visibleForTesting
   static dav.Client Function(WebDavEndpoint)? debugClientFactory;
 
   @visibleForTesting
-  static Future<File> Function()? debugExport;
+  static Future<SyncRecords> Function()? debugExportRecords;
 
   @visibleForTesting
-  static Future<void> Function(File, bool)? debugImport;
+  static Future<void> Function(SyncRecords, {void Function()? beforeCommit})?
+  debugApplyRecords;
+
+  @visibleForTesting
+  static Directory Function(String endpointHash)? debugStateDirFactory;
 
   @visibleForTesting
   static bool debugDisableWindowCloseHandler = false;
@@ -555,21 +497,19 @@ class DataSync with ChangeNotifier {
     instance = null;
     debugUploadOverride = null;
     debugDownloadOverride = null;
+    debugSyncOverride = null;
     debugDisableWindowCloseHandler = false;
     debugNow = null;
     debugClientFactory = null;
-    debugExport = null;
-    debugImport = null;
+    debugExportRecords = null;
+    debugApplyRecords = null;
+    debugStateDirFactory = null;
   }
 
   bool _isDownloading = false;
-  bool _downloadApplied = false;
-
   bool get isDownloading => _isDownloading;
 
   bool _isUploading = false;
-  bool _uploadApplied = false;
-
   bool get isUploading => _isUploading;
 
   bool get isSyncing => _active != null;
@@ -578,18 +518,20 @@ class DataSync with ChangeNotifier {
   final List<_SyncRequest> _queue = [];
 
   String? _lastError;
-
   String? get lastError => _lastError;
 
   @override
   void dispose() {
     _disposed = true;
     _scheduleTimer?.cancel();
+    _debounceTimer?.cancel();
     appdata.registerSyncDataRequestHandler(null);
+    appdata.settings.removeListener(onDataChanged);
     LocalFavoritesManager().removeListener(onDataChanged);
     ComicSourceManager().removeListener(onDataChanged);
     HistoryManager().removeListener(onDataChanged);
     ImageFavoriteManager().removeListener(onDataChanged);
+    CookieJarSql.registerCookiesChangedHandler(null);
     super.dispose();
   }
 
@@ -601,11 +543,10 @@ class DataSync with ChangeNotifier {
     isUploading: _isUploading,
     isDownloading: _isDownloading,
     isSyncing: isSyncing,
-    lastSyncTime: (appdata.settings['lastSyncTime'] as int?) ?? 0,
+    lastSyncTime: (appdata.implicitData['webdavSyncLastAttempt'] as int?) ?? 0,
     lastError: _lastError,
-    hasConflict: _hasConflict,
-    conflictRemoteFile: _conflictRemoteFile,
-    conflictRemoteVersion: _conflictRemoteVersion,
+    hasConflict: hasConflict,
+    conflictCount: conflictCount,
   );
 
   WebDavEndpoint? _validateConfig() {
@@ -626,16 +567,64 @@ class DataSync with ChangeNotifier {
     );
   }
 
-  Future<Res<bool>> syncNow() => _enqueue(_DataSyncTask.sync, () {
-    switch (direction) {
-      case SyncDirection.uploadOnly:
-        return _uploadDataNow();
-      case SyncDirection.downloadOnly:
-        return _downloadDataNow(checkVersion: false);
-      case SyncDirection.bidirectional:
-        return _syncBidirectionalNow();
+  MergeSyncCoordinator _createCoordinator(
+    String hash,
+    Directory directory,
+    String actor,
+    dav.Client client,
+  ) {
+    final coordinator = MergeSyncCoordinator(
+      endpointHash: hash,
+      stateDirectory: directory,
+      actor: actor,
+      store: MergeStore(directory, actor),
+      remote: MergeRemote(client),
+      exportPreferencesOverride: debugExportRecords,
+      applyPreferencesOverride: debugApplyRecords,
+      getGenerationOverride: () => _changeGeneration,
+    );
+    if (debugExportRecords != null) {
+      coordinator.exportFavoritesOverride = () => {};
+      coordinator.exportHistoryOverride = () => Future.value({});
     }
+    if (debugApplyRecords != null) {
+      coordinator.applyFavoritesOverride = (_) {};
+      coordinator.applyHistoryOverride = (_) {};
+    }
+    return coordinator;
+  }
+
+  Future<void> _ensureCoordinatorLoaded() async {
+    if (_coordinator == null) {
+      final endpoint = _validateConfig();
+      if (endpoint == null || !endpoint.isValid) return;
+      final hash = MergeSyncCoordinator.computeEndpointHash(
+        endpoint.url,
+        endpoint.user,
+      );
+      final actor = await MergeSyncCoordinator.getOrCreateActorId();
+      final directory =
+          debugStateDirFactory?.call(hash) ??
+          Directory(FilePath.join(App.dataPath, 'sync_state_$hash'));
+      _coordinator = _createCoordinator(
+        hash,
+        directory,
+        actor,
+        _client(endpoint),
+      );
+      _coordinatorNeedsRecovery = true;
+    }
+    if (_coordinatorNeedsRecovery) {
+      await _coordinator!.startupRecovery();
+      _coordinatorNeedsRecovery = false;
+    }
+  }
+
+  Future<Res<bool>> syncNow() => _enqueue(_DataSyncTask.sync, () {
+    return _syncDataNow();
   }, key: _DataSyncTask.sync);
+
+  Future<Res<bool>> syncData() => syncNow();
 
   Future<Res<bool>> uploadData() => _enqueue(_DataSyncTask.upload, () {
     if (direction == SyncDirection.downloadOnly) {
@@ -646,25 +635,72 @@ class DataSync with ChangeNotifier {
     return _uploadDataNow();
   }, key: _DataSyncTask.upload);
 
-  Future<Res<bool>> downloadData({bool checkVersion = true}) {
-    final generation = _changeGeneration;
+  Future<Res<bool>> downloadData() {
     return _enqueue(_DataSyncTask.download, () {
       if (direction == SyncDirection.uploadOnly) {
         return Future.value(
           const Res.error('Action not allowed by current sync direction'),
         );
       }
-      return _downloadDataNow(
-        checkVersion: direction == SyncDirection.downloadOnly
-            ? false
-            : checkVersion,
-        expectedGeneration: generation,
-      );
-    }, key: (_DataSyncTask.download, checkVersion, generation));
+      return _downloadDataNow();
+    }, key: _DataSyncTask.download);
   }
 
-  Future<Res<bool>> resolveConflict({required bool keepLocal}) =>
-      keepLocal ? uploadData() : downloadData(checkVersion: false);
+  Future<Res<bool>> resolveConflict({
+    required String recordKey,
+    required String field,
+    required String candidateId,
+  }) {
+    return _enqueue(_DataSyncTask.resolve, () async {
+      await _ensureCoordinatorLoaded();
+      if (_coordinator == null) {
+        return const Res.error('WebDAV is not configured');
+      }
+      return await _coordinator!.resolveConflict(
+        recordKey: recordKey,
+        field: field,
+        candidateId: candidateId,
+        direction: direction,
+      );
+    }, key: (_DataSyncTask.resolve, recordKey, field, candidateId));
+  }
+
+  Future<Res<bool>> _syncDataNow() async {
+    if (debugSyncOverride != null) {
+      return await debugSyncOverride!();
+    }
+    if (direction == SyncDirection.uploadOnly) return _uploadDataNow();
+    if (direction == SyncDirection.downloadOnly) return _downloadDataNow();
+    await _ensureCoordinatorLoaded();
+    if (_coordinator == null) {
+      return const Res.error('WebDAV is not configured');
+    }
+    return await _coordinator!.performSync(direction: direction);
+  }
+
+  Future<Res<bool>> _uploadDataNow() async {
+    if (debugUploadOverride != null) {
+      return await debugUploadOverride!();
+    }
+    await _ensureCoordinatorLoaded();
+    if (_coordinator == null) {
+      return const Res.error('WebDAV is not configured');
+    }
+    return await _coordinator!.performSync(direction: SyncDirection.uploadOnly);
+  }
+
+  Future<Res<bool>> _downloadDataNow() async {
+    if (debugDownloadOverride != null) {
+      return await debugDownloadOverride!();
+    }
+    await _ensureCoordinatorLoaded();
+    if (_coordinator == null) {
+      return const Res.error('WebDAV is not configured');
+    }
+    return await _coordinator!.performSync(
+      direction: SyncDirection.downloadOnly,
+    );
+  }
 
   Future<Res<bool>> _enqueue(
     _DataSyncTask type,
@@ -674,7 +710,6 @@ class DataSync with ChangeNotifier {
     if (_disposed) {
       return Future.value(const Res.error('Sync service is disposed'));
     }
-    // Only adjacent queued requests with identical semantics may share a result.
     if (key != null && _queue.isNotEmpty && _queue.last.key == key) {
       return _queue.last.completer.future;
     }
@@ -690,65 +725,82 @@ class DataSync with ChangeNotifier {
   }
 
   Future<void> _runTask(_SyncRequest request) async {
-    _downloadApplied = false;
-    _uploadApplied = false;
     _lastError = null;
-    final generation = _changeGeneration;
-    final wasPending = hasPendingChanges;
     Res<bool> result;
+
+    if (request.type == _DataSyncTask.upload) {
+      _isUploading = true;
+    } else if (request.type == _DataSyncTask.download) {
+      _isDownloading = true;
+    } else if (request.type == _DataSyncTask.sync) {
+      if (direction == SyncDirection.uploadOnly) {
+        _isUploading = true;
+      } else if (direction == SyncDirection.downloadOnly) {
+        _isDownloading = true;
+      } else {
+        _isUploading = true;
+        _isDownloading = true;
+      }
+    }
+
     if (request.type != _DataSyncTask.configure && hasConfiguration) {
       appdata.implicitData['webdavSyncLastAttempt'] =
           _now.millisecondsSinceEpoch;
     }
+
     try {
       if (!_disposed) notifyListeners();
+
       if (request.type != _DataSyncTask.configure && !hasConfiguration) {
         result = const Res.error(
           'WebDAV is not configured. Please configure it first.',
         );
       } else {
-        result = await request.run();
+        await _startupCompleter.future;
+        if (request.type != _DataSyncTask.configure && !_startupReady) {
+          throw StateError('Sync startup recovery failed: $_startupError');
+        }
+        final runGeneration = _changeGeneration;
+        result = await runZoned(
+          request.run,
+          zoneValues: {_importZoneKey: true},
+        );
         if (request.type != _DataSyncTask.configure) {
-          if (result.success &&
-              generation == _changeGeneration &&
-              (_uploadApplied || _downloadApplied)) {
-            appdata.implicitData['webdavSyncPending'] = false;
-          }
           appdata.implicitData['webdavSyncLastAttempt'] =
               _now.millisecondsSinceEpoch;
+          if (result.success &&
+              _changeGeneration == runGeneration &&
+              (_coordinator?.store.outbox.isEmpty ?? true)) {
+            appdata.implicitData['webdavSyncPending'] = false;
+          }
           await appdata.writeImplicitData();
         }
-      }
-      if (result.success && (_uploadApplied || _downloadApplied)) {
-        _clearConflict();
       }
     } catch (error, stack) {
       Log.error('Data Sync', error, stack);
       result = Res.error(error.toString());
-      // A failed network request still counts as a scheduled attempt.
       if (request.type != _DataSyncTask.configure) {
-        if (wasPending) appdata.implicitData['webdavSyncPending'] = true;
         appdata.implicitData['webdavSyncLastAttempt'] =
             _now.millisecondsSinceEpoch;
         try {
           await appdata.writeImplicitData();
-        } catch (persistenceError, persistenceStack) {
-          Log.error('Data Sync', persistenceError, persistenceStack);
-          result = Res.error('$error; $persistenceError');
-        }
+        } catch (_) {}
       }
     } finally {
       _isUploading = false;
       _isDownloading = false;
     }
+
     _lastError = result.errorMessage;
     _active = null;
+
     if (_queue.isNotEmpty) {
       _active = _queue.removeAt(0);
       unawaited(_runTask(_active!));
     } else if (!_disposed && timing == SyncTiming.scheduled) {
       checkForAutomaticSync();
     }
+
     request.completer.complete(result);
     if (!_disposed) notifyListeners();
   }
@@ -756,365 +808,4 @@ class DataSync with ChangeNotifier {
   dav.Client _client(WebDavEndpoint endpoint) =>
       debugClientFactory?.call(endpoint) ??
       endpoint.createClient(logRequests: true);
-
-  Future<List<RemoteSnapshot>> _snapshots(dav.Client client) async {
-    final files = (await client.readDir(
-      '/',
-    )).map(RemoteSnapshot.tryParse).whereType<RemoteSnapshot>().toList();
-    files.sort(compareRemoteSnapshots);
-    return files;
-  }
-
-  bool _collision(List<RemoteSnapshot> files) =>
-      files.length > 1 && files[0].version == files[1].version;
-
-  bool _sameSnapshot(RemoteSnapshot? a, RemoteSnapshot? b) {
-    if (a == null || b == null) return a == null && b == null;
-    return a.name == b.name &&
-        a.version == b.version &&
-        a.day == b.day &&
-        _strongEtag(a.eTag) != null &&
-        a.eTag == b.eTag;
-  }
-
-  Res<bool> _conflict(RemoteSnapshot? remote, String reason) {
-    _hasConflict = true;
-    _conflictRemoteFile = remote?.name;
-    _conflictRemoteVersion = remote?.version;
-    _lastError = reason;
-    if (!_disposed) notifyListeners();
-    return Res.error(reason);
-  }
-
-  Future<Res<bool>> _syncBidirectionalNow() async {
-    final endpoint = _validateConfig()!;
-    final client = _client(endpoint);
-    final generation = _changeGeneration;
-    final snapshots = await _snapshots(client);
-    final latest = snapshots.firstOrNull;
-    final action = evaluateSyncAction(
-      localHasPending: hasPendingChanges || generation != _changeGeneration,
-      localVersion: (appdata.settings['dataVersion'] as int?) ?? 0,
-      latestRemote: latest,
-      baselineTarget: appdata.implicitData['webdavBaselineTarget'] as String?,
-      currentTarget: endpointTarget(endpoint),
-      baselineFile:
-          appdata.implicitData['webdavLastSyncedRemoteFile'] as String?,
-      baselineVersion:
-          appdata.implicitData['webdavLastSyncedRemoteVersion'] as int?,
-      baselineEtag:
-          appdata.implicitData['webdavLastSyncedRemoteEtag'] as String?,
-      hasRemoteCollision: _collision(snapshots),
-    );
-    switch (action) {
-      case SyncAction.conflict:
-        return _conflict(
-          latest,
-          'Sync requires a choice: the baseline is unknown, data diverged, or remote versions collide.',
-        );
-      case SyncAction.download:
-        return _downloadRemoteFile(client, endpoint, latest!, generation);
-      case SyncAction.upload:
-        return _uploadDataNow(expected: latest, protectRemote: true);
-      case SyncAction.inSync:
-        appdata.settings['lastSyncTime'] = _now.millisecondsSinceEpoch;
-        await appdata.saveData(false);
-        return const Res(true);
-    }
-  }
-
-  Future<Res<bool>> _uploadDataNow({
-    RemoteSnapshot? expected,
-    bool protectRemote = false,
-  }) async {
-    _isUploading = true;
-    if (!_disposed) notifyListeners();
-    final override = debugUploadOverride;
-    if (override != null) {
-      final result = await override();
-      _uploadApplied = result.success;
-      return result;
-    }
-    final endpoint = _validateConfig()!;
-    final client = _client(endpoint);
-    final snapshots = await _snapshots(client);
-    if (protectRemote &&
-        (_collision(snapshots) ||
-            !_sameSnapshot(expected, snapshots.firstOrNull))) {
-      return _conflict(
-        snapshots.firstOrNull,
-        'Remote data changed during sync. Please retry.',
-      );
-    }
-    final version =
-        max(
-          (appdata.settings['dataVersion'] as int?) ?? 0,
-          snapshots.firstOrNull?.version ?? 0,
-        ) +
-        1;
-    appdata.settings['dataVersion'] = version;
-    await appdata.saveData(false);
-    final data = await (debugExport?.call() ?? exportAppData());
-    final filename =
-        '${_now.millisecondsSinceEpoch ~/ 86400000}-$version.venera';
-    try {
-      // Authenticate before opening a single-use stream. No conditional headers
-      // are attached to OPTIONS, PROPFIND, or any directory operations.
-      await client.ping();
-      final fresh = await _snapshots(client);
-      if (protectRemote &&
-          (_collision(fresh) || !_sameSnapshot(expected, fresh.firstOrNull))) {
-        return _conflict(
-          fresh.firstOrNull,
-          'Remote data changed during sync. Please retry.',
-        );
-      }
-      if (fresh.any((file) => file.version >= version)) {
-        return _conflict(
-          fresh.firstOrNull,
-          'Remote version collision detected',
-        );
-      }
-      final length = await data.length();
-      final response = await client.c.req(
-        client,
-        'PUT',
-        filename,
-        data: data.openRead(),
-        optionsHandler: (options) {
-          options.headers = {
-            'If-None-Match': '*',
-            'content-length': length,
-            'content-type': 'application/octet-stream',
-          };
-        },
-      );
-      if (response.statusCode == 412) {
-        return _conflict(
-          fresh.firstOrNull,
-          'Remote version collision detected',
-        );
-      }
-      if (![200, 201, 204].contains(response.statusCode)) {
-        throw StateError('WebDAV upload failed: HTTP ${response.statusCode}');
-      }
-      final after = await _snapshots(client);
-      final uploaded = after.where((file) => file.name == filename).firstOrNull;
-      if (_collision(after) ||
-          after.firstOrNull?.name != filename ||
-          uploaded == null) {
-        return _conflict(
-          after.firstOrNull,
-          'Remote data changed during sync. Please retry.',
-        );
-      }
-      if (protectRemote &&
-          !_sameSnapshot(
-            expected,
-            after.where((file) => file.name != filename).firstOrNull,
-          )) {
-        return _conflict(
-          after.firstOrNull,
-          'Remote data changed during sync. Please retry.',
-        );
-      }
-      // Only inspect pre-upload candidates; conditional DELETE cannot remove
-      // a file another client replaced since that listing.
-      for (var i = 0; i < snapshots.length; i++) {
-        final old = snapshots[i];
-        final etag = _strongEtag(old.eTag);
-        if (old.version >= version ||
-            (i > 0 && snapshots[i - 1].version == old.version) ||
-            (i + 1 < snapshots.length &&
-                snapshots[i + 1].version == old.version) ||
-            etag == null ||
-            (old.day != uploaded.day && i < 9)) {
-          continue;
-        }
-        try {
-          final deleted = await client.c.req(
-            client,
-            'DELETE',
-            old.name,
-            optionsHandler: (options) => options.headers = {'If-Match': etag},
-          );
-          if (![200, 204, 404, 412].contains(deleted.statusCode)) {
-            Log.warning(
-              'Data Sync',
-              'Snapshot cleanup failed: HTTP ${deleted.statusCode}',
-            );
-          }
-        } catch (error) {
-          Log.warning('Data Sync', 'Snapshot cleanup failed: $error');
-        }
-      }
-      await _updateBaseline(endpoint, uploaded);
-      appdata.settings['lastSyncTime'] = _now.millisecondsSinceEpoch;
-      await appdata.saveData(false);
-      _uploadApplied = true;
-      return const Res(true);
-    } finally {
-      await data.deleteIgnoreError();
-    }
-  }
-
-  Future<Res<bool>> _downloadDataNow({
-    bool checkVersion = true,
-    int? expectedGeneration,
-  }) async {
-    _isDownloading = true;
-    if (!_disposed) notifyListeners();
-    final generation = expectedGeneration ?? _changeGeneration;
-    if (generation != _changeGeneration) {
-      return _conflict(
-        null,
-        'Local data changed during download. Please retry.',
-      );
-    }
-    final override = debugDownloadOverride;
-    if (override != null) {
-      final result = await override();
-      if (generation != _changeGeneration) {
-        return _conflict(
-          null,
-          'Local data changed during download. Please retry.',
-        );
-      }
-      _downloadApplied = result.success;
-      return result;
-    }
-    final endpoint = _validateConfig()!;
-    final client = _client(endpoint);
-    final snapshots = await _snapshots(client);
-    final latest = snapshots.firstOrNull;
-    if (_collision(snapshots)) {
-      return _conflict(latest, 'Remote version collision detected');
-    }
-    if (latest == null) return const Res.error('No data file found');
-    if (checkVersion &&
-        latest.version <= ((appdata.settings['dataVersion'] as int?) ?? 0)) {
-      return const Res(true);
-    }
-    return _downloadRemoteFile(
-      client,
-      endpoint,
-      latest,
-      generation,
-      allowUnverified: true,
-    );
-  }
-
-  Future<Res<bool>> _downloadRemoteFile(
-    dav.Client client,
-    WebDavEndpoint endpoint,
-    RemoteSnapshot snapshot,
-    int generation, {
-    bool allowUnverified = false,
-  }) async {
-    _isDownloading = true;
-    if (!_disposed) notifyListeners();
-    // A strong validator binds the downloaded bytes to the inspected snapshot.
-    final etag = _strongEtag(snapshot.eTag);
-    if (etag == null && !allowUnverified) {
-      return _conflict(
-        snapshot,
-        'Automatic download needs a strong ETag. Choose Download Remote explicitly to use this server.',
-      );
-    }
-    final localFile = File(FilePath.join(App.cachePath, snapshot.name));
-    try {
-      final response = await client.c.req<ResponseBody>(
-        client,
-        'GET',
-        snapshot.name,
-        optionsHandler: (options) {
-          options.responseType = ResponseType.stream;
-          if (etag != null) options.headers = {'If-Match': etag};
-        },
-      );
-      if (response.statusCode != 200 ||
-          (etag != null && response.headers.value('etag') != etag) ||
-          response.data == null) {
-        await response.data?.stream.drain<void>();
-        return _conflict(
-          snapshot,
-          'Remote data changed during sync. Please retry.',
-        );
-      }
-      final sink = localFile.openWrite();
-      try {
-        await sink.addStream(response.data!.stream);
-      } finally {
-        await sink.close();
-      }
-      final fresh = await _snapshots(client);
-      final sameRemote = etag == null
-          ? fresh.firstOrNull?.name == snapshot.name
-          : _sameSnapshot(snapshot, fresh.firstOrNull);
-      if (_collision(fresh) || !sameRemote) {
-        return _conflict(
-          fresh.firstOrNull,
-          'Remote data changed during sync. Please retry.',
-        );
-      }
-      if (generation != _changeGeneration) {
-        return _conflict(
-          snapshot,
-          'Local data changed during download. Please retry.',
-        );
-      }
-      await runZoned(() async {
-        void beforeCommit() {
-          if (generation != _changeGeneration) {
-            const reason = 'Local data changed during download. Please retry.';
-            _conflict(snapshot, reason);
-            throw StateError(reason);
-          }
-        }
-
-        final importer = debugImport;
-        if (importer != null) {
-          beforeCommit();
-          await importer(localFile, false);
-        } else {
-          await importAppData(localFile, beforeCommit: beforeCommit);
-        }
-        HistoryManager().notifyChanges();
-        LocalFavoritesManager().notifyChanges();
-        ImageFavoriteManager().notifyChanges();
-      }, zoneValues: {_importZoneKey: true});
-      await _updateBaseline(
-        endpoint,
-        RemoteSnapshot(
-          file: snapshot.file,
-          name: snapshot.name,
-          day: snapshot.day,
-          version: snapshot.version,
-          eTag: etag,
-        ),
-      );
-      appdata.settings['lastSyncTime'] = _now.millisecondsSinceEpoch;
-      await appdata.saveData(false);
-      _downloadApplied = true;
-      return const Res(true);
-    } finally {
-      await localFile.deleteIgnoreError();
-    }
-  }
-
-  Future<void> _updateBaseline(
-    WebDavEndpoint endpoint,
-    RemoteSnapshot snapshot,
-  ) async {
-    appdata.implicitData['webdavBaselineTarget'] = endpointTarget(endpoint);
-    appdata.implicitData['webdavLastSyncedRemoteFile'] = snapshot.name;
-    appdata.implicitData['webdavLastSyncedRemoteVersion'] = snapshot.version;
-    final etag = _strongEtag(snapshot.eTag);
-    if (etag == null) {
-      appdata.implicitData.remove('webdavLastSyncedRemoteEtag');
-    } else {
-      appdata.implicitData['webdavLastSyncedRemoteEtag'] = etag;
-    }
-    await appdata.writeImplicitData();
-  }
 }

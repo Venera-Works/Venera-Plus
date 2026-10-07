@@ -198,7 +198,7 @@ void main() {
               _oldTime,
             );
             manager.addComic('在读', _tracked('local', 'local'));
-            await manager.debugWaitForHashedIdsRefresh();
+            await manager.waitForPendingReads();
             var notifications = 0;
             void listener() => notifications++;
             manager.addListener(listener);
@@ -365,7 +365,7 @@ void main() {
             final pending = updateComic(item, '在读');
             await started.future;
             if (replaceDatabase) {
-              await manager.debugWaitForHashedIdsRefresh();
+              await manager.waitForPendingReads();
               manager.close();
               await manager.init();
             } else {
@@ -529,7 +529,7 @@ Future<void> _withLiveFavorites(
   } finally {
     await appdata.saveData(false);
     if (manager != null) {
-      await manager.debugWaitForHashedIdsRefresh();
+      await manager.waitForPendingReads();
       manager.close();
     }
     LocalFavoritesManager.cache = oldManager;

@@ -112,7 +112,7 @@ class DataSyncScheduleFields extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           Text(
-            'Syncs at the selected interval while the app is running, following the selected direction. Overdue syncs run when the app reopens. Conflicts require an explicit snapshot choice.'
+            'Syncs at the selected interval while the app is running, following the selected direction. Overdue syncs run when the app reopens. Conflicting records and fields require an explicit candidate choice.'
                 .tl,
           ),
         ],

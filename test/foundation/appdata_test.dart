@@ -410,7 +410,7 @@ void main() {
   );
 
   test(
-    'Bangumi connection data syncs while pending progress remains local',
+    'Bangumi secrets and pending progress remain local across real sync import',
     () async {
       final dataDir = Directory.systemTemp.createTempSync(
         'venera-appdata-bangumi-',
@@ -441,7 +441,7 @@ void main() {
       };
 
       await appdata.saveData(false);
-      appdata.writeImplicitData();
+      await appdata.writeImplicitData();
       await appdata.saveData(false);
 
       final syncData = jsonDecode(
@@ -450,8 +450,16 @@ void main() {
       final implicitData = jsonDecode(
         File('${dataDir.path}/implicitData.json').readAsStringSync(),
       );
-      expect(syncData['settings']['bangumiAccessToken'], 'token');
-      expect(syncData['settings']['bangumiUsername'], 'alice');
+      expect(syncData['settings'].containsKey('bangumiAccessToken'), isFalse);
+      expect(syncData['settings'].containsKey('bangumiUsername'), isFalse);
+      expect(
+        appdata.exportSyncSettings().containsKey('bangumiAccessToken'),
+        isFalse,
+      );
+      expect(
+        appdata.exportSyncSettings().containsKey('bangumiUsername'),
+        isFalse,
+      );
       expect(syncData['settings']['bangumiAutoSyncEnabled'], isFalse);
       expect(syncData['settings']['bangumiBindings'], isNotEmpty);
       expect(
@@ -459,6 +467,40 @@ void main() {
         isFalse,
       );
       expect(implicitData['bangumiPendingProgress'], isNotEmpty);
+
+      await appdata.syncData({
+        'settings': {
+          'bangumiAccessToken': 'remote-secret',
+          'bangumiUsername': 'remote-user',
+          'bangumiAutoSyncEnabled': true,
+          'bangumiBindings': {
+            'remote@comic': {'subjectId': 99},
+          },
+        },
+        'implicitData': {'bangumiPendingProgress': <String, dynamic>{}},
+        'searchHistory': <String>[],
+      });
+      expect(appdata.settings['bangumiAccessToken'], 'token');
+      expect(appdata.settings['bangumiUsername'], 'alice');
+      expect(appdata.settings['bangumiAutoSyncEnabled'], isTrue);
+      expect(
+        appdata.settings['bangumiBindings']['remote@comic']['subjectId'],
+        99,
+      );
+      expect(
+        appdata.implicitData['bangumiPendingProgress'],
+        implicitData['bangumiPendingProgress'],
+      );
+      final persisted = jsonDecode(
+        File('${dataDir.path}/appdata.json').readAsStringSync(),
+      );
+      expect(persisted['settings']['bangumiAccessToken'], 'token');
+      expect(persisted['settings']['bangumiUsername'], 'alice');
+      final reexported = jsonDecode(
+        File('${dataDir.path}/syncdata.json').readAsStringSync(),
+      );
+      expect(reexported['settings'].containsKey('bangumiAccessToken'), isFalse);
+      expect(reexported['settings'].containsKey('bangumiUsername'), isFalse);
     },
   );
 
@@ -606,6 +648,127 @@ void main() {
           afterSyncData['settings'] as Map<String, dynamic>;
       expect(afterSyncSettings.containsKey('readLaterFolder'), isFalse);
       expect(afterSyncSettings['quickFavorite'], 'Updated Favorites');
+    },
+  );
+
+  test(
+    'save requests notify synchronously before queued disk persistence',
+    () async {
+      final previousSearch = appdata.fullSearchHistory;
+      var changes = 0;
+      appdata.registerSyncDataRequestHandler(() {
+        changes++;
+      });
+      addTearDown(() {
+        appdata.registerSyncDataRequestHandler(null);
+        appdata.setFullSearchHistory(previousSearch);
+      });
+      final pending = appdata.saveData();
+      expect(changes, 1);
+      appdata.addSearchHistory('immediate-notification');
+      expect(changes, 2);
+      appdata.removeSearchHistory('immediate-notification');
+      expect(changes, 3);
+      appdata.clearSearchHistory();
+      expect(changes, 4);
+      await pending;
+      await appdata.saveData(false);
+      expect(changes, 4);
+    },
+  );
+
+  test('invalid known setting types recover a valid backup', () async {
+    final directory = Directory.systemTemp.createTempSync(
+      'venera-setting-type-',
+    );
+    final previous = appdata.settings['comicTileScale'];
+    addTearDown(() {
+      appdata.settings['comicTileScale'] = previous;
+      directory.deleteSync(recursive: true);
+    });
+    File('${directory.path}/appdata.json').writeAsStringSync(
+      jsonEncode({
+        'settings': {'comicTileScale': 'bad'},
+        'searchHistory': [],
+      }),
+    );
+    File('${directory.path}/appdata.json.bak').writeAsStringSync(
+      jsonEncode({
+        'settings': {'comicTileScale': 1.0},
+        'searchHistory': [],
+      }),
+    );
+    await appdata.loadDataForTesting(directory.path);
+    expect(appdata.settings['comicTileScale'], 1.0);
+    final recovered = jsonDecode(
+      File('${directory.path}/appdata.json').readAsStringSync(),
+    );
+    expect(recovered['settings']['comicTileScale'], 1.0);
+  });
+
+  test(
+    'removed known settings read defaults without reviving persisted membership',
+    () async {
+      final previousSettings =
+          jsonDecode(jsonEncode(appdata.toJson()['settings']))
+              as Map<String, dynamic>;
+      final previousSearch = appdata.fullSearchHistory;
+      addTearDown(() {
+        appdata.settings.replaceAll(previousSettings);
+        appdata.setFullSearchHistory(previousSearch);
+      });
+      for (final root in [
+        'comicTileScale',
+        'comicSpecificSettings',
+        'comicLayoutDetections',
+        'blockedWords',
+      ]) {
+        appdata.removeSyncSetting(root);
+      }
+      expect(appdata.settings['comicTileScale'], 1.0);
+      expect(appdata.settings['comicSpecificSettings'], isEmpty);
+      expect(
+        appdata.settings.comicReaderModeOverride('comic', 'source'),
+        isNull,
+      );
+      expect(
+        appdata.settings.isComicSpecificSettingsEnabled('comic', 'source'),
+        isFalse,
+      );
+      appdata.settings.getReaderSetting('comic', 'source', 'comicTileScale');
+      appdata.settings.comicLayout('comic', 'source');
+      for (final root in [
+        'comicTileScale',
+        'comicSpecificSettings',
+        'comicLayoutDetections',
+        'blockedWords',
+      ]) {
+        expect(appdata.exportSyncSettings().containsKey(root), isFalse);
+      }
+      await appdata.saveData(false);
+      await appdata.loadDataForTesting(App.dataPath);
+      expect(appdata.settings['comicTileScale'], 1.0);
+      expect(appdata.settings['comicSpecificSettings'], isEmpty);
+      expect(
+        appdata.exportSyncSettings().containsKey('comicTileScale'),
+        isFalse,
+      );
+      expect(
+        appdata.exportSyncSettings().containsKey('comicSpecificSettings'),
+        isFalse,
+      );
+      appdata.settings.setReaderSetting(
+        'comic',
+        'source',
+        'splitDualPage',
+        true,
+      );
+      appdata.settings['blockedWords'].add('new-user-edit');
+      await appdata.saveData(false);
+      expect(appdata.exportSyncSettings()['comicSpecificSettings'], {
+        'comic@source': {'splitDualPage': true},
+      });
+      expect(appdata.exportSyncSettings()['blockedWords'], ['new-user-edit']);
     },
   );
 }

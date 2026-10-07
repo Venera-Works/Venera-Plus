@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter_reorderable_grid_view/widgets/reorderable_builder.dart';
 import 'package:venera_plus/components/button.dart';
@@ -539,11 +540,18 @@ class MultiPagesFilter extends StatefulWidget {
 
 class _MultiPagesFilterState extends State<MultiPagesFilter> {
   late List<String> keys;
+  late final List<String> _initialKeys;
 
   @override
   void initState() {
-    keys = List.from(appdata.settings[widget.settingsIndex]);
+    keys = List<String>.from(
+      appdata.settings[widget.settingsIndex] ??
+          (widget.settingsIndex == 'searchSources'
+              ? widget.pages.keys
+              : const <String>[]),
+    );
     keys.remove("");
+    _initialKeys = List<String>.of(keys);
     super.initState();
   }
 
@@ -712,6 +720,7 @@ class _MultiPagesFilterState extends State<MultiPagesFilter> {
   }
 
   void updateSetting() {
+    if (listEquals(keys, _initialKeys)) return;
     appdata.settings[widget.settingsIndex] = keys;
     appdata.saveData();
   }

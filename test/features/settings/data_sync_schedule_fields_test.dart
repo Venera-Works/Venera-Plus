@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_plus/features/settings/data_sync_schedule_fields.dart';
+import 'package:venera_plus/features/settings/settings.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/translations.dart';

@@ -49,7 +49,11 @@ extension _FutureInit<T> on Future<T> {
 Future<void> initializeBangumiAfterDataSync({
   required Future<void> Function() waitForDownload,
   required Future<void> Function() Function() createInitializer,
+  Future<void> Function()? waitForStartup,
 }) async {
+  if (waitForStartup != null) {
+    await waitForStartup();
+  }
   await waitForDownload();
   await createInitializer()();
 }
@@ -58,9 +62,11 @@ Future<void> initializeBangumiAfterDataSync({
 void startBangumiAfterDataSync({
   required Future<void> Function() waitForDownload,
   required Future<void> Function() Function() createInitializer,
+  Future<void> Function()? waitForStartup,
 }) {
   unawaited(
     initializeBangumiAfterDataSync(
+      waitForStartup: waitForStartup,
       waitForDownload: waitForDownload,
       createInitializer: createInitializer,
     ).wait(),
@@ -132,6 +138,14 @@ Future<void> init() async {
       checkForAutomaticSync: WebDavLibrarySource.checkForAutomaticSync,
     ),
   );
+  SyncPreferencesAdapter.registerSettingsImportedCallback(() async {
+    WebDavLibrarySource.onSettingsImported();
+    // Source/session refresh belongs to the adapter's post-journal phase.
+    // Startup services must not run until conservative recovery is ready.
+    if (DataSync.instance?.isReady != true) return;
+    await BangumiService().initialize();
+    WebDavLibrarySource.checkForAutomaticSync();
+  });
   WebDavLibrarySource.configureMetadataScraper(
     scrapeBangumiMetadataForWebDav,
     isEnabled: () =>
@@ -226,7 +240,9 @@ Future<void> init() async {
   await _checkOldConfigs();
   final dataSync = DataSync();
   configureComicSourceDataSavedHandler(() async => dataSync.onDataChanged());
+  CookieJarSql.registerCookiesChangedHandler(dataSync.onDataChanged);
   startBangumiAfterDataSync(
+    waitForStartup: dataSync.waitForStartupMerge,
     waitForDownload: dataSync.waitForDownload,
     createInitializer: () => () async {
       await BangumiService().initialize();
@@ -236,6 +252,7 @@ Future<void> init() async {
           appdata.settings['bangumiAutoMetadataScrapeEnabled'] == true) {
         unawaited(WebDavLibrarySource.synchronize());
       }
+      FollowUpdatesService.initChecker();
     },
   );
   CacheManager().setLimitSize(appdata.settings['cacheSize']);
@@ -314,13 +331,6 @@ Future<Uint8List?> _loadLocalCoverFallback(String sourceKey, String id) async {
 }
 
 Future<void> _checkOldConfigs() async {
-  if (appdata.settings['searchSources'] == null) {
-    appdata.settings['searchSources'] = ComicSource.all()
-        .where((e) => e.searchPageData != null)
-        .map((e) => e.key)
-        .toList();
-  }
-
   if (appdata.implicitData['webdavSyncDirection'] == null ||
       appdata.implicitData['webdavSyncTiming'] == null ||
       appdata.implicitData['webdavSyncIntervalMinutes'] == null ||
@@ -384,7 +394,13 @@ Future<void> _checkAppUpdates() async {
 
 void checkUpdates() {
   _checkAppUpdates();
-  FollowUpdatesService.initChecker();
+  unawaited(
+    () async {
+      await DataSync().waitForStartupMerge();
+      await DataSync().waitForDownload();
+      FollowUpdatesService.initChecker();
+    }().wait(),
+  );
 }
 
 void reloadComicSourcesForDebug() {

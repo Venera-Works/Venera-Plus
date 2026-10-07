@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/features/sync/data_sync.dart';
+import 'package:venera_plus/features/sync/sync_conflict_dialog.dart';
 import 'package:venera_plus/foundation/translations.dart';
 
 class SyncActionButton extends StatefulWidget {
@@ -77,40 +78,7 @@ class _SyncActionButtonState extends State<SyncActionButton>
         }
       }
       if (!mounted) return;
-      final keepLocal = await showDialog<bool>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: Text('Sync Conflict'.tl),
-          content: Text(
-            'Sync needs an explicit snapshot choice. The baseline may be unknown or data may have changed. This replaces data; it does not merge it.'
-                .tl,
-          ),
-          actions: [
-            if (DataSync.direction != SyncDirection.downloadOnly)
-              TextButton(
-                onPressed: () => Navigator.of(dialogContext).pop(true),
-                child: Text('Upload Local (Overwrite Remote)'.tl),
-              ),
-            if (DataSync.direction != SyncDirection.uploadOnly)
-              TextButton(
-                onPressed: () => Navigator.of(dialogContext).pop(false),
-                child: Text('Download Remote (Overwrite Local)'.tl),
-              ),
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: Text('Cancel'.tl),
-            ),
-          ],
-        ),
-      );
-      if (keepLocal == null || !mounted) return;
-      final result = await _sync.resolveConflict(keepLocal: keepLocal);
-      if (!mounted) return;
-      context.showMessage(
-        message: result.error
-            ? '${"Sync failed".tl}: ${result.errorMessage?.tl ?? ""}'
-            : 'Sync completed'.tl,
-      );
+      await showSyncConflictDialog(context);
     } finally {
       _sync.endInteraction();
     }
@@ -135,7 +103,11 @@ class _SyncActionButtonState extends State<SyncActionButton>
           tooltip = 'WebDAV is not configured. Please configure it first.'.tl;
         } else if (status.hasConflict) {
           iconData = Icons.sync_problem;
-          tooltip = 'Sync Conflict'.tl;
+          tooltip = status.conflictCount > 0
+              ? 'Sync Conflict (@count pending)'.tlParams({
+                  'count': status.conflictCount,
+                })
+              : 'Sync Conflict'.tl;
           iconColor = Theme.of(context).colorScheme.error;
         } else {
           iconData = Icons.sync;
@@ -152,6 +124,7 @@ class _SyncActionButtonState extends State<SyncActionButton>
         }
 
         return IconButton(
+          key: const Key('data-sync-action'),
           icon: iconWidget,
           tooltip: tooltip,
           onPressed: _handlePressed,

@@ -157,6 +157,33 @@ void main() {
       });
 
       test(
+        'adding a search source preserves all defaults when selection is null',
+        () async {
+          String searchable(String key) => script(key).replaceFirst(
+            'comic =',
+            'search = {load: async () => ({comics: []})}; comic =',
+          );
+          await manager.installScript(
+            js: searchable('transaction_a'),
+            fileName: 'transaction_a.js',
+            origin: const SourceOrigin(kind: 'file'),
+            beforeInstall: () {},
+          );
+          appdata.settings['searchSources'] = null;
+          await manager.installScript(
+            js: searchable('transaction_b'),
+            fileName: 'transaction_b.js',
+            origin: const SourceOrigin(kind: 'file'),
+            beforeInstall: () {},
+          );
+          expect(appdata.settings['searchSources'], [
+            'transaction_a',
+            'transaction_b',
+          ]);
+        },
+      );
+
+      test(
         'failed staged data write rolls back script, runtime and origin',
         () async {
           final original = await install('transaction_a');
@@ -219,6 +246,43 @@ void main() {
               ).readAsString(),
             )['token'],
             'new',
+          );
+        },
+      );
+
+      test(
+        'full source reload keeps complete sessions shared with old callbacks',
+        () async {
+          final original = await install('transaction_a');
+          original.data = {
+            'account': ['before', 'password'],
+            'token': 'before-token',
+            'settings': {'mode': 'before'},
+            '_localStorage': {'sid': 'before-storage'},
+          };
+          await original.saveData();
+          await manager.reload();
+          final replacement = manager.find(original.key)!;
+          expect(replacement, isNot(same(original)));
+          original.data['account'] = ['new', 'password'];
+          original.data['token'] = 'new-token';
+          original.data['settings']['mode'] = 'new';
+          original.data['_localStorage']['sid'] = 'new-storage';
+          await original.saveData();
+          expect(replacement.data, same(original.data));
+          expect(replacement.data, {
+            'account': ['new', 'password'],
+            'token': 'new-token',
+            'settings': {'mode': 'new'},
+            '_localStorage': {'sid': 'new-storage'},
+          });
+          expect(
+            jsonDecode(
+              await File(
+                '${directory.path}/comic_source/${original.key}.data',
+              ).readAsString(),
+            ),
+            replacement.data,
           );
         },
       );

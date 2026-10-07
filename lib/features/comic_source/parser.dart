@@ -89,6 +89,50 @@ class SourceAlreadyInstalledException extends ComicSourceParseException {
 }
 
 class ComicSourceParser {
+  /// Reads metadata in a separate QuickJS runtime with no host bridges.
+  /// Candidate constructors and getters cannot access live HTTP, cookies,
+  /// installed sources, UI, or source sessions, even before conflict selection.
+  static Future<String?> probeKey(String js, [String? filePath]) async {
+    FlutterQjs? runtime;
+    try {
+      final className = sourceClassName(js);
+      final definitions = await JsEngine.loadApiDefinitions();
+      runtime = FlutterQjs(timeout: 1000, memoryLimit: 32 * 1024 * 1024);
+      JSRef.freeRecursive(
+        runtime.evaluate('''
+        Object.defineProperty(globalThis, 'sendMessage', {
+          value: () => { throw new Error('Host I/O unavailable during metadata probing'); },
+          writable: false, configurable: false
+        });
+        const appVersion = ${jsonEncode(App.version)};
+        void 0;
+      '''),
+      );
+      JSRef.freeRecursive(
+        runtime.evaluate('$definitions\n;void 0;', name: '<metadata-api>'),
+      );
+      final dynamic key = runtime.evaluate('''(() => {
+        ${js.replaceFirst('\uFEFF', '').replaceAll('\r\n', '\n')}
+        return ((key) => typeof key === 'string' ? key : null)(
+          new $className().key
+        );
+      })()''', name: filePath ?? '<metadata>');
+      try {
+        return key is String && key.isNotEmpty ? key : null;
+      } finally {
+        JSRef.freeRecursive(key);
+      }
+    } catch (_) {
+      return null;
+    } finally {
+      try {
+        runtime?.close();
+      } finally {
+        runtime?.port.close();
+      }
+    }
+  }
+
   JSInvokable? _restore;
 
   /// Restore the previous runtime object if a later disk commit fails.

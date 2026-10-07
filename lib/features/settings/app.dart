@@ -354,7 +354,6 @@ class _WebdavSettingState extends State<_WebdavSetting> {
   late final TextEditingController fieldsController;
 
   bool isTesting = false;
-  bool upload = true;
 
   @override
   void initState() {
@@ -419,6 +418,7 @@ class _WebdavSettingState extends State<_WebdavSetting> {
               ),
               const SizedBox(height: 12),
               TextField(
+                obscureText: true,
                 decoration: InputDecoration(
                   labelText: "Password".tl,
                   border: const OutlineInputBorder(),
@@ -492,60 +492,62 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                     setState(() => syncInterval = value),
               ),
               const SizedBox(height: 12),
-              if (syncTiming != SyncTiming.manual) ...[
-                if (syncDirection == SyncDirection.bidirectional) ...[
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text('Initial sync'.tl),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.primaryContainer.withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.primary.withValues(alpha: 0.2),
                   ),
-                  RadioGroup<bool>(
-                    groupValue: upload,
-                    onChanged: (value) {
-                      setState(() {
-                        upload = value ?? upload;
-                      });
-                    },
-                    child: Column(
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
                       children: [
-                        RadioListTile<bool>(
-                          value: true,
-                          title: Text('Upload'.tl),
-                          contentPadding: EdgeInsets.zero,
+                        Icon(
+                          Icons.info_outline,
+                          size: 18,
+                          color: Theme.of(context).colorScheme.primary,
                         ),
-                        RadioListTile<bool>(
-                          value: false,
-                          title: Text('Download'.tl),
-                          contentPadding: EdgeInsets.zero,
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            syncDirection == SyncDirection.bidirectional
+                                ? 'Multi-device sync merges existing local and remote data losslessly rather than overwriting.'
+                                      .tl
+                                : (syncDirection == SyncDirection.uploadOnly
+                                      ? 'Upload-only mode will propagate local changes to remote without importing remote data.'
+                                            .tl
+                                      : 'Download-only mode will import remote changes without uploading local data.'
+                                            .tl),
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurface,
+                                ),
+                          ),
                         ),
                       ],
                     ),
-                  ),
-                ],
-              ],
-              const SizedBox(height: 16),
-              AnimatedSize(
-                duration: const Duration(milliseconds: 200),
-                child: syncTiming != SyncTiming.manual
-                    ? Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: Theme.of(context).colorScheme.primaryContainer,
-                          borderRadius: BorderRadius.circular(8),
+                    if (syncTiming != SyncTiming.manual) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        'Once saved, the app will automatically sync data according to the schedule.'
+                            .tl,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.info_outline, size: 20),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                "Once the operation is successful, app will automatically sync data with the server."
-                                    .tl,
-                              ),
-                            ),
-                          ],
-                        ),
-                      )
-                    : const SizedBox.shrink(),
+                      ),
+                    ],
+                  ],
+                ),
               ),
               const SizedBox(height: 16),
               Row(
@@ -563,6 +565,7 @@ class _WebdavSettingState extends State<_WebdavSetting> {
               Center(
                 child: Button.filled(
                   isLoading: isTesting,
+                  key: const Key('data-sync-save'),
                   onPressed: () async {
                     if (isTesting) return;
                     setState(() {
@@ -578,11 +581,6 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                       direction: syncDirection,
                       timing: syncTiming,
                       minutes: syncInterval,
-                      initialUpload: syncDirection == SyncDirection.uploadOnly
-                          ? true
-                          : (syncDirection == SyncDirection.downloadOnly
-                                ? false
-                                : upload),
                     );
                     if (!mounted) return;
                     setState(() => isTesting = false);
@@ -594,7 +592,7 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                       App.rootPop();
                     }
                   },
-                  child: Text("Continue".tl),
+                  child: Text("Save".tl),
                 ),
               ),
             ],
@@ -872,7 +870,7 @@ class _WebDavComicLibrarySettingState
               contentPadding: EdgeInsets.zero,
               title: Text('Sync comic library config'.tl),
               subtitle: Text(
-                'Sync the WebDAV comic library URL, username, password, remote path, automatic updates and update interval. Credentials will be stored in remote .venera files.'
+                'Sync the WebDAV comic library URL, username, password, remote path, automatic updates and update interval. Credentials will be stored in remote sync storage.'
                     .tl,
               ),
               value: configSyncEnabled,

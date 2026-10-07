@@ -1,6 +1,7 @@
 export 'about.dart';
 export 'app.dart';
 export 'appearance.dart';
+export 'data_sync_schedule_fields.dart';
 export 'debug.dart';
 export 'explore_settings.dart';
 export 'logs.dart';
