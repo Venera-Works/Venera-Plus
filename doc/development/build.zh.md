@@ -73,7 +73,9 @@ git diff --check
 
 CI 会使用 `flutter test --coverage` 生成 `coverage/lcov.info`，在工作流摘要中显示行覆盖率，并上传报告产物。当前覆盖率用于建立可见基线，尚未设置统一硬阈值；涉及关键业务路径的改动仍必须增加针对性测试。
 
-PR 还会运行 `依赖安全审查` 和 `PR 平台冒烟构建`。依赖审查会阻止引入高危或严重漏洞依赖；当改动涉及业务代码、原生平台目录、依赖、构建脚本、工作流，或 `test/integration/`、`test/driver/` 原生测试时，平台工作流会执行 Android Debug（arm64 编译门禁与 x86_64 模拟器环境原生集成测试）和 Windows Debug（应用构建、真实启动脚本与原生集成测试）。CI 变更检测精确匹配 `test/integration/` 与 `test/driver/`，不扩大触发范围到所有 `test/`；文档等不影响构建的改动会跳过这两个平台任务。
+PR 还会运行 `依赖安全审查` 和 `PR 平台冒烟构建`。依赖审查会阻止引入高危或严重漏洞依赖；当改动涉及业务代码、原生平台目录、依赖、构建脚本、工作流，或 `test/integration/`、`test/driver/` 及 `test/features/sync/legacy_sync_reader_test.dart` 原生测试时，平台工作流会执行 Android Debug（arm64 编译门禁与 x86_64 模拟器环境原生集成测试）和 Windows Debug（应用构建、QuickJS 源迁移测试、真实启动脚本与原生集成测试）。CI 变更检测精确匹配这两个原生测试目录及上述源迁移测试文件，不扩大触发范围到所有 `test/`；文档等不影响构建的改动会跳过这两个平台任务。
+
+旧同步档迁移测试将 SQLite 收藏、历史模式迁移与依赖 QuickJS 的漫画源脚本迁移分开。普通 `flutter test --coverage` 环境缺少 QuickJS 原生库时，仅跳过 `LegacySyncReader QuickJS Source Migration` 测试组，数据库迁移仍独立执行。Windows PR 平台任务在已有 Debug 构建后检查 `flutter_qjs_plugin.dll` 与 `flutter_windows.dll`，将产物目录加入 `PATH`，再运行 `flutter test --no-pub --reporter=expanded --dart-define=CI_REQUIRE_QUICKJS=true --plain-name "LegacySyncReader QuickJS Source Migration" test/features/sync/legacy_sync_reader_test.dart`。该严格开关要求真实原生运行时，缺库时必须失败而非跳过；测试覆盖脚本和会话迁移、逻辑文件名保留及错误后的隔离目录清理，不新增应用构建步骤。
 
 原生集成测试与驱动已统一收敛至 `test/` 目录：场景入口为 `test/integration/platform_smoke.dart`，宿主端驱动为 `test/driver/platform_smoke_driver.dart`。为避免被日常 `flutter test --coverage` 默认发现与覆盖率统计收集，两个入口刻意省略了 `_test.dart` 后缀；旧根目录 `integration_test/` 与 `test_driver/` 已彻底移除，不保留兼容入口。
 

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -23,6 +24,50 @@ bool _sqliteAvailable() {
     return true;
   } catch (_) {
     return false;
+  }
+}
+
+const bool _ciRequireQuickJs = bool.fromEnvironment(
+  'CI_REQUIRE_QUICKJS',
+  defaultValue: false,
+);
+
+String? _quickJsLoadFailure() {
+  final libraryPath = Platform.isWindows
+      ? 'flutter_qjs_plugin.dll'
+      : Platform.isLinux
+      ? 'libflutter_qjs_plugin.so'
+      : 'flutter_qjs.framework/flutter_qjs';
+  try {
+    if (Platform.isWindows) {
+      for (final buildDir in [
+        'build/windows/x64/runner/Debug',
+        'build/windows/x64/runner/Release',
+      ]) {
+        final build = Directory(buildDir).absolute.path;
+        if (File('$build/flutter_windows.dll').existsSync() &&
+            File('$build/flutter_qjs_plugin.dll').existsSync()) {
+          DynamicLibrary.open('$build/flutter_windows.dll');
+          DynamicLibrary.open('$build/flutter_qjs_plugin.dll');
+          break;
+        }
+      }
+    } else if (Platform.isLinux) {
+      for (final buildDir in [
+        'build/linux/x64/debug/bundle/lib',
+        'build/linux/x64/release/bundle/lib',
+      ]) {
+        final build = Directory(buildDir).absolute.path;
+        if (File('$build/libflutter_qjs_plugin.so').existsSync()) {
+          DynamicLibrary.open('$build/libflutter_qjs_plugin.so');
+          break;
+        }
+      }
+    }
+    DynamicLibrary.open(libraryPath);
+    return null;
+  } catch (error) {
+    return '$libraryPath: $error';
   }
 }
 
@@ -233,6 +278,9 @@ Uint8List? _createHistoryDbBytes(Directory tempDir) {
 }
 
 void main() {
+  final quickJsFailure = _quickJsLoadFailure();
+  final quickJsAvailable = quickJsFailure == null;
+
   late Directory tempDir;
   late Directory scratchDir;
   late String originalDataPath;
@@ -952,104 +1000,63 @@ void main() {
     );
   });
 
-  group('LegacySyncReader Lossless Multi-Domain Conversion and Schema Migration', () {
-    test(
-      'migration preserves logical source names from the exact metadata sidecar',
-      () async {
-        final physicalName = 'sync_${sha256.convert(utf8.encode('my_src'))}.js';
-        transport.files['500-1.venera'] = _createVeneraArchive(
-          comicSources: {
-            physicalName:
-                'class Custom extends ComicSource { key = "my_src"; }',
-            '.sync_source_names.json': jsonEncode({
-              'my_src': {
-                'filename': 'custom.js',
-                'revisions': <String, String>{},
-              },
+  group(
+    'LegacySyncReader Lossless Multi-Domain Conversion and Schema Migration',
+    () {
+      test(
+        'migrates legacy favorite folder missing columns in isolated DB and converts losslessly',
+        () async {
+          final favBytes = _createFavoriteDbBytes(
+            tempDir,
+            includeMissingColumns: true,
+          );
+          final histBytes = _createHistoryDbBytes(tempDir);
+          expect(favBytes, isNotNull);
+          expect(histBytes, isNotNull);
+
+          final archiveBytes = _createVeneraArchive(
+            historyDbBytes: histBytes,
+            localFavoriteDbBytes: favBytes,
+            appdataJson: jsonEncode({
+              'settings': {'themeMode': 'dark'},
+              'searchHistory': ['keyword1', 'keyword2'],
             }),
-          },
-        );
-        client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
-        final seeds = await LegacySyncReader(
-          client,
-          scratchDir,
-          preferences: preferences,
-        ).readSeeds();
-        final script =
-            seeds.single.records[syncRecordKey('source', ['my_src'])]!['script']
-                as Map;
-        expect(script['filename'], 'custom.js');
-        expect(scratchDir.listSync(), isEmpty);
-      },
-    );
+          );
 
-    test(
-      'migrates legacy favorite folder missing columns in isolated DB and converts losslessly',
-      () async {
-        // Create favorite DB with legacy schema missing display_order, last_update_time, has_new_update
-        final favBytes = _createFavoriteDbBytes(
-          tempDir,
-          includeMissingColumns: true,
-        );
-        final histBytes = _createHistoryDbBytes(tempDir);
+          transport.files['500-1.venera'] = archiveBytes;
+          client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
 
-        final archiveBytes = _createVeneraArchive(
-          historyDbBytes: histBytes,
-          localFavoriteDbBytes: favBytes,
-          appdataJson: jsonEncode({
-            'settings': {'themeMode': 'dark'},
-            'searchHistory': ['keyword1', 'keyword2'],
-          }),
-          comicSources: {
-            'custom.js': 'class Custom extends ComicSource { key = "my_src"; }',
-            'my_src.data': '{"token":"session_token_123"}',
-          },
-        );
+          final reader = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+          );
+          final seeds = await reader.readSeeds();
 
-        transport.files['500-1.venera'] = archiveBytes;
-        client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
+          expect(seeds.length, equals(1));
+          final seed = seeds.first;
+          expect(
+            seed.id,
+            equals(sha256.convert(archiveBytes).toString().toLowerCase()),
+          );
 
-        final reader = LegacySyncReader(
-          client,
-          scratchDir,
-          preferences: preferences,
-        );
-        final seeds = await reader.readSeeds();
+          // Setting domain
+          expect(
+            seed.records[syncRecordKey('setting', ['themeMode'])],
+            equals({'value': 'dark'}),
+          );
 
-        expect(seeds.length, equals(1));
-        final seed = seeds.first;
-        expect(
-          seed.id,
-          equals(sha256.convert(archiveBytes).toString().toLowerCase()),
-        );
+          // Search domain
+          expect(
+            seed.records[syncRecordKey('search', ['keyword1'])],
+            equals({'order': 0}),
+          );
+          expect(
+            seed.records[syncRecordKey('search', ['keyword2'])],
+            equals({'order': 1}),
+          );
 
-        // Setting domain
-        expect(
-          seed.records[syncRecordKey('setting', ['themeMode'])],
-          equals({'value': 'dark'}),
-        );
-
-        // Search domain
-        expect(
-          seed.records[syncRecordKey('search', ['keyword1'])],
-          equals({'order': 0}),
-        );
-        expect(
-          seed.records[syncRecordKey('search', ['keyword2'])],
-          equals({'order': 1}),
-        );
-
-        // Source and sourceSession domain
-        expect(seed.records[syncRecordKey('source', ['my_src'])], isNotNull);
-        expect(
-          seed.records[syncRecordKey('sourceSession', ['my_src'])],
-          equals({
-            'data': {'token': 'session_token_123'},
-          }),
-        );
-
-        // If SQLite was available, verify favorite and history domains
-        if (favBytes != null) {
+          // Favorite and history domains (unconditionally asserted when SQLite is available)
           final folderKey = syncRecordKey('folder', ['legacy-folder-1']);
           expect(seed.records.containsKey(folderKey), isTrue);
           expect(seed.records[folderKey]?['name'], equals('Comics'));
@@ -1061,9 +1068,7 @@ void main() {
           ]);
           expect(seed.records.containsKey(favKey), isTrue);
           expect(seed.records[favKey]?['title'], equals('Comic One'));
-        }
 
-        if (histBytes != null) {
           final histKey = syncRecordKey('history', ['hist1', 1]);
           expect(seed.records.containsKey(histKey), isTrue);
           expect(seed.records[histKey]?['title'], equals('Hist Title'));
@@ -1080,8 +1085,135 @@ void main() {
           ]);
           expect(seed.records.containsKey(chapterKey1), isTrue);
           expect(seed.records.containsKey(chapterKey2), isTrue);
+
+          expect(scratchDir.listSync(), isEmpty);
+        },
+        skip: _sqliteAvailable() ? false : 'sqlite3 native library unavailable',
+      );
+    },
+  );
+
+  group(
+    'LegacySyncReader QuickJS Source Migration',
+    () {
+      setUp(() {
+        if (_ciRequireQuickJs && quickJsFailure != null) {
+          fail(
+            'CI_REQUIRE_QUICKJS=true requires QuickJS native library, '
+            'but it failed to load: $quickJsFailure',
+          );
         }
-      },
-    );
-  });
+      });
+
+      test(
+        'migration preserves logical source names from the exact metadata sidecar',
+        () async {
+          final physicalName =
+              'sync_${sha256.convert(utf8.encode('my_src'))}.js';
+          const scriptContent =
+              'class Custom extends ComicSource { key = "my_src"; }';
+          transport.files['500-1.venera'] = _createVeneraArchive(
+            comicSources: {
+              physicalName: scriptContent,
+              '.sync_source_names.json': jsonEncode({
+                'my_src': {
+                  'filename': 'custom.js',
+                  'revisions': <String, String>{},
+                },
+              }),
+            },
+          );
+          client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
+          final seeds = await LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+          ).readSeeds();
+
+          expect(seeds.length, equals(1));
+          final sourceKey = syncRecordKey('source', ['my_src']);
+          expect(seeds.single.records.containsKey(sourceKey), isTrue);
+          final script = seeds.single.records[sourceKey]!['script'] as Map;
+          expect(script['filename'], equals('custom.js'));
+          expect(script['content'], equals(scriptContent));
+          expect(scratchDir.listSync(), isEmpty);
+        },
+      );
+
+      test(
+        'migrates legacy comic source scripts and sessions in isolated QuickJS runtime',
+        () async {
+          const scriptContent =
+              'class Custom extends ComicSource { key = "my_src"; }';
+          final archiveBytes = _createVeneraArchive(
+            comicSources: {
+              'custom.js': scriptContent,
+              'my_src.data': jsonEncode({'token': 'session_token_123'}),
+            },
+          );
+
+          transport.files['500-1.venera'] = archiveBytes;
+          client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
+
+          final reader = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+          );
+          final seeds = await reader.readSeeds();
+
+          expect(seeds.length, equals(1));
+          final seed = seeds.first;
+          expect(
+            seed.id,
+            equals(sha256.convert(archiveBytes).toString().toLowerCase()),
+          );
+
+          // Source and sourceSession domain
+          final sourceKey = syncRecordKey('source', ['my_src']);
+          expect(seed.records.containsKey(sourceKey), isTrue);
+          final script = seed.records[sourceKey]!['script'] as Map;
+          expect(script['filename'], equals('custom.js'));
+          expect(script['content'], equals(scriptContent));
+
+          final sessionKey = syncRecordKey('sourceSession', ['my_src']);
+          expect(seed.records.containsKey(sessionKey), isTrue);
+          expect(
+            seed.records[sessionKey],
+            equals({
+              'data': {'token': 'session_token_123'},
+            }),
+          );
+
+          expect(scratchDir.listSync(), isEmpty);
+        },
+      );
+
+      test(
+        'unresolvable legacy comic source script fails safely and cleans scratch directory',
+        () async {
+          final archiveBytes = _createVeneraArchive(
+            comicSources: {'broken.js': '// empty script without key'},
+          );
+
+          transport.files['500-1.venera'] = archiveBytes;
+          client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
+
+          final reader = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+          );
+
+          await expectLater(
+            reader.readSeeds(),
+            throwsA(isA<FormatException>()),
+          );
+
+          expect(scratchDir.listSync(), isEmpty);
+        },
+      );
+    },
+    skip: (_ciRequireQuickJs || quickJsAvailable) ? false : quickJsFailure,
+  );
 }
