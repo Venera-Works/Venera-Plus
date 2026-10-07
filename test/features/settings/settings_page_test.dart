@@ -1,46 +1,93 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/settings/settings.dart';
-import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 
-void _setupTestEnv(WidgetTester tester, String prefix, Size size) {
+void _setupTestView(WidgetTester tester, Size size) {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
-  addTearDown(tester.view.resetPhysicalSize);
-  addTearDown(tester.view.resetDevicePixelRatio);
-
-  final root = Directory.systemTemp.createTempSync('venera-settings-$prefix-');
-  App.cachePath = (Directory('${root.path}/cache')..createSync()).path;
-  App.dataPath = (Directory('${root.path}/data')..createSync()).path;
-  LocalManager().path = 'test-library';
-
   addTearDown(() async {
-    await tester.pumpWidget(const SizedBox.shrink());
-    WebDavLibrarySource.resetCacheForTesting();
-    CacheManager.resetForTesting();
-    await appdata.saveData(false);
-    if (root.existsSync()) {
-      root.deleteSync(recursive: true);
+    try {
+      // Run before binding.postTest, including when a widget assertion fails.
+      await tester.pumpWidget(const SizedBox.shrink());
+    } finally {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
     }
   });
 }
 
 void main() {
+  late Directory fallbackRoot;
+  Directory? testRoot;
+  late String originalDataPath;
+  late String originalCachePath;
+  late Map<String, dynamic> settingsSnapshot;
+  late Map<String, dynamic> implicitDataSnapshot;
+
+  setUpAll(() async {
+    fallbackRoot = await Directory.systemTemp.createTemp(
+      'venera-settings-fallback-',
+    );
+    // App's paths are late at process startup, so establish suite-owned
+    // fallbacks rather than pretending an uninitialized value can be restored.
+    // Accessing App also initializes appdata's write queue in this real zone.
+    App.dataPath = fallbackRoot.path;
+    App.cachePath = fallbackRoot.path;
+  });
+
+  tearDownAll(() async {
+    await fallbackRoot.delete(recursive: true);
+  });
+
+  setUp(() async {
+    originalDataPath = App.dataPath;
+    originalCachePath = App.cachePath;
+    settingsSnapshot =
+        jsonDecode(jsonEncode(appdata.toJson()['settings']))
+            as Map<String, dynamic>;
+    implicitDataSnapshot = Map<String, dynamic>.from(appdata.implicitData);
+    final root = await Directory.systemTemp.createTemp('venera-settings-');
+    testRoot = root;
+    App.cachePath = (await Directory('${root.path}/cache').create()).path;
+    App.dataPath = (await Directory('${root.path}/data').create()).path;
+  });
+
+  tearDown(() async {
+    try {
+      try {
+        WebDavLibrarySource.resetCacheForTesting();
+      } finally {
+        CacheManager.resetForTesting();
+      }
+    } finally {
+      appdata.settings.replaceAll(settingsSnapshot);
+      appdata.implicitData = implicitDataSnapshot;
+      App.dataPath = originalDataPath;
+      App.cachePath = originalCachePath;
+    }
+    // These routes do not save on disposal, and the credential switch changes
+    // only dialog state. There are no queued writes or cache scans to drain;
+    // a cleanup-only save would introduce unnecessary asynchronous file I/O.
+    final root = testRoot;
+    testRoot = null;
+    if (root != null && await root.exists()) {
+      await root.delete(recursive: true);
+    }
+  });
+
   testWidgets('comic library settings expose credential sync opt-in', (
     tester,
   ) async {
-    _setupTestEnv(tester, 'credential-sync', const Size(700, 1400));
+    _setupTestView(tester, const Size(700, 1400));
     appdata.settings['webdavComicLibrarySyncEnabled'] = false;
-    addTearDown(
-      () => appdata.settings['webdavComicLibrarySyncEnabled'] = false,
-    );
 
     await tester.pumpWidget(
       MaterialApp(
@@ -74,7 +121,7 @@ void main() {
   testWidgets(
     'narrow layout initial destination opens detail and back returns to settings list',
     (tester) async {
-      _setupTestEnv(tester, 'narrow-nav', const Size(700, 1400));
+      _setupTestView(tester, const Size(700, 1400));
 
       await tester.pumpWidget(
         const MaterialApp(
@@ -97,7 +144,7 @@ void main() {
   testWidgets(
     'wide layout handles nested route push, system pop, left back, and destination change',
     (tester) async {
-      _setupTestEnv(tester, 'wide-nav', const Size(1000, 800));
+      _setupTestView(tester, const Size(1000, 800));
 
       await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
       await tester.pumpAndSettle();

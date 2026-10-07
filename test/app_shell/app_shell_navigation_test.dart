@@ -109,8 +109,11 @@ void main() {
           ),
         );
 
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 300));
+        await tester.pumpAndSettle(
+          const Duration(milliseconds: 100),
+          EnginePhase.sendSemanticsUpdate,
+          const Duration(seconds: 5),
+        );
 
         // Verify target route rendered without duplicate hero exception
         expect(find.text('Hero Target'), findsOneWidget);
@@ -118,8 +121,11 @@ void main() {
 
         // Pop back to root
         Navigator.of(scaffoldContext!).pop();
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 300));
+        await tester.pumpAndSettle(
+          const Duration(milliseconds: 100),
+          EnginePhase.sendSemanticsUpdate,
+          const Duration(seconds: 5),
+        );
 
         // Returned safely to active view while inactive view remains retained-but-hidden
         expect(find.text('Hero Active'), findsOneWidget);

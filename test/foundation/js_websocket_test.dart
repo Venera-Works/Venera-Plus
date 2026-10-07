@@ -994,6 +994,7 @@ void main() {
           lifecycleLogger: (level, content) =>
               logs.add((level: level, content: content)),
         );
+        addTearDown(testBridge.dispose);
 
         unawaited(() async {
           final socket = await WebSocketTransformer.upgrade(await server.first);
@@ -1002,7 +1003,14 @@ void main() {
           }
         }());
 
-        final connected = await _connect(testBridge, server.port);
+        // Legitimate endpoint metadata may contain individual payload bytes.
+        final connectionUrl = 'ws://127.0.0.1:${server.port}/socket99';
+        final connected =
+            await testBridge.handle({
+                  'function': 'connect',
+                  'url': connectionUrl,
+                })
+                as Map<String, dynamic>;
 
         const secretText = 'confidential_user_payload_string_48123';
         await testBridge.handle({
@@ -1037,11 +1045,10 @@ void main() {
         await testBridge.handle({'function': 'close', 'id': connected['id']});
         await testBridge.dispose();
 
+        expect(logs.any((log) => log.content.contains(connectionUrl)), isTrue);
         for (final log in logs) {
           expect(log.content.contains(secretText), isFalse);
-          expect(log.content.contains('99'), isFalse);
-          expect(log.content.contains('payload'), isFalse);
-          expect(log.content.contains('message'), isFalse);
+          expect(log.content.contains(secretBytes.toString()), isFalse);
         }
       },
     );
