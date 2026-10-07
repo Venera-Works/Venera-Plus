@@ -8,6 +8,28 @@ import 'package:crypto/crypto.dart';
 /// An empty field map represents existence of a record with no specific fields.
 typedef SyncRecords = Map<String, Map<String, Object?>>;
 
+/// Local snapshot containing materialized sync records, discovered source variants,
+/// and flags indicating if local storage requires source file normalization.
+class SyncLocalSnapshot {
+  /// Materialized business records with deterministic representatives.
+  final SyncRecords records;
+
+  /// Discovered distinct content variants for source identities with differing duplicate scripts.
+  ///
+  /// Keys are encoded source record keys: `syncRecordKey('source', [key])`.
+  /// Values are distinct atomic script objects: `{'filename': ..., 'content': ...}`.
+  final Map<String, List<Map<String, Object?>>> sourceVariants;
+
+  /// Whether local physical storage contains duplicate source identities needing normalization.
+  final bool needsSourceNormalization;
+
+  const SyncLocalSnapshot({
+    required this.records,
+    this.sourceVariants = const {},
+    this.needsSourceNormalization = false,
+  });
+}
+
 /// Encodes a record identity into a stable, unambiguous JSON-string key.
 ///
 /// Example: `syncRecordKey('folder', ['folder-123'])` -> `["folder","folder-123"]`

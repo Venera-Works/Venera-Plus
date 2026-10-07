@@ -138,6 +138,7 @@ class MergeStore {
     SyncRecords records, {
     MergeDocument? observation,
     SyncRecords? previous,
+    Map<String, List<Map<String, Object?>>>? sourceVariants,
   }) async {
     _ensureCanAllocate();
     if (_pendingApply != null) {
@@ -157,6 +158,29 @@ class MergeStore {
       bootstrap: !_initialized,
       contributionFloor: _document,
     );
+
+    var newVariantsAdded = false;
+    if (sourceVariants != null && sourceVariants.isNotEmpty) {
+      for (final entry in sourceVariants.entries) {
+        final recordKey = entry.key;
+        for (final script in entry.value) {
+          final seedDoc = MergeDocument.createSourceVariantSeed(
+            recordKey,
+            script,
+          );
+          if (!_document.dominates(seedDoc)) {
+            _document.merge(seedDoc);
+            _localObservation.merge(seedDoc);
+            branch.merge(seedDoc);
+            if (observation != null) {
+              observation.merge(seedDoc);
+            }
+            newVariantsAdded = true;
+          }
+        }
+      }
+    }
+
     if (counter > 0) {
       _document.merge(branch);
       _outbox.add(
@@ -166,10 +190,21 @@ class MergeStore {
           document: _document.clone(),
         ),
       );
+      _localObservation = branch.clone();
+    } else if (newVariantsAdded) {
+      final checkpointCounter = _document.reserveCounter(actor);
+      _outbox.add(
+        MergeBatch.create(
+          actor: actor,
+          counter: checkpointCounter,
+          document: _document.clone(),
+        ),
+      );
     }
-    if (counter > 0) _localObservation = branch.clone();
+
     final shouldSave =
         counter > 0 ||
+        newVariantsAdded ||
         !_initialized ||
         _counterFloorDirty ||
         !syncValuesEqual(_observed, current);
@@ -261,6 +296,7 @@ class MergeStore {
   Future<SyncRecords> recoverPendingApply(
     SyncRecords records, {
     SyncRecords? previous,
+    Map<String, List<Map<String, Object?>>>? sourceVariants,
   }) async {
     _ensureCanAllocate();
     if (_pendingApply == null) throw StateError('No business apply is staged');
@@ -275,6 +311,26 @@ class MergeStore {
       bootstrap: false,
       contributionFloor: _document,
     );
+
+    var newVariantsAdded = false;
+    if (sourceVariants != null && sourceVariants.isNotEmpty) {
+      for (final entry in sourceVariants.entries) {
+        final recordKey = entry.key;
+        for (final script in entry.value) {
+          final seedDoc = MergeDocument.createSourceVariantSeed(
+            recordKey,
+            script,
+          );
+          if (!_document.dominates(seedDoc)) {
+            _document.merge(seedDoc);
+            _localObservation.merge(seedDoc);
+            branch.merge(seedDoc);
+            newVariantsAdded = true;
+          }
+        }
+      }
+    }
+
     if (counter > 0) {
       _document.merge(branch);
       _localObservation.merge(branch);
@@ -282,6 +338,15 @@ class MergeStore {
         MergeBatch.create(
           actor: actor,
           counter: counter,
+          document: _document.clone(),
+        ),
+      );
+    } else if (newVariantsAdded) {
+      final checkpointCounter = _document.reserveCounter(actor);
+      _outbox.add(
+        MergeBatch.create(
+          actor: actor,
+          counter: checkpointCounter,
           document: _document.clone(),
         ),
       );

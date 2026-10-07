@@ -757,8 +757,29 @@ class DataSync with ChangeNotifier {
         );
       } else {
         await _startupCompleter.future;
-        if (request.type != _DataSyncTask.configure && !_startupReady) {
-          throw StateError('Sync startup recovery failed: $_startupError');
+        if (request.type != _DataSyncTask.configure) {
+          if (!isReady) {
+            try {
+              await runZoned(
+                _ensureCoordinatorLoaded,
+                zoneValues: {_importZoneKey: true},
+              );
+              if (_coordinator != null) {
+                _startupReady = true;
+                _startupError = null;
+              }
+            } catch (e, s) {
+              Log.error('DataSync', 'Startup recovery retry failed: $e\n$s');
+              _startupError = e;
+              _startupReady = false;
+              _lastError = e.toString();
+              if (!_disposed) notifyListeners();
+              throw StateError('Sync startup recovery failed: $_startupError');
+            }
+          }
+          if (!isReady) {
+            throw StateError('Sync startup recovery failed: $_startupError');
+          }
         }
         final runGeneration = _changeGeneration;
         result = await runZoned(

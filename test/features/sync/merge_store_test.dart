@@ -952,6 +952,225 @@ void main() {
       },
     );
 
+    test(
+      'variant capture is idempotent and preserves all variants across re-open',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+
+        final sourceKey = syncRecordKey('source', ['jm']);
+        final variantA = {'filename': 'jm.js', 'content': 'script A content'};
+        final variantB = {
+          'filename': 'sync_123.js',
+          'content': 'script B content',
+        };
+
+        final records = {
+          sourceKey: {'script': variantA},
+        };
+        final sourceVariants = {
+          sourceKey: [variantA, variantB],
+        };
+
+        await store.capture(records, sourceVariants: sourceVariants);
+
+        // Both variants observed in cell fingerprints
+        expect(
+          store.document.hasObservedFieldValue(sourceKey, 'script', variantA),
+          isTrue,
+        );
+        expect(
+          store.document.hasObservedFieldValue(sourceKey, 'script', variantB),
+          isTrue,
+        );
+        expect(
+          store.document.conflicts.any((c) => c.field == 'script'),
+          isTrue,
+        );
+
+        final outboxCount = store.outbox.length;
+        final outboxBatchId = store.outbox.first.id;
+
+        // Re-capture identical state is strictly idempotent
+        await store.capture(records, sourceVariants: sourceVariants);
+        expect(store.outbox.length, outboxCount);
+        expect(store.outbox.first.id, outboxBatchId);
+
+        // Re-open store from disk and verify durability
+        final reopened = MergeStore(tempDir, 'device-alpha');
+        await reopened.load();
+
+        expect(
+          reopened.document.hasObservedFieldValue(
+            sourceKey,
+            'script',
+            variantA,
+          ),
+          isTrue,
+        );
+        expect(
+          reopened.document.hasObservedFieldValue(
+            sourceKey,
+            'script',
+            variantB,
+          ),
+          isTrue,
+        );
+        expect(
+          reopened.document.conflicts.any((c) => c.field == 'script'),
+          isTrue,
+        );
+      },
+    );
+
+    test(
+      'explicit resolution persists and replay does not resurrect resolved seed',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+
+        final sourceKey = syncRecordKey('source', ['jm']);
+        final variantA = {'filename': 'jm.js', 'content': 'script A content'};
+        final variantB = {
+          'filename': 'sync_123.js',
+          'content': 'script B content',
+        };
+
+        // Capture local variantA normally without any sourceVariants seed
+        await store.capture({
+          sourceKey: {'script': variantA},
+        });
+
+        // Merge foreign remote peer variantB normally without any sourceVariants seed
+        final peerDoc = MergeDocument();
+        peerDoc.captureLocal('device-beta', {}, {
+          sourceKey: {'script': variantB},
+        });
+        store.document.merge(peerDoc);
+
+        final conflict = store.document.conflicts.firstWhere(
+          (c) => c.field == 'script',
+        );
+        final candidateA = conflict.candidates.firstWhere(
+          (c) => (c.value as Map)['content'] == 'script A content',
+        );
+
+        // Resolve in favor of variantA
+        await store.resolve(sourceKey, 'script', candidateA.id);
+        expect(store.pendingApply, isNotNull);
+        await store.completeApply(store.pendingApply!);
+
+        // Conflict is resolved
+        expect(
+          store.document.conflicts.any((c) => c.field == 'script'),
+          isFalse,
+        );
+
+        // Re-open store
+        final reopened = MergeStore(tempDir, 'device-alpha');
+        await reopened.load();
+        expect(
+          reopened.document.conflicts.any((c) => c.field == 'script'),
+          isFalse,
+        );
+
+        // Replaying the old variant seeds on re-opened store does NOT resurrect seed B
+        await reopened.capture(
+          {
+            sourceKey: {'script': variantA},
+          },
+          sourceVariants: {
+            sourceKey: [variantA, variantB],
+          },
+        );
+        expect(
+          reopened.document.conflicts.any((c) => c.field == 'script'),
+          isFalse,
+        );
+
+        // Both values remain permanently observed in cell fingerprints (active and retired)
+        expect(
+          reopened.document.hasObservedFieldValue(
+            sourceKey,
+            'script',
+            variantA,
+          ),
+          isTrue,
+        );
+        expect(
+          reopened.document.hasObservedFieldValue(
+            sourceKey,
+            'script',
+            variantB,
+          ),
+          isTrue,
+        );
+      },
+    );
+
+    test(
+      'unchanged primary records create outbox checkpoint when new variants are discovered',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+
+        final sourceKey = syncRecordKey('source', ['jm']);
+        final variantA = {'filename': 'jm.js', 'content': 'script A content'};
+        final variantB = {
+          'filename': 'sync_123.js',
+          'content': 'script B content',
+        };
+
+        // Initial capture establishes baseline with variantA only
+        await store.capture({
+          sourceKey: {'script': variantA},
+        });
+
+        expect(store.outbox.length, 1);
+        final initialBatch = store.outbox.first;
+        expect(
+          store.document.hasObservedFieldValue(sourceKey, 'script', variantB),
+          isFalse,
+        );
+
+        // Acknowledge initial batch to clear outbox
+        await store.acknowledge(initialBatch.id);
+        expect(store.outbox, isEmpty);
+
+        // Capture with identical primary records (records equal observed), but new variantB in sourceVariants
+        await store.capture(
+          {
+            sourceKey: {'script': variantA},
+          },
+          sourceVariants: {
+            sourceKey: [variantA, variantB],
+          },
+        );
+
+        // Outbox checkpoint must be created covering the new variant even though flat records did not change
+        expect(store.outbox.length, 1);
+        final variantBatch = store.outbox.first;
+        expect(variantBatch.counter, greaterThan(initialBatch.counter));
+        expect(
+          store.document.hasObservedFieldValue(sourceKey, 'script', variantB),
+          isTrue,
+        );
+
+        // Re-open verifies the checkpoint and variant are durable on disk
+        final reopened = MergeStore(tempDir, 'device-alpha');
+        await reopened.load();
+        expect(reopened.outbox.length, 1);
+        expect(
+          reopened.document.hasObservedFieldValue(
+            sourceKey,
+            'script',
+            variantB,
+          ),
+          isTrue,
+        );
+      },
+    );
+
     final invalidStates = <String, void Function(Map<String, dynamic>)>{
       'missing schema': (state) => state.remove('schemaVersion'),
       'invalid schema type': (state) => state['schemaVersion'] = 1.0,

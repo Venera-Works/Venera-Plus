@@ -9,6 +9,7 @@ import '../../foundation/app.dart';
 import '../../foundation/appdata.dart';
 import '../../foundation/log.dart';
 import '../../foundation/res.dart';
+import '../../foundation/sync_records.dart';
 import '../../network/webdav.dart';
 import '../favorites/favorites.dart';
 import '../history/history.dart';
@@ -94,9 +95,9 @@ class MergeSyncCoordinator {
     return id;
   }
 
-  /// Exports current local records across all business domains.
+  /// Exports current local snapshot across all business domains.
   /// Throws immediately if any domain export fails, preventing partial DTOs and accidental tombstones.
-  Future<SyncRecords> exportAllRecords() async {
+  Future<SyncLocalSnapshot> exportAllSnapshot() async {
     final records = <String, Map<String, Object?>>{};
 
     // 1. Favorites
@@ -112,12 +113,20 @@ class MergeSyncCoordinator {
     records.addAll(histRecords);
 
     // 3. Preferences, cookies, sources
-    final prefRecords = exportPreferencesOverride != null
-        ? await exportPreferencesOverride!()
-        : await preferencesAdapter.exportSyncRecords();
-    records.addAll(prefRecords);
+    final SyncLocalSnapshot prefSnapshot;
+    if (exportPreferencesOverride != null) {
+      final prefRecords = await exportPreferencesOverride!();
+      prefSnapshot = SyncLocalSnapshot(records: prefRecords);
+    } else {
+      prefSnapshot = await preferencesAdapter.exportSyncSnapshot();
+    }
+    records.addAll(prefSnapshot.records);
 
-    return records;
+    return SyncLocalSnapshot(
+      records: records,
+      sourceVariants: prefSnapshot.sourceVariants,
+      needsSourceNormalization: prefSnapshot.needsSourceNormalization,
+    );
   }
 
   /// Applies incoming records atomically across all domains.
@@ -152,6 +161,8 @@ class MergeSyncCoordinator {
       await preferencesAdapter.applySyncRecords(
         records,
         beforeCommit: runSynchronousCommits,
+        hasPreservedSourceVariant: (recordKey, script) =>
+            store.document.hasObservedFieldValue(recordKey, 'script', script),
       );
     }
   }
@@ -161,25 +172,33 @@ class MergeSyncCoordinator {
 
   /// An export may await several independent stores. Only use a snapshot whose
   /// generation stayed unchanged throughout, never adopt the ending generation.
-  Future<({SyncRecords records, int generation})> _stableExport() async {
+  Future<({SyncLocalSnapshot snapshot, int generation})> _stableExport() async {
     for (var attempt = 0; attempt < 16; attempt++) {
       final generation = _getGeneration();
-      final records = _project(await exportAllRecords());
+      final raw = await exportAllSnapshot();
       if (_getGeneration() == generation) {
-        return (records: records, generation: generation);
+        final projected = SyncLocalSnapshot(
+          records: _project(raw.records),
+          sourceVariants: raw.sourceVariants,
+          needsSourceNormalization: raw.needsSourceNormalization,
+        );
+        return (snapshot: projected, generation: generation);
       }
     }
     throw ConcurrentEditException('Local data did not stabilize for export');
   }
 
-  Future<int> _captureStable({MergeDocument? observation}) async {
-    final snapshot = await _stableExport();
+  Future<({SyncLocalSnapshot snapshot, int generation})> _captureStable({
+    MergeDocument? observation,
+  }) async {
+    final stable = await _stableExport();
     await store.capture(
-      snapshot.records,
+      stable.snapshot.records,
       previous: _project(store.observed),
       observation: observation,
+      sourceVariants: stable.snapshot.sourceVariants,
     );
-    return snapshot.generation;
+    return stable;
   }
 
   Future<void> _finishApply() async {
@@ -198,7 +217,7 @@ class MergeSyncCoordinator {
       final alreadyStaged = attempt == 0 && stagedGeneration != null;
       final generation = alreadyStaged
           ? stagedGeneration
-          : await _captureStable(observation: observation);
+          : (await _captureStable(observation: observation)).generation;
       final desired = alreadyStaged
           ? store.pendingApply!
           : store.document.materialize(preferred: store.observed);
@@ -234,23 +253,60 @@ class MergeSyncCoordinator {
     throw ConcurrentEditException('Local data did not stabilize for apply');
   }
 
+  /// Journaled normalization of local physical source duplicates without importing
+  /// foreign/unapplied remote business records from [store.document].
+  Future<void> _normalizeSourcesLocally(
+    ({SyncLocalSnapshot snapshot, int generation}) staged,
+  ) async {
+    for (var attempt = 0; attempt < 16; attempt++) {
+      final current = attempt == 0 ? staged : await _captureStable();
+      if (!current.snapshot.needsSourceNormalization) {
+        return;
+      }
+      final generation = current.generation;
+      final desired = current.snapshot.records;
+      await store.stageApply(desired);
+      void guard() {
+        if (_getGeneration() != generation) throw ConcurrentEditException();
+      }
+
+      try {
+        await applyAllRecords(desired, beforeCommit: guard);
+      } on ConcurrentEditException {
+        await store.cancelApply();
+        continue;
+      }
+      await store.completeApply(
+        _project(desired),
+        observation: store.localObservation,
+      );
+      await _finishApply();
+      await _captureStable();
+      return;
+    }
+    throw ConcurrentEditException(
+      'Local data did not stabilize for source normalization',
+    );
+  }
+
   /// A pending target may have been partly applied before a crash. Preserve the
   /// real profile as a concurrent branch before choosing any replacement target.
   Future<void> startupRecovery() async {
     await store.load();
     await reconcileBackupRecoveryIfNeeded();
     if (store.pendingApply != null) {
-      final snapshot = await _stableExport();
+      final stable = await _stableExport();
       final pending = store.pendingApply!;
       final desired = await store.recoverPendingApply(
-        snapshot.records,
+        stable.snapshot.records,
         previous: _project(pending),
+        sourceVariants: stable.snapshot.sourceVariants,
       );
       try {
         await applyAllRecords(
           desired,
           beforeCommit: () {
-            if (_getGeneration() != snapshot.generation) {
+            if (_getGeneration() != stable.generation) {
               throw ConcurrentEditException();
             }
           },
@@ -268,7 +324,10 @@ class MergeSyncCoordinator {
       );
       await _finishApply();
     }
-    await _captureStable();
+    final captured = await _captureStable();
+    if (captured.snapshot.needsSourceNormalization) {
+      await _normalizeSourcesLocally(captured);
+    }
   }
 
   /// Performs one-time legacy `.venera` snapshot migration if needed.
@@ -311,6 +370,20 @@ class MergeSyncCoordinator {
           final seedDoc = MergeDocument();
           seedDoc.captureLocal(seedActor, {}, seed.records, bootstrap: true);
           store.document.merge(seedDoc);
+          if (seed.sourceVariants.isNotEmpty) {
+            for (final entry in seed.sourceVariants.entries) {
+              final recordKey = entry.key;
+              for (final script in entry.value) {
+                final variantDoc = MergeDocument.createSourceVariantSeed(
+                  recordKey,
+                  script,
+                );
+                if (!store.document.dominates(variantDoc)) {
+                  store.document.merge(variantDoc);
+                }
+              }
+            }
+          }
         }
         await store.enqueueCheckpoint();
         if (applyToLocal) await _applyMerged(observation);
@@ -379,7 +452,10 @@ class MergeSyncCoordinator {
       if (store.pendingApply != null) {
         throw StateError('Startup recovery is required before synchronization');
       }
-      await _captureStable();
+      final captured = await _captureStable();
+      if (captured.snapshot.needsSourceNormalization) {
+        await _normalizeSourcesLocally(captured);
+      }
       await migrateLegacyIfNeeded(
         applyToLocal: direction != SyncDirection.uploadOnly,
       );
@@ -452,10 +528,10 @@ class MergeSyncCoordinator {
     required SyncDirection direction,
   }) async {
     try {
-      final generation = await _captureStable();
+      final captured = await _captureStable();
       final observation = store.localObservation;
       await store.resolve(recordKey, field, candidateId);
-      await _applyMerged(observation, stagedGeneration: generation);
+      await _applyMerged(observation, stagedGeneration: captured.generation);
 
       if (direction != SyncDirection.downloadOnly) {
         await _uploadOutboxWithRecovery();

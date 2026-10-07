@@ -18,11 +18,17 @@ import 'package:webdav_client/webdav_client.dart' as dav;
 class LegacyMergeSeed {
   final String id;
   final SyncRecords records;
+  final Map<String, List<Map<String, Object?>>> sourceVariants;
 
-  const LegacyMergeSeed(this.id, this.records);
+  const LegacyMergeSeed(
+    this.id,
+    this.records, {
+    this.sourceVariants = const {},
+  });
 
   @override
-  String toString() => 'LegacyMergeSeed(id: $id, records: ${records.length})';
+  String toString() =>
+      'LegacyMergeSeed(id: $id, records: ${records.length}, variants: ${sourceVariants.length})';
 }
 
 /// Parsed metadata for a remote numeric day-version `.venera` archive snapshot.
@@ -321,14 +327,20 @@ class LegacySyncReader {
         }
       }
 
-      final preferenceRecords = await preferences.readLegacyRecords(extractDir);
+      final preferenceSnapshot = await preferences.readLegacySnapshot(
+        extractDir,
+      );
 
       final combinedRecords = <String, Map<String, Object?>>{};
       combinedRecords.addAll(favoriteRecords);
       combinedRecords.addAll(historyRecords);
-      combinedRecords.addAll(preferenceRecords);
+      combinedRecords.addAll(preferenceSnapshot.records);
 
-      return LegacyMergeSeed(archiveSha256, combinedRecords);
+      return LegacyMergeSeed(
+        archiveSha256,
+        combinedRecords,
+        sourceVariants: preferenceSnapshot.sourceVariants,
+      );
     } finally {
       try {
         if (partFile.existsSync()) {

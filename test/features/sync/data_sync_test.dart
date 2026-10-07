@@ -949,6 +949,62 @@ void main() {
         );
       },
     );
+    test(
+      'initial exporter failure rejects tasks while persistent, recovers after fix without reset',
+      () async {
+        var failExport = true;
+        DataSync.debugExportRecords = () async {
+          if (failExport) {
+            throw StateError('Simulated exporter failure');
+          }
+          return Map.from(localRecords);
+        };
+
+        final sync = DataSync();
+        await expectLater(sync.waitForStartupMerge(), throwsStateError);
+        expect(sync.isReady, isFalse);
+        expect(sync.lastError, contains('Simulated exporter failure'));
+        expect(
+          sync.statusSnapshot.lastError,
+          contains('Simulated exporter failure'),
+        );
+
+        final rejectedResult = await sync.syncNow();
+        expect(rejectedResult.error, isTrue);
+        expect(
+          rejectedResult.errorMessage,
+          contains('Simulated exporter failure'),
+        );
+        expect(sync.isReady, isFalse);
+        expect(sync.lastError, contains('Simulated exporter failure'));
+        expect(
+          sync.statusSnapshot.lastError,
+          contains('Simulated exporter failure'),
+        );
+        expect(
+          transport.requests.where((request) => request.method == 'PUT'),
+          isEmpty,
+        );
+
+        failExport = false;
+
+        final recoveredResult = await sync.syncNow();
+        expect(recoveredResult.success, isTrue);
+        expect(sync.isReady, isTrue);
+        expect(sync.lastError, isNull);
+        expect(sync.statusSnapshot.lastError, isNull);
+        expect(sync.hasConflict, isFalse);
+        expect(
+          transport.requests.where((request) => request.method == 'PUT'),
+          isNotEmpty,
+        );
+        expect(
+          transport.remoteFiles.keys.any((key) => key.contains('sync-v2')),
+          isTrue,
+        );
+        await expectLater(sync.waitForStartupMerge(), completes);
+      },
+    );
 
     test(
       'invalid endpoint state leaves old configuration and business intact',

@@ -31,10 +31,17 @@ String? _quickJsLoadFailure() {
       : 'flutter_qjs.framework/flutter_qjs';
   try {
     if (Platform.isWindows) {
-      final build = Directory('build/windows/x64/runner/Release').absolute.path;
-      if (File('$build/flutter_windows.dll').existsSync()) {
-        DynamicLibrary.open('$build/flutter_windows.dll');
-        DynamicLibrary.open('$build/flutter_qjs_plugin.dll');
+      for (final buildDir in [
+        'build/windows/x64/runner/Debug',
+        'build/windows/x64/runner/Release',
+      ]) {
+        final build = Directory(buildDir).absolute.path;
+        if (File('$build/flutter_windows.dll').existsSync() &&
+            File('$build/flutter_qjs_plugin.dll').existsSync()) {
+          DynamicLibrary.open('$build/flutter_windows.dll');
+          DynamicLibrary.open('$build/flutter_qjs_plugin.dll');
+          break;
+        }
       }
     }
     DynamicLibrary.open(libraryPath);
@@ -118,7 +125,7 @@ void main() {
         appdata.settings['explore_pages'] = ['home', 'ranking'];
 
         final adapter = SyncPreferencesAdapter();
-        final records = await adapter.exportSyncRecords();
+        final records = (await adapter.exportSyncSnapshot()).records;
 
         // Leaf 1
         final key1 = syncRecordKey('setting', [
@@ -160,7 +167,7 @@ void main() {
         appdata.settings['bangumiUsername'] = 'private-bangumi-user';
 
         final adapter = SyncPreferencesAdapter();
-        final records = await adapter.exportSyncRecords();
+        final records = (await adapter.exportSyncSnapshot()).records;
 
         expect(
           records.containsKey(syncRecordKey('setting', ['deviceId'])),
@@ -194,7 +201,7 @@ void main() {
       appdata.settings['theme_mode'] = 'dark';
 
       final adapter = SyncPreferencesAdapter();
-      final records = await adapter.exportSyncRecords();
+      final records = (await adapter.exportSyncSnapshot()).records;
 
       expect(
         records.containsKey(syncRecordKey('setting', ['cacheSize'])),
@@ -224,14 +231,14 @@ void main() {
           'secret',
         ];
         final adapter = SyncPreferencesAdapter();
-        final previous = await adapter.exportSyncRecords();
+        final previous = (await adapter.exportSyncSnapshot()).records;
         final credentialKey = syncRecordKey('setting', ['backupWebdav']);
         expect(previous, contains(credentialKey));
         final document = MergeDocument();
         document.captureLocal('policy-device', {}, previous);
         appdata.settings['backupWebdavSyncEnabled'] = false;
         appdata.settings['disableSyncFields'] = 'theme_mode';
-        final current = await adapter.exportSyncRecords();
+        final current = (await adapter.exportSyncSnapshot()).records;
         expect(adapter.shouldObserveRecord(credentialKey), isFalse);
         expect(
           adapter.shouldObserveRecord(syncRecordKey('setting', ['theme_mode'])),
@@ -288,7 +295,7 @@ void main() {
         expect(appdata.fullSearchHistory.length, 60); // Engine preserves all 60
 
         final adapter = SyncPreferencesAdapter();
-        final records = await adapter.exportSyncRecords();
+        final records = (await adapter.exportSyncSnapshot()).records;
 
         for (int i = 0; i < 60; i++) {
           final key = syncRecordKey('search', ['search-keyword-$i']);
@@ -306,14 +313,18 @@ void main() {
         final file = File('${tempDir.path}/appdata.json');
         final baselineFile = await file.readAsString();
         final adapter = SyncPreferencesAdapter();
-        final baseline = await adapter.exportSyncRecords();
+        final baseline = (await adapter.exportSyncSnapshot()).records;
         final seed = MergeDocument()
           ..captureLocal('legacy_seed', {}, baseline, bootstrap: true);
 
         appdata.addSearchHistory('new-A');
         await appdata.saveData(false);
         final a = seed.clone()
-          ..captureLocal('A', baseline, await adapter.exportSyncRecords());
+          ..captureLocal(
+            'A',
+            baseline,
+            (await adapter.exportSyncSnapshot()).records,
+          );
 
         await file.writeAsString(baselineFile, flush: true);
         await appdata.doInit();
@@ -321,7 +332,11 @@ void main() {
         appdata.addSearchHistory('second-B');
         await appdata.saveData(false);
         final b = seed.clone()
-          ..captureLocal('B', baseline, await adapter.exportSyncRecords());
+          ..captureLocal(
+            'B',
+            baseline,
+            (await adapter.exportSyncSnapshot()).records,
+          );
         a.merge(b);
         expect(a.conflicts, isEmpty);
 
@@ -337,7 +352,7 @@ void main() {
         }
         await adapter.applySyncRecords(merged);
         await appdata.doInit();
-        final restarted = await adapter.exportSyncRecords();
+        final restarted = (await adapter.exportSyncSnapshot()).records;
         for (final entry in merged.entries) {
           if (syncRecordDomain(entry.key) == 'search') {
             expect(restarted[entry.key], entry.value);
@@ -361,7 +376,7 @@ void main() {
         ]);
 
         final adapter = SyncPreferencesAdapter(cookieJarInstance: jar);
-        final exportFuture = adapter.exportSyncRecords();
+        final exportFuture = adapter.exportSyncSnapshot();
 
         expect(exportFuture, completes);
       },
@@ -390,7 +405,7 @@ class TestComicSource extends ComicSource {
         );
 
         final adapter = SyncPreferencesAdapter();
-        final records = await adapter.exportSyncRecords();
+        final records = (await adapter.exportSyncSnapshot()).records;
 
         final sourceKey = syncRecordKey('source', ['test_src']);
         expect(records, contains(sourceKey));
@@ -418,7 +433,7 @@ class TestComicSource extends ComicSource {
 
         final adapter = SyncPreferencesAdapter();
         await expectLater(
-          adapter.exportSyncRecords(),
+          adapter.exportSyncSnapshot(),
           throwsA(isA<FormatException>()),
         );
       },
@@ -577,7 +592,7 @@ class TestComicSource extends ComicSource {
         await adapter.finishApply();
         expect(manager.find('sync_a'), isNotNull);
         expect(manager.find('sync_b'), isNotNull);
-        final exported = await adapter.exportSyncRecords();
+        final exported = (await adapter.exportSyncSnapshot()).records;
         for (final entry in records.entries) {
           expect(exported[entry.key], entry.value);
         }
@@ -699,7 +714,7 @@ class TestComicSource extends ComicSource {
         expect(appdata.settings['comicSpecificSettings']['comic@source'], {
           'splitDualPage': true,
         });
-        final actual = await adapter.exportSyncRecords();
+        final actual = (await adapter.exportSyncSnapshot()).records;
         expect(actual, isNot(contains(root)));
         expect(actual[leaf], {'value': true});
         expect(
@@ -885,7 +900,7 @@ class IsolatedSource extends ComicSource {
       final liveSearchBefore = List.from(appdata.searchHistory);
 
       final adapter = SyncPreferencesAdapter();
-      final records = await adapter.readLegacyRecords(legacyDir);
+      final records = (await adapter.readLegacySnapshot(legacyDir)).records;
 
       // Verify records DTO
       final settingKey = syncRecordKey('setting', [
@@ -952,7 +967,7 @@ class IsolatedSource extends ComicSource {
         ]) {
           file.writeAsStringSync(jsonEncode(malformed));
           await expectLater(
-            adapter.readLegacyRecords(extracted),
+            adapter.readLegacySnapshot(extracted),
             throwsFormatException,
           );
         }

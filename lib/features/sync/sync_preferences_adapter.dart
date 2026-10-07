@@ -21,6 +21,46 @@ class SyncPathSecurityException implements Exception {
   String toString() => 'SyncPathSecurityException: $message';
 }
 
+class _ScannedSourceFile {
+  final File file;
+  final String filename;
+  final String content;
+  final String key;
+
+  _ScannedSourceFile({
+    required this.file,
+    required this.filename,
+    required this.content,
+    required this.key,
+  });
+}
+
+class _ScannedSession {
+  final File file;
+  final String key;
+  final Map<String, Object?> data;
+
+  _ScannedSession({required this.file, required this.key, required this.data});
+}
+
+class _SourceScanResult {
+  final SyncRecords records;
+  final Map<String, List<Map<String, Object?>>> sourceVariants;
+  final bool needsSourceNormalization;
+  final Map<String, List<_ScannedSourceFile>> filesByKey;
+  final Map<String, _ScannedSession> sessionsByKey;
+  final Map<String, Map<String, Object?>> sourceNames;
+
+  _SourceScanResult({
+    required this.records,
+    required this.sourceVariants,
+    required this.needsSourceNormalization,
+    required this.filesByKey,
+    required this.sessionsByKey,
+    required this.sourceNames,
+  });
+}
+
 /// Sync adapter for preferences, search history, cookies, and comic sources.
 ///
 /// Implements lossless record-level export, apply, and legacy migration for
@@ -187,26 +227,224 @@ class SyncPreferencesAdapter {
     String key,
     String physicalName,
     String content,
-    Map<String, Map<String, Object?>> names,
-  ) {
-    if (physicalName != _physicalSourceName(key)) return physicalName;
+    Map<String, Map<String, Object?>> names, {
+    bool hasCanonicalGroup = false,
+  }) {
+    if (physicalName != _physicalSourceName(key)) {
+      if (hasCanonicalGroup) {
+        final metadata = names[key];
+        if (metadata != null) {
+          final revision = sha256.convert(utf8.encode(content)).toString();
+          final revisions = metadata['revisions'];
+          if (revisions is Map) {
+            final rev = revisions[revision];
+            if (rev is String) return rev;
+          }
+        }
+      }
+      return physicalName;
+    }
     final metadata = names[key];
     if (metadata == null) {
       throw FormatException('Missing logical filename for source "$key"');
     }
     final revision = sha256.convert(utf8.encode(content)).toString();
-    return (metadata['revisions'] as Map)[revision] as String? ??
-        metadata['filename'] as String;
+    final revisions = metadata['revisions'];
+    if (revisions is Map) {
+      final rev = revisions[revision];
+      if (rev is String) return rev;
+    }
+    return metadata['filename'] as String;
+  }
+
+  Future<_SourceScanResult> _scanSourceDirectory(
+    Directory sourceDir, {
+    bool isLiveDirectory = false,
+  }) async {
+    final filesByKey = <String, List<_ScannedSourceFile>>{};
+    final sessionsByKey = <String, _ScannedSession>{};
+
+    if (await sourceDir.exists()) {
+      await for (final entity in sourceDir.list()) {
+        if (entity is! File) continue;
+        final filename = p.basename(entity.path);
+        if (filename.startsWith('.') || filename.startsWith('.sync_stage')) {
+          continue;
+        }
+
+        if (filename.endsWith('.js')) {
+          _validateFileName(filename);
+          final content = await entity.readAsString();
+          final key = await ComicSourceParser.probeKey(content, entity.path);
+          if (key == null || key.isEmpty) {
+            throw FormatException(
+              'Failed to resolve stable comic source key for script $filename; '
+              'capture aborted to prevent false deletion.',
+            );
+          }
+          _validateRecordKey(key);
+          filesByKey
+              .putIfAbsent(key, () => [])
+              .add(
+                _ScannedSourceFile(
+                  file: entity,
+                  filename: filename,
+                  content: content,
+                  key: key,
+                ),
+              );
+        } else if (filename.endsWith('.data')) {
+          final key = filename.substring(0, filename.length - 5);
+          _validateRecordKey(key);
+          final raw = await entity.readAsString();
+          final decoded = jsonDecode(raw);
+          if (decoded is! Map) {
+            throw FormatException(
+              'Failed to parse comic source session for $filename: must be JSON object.',
+            );
+          }
+          sessionsByKey[key] = _ScannedSession(
+            file: entity,
+            key: key,
+            data: Map<String, Object?>.from(decoded),
+          );
+        }
+      }
+    }
+
+    final sourceNames = await _readSourceNames(sourceDir);
+
+    Map<String, String>? liveFileNamesByKey;
+    if (isLiveDirectory) {
+      liveFileNamesByKey = <String, String>{};
+      final canonicalSourceDirPath = p.canonicalize(sourceDir.path);
+      for (final source in ComicSource.all()) {
+        if (source.filePath.isNotEmpty) {
+          final file = File(source.filePath);
+          if (p.canonicalize(p.dirname(file.path)) == canonicalSourceDirPath) {
+            liveFileNamesByKey[source.key] = p.basename(file.path);
+          }
+        }
+      }
+    }
+
+    final records = <String, Map<String, Object?>>{};
+    final sourceVariants = <String, List<Map<String, Object?>>>{};
+    var needsSourceNormalization = false;
+
+    for (final entry in filesByKey.entries) {
+      final key = entry.key;
+      final files = entry.value;
+
+      if (files.length > 1) {
+        needsSourceNormalization = true;
+      }
+
+      final canonicalName = _physicalSourceName(key);
+      final hasCanonicalGroup =
+          files.length > 1 && files.any((f) => f.filename == canonicalName);
+      _ScannedSourceFile pickRepresentative(
+        List<_ScannedSourceFile> candidates,
+      ) {
+        final liveName = liveFileNamesByKey?[key];
+        _ScannedSourceFile? canonicalMatch;
+        _ScannedSourceFile? liveMatch;
+        _ScannedSourceFile minLexical = candidates.first;
+
+        for (final f in candidates) {
+          if (f.filename == canonicalName) {
+            canonicalMatch = f;
+            break; // Canonical is highest priority
+          }
+          if (liveName != null && f.filename == liveName) {
+            liveMatch ??= f;
+          }
+          if (f.filename.compareTo(minLexical.filename) < 0) {
+            minLexical = f;
+          }
+        }
+
+        return canonicalMatch ?? liveMatch ?? minLexical;
+      }
+
+      final repFile = pickRepresentative(files);
+      final repLogicalName = _logicalSourceName(
+        key,
+        repFile.filename,
+        repFile.content,
+        sourceNames,
+        hasCanonicalGroup: hasCanonicalGroup,
+      );
+      final repScript = <String, Object?>{
+        'filename': repLogicalName,
+        'content': repFile.content,
+      };
+
+      records[syncRecordKey('source', [key])] = {'script': repScript};
+
+      final contentToFiles = <String, List<_ScannedSourceFile>>{};
+      for (final f in files) {
+        contentToFiles.putIfAbsent(f.content, () => []).add(f);
+      }
+
+      if (contentToFiles.length > 1) {
+        final variants = <Map<String, Object?>>[repScript];
+        final otherVariants = <Map<String, Object?>>[];
+
+        for (final entry in contentToFiles.entries) {
+          final c = entry.key;
+          if (c == repFile.content) continue;
+          final bestForContent = pickRepresentative(entry.value);
+          final logicalName = _logicalSourceName(
+            key,
+            bestForContent.filename,
+            c,
+            sourceNames,
+            hasCanonicalGroup: hasCanonicalGroup,
+          );
+          otherVariants.add(<String, Object?>{
+            'filename': logicalName,
+            'content': c,
+          });
+        }
+
+        otherVariants.sort((a, b) {
+          final nameCmp = (a['filename'] as String).compareTo(
+            b['filename'] as String,
+          );
+          if (nameCmp != 0) return nameCmp;
+          return (a['content'] as String).compareTo(b['content'] as String);
+        });
+
+        variants.addAll(otherVariants);
+        sourceVariants[syncRecordKey('source', [key])] = variants;
+      }
+    }
+
+    for (final session in sessionsByKey.values) {
+      records[syncRecordKey('sourceSession', [session.key])] = {
+        'data': session.data,
+      };
+    }
+
+    return _SourceScanResult(
+      records: records,
+      sourceVariants: sourceVariants,
+      needsSourceNormalization: needsSourceNormalization,
+      filesByKey: filesByKey,
+      sessionsByKey: sessionsByKey,
+      sourceNames: sourceNames,
+    );
   }
 
   // ===========================================================================
   // Export
   // ===========================================================================
 
-  /// Exports current local preferences and file-backed assets into [SyncRecords].
+  /// Exports current local preferences and file-backed assets into [SyncLocalSnapshot].
   ///
   /// Any read error fails the entire capture to avoid emitting false deletions.
-  Future<SyncRecords> exportSyncRecords() async {
+  Future<SyncLocalSnapshot> exportSyncSnapshot() async {
     final records = <String, Map<String, Object?>>{};
 
     // 1. Settings domain (flattened to per-leaf records)
@@ -245,58 +483,23 @@ class SyncPreferencesAdapter {
       await source.waitForDataWrites();
     }
     final comicSourceDir = Directory(p.join(_dataPath, 'comic_source'));
-    final sourceNames = await _readSourceNames(comicSourceDir);
+    var sourceVariants = const <String, List<Map<String, Object?>>>{};
+    var needsSourceNormalization = false;
     if (await comicSourceDir.exists()) {
-      await for (final entity in comicSourceDir.list()) {
-        if (entity is! File) continue;
-        final filename = p.basename(entity.path);
-        if (filename.startsWith('.')) continue;
-
-        if (filename.endsWith('.js')) {
-          final content = await entity.readAsString();
-          final key = await ComicSourceParser.probeKey(content, entity.path);
-          if (key == null || key.isEmpty) {
-            throw FormatException(
-              'Failed to resolve stable comic source key for script $filename; '
-              'capture aborted to prevent false deletion.',
-            );
-          }
-          _validateRecordKey(key);
-          final recordKey = syncRecordKey('source', [key]);
-          if (records.containsKey(recordKey)) {
-            throw FormatException(
-              'Multiple scripts use source identity "$key"',
-            );
-          }
-          records[syncRecordKey('source', [key])] = {
-            'script': {
-              'filename': _logicalSourceName(
-                key,
-                filename,
-                content,
-                sourceNames,
-              ),
-              'content': content,
-            },
-          };
-        } else if (filename.endsWith('.data')) {
-          final key = filename.substring(0, filename.length - 5);
-          _validateRecordKey(key);
-          final raw = await entity.readAsString();
-          final decoded = jsonDecode(raw);
-          if (decoded is! Map) {
-            throw FormatException(
-              'Failed to parse comic source session for $filename: must be JSON object.',
-            );
-          }
-          records[syncRecordKey('sourceSession', [key])] = {
-            'data': Map<String, Object?>.from(decoded),
-          };
-        }
-      }
+      final scanResult = await _scanSourceDirectory(
+        comicSourceDir,
+        isLiveDirectory: true,
+      );
+      records.addAll(scanResult.records);
+      sourceVariants = scanResult.sourceVariants;
+      needsSourceNormalization = scanResult.needsSourceNormalization;
     }
 
-    return records;
+    return SyncLocalSnapshot(
+      records: records,
+      sourceVariants: sourceVariants,
+      needsSourceNormalization: needsSourceNormalization,
+    );
   }
 
   void _flattenMapLeaves(List<String> path, Map map, SyncRecords output) {
@@ -333,6 +536,8 @@ class SyncPreferencesAdapter {
   Future<void> applySyncRecords(
     SyncRecords records, {
     void Function()? beforeCommit,
+    bool Function(String recordKey, Map<String, Object?> script)?
+    hasPreservedSourceVariant,
   }) async {
     final stageDir = Directory(
       p.join(
@@ -491,43 +696,15 @@ class SyncPreferencesAdapter {
         });
       final newSearchHistory = sortedKeywords.map((e) => e.key).toList();
 
-      // Read current local sources to detect changes and deletions
+      // Read current local sources afresh using shared directory scanner
       final targetSourceDir = Directory(p.join(_dataPath, 'comic_source'));
       await targetSourceDir.create(recursive: true);
 
-      final currentSourceFiles = <String, File>{}; // key -> File
-      final currentSessionFiles = <String, File>{}; // key -> File
-      final sourceNames = await _readSourceNames(targetSourceDir);
-      final currentSourceContents = <String, String>{};
-
-      await for (final entity in targetSourceDir.list()) {
-        if (entity is! File) continue;
-        final name = p.basename(entity.path);
-        if (name.startsWith('.sync_stage')) continue;
-
-        if (name.endsWith('.js')) {
-          final content = await entity.readAsString();
-          final key = await ComicSourceParser.probeKey(content, entity.path);
-          if (key != null && key.isNotEmpty) {
-            _validateRecordKey(key);
-            if (currentSourceFiles.containsKey(key)) {
-              throw FormatException(
-                'Multiple local scripts use source identity "$key"',
-              );
-            }
-            currentSourceFiles[key] = entity;
-            currentSourceContents[key] = content;
-          } else {
-            throw FormatException(
-              'Cannot resolve source key for local file $name during sync apply; aborted to prevent data loss',
-            );
-          }
-        } else if (name.endsWith('.data')) {
-          final key = name.substring(0, name.length - 5);
-          _validateRecordKey(key);
-          currentSessionFiles[key] = entity;
-        }
-      }
+      final localScan = await _scanSourceDirectory(
+        targetSourceDir,
+        isLiveDirectory: true,
+      );
+      final sourceNames = localScan.sourceNames;
 
       // Stage new or updated source scripts
       final stagedSourceMoves = <File, File>{}; // stagedFile -> targetFile
@@ -564,25 +741,46 @@ class SyncPreferencesAdapter {
         p.join(stageDir.path, '.sync_source_names.json'),
       );
       final nextSourceNames = <String, Map<String, Object?>>{
-        for (final key in currentSourceFiles.keys)
+        for (final key in localScan.filesByKey.keys)
           if (sourceNames.containsKey(key)) key: sourceNames[key]!,
       };
       for (final entry in incomingSources.entries) {
         final key = entry.key;
         final revisions = <String, String>{};
-        final previousContent = currentSourceContents[key];
-        if (previousContent != null) {
-          revisions[sha256
-              .convert(utf8.encode(previousContent))
-              .toString()] = _logicalSourceName(
-            key,
-            p.basename(currentSourceFiles[key]!.path),
-            previousContent,
-            sourceNames,
-          );
+
+        // 1. Carry forward previous revisions from metadata
+        final priorRevisions = sourceNames[key]?['revisions'];
+        if (priorRevisions is Map) {
+          for (final r in priorRevisions.entries) {
+            if (r.key is String && r.value is String) {
+              revisions[r.key as String] = r.value as String;
+            }
+          }
         }
-        revisions[sha256.convert(utf8.encode(entry.value.content)).toString()] =
-            entry.value.filename;
+
+        // 2. Retain revisions for all distinct contents across local files
+        final sourceKey = syncRecordKey('source', [key]);
+        final selectedScripts =
+            localScan.sourceVariants[sourceKey] ??
+            (localScan.records.containsKey(sourceKey)
+                ? [
+                    localScan.records[sourceKey]!['script']
+                        as Map<String, Object?>,
+                  ]
+                : const <Map<String, Object?>>[]);
+        for (final script in selectedScripts) {
+          final content = script['content'] as String;
+          final logicalName = script['filename'] as String;
+          final rev = sha256.convert(utf8.encode(content)).toString();
+          revisions[rev] = logicalName;
+        }
+
+        // 3. Retain revision for incoming content
+        final incomingRev = sha256
+            .convert(utf8.encode(entry.value.content))
+            .toString();
+        revisions[incomingRev] = entry.value.filename;
+
         nextSourceNames[key] = {
           'filename': entry.value.filename,
           'revisions': revisions,
@@ -620,28 +818,91 @@ class SyncPreferencesAdapter {
         }
       }
 
-      // Identify source files to delete (omitted from incoming records)
-      final filesToDelete = <File>[];
-      final incomingPhysicalNames = incomingSources.keys
-          .map(_physicalSourceName)
-          .toSet();
-      for (final entry in currentSourceFiles.entries) {
-        if ((!incomingSources.containsKey(entry.key) ||
-                p.basename(entry.value.path) !=
-                    _physicalSourceName(entry.key)) &&
-            !incomingPhysicalNames.contains(p.basename(entry.value.path))) {
-          _assertPathContained(targetSourceDir, entry.value);
-          filesToDelete.add(entry.value);
-        }
+      // Identify source and session files to delete, enforcing preservation verification
+      final filesToDeleteMap = <String, File>{};
+      final protectedCanonicalPaths = <String>{};
+
+      // Canonical targets of incoming sources are protected
+      for (final key in incomingSources.keys) {
+        final canonicalFile = File(
+          p.join(targetSourceDir.path, _physicalSourceName(key)),
+        );
+        protectedCanonicalPaths.add(p.canonicalize(canonicalFile.path));
       }
-      for (final entry in currentSessionFiles.entries) {
-        if (!incomingSessions.containsKey(entry.key)) {
-          _assertPathContained(targetSourceDir, entry.value);
-          filesToDelete.add(entry.value);
-          updatedSessionKeys.add(entry.key);
+
+      // Session files of incoming sessions are protected
+      for (final key in incomingSessions.keys) {
+        final sessionFile = File(p.join(targetSourceDir.path, '$key.data'));
+        protectedCanonicalPaths.add(p.canonicalize(sessionFile.path));
+      }
+
+      for (final entry in localScan.filesByKey.entries) {
+        final key = entry.key;
+        final localFiles = entry.value;
+        final canonicalPhysicalName = _physicalSourceName(key);
+        final isIncoming = incomingSources.containsKey(key);
+        final incomingContent = isIncoming
+            ? incomingSources[key]!.content
+            : null;
+
+        // Check preservation when local storage has physical duplicates (localFiles.length > 1)
+        // Ordinary single-file replacements remain unchanged without requiring callback.
+        if (localFiles.length > 1) {
+          final sourceKey = syncRecordKey('source', [key]);
+          final candidateScripts =
+              localScan.sourceVariants[sourceKey] ??
+              (localScan.records.containsKey(sourceKey)
+                  ? [
+                      localScan.records[sourceKey]!['script']
+                          as Map<String, Object?>,
+                    ]
+                  : const <Map<String, Object?>>[]);
+
+          for (final script in candidateScripts) {
+            final scriptContent = script['content'] as String;
+            if (isIncoming && scriptContent == incomingContent) {
+              // Matches incoming content being written to canonical file
+              continue;
+            }
+            // Discarded variant from a physical duplicate group
+            final isPreserved =
+                hasPreservedSourceVariant?.call(sourceKey, script) ?? false;
+            if (!isPreserved) {
+              final logicalName = script['filename'] as String? ?? '';
+              throw StateError(
+                'Cannot discard differing source variant for "$key" ($logicalName): '
+                'variant is not durable in merge document.',
+              );
+            }
+          }
+        }
+
+        // Queue superseded files for deletion
+        for (final f in localFiles) {
+          final isCanonical = (f.filename == canonicalPhysicalName);
+          if (!isIncoming || !isCanonical) {
+            final canonPath = p.canonicalize(f.file.path);
+            if (!protectedCanonicalPaths.contains(canonPath)) {
+              _assertPathContained(targetSourceDir, f.file);
+              filesToDeleteMap[canonPath] = f.file;
+            }
+          }
         }
       }
 
+      // Session deletions (only for omitted session keys)
+      for (final session in localScan.sessionsByKey.values) {
+        if (!incomingSessions.containsKey(session.key)) {
+          final canonPath = p.canonicalize(session.file.path);
+          if (!protectedCanonicalPaths.contains(canonPath)) {
+            _assertPathContained(targetSourceDir, session.file);
+            filesToDeleteMap[canonPath] = session.file;
+            updatedSessionKeys.add(session.key);
+          }
+        }
+      }
+
+      final filesToDelete = filesToDeleteMap.values.toList();
       // -----------------------------------------------------------------------
       // Phase 2: Before Commit Callback
       // -----------------------------------------------------------------------
@@ -790,7 +1051,7 @@ class SyncPreferencesAdapter {
   /// Reads records from an extracted legacy directory without mutating live state.
   ///
   /// Reuses shared safety filtering, key probing, and domain normalization.
-  Future<SyncRecords> readLegacyRecords(Directory extracted) async {
+  Future<SyncLocalSnapshot> readLegacySnapshot(Directory extracted) async {
     final records = <String, Map<String, Object?>>{};
 
     // 1. Read appdata.json or syncdata.json
@@ -900,51 +1161,22 @@ class SyncPreferencesAdapter {
 
     // 3. Read isolated comic_source directory
     final sourceDir = Directory(p.join(extracted.path, 'comic_source'));
+    var sourceVariants = const <String, List<Map<String, Object?>>>{};
+    var needsSourceNormalization = false;
     if (sourceDir.existsSync()) {
-      final sourceNames = await _readSourceNames(sourceDir);
-      for (final entity in sourceDir.listSync()) {
-        if (entity is! File) continue;
-        final name = p.basename(entity.path);
-        if (name.startsWith('.')) continue;
-
-        if (name.endsWith('.js')) {
-          final content = entity.readAsStringSync();
-          final key = await ComicSourceParser.probeKey(content, entity.path);
-          if (key != null && key.isNotEmpty) {
-            _validateRecordKey(key);
-            _validateFileName(name);
-            final recordKey = syncRecordKey('source', [key]);
-            if (records.containsKey(recordKey)) {
-              throw FormatException('Duplicate legacy source identity "$key"');
-            }
-            records[syncRecordKey('source', [key])] = {
-              'script': {
-                'filename': _logicalSourceName(key, name, content, sourceNames),
-                'content': content,
-              },
-            };
-          } else {
-            throw FormatException(
-              'Cannot resolve comic source key for legacy script $name',
-            );
-          }
-        } else if (name.endsWith('.data')) {
-          final key = name.substring(0, name.length - 5);
-          _validateRecordKey(key);
-          final raw = entity.readAsStringSync();
-          final decoded = jsonDecode(raw);
-          if (decoded is! Map) {
-            throw FormatException(
-              'Invalid legacy comic source session for $name: must be JSON object',
-            );
-          }
-          records[syncRecordKey('sourceSession', [key])] = {
-            'data': Map<String, Object?>.from(decoded),
-          };
-        }
-      }
+      final scanResult = await _scanSourceDirectory(
+        sourceDir,
+        isLiveDirectory: false,
+      );
+      records.addAll(scanResult.records);
+      sourceVariants = scanResult.sourceVariants;
+      needsSourceNormalization = scanResult.needsSourceNormalization;
     }
 
-    return records;
+    return SyncLocalSnapshot(
+      records: records,
+      sourceVariants: sourceVariants,
+      needsSourceNormalization: needsSourceNormalization,
+    );
   }
 }

@@ -17,7 +17,7 @@ The new protocol merges **business records and fields using causal relationships
 | Settings | Allowed settings merge by key and nested object leaf; lists remain whole values. Concurrent edits to the same setting can still conflict. Filtering is described below. |
 | Search history | Membership and stable ordering are retained per keyword. Adding or searching a keyword again updates only that keyword, without renumbering untouched entries and creating false conflicts. Concurrent new keywords with equal order are displayed deterministically by keyword. The interface shows at most 50 entries; hidden overflow is not treated as deletion. |
 | Cookies | A complete cookie session merges atomically per normalized domain; cookies from separate logins are not mixed individually. |
-| Comic source scripts and sessions | Each source script revision is atomic, as is each source's `.data` session. Script bodies and login states are not spliced together. |
+| Comic source scripts and sessions | Each source script revision is atomic, as is each source's `.data` session. Script bodies and login states are not spliced together. Local equal-content aliases of the same source identity collapse into a single canonical physical file without fake conflicts; differing contents are preserved as durable candidates before stale runtime aliases are deleted; source `.data` sessions are not cleared by normalization. |
 
 Local comic image files, downloaded comic archives, and images in the online library are not included. Comic archive backups and the online WebDAV comic library remain separate features.
 
@@ -58,6 +58,10 @@ Persistent local state is bound to the WebDAV endpoint and retains device identi
 State has a recoverable backup; corrupt metadata is not silently reset to a new empty state. Recovery from backup may require remote verification to prevent the device counter from regressing. Failed verification reports an error rather than continuing unsafely. This is not a single cross-process or cross-database/filesystem transaction; recovery relies on the persistent application journal.
 
 Authentication, network, and application failures report failure and retain unfinished publication/application work. If some remote publications or local business commits already succeeded, a later failure **does not pretend to roll those committed changes back**. Retries continue from persistent state rather than treating committed work as if it never happened.
+
+Local comic source normalization is similarly protected by the persistent journal: when old aliases coexist with new canonical files during recovery, journal recovery is idempotent and repeated recovery never resurrects explicitly resolved candidates. Local source normalization strictly respects sync direction boundaries and does not import unapplied remote business values under restricted modes (such as upload-only). Genuine filesystem failures and invalid script syntax errors still strictly fail and block.
+
+If startup recovery fails, initiating sync again after correcting the issue re-executes recovery rather than permanently rejecting requests due to a cached startup error; subsequent upload, download, or conflict handling will not proceed until recovery succeeds.
 
 ## Cloud Format and Integrity
 

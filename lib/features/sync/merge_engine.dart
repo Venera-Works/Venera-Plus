@@ -543,6 +543,34 @@ class MergeDocument {
   /// Publication allocation bound only; use [dominates] to prove content coverage.
   bool coversActor(String actor, int counter) => counterFor(actor) >= counter;
 
+  /// Checks exact cell seen fingerprint of normal {'deleted':false,'value':value}
+  /// payload (active or retired), not actor counters.
+  bool hasObservedFieldValue(String recordKey, String field, Object? value) {
+    final record = _records[recordKey];
+    if (record == null) return false;
+    final cell = record.fields[field];
+    if (cell == null) return false;
+    final expectedDigest = _digest({'deleted': false, 'value': value});
+    return cell.seen.values.contains(expectedDigest);
+  }
+
+  /// Content-addressed immutable variant seed document with actor
+  /// `source_variant_<SHA256(canonicalSyncJson([recordKey,script]))>` and counter 1.
+  static MergeDocument createSourceVariantSeed(
+    String recordKey,
+    Map<String, Object?> script,
+  ) {
+    final hash = sha256
+        .convert(utf8.encode(canonicalSyncJson([recordKey, script])))
+        .toString();
+    final actor = 'source_variant_$hash';
+    final seedDoc = MergeDocument();
+    seedDoc.captureLocal(actor, {}, {
+      recordKey: {'script': script},
+    });
+    return seedDoc;
+  }
+
   String _domain(String key) {
     try {
       return syncRecordDomain(key);
@@ -919,11 +947,30 @@ class MergeDocument {
       if (cell == null || !cell.values.containsKey(candidateId))
         throw StateError('Unknown candidate');
       chosen = cell.values[candidateId];
+      if (_domain(recordKey) == 'source' && field == 'script') {
+        final seenScripts = <String, Map<String, Object?>>{};
+        for (final entry in cell.values.entries) {
+          final digest = cell.seen[entry.key]!;
+          if (seenScripts.containsKey(digest)) continue;
+          final payload = _map(entry.value);
+          if (payload['deleted'] != true && payload['value'] is Map) {
+            seenScripts[digest] = (payload['value'] as Map)
+                .cast<String, Object?>();
+          }
+        }
+        for (final script in seenScripts.values) {
+          final seed = createSourceVariantSeed(recordKey, script);
+          if (!dominates(seed)) {
+            merge(seed);
+          }
+        }
+      }
     }
+    final currentRecord = _records[recordKey]!;
     final dot = MergeDot(actor, reserveCounter(actor)).toKey();
     final edits = <String, Object?>{};
     _write(
-      record.presence,
+      currentRecord.presence,
       dot,
       field == 'presence' ? chosen : true,
       edits,
@@ -931,14 +978,18 @@ class MergeDocument {
     );
     if (field == 'readDurationMs') {
       _write(
-        record.bases,
+        currentRecord.bases,
         dot,
-        {'value': chosen, 'absorbed': record.prefixes, 'kind': 'resolution'},
+        {
+          'value': chosen,
+          'absorbed': currentRecord.prefixes,
+          'kind': 'resolution',
+        },
         edits,
         'base',
       );
     } else if (field != 'presence') {
-      _write(record.fields[field]!, dot, chosen, edits, 'field:$field');
+      _write(currentRecord.fields[field]!, dot, chosen, edits, 'field:$field');
     }
     _eventDigests[dot] = _digest({recordKey: edits});
   }

@@ -1144,10 +1144,13 @@ void main() {
         'migrates legacy comic source scripts and sessions in isolated QuickJS runtime',
         () async {
           const scriptContent =
-              'class Custom extends ComicSource { key = "my_src"; }';
+              'class Custom extends ComicSource { key = ["my", "src"].join("_"); }';
+          const variantScriptContent =
+              'class CustomVariant extends ComicSource { key = ["my", "src"].join("_"); version = "2.0"; }';
           final archiveBytes = _createVeneraArchive(
             comicSources: {
               'custom.js': scriptContent,
+              'variant.js': variantScriptContent,
               'my_src.data': jsonEncode({'token': 'session_token_123'}),
             },
           );
@@ -1173,9 +1176,21 @@ void main() {
           final sourceKey = syncRecordKey('source', ['my_src']);
           expect(seed.records.containsKey(sourceKey), isTrue);
           final script = seed.records[sourceKey]!['script'] as Map;
-          expect(script['filename'], equals('custom.js'));
-          expect(script['content'], equals(scriptContent));
+          expect(
+            script['content'],
+            anyOf(equals(scriptContent), equals(variantScriptContent)),
+          );
 
+          expect(seed.sourceVariants.containsKey(sourceKey), isTrue);
+          final variants = seed.sourceVariants[sourceKey]!;
+          expect(variants, hasLength(2));
+          final variantContents = variants
+              .map((v) => v['content'] as String)
+              .toSet();
+          expect(
+            variantContents,
+            equals({scriptContent, variantScriptContent}),
+          );
           final sessionKey = syncRecordKey('sourceSession', ['my_src']);
           expect(seed.records.containsKey(sessionKey), isTrue);
           expect(

@@ -33,7 +33,7 @@ jobs:
           changed_files="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" --)"
           printf '%s\n' "$changed_files"
           if printf '%s\n' "$changed_files" | grep -Eq \
-            '^(test/integration/|test/driver/|test/features/sync/legacy_sync_reader_test\.dart$|lib/|assets/|android/|windows/|ios/|macos/|linux/|debian/|patch/|\.github/workflows/|\.github/scripts/|pubspec\.yaml$|pubspec\.lock$|rust-toolchain\.toml$|analysis_options\.yaml$)'; then
+            '^(test/integration/|test/driver/|test/features/sync/legacy_sync_reader_test\.dart$|test/features/sync/source_identity_recovery_test\.dart$|lib/|assets/|android/|windows/|ios/|macos/|linux/|debian/|patch/|\.github/workflows/|\.github/scripts/|pubspec\.yaml$|pubspec\.lock$|rust-toolchain\.toml$|analysis_options\.yaml$)'; then
             echo "platform=true" >> "$GITHUB_OUTPUT"
           else
             echo "platform=false" >> "$GITHUB_OUTPUT"
@@ -145,7 +145,7 @@ jobs:
       - run: flutter pub get --enforce-lockfile
       - name: 构建 Windows Debug 应用
         run: flutter build windows --debug
-      - name: 执行 QuickJS 源迁移原生测试
+      - name: 执行 QuickJS 源迁移与标识恢复原生测试
         shell: pwsh
         run: |
           $runnerDir = Join-Path (Get-Location) 'build\windows\x64\runner\Debug'
@@ -158,9 +158,9 @@ jobs:
               throw "未找到 Flutter 原生引擎库：$flutterDll"
           }
           $env:PATH = "$runnerDir;$env:PATH"
-          flutter test --no-pub --reporter=expanded --dart-define=CI_REQUIRE_QUICKJS=true --plain-name "LegacySyncReader QuickJS Source Migration" test/features/sync/legacy_sync_reader_test.dart
+          flutter test --no-pub --reporter=expanded --dart-define=CI_REQUIRE_QUICKJS=true --name 'LegacySyncReader QuickJS Source Migration|SourceIdentityRecovery QuickJS' test/features/sync/legacy_sync_reader_test.dart test/features/sync/source_identity_recovery_test.dart
           if ($LASTEXITCODE -ne 0) {
-              throw "QuickJS 源迁移原生测试执行失败，退出码：$LASTEXITCODE"
+              throw "QuickJS 源迁移与标识恢复原生测试执行失败，退出码：$LASTEXITCODE"
           }
       - name: 执行 Windows 真实启动脚本验证
         shell: pwsh
