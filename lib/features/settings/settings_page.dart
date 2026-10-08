@@ -38,9 +38,16 @@ Widget _buildSettingsContent(SettingsDestination destination) {
 }
 
 class SettingsPage extends StatefulWidget {
-  const SettingsPage({this.initialDestination, super.key});
+  const SettingsPage({
+    this.initialDestination,
+    this.isRoot = false,
+    this.isActive = true,
+    super.key,
+  });
 
   final SettingsDestination? initialDestination;
+  final bool isRoot;
+  final bool isActive;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -113,6 +120,7 @@ class _SettingsPageState extends State<SettingsPage> {
         return;
       }
     }
+    if (widget.isRoot) return;
     context.pop();
   }
 
@@ -120,12 +128,13 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget build(BuildContext context) {
     return PopScope(
       canPop:
+          !widget.isActive ||
           !enableTwoViews ||
           (!_innerCanPop &&
               (_detailNavKey.currentState?.canPop() != true) &&
               (currentPage == null || widget.initialDestination != null)),
       onPopInvokedWithResult: (didPop, result) {
-        if (didPop) return;
+        if (didPop || !widget.isActive) return;
         _handleBack();
       },
       child: Material(child: buildBody()),
@@ -157,29 +166,33 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget buildLeft() {
+    final showHeader =
+        !widget.isRoot || (enableTwoViews && currentPage != null);
     return Material(
       child: Column(
         children: [
-          SizedBox(height: MediaQuery.of(context).padding.top),
-          SizedBox(
-            height: 56,
-            child: Row(
-              children: [
-                const SizedBox(width: 8),
-                Tooltip(
-                  message: "Back".tl,
-                  child: IconButton(
-                    key: const Key('settings-back-button'),
-                    icon: const Icon(Icons.arrow_back),
-                    onPressed: _handleBack,
+          if (showHeader) ...[
+            SizedBox(height: MediaQuery.of(context).padding.top),
+            SizedBox(
+              height: 56,
+              child: Row(
+                children: [
+                  const SizedBox(width: 8),
+                  Tooltip(
+                    message: "Back".tl,
+                    child: IconButton(
+                      key: const Key('settings-back-button'),
+                      icon: const Icon(Icons.arrow_back),
+                      onPressed: _handleBack,
+                    ),
                   ),
-                ),
-                const SizedBox(width: 24),
-                Text("Settings".tl, style: ts.s20),
-              ],
+                  const SizedBox(width: 24),
+                  if (!widget.isRoot) Text("Settings".tl, style: ts.s20),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 4),
+            const SizedBox(height: 4),
+          ],
           Expanded(child: buildCategories()),
         ],
       ),

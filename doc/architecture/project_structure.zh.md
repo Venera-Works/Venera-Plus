@@ -4,7 +4,7 @@
 
 ## 总体原则
 
-- `app_shell/` 放应用壳层入口，例如鉴权页、首页编排、主导航壳（包含 Home / Library / Explore 三主导航组织与 `LibraryPage` 书库容器）。
+- `app_shell/` 放应用壳层入口，例如鉴权页、首页编排、主导航壳（包含 Home / Library / Explore / Settings 四主导航组织与 `LibraryPage` 书库容器）。
 - `app_runtime/` 放应用运行时组装，例如启动初始化、更新检查、调试重载和无头命令入口。
 - 优先按功能域归集代码。一个功能同时包含状态、数据模型、服务、页面和子组件时，应放在同一个 `features/<domain>/` 下。
 - 不再新增 `pages/` 目录；应用级入口放入 `app_shell/`，业务页面放入对应 `features/<domain>/`。
@@ -76,9 +76,9 @@ test/features/<domain>/
 
 `app_shell/` 保留应用级入口和页面编排：
 
-- `main_page.dart`：主导航壳，负责挂载首页、收藏、探索和分类等一级入口，统一在顶栏右上角展示同步按钮（`SyncActionButton`）、搜索按钮和设置按钮。
-- `home_page.dart`：首页，挂载 `favorites.ReadingFavoritesView` 展示用户绑定的收藏夹，提供选择或新建绑定、跨平台下拉刷新和右下角阅读记录悬浮入口。
-- `library_page.dart`：书库容器，聚合个人内容并记忆分栏；漫画收藏首次默认“全部”，之后恢复最后查看的有效收藏夹。
+- `main_page.dart`：主导航壳，挂载主页、书库、发现和设置四个一级入口，统一在全局顶栏展示同步按钮（`SyncActionButton`）和搜索按钮；主页的 `ReadingFavoritesMenuButton` 位于顶栏最右侧，设置通过独立 Tab 进入。
+- `home_page.dart`：首页，挂载 `favorites.ReadingFavoritesView` 展示用户绑定的收藏夹，提供选择或新建绑定、跨平台下拉刷新和右侧拖动滑块。漫画列表只使用全局顶栏，右下角阅读记录悬浮按钮与发现页刷新按钮大小一致。
+- `library_page.dart`：书库容器，聚合个人内容并记忆分栏，四个分类支持左右滑动和切换动画，保留各分类滚动位置。通过 `NestedScrollView` 和 `NestedScrollScope` 协调活动分类的滚动：分类栏上滑隐藏、下滑优先恢复，分栏工具栏吸顶；非活动分类与旁支滚动区域不接入同一内层控制器。漫画收藏首次默认“全部”，之后恢复最后查看的有效收藏夹。
 - `auth_page.dart`：应用启动和前后台切换时使用的本地鉴权页面。
 应用壳层可以依赖功能域入口；功能域不应反向依赖应用壳层。
 `app_shell.dart` 是壳层对外入口，`main.dart` 等应用组装代码应通过它引用应用级页面；`features/`、`routing/`、`foundation/`、`network/`、`utils/` 和 `components/` 不应依赖 `app_shell/`。

@@ -142,11 +142,64 @@ void main() {
   );
 
   testWidgets(
+    'inactive root settings releases system back to the outer route',
+    (tester) async {
+      _setupTestView(tester, const Size(1000, 800));
+      var settingsActive = true;
+      StateSetter? updateSettings;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: TextButton(
+                onPressed: () {
+                  Navigator.of(context).push<void>(
+                    MaterialPageRoute<void>(
+                      builder: (_) => StatefulBuilder(
+                        builder: (context, setState) {
+                          updateSettings = setState;
+                          return SettingsPage(
+                            isRoot: true,
+                            isActive: settingsActive,
+                          );
+                        },
+                      ),
+                    ),
+                  );
+                },
+                child: const Text('Open Settings'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('Open Settings'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Sources and Services'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SourcesAndServicesSettings), findsOneWidget);
+
+      updateSettings!(() {
+        settingsActive = false;
+      });
+      await tester.pumpAndSettle();
+
+      expect(await tester.binding.handlePopRoute(), isTrue);
+      await tester.pumpAndSettle();
+      expect(find.byType(SettingsPage), findsNothing);
+      expect(find.text('Open Settings'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
     'wide layout handles nested route push, system pop, left back, and destination change',
     (tester) async {
       _setupTestView(tester, const Size(1000, 800));
 
-      await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
+      await tester.pumpWidget(
+        const MaterialApp(home: SettingsPage(isRoot: true)),
+      );
       await tester.pumpAndSettle();
 
       // Initially no content selected on wide layout

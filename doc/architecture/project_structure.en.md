@@ -6,7 +6,7 @@ This document is the English companion for the repository structure rules. The C
 
 ## General Principles
 
-- `app_shell/` contains app shell entry points, such as authentication, home page composition, and the main navigation shell (organizing Home / Library / Explore destinations and the `LibraryPage` container).
+- `app_shell/` contains app shell entry points, such as authentication, home page composition, and the main navigation shell (organizing Home / Library / Explore / Settings destinations and the `LibraryPage` container).
 - `app_runtime/` contains runtime assembly, such as startup initialization, update checks, debug reload, and headless command entry points.
 - Business code should be grouped by feature domain under `features/<domain>/`.
 - Do not add new source files under `pages/`; app-level entry points belong in `app_shell/`, and business pages belong in the corresponding feature domain.
@@ -67,9 +67,9 @@ External modules should prefer stable feature entry files instead of importing i
 
 `app_shell/` owns app-level page composition:
 
-- `main_page.dart`: main navigation shell, displaying the top-right action buttons (Sync, Search, Settings) across all screen sizes.
-- `home_page.dart`: mounts `favorites.ReadingFavoritesView` for the user-bound folder, with folder selection/creation, cross-platform pull-to-refresh, and a bottom-right reading-history floating action button.
-- `library_page.dart`: groups personal content and remembers its selected section. Comic favorites initially show All, then restore the last valid folder selection.
+- `main_page.dart`: main navigation shell with Home, Library, Explore, and Settings destinations. The global app bar provides Sync and Search actions, with Home's `ReadingFavoritesMenuButton` at the far right; Settings has its own navigation Tab.
+- `home_page.dart`: mounts `favorites.ReadingFavoritesView` for the user-bound folder, with folder selection/creation, cross-platform pull-to-refresh, and a right-hand draggable scroll handle. The comic list uses only the global app bar, and its reading-history floating action button matches the size of Explore's refresh button.
+- `library_page.dart`: groups personal content and remembers its selected section. Its four categories support animated horizontal swipes and retain their list offsets. `NestedScrollView` and `NestedScrollScope` coordinate the active category: upward scrolling hides the category row and pins the section toolbar, while downward scrolling restores the category row before moving the list. Inactive categories and unrelated descendant scrollables do not share the inner controller. Comic favorites initially show All, then restore the last valid folder selection.
 - `auth_page.dart`: local authentication page.
 
 Feature domains must not depend on `app_shell/`.

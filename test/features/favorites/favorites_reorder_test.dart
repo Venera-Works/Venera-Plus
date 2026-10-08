@@ -169,7 +169,10 @@ void main() {
 
       Widget homePage() => MaterialApp(
         navigatorKey: App.rootNavigatorKey,
-        home: const Scaffold(body: ReadingFavoritesView()),
+        home: Scaffold(
+          appBar: AppBar(actions: [const ReadingFavoritesMenuButton()]),
+          body: const ReadingFavoritesView(),
+        ),
       );
 
       await tester.pumpWidget(homePage());

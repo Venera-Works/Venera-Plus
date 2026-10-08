@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:venera_plus/app_shell/home_page.dart';
 import 'package:venera_plus/app_shell/library_page.dart';
 import 'package:venera_plus/features/discovery/discovery.dart';
+import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/search/search.dart';
 import 'package:venera_plus/features/settings/settings.dart';
 import 'package:venera_plus/features/sync/sync.dart';
@@ -110,6 +111,11 @@ class _MainPageState extends State<MainPage> {
           icon: Icons.explore_outlined,
           activeIcon: Icons.explore,
         ),
+        PaneItemEntry(
+          label: 'Settings'.tl,
+          icon: Icons.settings_outlined,
+          activeIcon: Icons.settings,
+        ),
       ],
       onPageChanged: (i) {
         setState(() {
@@ -127,15 +133,7 @@ class _MainPageState extends State<MainPage> {
             },
           ),
         ),
-        Tooltip(
-          message: "Settings".tl,
-          child: IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: () {
-              to(() => const SettingsPage(), preventDuplicate: true);
-            },
-          ),
-        ),
+        if (index == 0) const ReadingFavoritesMenuButton(),
       ],
       pageBuilder: (pageIndex) {
         return _MainShellPages(
@@ -204,6 +202,8 @@ class _MainShellPagesState extends State<_MainShellPages> {
           key: const PageStorageKey('main_explore'),
           initialSection: widget.initialDiscoverySection,
         );
+      case 3:
+        return SettingsPage(isRoot: true, isActive: widget.currentIndex == 3);
       default:
         return const SizedBox.shrink();
     }
@@ -213,7 +213,7 @@ class _MainShellPagesState extends State<_MainShellPages> {
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        for (var i = 0; i < 3; i++)
+        for (var i = 0; i < 4; i++)
           if (_visitedIndices.contains(i))
             Positioned.fill(
               key: ValueKey('main_dest_$i'),

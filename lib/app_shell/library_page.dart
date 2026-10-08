@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/history/history.dart';
@@ -8,23 +9,30 @@ import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/navigation_settings.dart';
 import 'package:venera_plus/foundation/translations.dart';
 
-/// Wraps an offstage / keepalive view with complete isolation:
-/// - HeroMode disabled when inactive to prevent duplicate Hero tags across sections
-/// - Focus disabled when inactive to prevent focus trapping
-/// - TickerMode disabled when inactive to avoid unnecessary animations
-/// - Offstage to hide and prevent painting / hit-testing
+/// Wraps a kept-alive view with focus, hero, ticker, pointer, and semantics
+/// isolation. [isVisible] can keep a page painted during a page-view transition.
 class KeepAliveView extends StatefulWidget {
-  const KeepAliveView({super.key, required this.isActive, required this.child});
+  const KeepAliveView({
+    super.key,
+    required this.isActive,
+    this.isVisible,
+    required this.child,
+  });
 
   final bool isActive;
+  final bool? isVisible;
   final Widget child;
 
   @override
   State<KeepAliveView> createState() => _KeepAliveViewState();
 }
 
-class _KeepAliveViewState extends State<KeepAliveView> {
+class _KeepAliveViewState extends State<KeepAliveView>
+    with AutomaticKeepAliveClientMixin {
   final FocusScopeNode _focusScopeNode = FocusScopeNode();
+
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void didUpdateWidget(covariant KeepAliveView oldWidget) {
@@ -44,16 +52,26 @@ class _KeepAliveViewState extends State<KeepAliveView> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     return FocusScope(
       node: _focusScopeNode,
       canRequestFocus: widget.isActive,
       child: ExcludeFocus(
         excluding: !widget.isActive,
-        child: HeroMode(
-          enabled: widget.isActive,
-          child: TickerMode(
+        child: ExcludeSemantics(
+          excluding: !widget.isActive,
+          child: HeroMode(
             enabled: widget.isActive,
-            child: Offstage(offstage: !widget.isActive, child: widget.child),
+            child: TickerMode(
+              enabled: widget.isActive,
+              child: IgnorePointer(
+                ignoring: !widget.isActive,
+                child: Offstage(
+                  offstage: !(widget.isVisible ?? widget.isActive),
+                  child: widget.child,
+                ),
+              ),
+            ),
           ),
         ),
       ),
@@ -75,7 +93,6 @@ class LibraryPageState extends State<LibraryPage>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
   late LibrarySection _currentSection;
-  late Set<LibrarySection> _visitedSections;
 
   static const _sections = [
     LibrarySection.favorites,
@@ -105,7 +122,6 @@ class LibraryPageState extends State<LibraryPage>
   void initState() {
     super.initState();
     _currentSection = _resolveInitialSection();
-    _visitedSections = {_currentSection};
     _tabController = TabController(
       length: _sections.length,
       initialIndex: _sections.indexOf(_currentSection),
@@ -118,12 +134,10 @@ class LibraryPageState extends State<LibraryPage>
   }
 
   void _onTabChanged() {
-    if (_tabController.indexIsChanging) return;
     final newSection = _sections[_tabController.index];
     if (newSection != _currentSection) {
       setState(() {
         _currentSection = newSection;
-        _visitedSections.add(newSection);
       });
       appdata.implicitData['librarySection'] = newSection.name;
       appdata.writeImplicitData();
@@ -139,7 +153,6 @@ class LibraryPageState extends State<LibraryPage>
     if (_currentSection != section) {
       setState(() {
         _currentSection = section;
-        _visitedSections.add(section);
       });
       appdata.implicitData['librarySection'] = section.name;
       appdata.writeImplicitData();
@@ -208,32 +221,43 @@ class LibraryPageState extends State<LibraryPage>
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Material(
-          child: AppTabBar(
-            controller: _tabController,
-            tabs: _sections
-                .map((section) => Tab(text: _sectionTitle(section)))
-                .toList(),
-          ),
-        ),
-        Expanded(
-          child: Stack(
-            children: [
-              for (final section in _sections)
-                if (_visitedSections.contains(section))
-                  Positioned.fill(
-                    key: ValueKey('library_section_${section.name}'),
-                    child: KeepAliveView(
-                      isActive: widget.isActive && (_currentSection == section),
-                      child: _buildSectionWidget(section),
-                    ),
-                  ),
-            ],
+    return NestedScrollView(
+      floatHeaderSlivers: true,
+      headerSliverBuilder: (context, innerBoxIsScrolled) => [
+        SliverToBoxAdapter(
+          child: Material(
+            child: AppTabBar(
+              controller: _tabController,
+              tabs: _sections
+                  .map((section) => Tab(text: _sectionTitle(section)))
+                  .toList(),
+            ),
           ),
         ),
       ],
+      body: Builder(
+        builder: (context) {
+          final nestedController = PrimaryScrollController.of(context);
+          return TabBarView(
+            controller: _tabController,
+            children: [
+              for (final section in _sections)
+                PrimaryScrollController.none(
+                  child: KeepAliveView(
+                    key: ValueKey('library_section_${section.name}'),
+                    isActive: widget.isActive && _currentSection == section,
+                    isVisible: widget.isActive,
+                    child: NestedScrollScope(
+                      controller: nestedController,
+                      isActive: widget.isActive && _currentSection == section,
+                      child: _buildSectionWidget(section),
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
     );
   }
 }

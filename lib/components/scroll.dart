@@ -9,6 +9,37 @@ import 'package:venera_plus/foundation/widget_utils.dart';
 
 import 'consts.dart';
 
+/// Scopes one root smooth scroll view to NestedScrollView's inner controller.
+/// The root view isolates its sliver descendants from this scope.
+class NestedScrollScope extends InheritedWidget {
+  const NestedScrollScope({
+    super.key,
+    required this.controller,
+    required this.isActive,
+    required super.child,
+  });
+
+  const NestedScrollScope._isolated({required super.child})
+    : controller = null,
+      isActive = false;
+
+  final ScrollController? controller;
+  final bool isActive;
+
+  static NestedScrollScope? maybeOf(BuildContext context) {
+    final scope = context
+        .dependOnInheritedWidgetOfExactType<NestedScrollScope>();
+    return scope?.controller == null ? null : scope;
+  }
+
+  static Widget isolate(Widget child) =>
+      NestedScrollScope._isolated(child: child);
+
+  @override
+  bool updateShouldNotify(NestedScrollScope oldWidget) =>
+      oldWidget.controller != controller || oldWidget.isActive != isActive;
+}
+
 class SmoothCustomScrollView extends StatelessWidget {
   const SmoothCustomScrollView({
     super.key,
@@ -25,10 +56,13 @@ class SmoothCustomScrollView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final nestedScope = NestedScrollScope.maybeOf(context);
     return SmoothScrollProvider(
       controller: controller,
+      nestedController: nestedScope?.controller,
+      nestedScrollActive: nestedScope?.isActive ?? false,
       builder: (context, controller, providedPhysics) {
-        return CustomScrollView(
+        final scrollView = CustomScrollView(
           controller: controller,
           physics: physics == null
               ? providedPhysics
@@ -40,8 +74,79 @@ class SmoothCustomScrollView extends StatelessWidget {
             ),
           ],
         );
+        return nestedScope == null
+            ? scrollView
+            : NestedScrollScope.isolate(scrollView);
       },
     );
+  }
+}
+
+/// Mirrors the root list's single position, but joins NestedScrollView only
+/// while its category is active.
+class _NestedScrollControllerBridge extends ScrollController {
+  _NestedScrollControllerBridge({
+    required ScrollController localController,
+    required ScrollController nestedController,
+    required bool isActive,
+  }) : _localController = localController,
+       _nestedController = nestedController,
+       _isActive = isActive;
+
+  final ScrollController _localController;
+  final ScrollController _nestedController;
+
+  bool _isActive;
+
+  bool get isActive => _isActive;
+
+  @override
+  ScrollPosition createScrollPosition(
+    ScrollPhysics physics,
+    ScrollContext context,
+    ScrollPosition? oldPosition,
+  ) => _nestedController.createScrollPosition(physics, context, oldPosition);
+
+  @override
+  void attach(ScrollPosition position) {
+    super.attach(position);
+    _localController.attach(position);
+    if (_isActive) {
+      _nestedController.attach(position);
+    }
+  }
+
+  @override
+  void detach(ScrollPosition position) {
+    if (_isActive) {
+      _nestedController.detach(position);
+    }
+    _localController.detach(position);
+    super.detach(position);
+  }
+
+  void setActive(bool isActive) {
+    if (_isActive == isActive) return;
+    _isActive = isActive;
+    for (final position in positions) {
+      if (isActive) {
+        _nestedController.attach(position);
+      } else {
+        position.beginActivity(
+          IdleScrollActivity(position as ScrollActivityDelegate),
+        );
+        _nestedController.detach(position);
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    setActive(false);
+    while (positions.isNotEmpty) {
+      detach(positions.first);
+    }
+    super.dispose();
   }
 }
 
@@ -368,10 +473,14 @@ class SmoothScrollProvider extends StatefulWidget {
   const SmoothScrollProvider({
     super.key,
     this.controller,
+    this.nestedController,
+    this.nestedScrollActive = false,
     required this.builder,
   });
 
   final ScrollController? controller;
+  final ScrollController? nestedController;
+  final bool nestedScrollActive;
 
   final Widget Function(BuildContext, ScrollController, ScrollPhysics) builder;
 
@@ -383,6 +492,9 @@ class SmoothScrollProvider extends StatefulWidget {
 
 class _SmoothScrollProviderState extends State<SmoothScrollProvider> {
   late final ScrollController _controller;
+  _NestedScrollControllerBridge? _nestedController;
+
+  ScrollController get _scrollController => _nestedController ?? _controller;
 
   double? _futurePosition;
 
@@ -399,9 +511,31 @@ class _SmoothScrollProviderState extends State<SmoothScrollProvider> {
   @override
   void initState() {
     _controller = widget.controller ?? ScrollController();
+    _nestedController = _createNestedController();
     super.initState();
     id = _id;
     _id++;
+  }
+
+  _NestedScrollControllerBridge? _createNestedController() {
+    final nestedController = widget.nestedController;
+    if (nestedController == null) return null;
+    return _NestedScrollControllerBridge(
+      localController: _controller,
+      nestedController: nestedController,
+      isActive: widget.nestedScrollActive,
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant SmoothScrollProvider oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.nestedController != widget.nestedController) {
+      _nestedController?.setActive(false);
+      _nestedController = _createNestedController();
+    } else if (oldWidget.nestedScrollActive != widget.nestedScrollActive) {
+      _nestedController?.setActive(widget.nestedScrollActive);
+    }
   }
 
   @override
@@ -413,15 +547,20 @@ class _SmoothScrollProviderState extends State<SmoothScrollProvider> {
   @override
   void dispose() {
     parent?.onChildInactive(id);
+    _nestedController?.dispose();
+    if (widget.controller == null) {
+      _controller.dispose();
+    }
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final scrollController = _scrollController;
     if (App.isMacOS) {
       return widget.builder(
         context,
-        _controller,
+        scrollController,
         const BouncingScrollPhysics(),
       );
     }
@@ -449,6 +588,24 @@ class _SmoothScrollProviderState extends State<SmoothScrollProvider> {
             });
           }
           if (!_isMouseScroll) return;
+          final nestedController = _nestedController;
+          if (nestedController != null) {
+            if (!nestedController.isActive || !nestedController.hasClients) {
+              return;
+            }
+            _futurePosition = null;
+            GestureBinding.instance.pointerSignalResolver.register(
+              pointerSignal,
+              (_) {
+                if (nestedController.isActive && nestedController.hasClients) {
+                  nestedController.position.pointerScroll(
+                    pointerSignal.scrollDelta.dy,
+                  );
+                }
+              },
+            );
+            return;
+          }
           var currentLocation = _controller.position.pixels;
           var old = _futurePosition;
           _futurePosition ??= currentLocation;
@@ -493,7 +650,7 @@ class _SmoothScrollProviderState extends State<SmoothScrollProvider> {
         },
         child: widget.builder(
           context,
-          _controller,
+          scrollController,
           _isMouseScroll
               ? const NeverScrollableScrollPhysics()
               : const BouncingScrollPhysics(),
