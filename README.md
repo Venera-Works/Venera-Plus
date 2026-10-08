@@ -55,7 +55,7 @@ VeneraPlus 是一款支持 Android、iOS、Windows和 Linux 的跨平台漫画�
 ## 下载与快速入门
 
 ### 获取应用
-前往 [GitHub Releases](https://github.com/Venera-Works/Venera-Plus/releases) 下载适用于对应平台的安装包或便携包。
+前往 [最新版](https://github.com/Venera-Works/Venera-Plus/releases/latest) 下载适用于对应平台的安装包或便携包。
 
 ### 数据迁移（可选）
 VeneraPlus 与旧版 Venera / VeneraNext 互为独立应用，可并存安装使用。如需从旧版迁移数据：
