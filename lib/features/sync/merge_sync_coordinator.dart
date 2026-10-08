@@ -765,39 +765,62 @@ class MergeSyncCoordinator {
     }
   }
 
-  /// Resolves an active conflict, establishes a new causal dot, materializes, applies,
-  /// and publishes the resolution checkpoint if allowed by [direction].
-  Future<Res<bool>> resolveConflict({
-    required String recordKey,
-    required String field,
-    required String candidateId,
+  /// Resolves an active conflict batch, applies it, then publishes the durable
+  /// checkpoint if allowed by [direction].
+  Future<Res<bool>> resolveConflicts(
+    List<MergeConflictResolution> resolutions, {
     required SyncDirection direction,
   }) async {
+    final immutableResolutions = List<MergeConflictResolution>.unmodifiable([
+      for (final resolution in resolutions)
+        MergeConflictResolution(
+          recordKey: resolution.recordKey,
+          field: resolution.field,
+          candidateId: resolution.candidateId,
+          expectedCandidateIds: resolution.expectedCandidateIds == null
+              ? null
+              : Set.unmodifiable(resolution.expectedCandidateIds!),
+          expectedCandidateFingerprint: resolution.expectedCandidateFingerprint,
+        ),
+    ]);
+    var batchCommitted = false;
+    var applyCompleted = false;
     try {
-      final domain = syncRecordDomain(recordKey);
       final captured = await _captureStable();
-      if (unavailableDomains.contains(domain)) {
-        return Res.error(
-          'Cannot resolve conflict for unavailable domain "$domain"',
-        );
-      }
       final observation = store.localObservation;
-      await store.resolve(
-        recordKey,
-        field,
-        candidateId,
+      await store.resolveAll(
+        immutableResolutions,
         unavailableDomains: unavailableDomains,
       );
+      batchCommitted = true;
       await _applyMerged(observation, stagedGeneration: captured.generation);
+      applyCompleted = true;
 
       if (direction != SyncDirection.downloadOnly) {
         await _uploadOutboxWithRecovery();
       }
 
       return const Res(true);
+    } on MergeStorePersistenceException catch (e, s) {
+      Log.error('MergeSyncCoordinator', 'resolveConflicts error: $e\n$s');
+      return Res.error(
+        'Batch persistence status is uncertain; reopen sync or restart to '
+        'recover before retrying. The save operation failed before its '
+        'commit could be confirmed.',
+      );
     } catch (e, s) {
-      Log.error('MergeSyncCoordinator', 'resolveConflict error: $e\n$s');
-      return Res.error(e.toString());
+      Log.error('MergeSyncCoordinator', 'resolveConflicts error: $e\n$s');
+      if (!batchCommitted) return Res.error(e.toString());
+      if (applyCompleted) {
+        return Res.error(
+          'Resolution batch was durably saved and applied locally, but '
+          'publishing may be incomplete. Retry sync to publish it.',
+        );
+      }
+      return Res.error(
+        'Resolution batch was durably saved, but local application or '
+        'publishing may be incomplete. Restart or retry sync to recover it.',
+      );
     }
   }
 
@@ -805,6 +828,12 @@ class MergeSyncCoordinator {
   /// a dominating replacement checkpoint, acknowledges batches, and compacts.
   Future<void> _uploadOutboxWithRecovery() async {
     final priorEntries = await remote.list(latestOnly: false);
+    // An already-acknowledged local store may have no outbox in the new remote
+    // namespace. Seed it once unless this actor already has a published checkpoint.
+    if (store.outbox.isEmpty &&
+        !priorEntries.any((entry) => entry.actor == actor)) {
+      await store.enqueueCheckpoint();
+    }
     MergeBatch? lastUploaded;
 
     final outboxBatches = List<MergeBatch>.from(store.outbox);

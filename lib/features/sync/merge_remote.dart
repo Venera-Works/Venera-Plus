@@ -8,6 +8,7 @@ import 'package:dio/dio.dart';
 import 'package:webdav_client/webdav_client.dart' as dav;
 
 import 'merge_engine.dart';
+import 'sync_device_name.dart';
 
 /// Helper to determine whether an HTTP ETag is a legitimate quoted strong validator.
 ///
@@ -76,12 +77,12 @@ class MergeRemoteConflictException extends MergeRemoteException {
       'MergeRemoteConflictException($message${statusCode != null ? ', status: $statusCode' : ''})';
 }
 
-/// Metadata representation of a remote causal checkpoint candidate file in the sync-v2 namespace.
+/// Metadata representation of a remote causal checkpoint candidate file.
 class MergeRemoteEntry {
-  /// Unique relative namespace path, strictly contained within the sync namespace.
+  /// Full relative path below the WebDAV endpoint.
   final String filename;
 
-  /// The device or actor identifier that published this checkpoint.
+  /// Actor read from the owning device directory's `device.json`.
   final String actor;
 
   /// The monotonic publication counter for [actor].
@@ -101,70 +102,37 @@ class MergeRemoteEntry {
     this.eTag,
   });
 
-  /// Regex validating safe actor identifier: only alphanumeric, underscore, hyphen.
-  /// Strictly prevents path separators, spaces, or traversal dots.
+  /// Regex validating safe actor identifiers used in checkpoint payloads.
   static final RegExp _actorRegex = RegExp(r'^[a-zA-Z0-9_\-]+$');
 
-  /// Regex matching `${actor}-${counter}-${sha256}.json`.
-  static final RegExp _entryRegex = RegExp(
-    r'^([a-zA-Z0-9_\-]+)-(\d+)-([0-9a-fA-F]{64})\.json$',
-  );
+  /// Regex matching `<counter>-<sha256>.json`.
+  static final RegExp _entryRegex = RegExp(r'^(\d+)-([0-9a-fA-F]{64})\.json$');
 
-  /// Attempts to parse [fullPathOrName] into a safe [MergeRemoteEntry].
+  /// Attempts to parse a full `VeneraPlus/<device>/<counter>-<digest>.json` path.
   ///
-  /// Enforces:
-  /// - Extracts only the leaf filename segment.
-  /// - Validates actor against [_actorRegex] (no path traversal `..` or separators).
-  /// - Canonicalizes [filename] strictly within [namespace] to prevent path escape.
-  ///
-  /// Returns `null` if the filename does not adhere to the checkpoint naming scheme.
+  /// [actor] comes from the device directory ownership marker; it is deliberately
+  /// not encoded into the immutable checkpoint filename.
   static MergeRemoteEntry? tryParse(
-    String fullPathOrName, {
+    String fullPath, {
+    required String actor,
     String? eTag,
-    String namespace = 'sync-v2',
   }) {
-    final raw = fullPathOrName.trim().replaceAll('\\', '/');
-    if (raw.isEmpty) return null;
-
-    final segments = raw.split('/').where((s) => s.isNotEmpty).toList();
-    if (segments.isEmpty || segments.any((s) => s == '..' || s == '.')) {
+    final segments = fullPath.split('/');
+    if (segments.length != 3 ||
+        segments[0] != 'VeneraPlus' ||
+        !_isSafeDeviceDirectoryName(segments[1]) ||
+        !_actorIsSafe(actor)) {
       return null;
     }
 
-    final leaf = segments.last;
-    final match = _entryRegex.firstMatch(leaf);
-    if (match == null) return null;
-
-    final actor = match.group(1)!;
-    if (!_actorRegex.hasMatch(actor) || actor.contains('..')) {
-      return null;
-    }
-
-    final counter = int.tryParse(match.group(2)!);
-    final digest = match.group(3)!.toLowerCase();
-
-    if (counter == null || counter < 0 || digest.length != 64) {
-      return null;
-    }
-
-    // Always canonicalize the entry path strictly within the target namespace.
-    final cleanNamespace = namespace
-        .trim()
-        .replaceAll('\\', '/')
-        .replaceAll(RegExp(r'^/+|/+$'), '');
-    if (segments.length > 1) {
-      final namespaceSegments = cleanNamespace.split('/');
-      if (segments.length != namespaceSegments.length + 1) return null;
-      for (var i = 0; i < namespaceSegments.length; i++) {
-        if (segments[i] != namespaceSegments[i]) return null;
-      }
-    }
-    final safeFilename = cleanNamespace.isEmpty
-        ? leaf
-        : '$cleanNamespace/$leaf';
+    final match = _entryRegex.firstMatch(segments[2]);
+    if (match == null || match.group(0) != segments[2]) return null;
+    final counter = int.tryParse(match.group(1)!);
+    final digest = match.group(2)!.toLowerCase();
+    if (counter == null || counter < 0) return null;
 
     return MergeRemoteEntry(
-      filename: safeFilename,
+      filename: fullPath,
       actor: actor,
       counter: counter,
       digest: digest,
@@ -193,29 +161,37 @@ class MergeRemoteEntry {
       'MergeRemoteEntry(filename: $filename, actor: $actor, counter: $counter, digest: $digest, eTag: $eTag)';
 }
 
-/// Remote WebDAV transport for Venera-Plus multi-device merge sync (v2).
+bool _isSafeDeviceDirectoryName(String value) {
+  try {
+    return normalizeSyncDeviceName(value) == value;
+  } on FormatException {
+    return false;
+  }
+}
+
+bool _actorIsSafe(String actor) =>
+    MergeRemoteEntry._actorRegex.firstMatch(actor)?.group(0) == actor;
+
+class _DeviceOwnership {
+  const _DeviceOwnership({required this.actor, required this.name});
+
+  final String actor;
+  final String name;
+}
+
+/// Remote WebDAV transport for VeneraPlus multi-device merge sync.
 ///
-/// Features:
-/// - Dedicated `sync-v2/` namespace isolated from legacy root `.venera` snapshots.
-/// - Immutable checkpoint publications named `${actor}-${counter}-${sha256}.json`.
-/// - Zero-copy streamed PUT with opportunistic `If-None-Match: *` precondition.
-/// - Upload verification: successful PUTs (200/201/204) are read back and cryptographically
-///   verified before returning, preventing truncated uploads from acknowledging success.
-/// - Self-healing retry: severed/truncated uploads left on the server are safely recovered
-///   on retry using conditional `If-Match: strongEtag` replace after verifying the torn file.
-/// - GET verification using response byte SHA-256 independent of redirects and missing ETags.
-/// - Listing returns candidate entries across all actors without masking older valid ones.
-/// - Safe compaction conditionally deletes only pre-upload own-actor predecessors after
-///   downloading and proving causal dominance over all records/candidates/tombstones,
-///   requiring a legitimate quoted strong ETag validator.
-/// - Strictly validates actor and namespace paths to prevent escaping the sync namespace.
-/// - Observable compaction warnings without logging confidential user data.
+/// Checkpoints are immutable files in `VeneraPlus/<device-name>/` and their
+/// ownership is established by a conditional `device.json` marker.
 class MergeRemote {
-  MergeRemote(this._client, {String namespace = 'sync-v2', this.onWarning})
-    : _namespace = _normalizeNamespace(namespace);
+  MergeRemote(this._client, {String deviceName = 'Device', this.onWarning})
+    : deviceName = normalizeSyncDeviceName(deviceName);
+
+  static const String _namespace = 'VeneraPlus';
+  static const String _markerName = 'device.json';
 
   final dav.Client _client;
-  final String _namespace;
+  final String deviceName;
 
   /// Optional callback to observe non-fatal warnings (e.g. compaction skips, corrupt candidate skips).
   final void Function(String warning)? onWarning;
@@ -224,73 +200,55 @@ class MergeRemote {
   final List<String> warnings = [];
 
   dav.Client get client => _client;
-  String get namespace => _namespace;
 
   void _recordWarning(String message) {
     warnings.add(message);
     onWarning?.call(message);
   }
 
-  static String _normalizeNamespace(String value) {
-    var trimmed = value.trim().replaceAll('\\', '/');
-    while (trimmed.startsWith('/')) {
-      trimmed = trimmed.substring(1);
-    }
-    while (trimmed.endsWith('/')) {
-      trimmed = trimmed.substring(0, trimmed.length - 1);
-    }
-    if (trimmed.split('/').any((s) => s == '..' || s == '.')) {
-      throw const FormatException(
-        'Invalid namespace path containing traversal dots',
-      );
-    }
-    return trimmed;
-  }
+  String _deviceDirectoryPath(String name) => '$_namespace/$name';
 
-  /// Resolves [relativeOrLeaf] strictly against [_namespace], preventing directory escape.
-  String _resolvePath(String relativeOrLeaf) {
-    final raw = relativeOrLeaf.trim().replaceAll('\\', '/');
-    final segments = raw.split('/').where((s) => s.isNotEmpty).toList();
-    if (segments.isEmpty || segments.any((s) => s == '..' || s == '.')) {
+  String _markerPath(String name) =>
+      '${_deviceDirectoryPath(name)}/$_markerName';
+
+  /// Validates a complete checkpoint path rather than silently rebasing it.
+  String _resolvePath(MergeRemoteEntry entry) {
+    final parsed = MergeRemoteEntry.tryParse(
+      entry.filename,
+      actor: entry.actor,
+    );
+    if (parsed == null ||
+        parsed.counter != entry.counter ||
+        parsed.digest != entry.digest.toLowerCase()) {
       throw FormatException(
-        'Invalid path containing traversal elements: $relativeOrLeaf',
+        'Invalid checkpoint path for actor ${entry.actor}: ${entry.filename}',
       );
     }
-
-    // Always constrain to leaf filename
-    final leaf = segments.last;
-    if (leaf.contains('..') || leaf.contains('/') || leaf.contains('\\')) {
-      throw FormatException('Invalid leaf filename: $leaf');
-    }
-
-    return _namespace.isEmpty ? leaf : '$_namespace/$leaf';
+    return parsed.filename;
   }
 
-  /// Ensures the remote namespace directory exists and is accessible.
-  ///
-  /// Accurately treats HTTP 405 (Method Not Allowed) as "collection already exists".
-  /// Never suppresses 401, 403, 500, or network errors.
-  Future<void> _ensureNamespaceDirectory() async {
-    if (_namespace.isEmpty) return;
-    try {
-      await _client.mkdir(_namespace);
-    } on DioException catch (e) {
-      final status = e.response?.statusCode;
-      if (status == 405) {
-        // Collection already exists on server, proceed.
-      } else {
-        // Re-throw 401, 403, network errors, timeouts, etc.
-        rethrow;
-      }
+  Future<void> _verifyEntryOwnership(MergeRemoteEntry entry) async {
+    final directoryName = entry.filename.split('/')[1];
+    final owner = await _readDeviceOwnership(directoryName);
+    if (owner == null || owner.actor != entry.actor) {
+      throw MergeRemoteCorruptException(
+        'Checkpoint ownership metadata does not match ${entry.filename}',
+      );
     }
+  }
 
-    // Verify directory accessibility
+  Future<void> _ensureCollection(String path) async {
     try {
-      await _client.readDir(_namespace);
+      await _client.mkdir(path);
+    } on DioException catch (e) {
+      if (e.response?.statusCode != 405) rethrow;
+    }
+    try {
+      await _client.readDir(path);
     } on DioException catch (e) {
       if (e.response?.statusCode == 404) {
         throw MergeRemoteException(
-          'Failed to verify created namespace directory $_namespace',
+          'Failed to verify WebDAV collection $path',
           statusCode: 404,
           cause: e,
         );
@@ -299,7 +257,157 @@ class MergeRemote {
     }
   }
 
-  /// Lists remote checkpoint candidates in the dedicated namespace.
+  Future<void> _ensureNamespaceDirectory() => _ensureCollection(_namespace);
+
+  Future<_DeviceOwnership?> _readDeviceOwnership(
+    String directoryName, {
+    bool ignoreInvalid = false,
+  }) async {
+    final path = _markerPath(directoryName);
+    final Response<List<int>> response;
+    try {
+      response = await _client.c.req<List<int>>(
+        _client,
+        'GET',
+        path,
+        optionsHandler: (options) {
+          options.responseType = ResponseType.bytes;
+        },
+      );
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 404) return null;
+      throw MergeRemoteException(
+        'Failed to read device ownership marker',
+        statusCode: e.response?.statusCode,
+        cause: e,
+      );
+    }
+
+    if (response.statusCode == 404) return null;
+    if (response.statusCode != 200 || response.data == null) {
+      throw MergeRemoteException(
+        'Unexpected response reading device ownership marker',
+        statusCode: response.statusCode,
+      );
+    }
+
+    try {
+      final decoded = jsonDecode(utf8.decode(response.data!));
+      if (decoded is! Map<String, dynamic> || decoded.length != 2) {
+        throw const FormatException('Invalid device ownership marker schema');
+      }
+      final actor = decoded['actor'];
+      final name = decoded['name'];
+      if (actor is! String ||
+          !_actorIsSafe(actor) ||
+          name is! String ||
+          name != directoryName ||
+          !_isSafeDeviceDirectoryName(name)) {
+        throw const FormatException('Invalid device ownership marker values');
+      }
+      return _DeviceOwnership(actor: actor, name: name);
+    } on FormatException catch (error) {
+      final corrupt = MergeRemoteCorruptException(
+        'Invalid ownership metadata in $path',
+        cause: error,
+      );
+      if (ignoreInvalid) {
+        _recordWarning(
+          'Ignoring device directory with invalid ownership metadata',
+        );
+        return null;
+      }
+      throw corrupt;
+    }
+  }
+
+  Future<_DeviceOwnership> _claimDeviceOwnership(
+    String directoryName,
+    String actor,
+  ) async {
+    final markerBytes = Uint8List.fromList(
+      utf8.encode(jsonEncode({'actor': actor, 'name': directoryName})),
+    );
+    Response? response;
+    try {
+      response = await _client.c.req(
+        _client,
+        'PUT',
+        _markerPath(directoryName),
+        data: markerBytes,
+        optionsHandler: (options) {
+          options.headers ??= {};
+          options.headers!['If-None-Match'] = '*';
+          options.headers!['content-length'] = markerBytes.length;
+          options.headers!['content-type'] = 'application/json; charset=utf-8';
+        },
+      );
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 412) {
+        response = e.response;
+      } else {
+        rethrow;
+      }
+    }
+
+    final statusCode = response?.statusCode;
+    if (statusCode != 412 &&
+        statusCode != 200 &&
+        statusCode != 201 &&
+        statusCode != 204) {
+      throw MergeRemoteException(
+        'WebDAV ownership claim failed',
+        statusCode: statusCode,
+      );
+    }
+
+    // Read-after-write also resolves a concurrent claim that won the precondition race.
+    final owner = await _readDeviceOwnership(directoryName);
+    if (owner == null) {
+      throw const MergeRemoteConflictException(
+        'Device ownership marker was not visible after claim',
+      );
+    }
+    return owner;
+  }
+
+  Future<String> _ensureDeviceDirectory(String actor) async {
+    await _ensureNamespaceDirectory();
+
+    var directoryName = deviceName;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      await _ensureCollection(_deviceDirectoryPath(directoryName));
+      var owner = await _readDeviceOwnership(directoryName);
+      owner ??= await _claimDeviceOwnership(directoryName, actor);
+      if (owner.actor == actor && owner.name == directoryName) {
+        return directoryName;
+      }
+      if (attempt == 0) {
+        final suffix = sha256
+            .convert(utf8.encode(actor))
+            .toString()
+            .substring(0, 8);
+        final fallbackName = normalizeSyncDeviceName('$deviceName-$suffix');
+        if (fallbackName == deviceName ||
+            !_isSafeDeviceDirectoryName(fallbackName) ||
+            !fallbackName.endsWith('-$suffix')) {
+          throw const MergeRemoteConflictException(
+            'Unable to resolve device directory ownership collision',
+          );
+        }
+        directoryName = fallbackName;
+        continue;
+      }
+      throw MergeRemoteConflictException(
+        'Device directory ownership collision at $directoryName',
+      );
+    }
+    throw const MergeRemoteConflictException(
+      'Unable to resolve device directory ownership collision',
+    );
+  }
+
+  /// Lists remote checkpoint candidates in immediate `VeneraPlus` device directories.
   ///
   /// Important:
   /// Entries discovered from directory listings are unverified *candidate* checkpoints.
@@ -315,40 +423,48 @@ class MergeRemote {
   /// When [latestOnly] is true, returns only the highest-counter candidate entries per actor
   /// (preserving multiple entries with the same highest counter to expose collisions).
   Future<List<MergeRemoteEntry>> list({bool latestOnly = false}) async {
-    final dirPath = _namespace.isEmpty ? '/' : _namespace;
-    List<dav.File> rawFiles;
+    List<dav.File> deviceDirectories;
     try {
-      rawFiles = await _client.readDir(dirPath);
+      deviceDirectories = await _client.readDir(_namespace);
     } on DioException catch (e) {
-      if (e.response?.statusCode == 404) {
-        return const [];
-      }
-      rethrow;
-    } catch (e) {
-      if (e is DioException && e.response?.statusCode == 404) {
-        return const [];
-      }
+      if (e.response?.statusCode == 404) return const [];
       rethrow;
     }
 
     final parsedEntries = <MergeRemoteEntry>[];
-    for (final file in rawFiles) {
-      if (file.isDir == true) continue;
-      final name = file.name;
-      if (name == null || name.isEmpty) continue;
-
-      // Incomplete or torn uploads with 0 bytes are immediately discarded.
-      if (file.size != null && file.size == 0) {
+    for (final directory in deviceDirectories) {
+      if (directory.isDir != true) continue;
+      final directoryName = directory.name;
+      if (directoryName == null || !_isSafeDeviceDirectoryName(directoryName)) {
         continue;
       }
 
-      final entry = MergeRemoteEntry.tryParse(
-        name,
-        eTag: file.eTag,
-        namespace: _namespace,
+      final owner = await _readDeviceOwnership(
+        directoryName,
+        ignoreInvalid: true,
       );
-      if (entry != null) {
-        parsedEntries.add(entry);
+      if (owner == null) continue;
+
+      final List<dav.File> checkpointFiles;
+      try {
+        checkpointFiles = await _client.readDir(
+          _deviceDirectoryPath(directoryName),
+        );
+      } on DioException catch (e) {
+        if (e.response?.statusCode == 404) continue;
+        rethrow;
+      }
+
+      for (final file in checkpointFiles) {
+        if (file.isDir == true) continue;
+        final name = file.name;
+        if (name == null || name.isEmpty || (file.size == 0)) continue;
+        final entry = MergeRemoteEntry.tryParse(
+          '$_namespace/$directoryName/$name',
+          actor: owner.actor,
+          eTag: file.eTag,
+        );
+        if (entry != null) parsedEntries.add(entry);
       }
     }
 
@@ -403,7 +519,8 @@ class MergeRemote {
   /// 4. Verify payload `actor` and `counter` strictly match [entry.actor] and [entry.counter].
   /// 5. Validate `MergeBatch.fromJson` and verify `batch.id` matches [entry.digest].
   Future<MergeBatch> download(MergeRemoteEntry entry) async {
-    final remotePath = _resolvePath(entry.filename);
+    final remotePath = _resolvePath(entry);
+    await _verifyEntryOwnership(entry);
     final Response<List<int>> response;
     try {
       response = await _client.c.req<List<int>>(
@@ -491,8 +608,8 @@ class MergeRemote {
     final counterVal = payloadCounter;
     if (payloadActor != entry.actor || counterVal != entry.counter) {
       throw MergeRemoteCorruptException(
-        'Metadata mismatch in ${entry.filename}: '
-        'filename indicates (${entry.actor}, ${entry.counter}) '
+        'Checkpoint metadata mismatch in ${entry.filename}: '
+        'ownership marker and counter indicate (${entry.actor}, ${entry.counter}) '
         'but payload indicates ($payloadActor, $counterVal)',
       );
     }
@@ -585,9 +702,10 @@ class MergeRemote {
   /// Publishes an immutable full causal checkpoint batch.
   ///
   /// Publication procedure:
-  /// 1. Filename format: `${batch.actor}-${batch.counter}-${batch.id}.json`.
+  /// 1. Filename format: `<counter>-<sha256>.json` inside the claimed device directory.
   /// 2. Authenticates beforehand via `client.ping()` (OPTIONS without conditional headers).
-  /// 3. Ensures namespace directory exists and is accessible.
+  /// 3. Creates and verifies the fixed `VeneraPlus/<device-name>/` collection, claiming
+  ///    `device.json` conditionally when the folder has no owner.
   /// 4. Performs streamed PUT with `If-None-Match: *` to prevent unintended overwrites.
   /// 5. On 200/201/204, performs GET read-back to verify that bytes on the server match
   ///    [batch.id] before acknowledging success.
@@ -598,14 +716,15 @@ class MergeRemote {
   ///       corrupt file using `If-Match: strongEtag`, then re-verifies.
   ///    c. Otherwise throws [MergeRemoteConflictException].
   ///
-  /// Returns the relative namespace path of the uploaded checkpoint.
+  /// Returns the full relative path below the WebDAV endpoint.
   Future<String> upload(MergeBatch batch) async {
-    if (!MergeRemoteEntry._actorRegex.hasMatch(batch.actor)) {
+    if (!_actorIsSafe(batch.actor)) {
       throw FormatException('Invalid actor identifier: ${batch.actor}');
     }
+    if (batch.counter < 0) {
+      throw const FormatException('Checkpoint counter must be non-negative');
+    }
 
-    final leafName = '${batch.actor}-${batch.counter}-${batch.id}.json';
-    final relativePath = _resolvePath(leafName);
     final bytes = batch.serializeBytes();
     final expectedDigest = batch.id.toLowerCase();
     if (sha256.convert(bytes).toString() != expectedDigest) {
@@ -616,7 +735,13 @@ class MergeRemote {
 
     // Authenticate before opening streamed PUT. No conditional headers on ping.
     await _client.ping();
-    await _ensureNamespaceDirectory();
+    final directoryName = await _ensureDeviceDirectory(batch.actor);
+    final relativePath =
+        '$_namespace/$directoryName/${batch.counter}-${batch.id}.json';
+    final entry = MergeRemoteEntry.tryParse(relativePath, actor: batch.actor);
+    if (entry == null) {
+      throw FormatException('Invalid checkpoint path: $relativePath');
+    }
 
     Response? response;
     try {
@@ -793,7 +918,7 @@ class MergeRemote {
       }
 
       // 7. Conditional DELETE with If-Match: strong (quoted strong ETag).
-      final remotePath = _resolvePath(prior.filename);
+      final remotePath = _resolvePath(prior);
       try {
         final delResponse = await _client.c.req(
           _client,

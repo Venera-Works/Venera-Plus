@@ -528,11 +528,13 @@ Future<void> _handleWebdavResolve(List<String> args, int startIndex) async {
   cliPrint({'status': 'running', 'message': 'Resolving sync conflict...'});
   await DataSync().waitForStartupMerge();
   await DataSync().waitForSync();
-  final result = await DataSync().resolveConflict(
-    recordKey: recordKey,
-    field: field,
-    candidateId: candidateId,
-  );
+  final result = await DataSync().resolveConflicts([
+    MergeConflictResolution(
+      recordKey: recordKey,
+      field: field,
+      candidateId: candidateId,
+    ),
+  ]);
   if (result.error) {
     cliPrint({
       'status': 'error',

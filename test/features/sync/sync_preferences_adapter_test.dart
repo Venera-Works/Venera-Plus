@@ -5,6 +5,8 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqlite3/sqlite3.dart';
+import 'package:venera_plus/features/bangumi/bangumi_models.dart';
+import 'package:venera_plus/features/bangumi/bangumi_service.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/app.dart';
@@ -130,6 +132,7 @@ void main() {
   late Directory tempDir;
   late String originalDataPath;
   late Map<String, dynamic> cleanSettingsSnapshot;
+  late Map<String, dynamic> cleanImplicitDataSnapshot;
   late List<String> cleanSearchHistorySnapshot;
 
   setUpAll(() {
@@ -154,6 +157,7 @@ void main() {
         jsonDecode(jsonEncode(appdata.toJson()['settings']))
             as Map<String, dynamic>;
     cleanSearchHistorySnapshot = appdata.fullSearchHistory;
+    cleanImplicitDataSnapshot = Map<String, dynamic>.from(appdata.implicitData);
 
     appdata.settings.replaceAll(cleanSettingsSnapshot);
     appdata.setFullSearchHistory([]);
@@ -164,6 +168,9 @@ void main() {
     await appdata.saveData(false);
     appdata.settings.replaceAll(cleanSettingsSnapshot);
     appdata.setFullSearchHistory(cleanSearchHistorySnapshot);
+    appdata.implicitData
+      ..clear()
+      ..addAll(cleanImplicitDataSnapshot);
 
     try {
       if (tempDir.existsSync()) {
@@ -223,8 +230,6 @@ void main() {
         appdata.settings['deviceSpecificSettings'] = {
           'private-device': {'token': 'private-override'},
         };
-        appdata.settings['bangumiAccessToken'] = 'private-bangumi-token';
-        appdata.settings['bangumiUsername'] = 'private-bangumi-user';
 
         final adapter = SyncPreferencesAdapter();
         final records = (await adapter.exportSyncSnapshot()).records;
@@ -250,7 +255,6 @@ void main() {
           isFalse,
         );
         expect(canonicalSyncJson(records), isNot(contains('private-device')));
-        expect(canonicalSyncJson(records), isNot(contains('private-bangumi')));
       },
     );
 
@@ -336,8 +340,8 @@ void main() {
           'user',
           'secret',
         ]);
-        expect(appdata.settings['bangumiAccessToken'], isNot('remote-token'));
-        expect(appdata.settings['bangumiUsername'], isNot('remote-user'));
+        expect(appdata.settings['bangumiAccessToken'], 'remote-token');
+        expect(appdata.settings['bangumiUsername'], 'remote-user');
         expect(
           canonicalSyncJson(appdata.settings['deviceSpecificSettings']),
           isNot(contains('remote-device')),
@@ -619,6 +623,159 @@ class TestComicSource extends ComicSource {
   });
 
   group('Preferences Sync Apply', () {
+    test(
+      'transfers Bangumi account and bindings while retaining target-local data',
+      () async {
+        const token = 'source-test-bangumi-token';
+        const username = 'source-test-bangumi-user';
+        const sourceKey = 'test-source';
+        const comicId = 'comic-42';
+        final binding = BangumiBinding(
+          sourceKey: sourceKey,
+          comicId: comicId,
+          subjectId: 42,
+          subjectTitle: 'Test subject',
+          subjectOriginalTitle: 'Original test subject',
+          coverUrl: 'https://example.invalid/cover.jpg',
+          progressMode: BangumiProgressMode.episode,
+          collectionStatus: BangumiCollectionStatus.reading,
+          totalEpisodes: 24,
+          totalVolumes: 3,
+          lastRemoteEpisode: 12,
+          lastRemoteVolume: 3,
+          rating: 8,
+        );
+        final bindingKey = bangumiBindingKey(sourceKey, comicId);
+        appdata.settings['bangumiAccessToken'] = token;
+        appdata.settings['bangumiUsername'] = username;
+        appdata.settings['bangumiBindings'] = {bindingKey: binding.toJson()};
+        appdata.settings['proxy'] = 'source-private-proxy';
+        appdata.settings['webdav'] = [
+          'https://source-dav.example',
+          'source-dav-user',
+          'source-private-dav-secret',
+        ];
+        appdata.settings['deviceId'] = 'source-private-device-id';
+        appdata.settings['deviceSpecificSettings'] = {
+          'source-private-device': {'readerMode': 'source-private-reader-mode'},
+        };
+        appdata.implicitData['bangumiPendingProgress'] = {
+          'source-pending': {
+            'ep_status': {
+              'field': 'ep_status',
+              'value': 13,
+              'attempts': 1,
+              'nextAttemptAt': 123456789,
+              'subjectId': 42,
+              'username': username,
+            },
+          },
+        };
+        final sourceRecords =
+            (await SyncPreferencesAdapter().exportSyncSnapshot()).records;
+        final tokenKey = syncRecordKey('setting', ['bangumiAccessToken']);
+        final usernameKey = syncRecordKey('setting', ['bangumiUsername']);
+        final bindingRatingKey = syncRecordKey('setting', [
+          'bangumiBindings',
+          bindingKey,
+          'rating',
+        ]);
+        expect(sourceRecords[tokenKey]?['value'], token);
+        expect(
+          formatCandidateSafePreview(
+            domain: 'setting',
+            field: 'value',
+            value: sourceRecords[tokenKey]!['value'],
+            isDeleted: false,
+            recordKey: tokenKey,
+          ),
+          isNot(contains(token)),
+        );
+        expect(sourceRecords[usernameKey]?['value'], username);
+        expect(sourceRecords[bindingRatingKey]?['value'], binding.rating);
+        expect(
+          canonicalSyncJson(sourceRecords),
+          isNot(contains('source-pending')),
+        );
+        expect(
+          canonicalSyncJson(sourceRecords),
+          isNot(contains('source-private-dav-secret')),
+        );
+        expect(
+          canonicalSyncJson(sourceRecords),
+          isNot(contains('source-private-device')),
+        );
+
+        const targetToken = 'target-test-bangumi-token';
+        const targetUsername = 'target-test-bangumi-user';
+        final targetPending = {
+          'target-pending': {
+            'ep_status': {
+              'field': 'ep_status',
+              'value': 7,
+              'attempts': 2,
+              'nextAttemptAt': 987654321,
+              'subjectId': 77,
+              'username': targetUsername,
+            },
+          },
+        };
+        appdata.settings['bangumiAccessToken'] = targetToken;
+        appdata.settings['bangumiUsername'] = targetUsername;
+        appdata.settings['bangumiBindings'] = <String, dynamic>{};
+        appdata.settings['proxy'] = 'target-private-proxy';
+        appdata.settings['webdav'] = [
+          'https://target-dav.example',
+          'target-dav-user',
+          'target-private-dav-secret',
+        ];
+        appdata.settings['webdavSyncPending'] = true;
+        appdata.settings['deviceId'] = 'target-private-device-id';
+        appdata.settings['deviceSpecificSettings'] = {
+          'target-private-device': {'readerMode': 'target-private-reader-mode'},
+        };
+        appdata.settings['disableSyncFields'] = 'theme_mode';
+        appdata.implicitData['bangumiPendingProgress'] = targetPending;
+        appdata.implicitData['webdavSyncPending'] = true;
+        appdata.implicitData['webdavSyncDirection'] = 'pull';
+
+        await SyncPreferencesAdapter().applySyncRecords(
+          sourceRecords,
+          unavailableDomains: const {
+            'search',
+            'cookies',
+            'source',
+            'sourceSession',
+          },
+        );
+
+        final targetConsumer = BangumiService.forTesting(
+          gatewayFactory: (_) => throw UnimplementedError(),
+          scopeResolver: (_) => '',
+        );
+        expect(targetConsumer.isConnected, isTrue);
+        expect(appdata.settings['bangumiAccessToken'], token);
+        expect(appdata.settings['bangumiUsername'], username);
+        expect(targetConsumer.bindingFor(sourceKey, comicId), binding);
+        expect(appdata.settings['proxy'], 'target-private-proxy');
+        expect(appdata.settings['webdav'], [
+          'https://target-dav.example',
+          'target-dav-user',
+          'target-private-dav-secret',
+        ]);
+        expect(appdata.settings['webdavSyncPending'], isTrue);
+        expect(appdata.settings['deviceId'], 'target-private-device-id');
+        expect(appdata.settings['deviceSpecificSettings'], {
+          'target-private-device': {'readerMode': 'target-private-reader-mode'},
+        });
+        expect(appdata.settings['disableSyncFields'], 'theme_mode');
+        expect(appdata.implicitData['bangumiPendingProgress'], targetPending);
+        expect(appdata.implicitData['webdavSyncPending'], isTrue);
+        expect(appdata.implicitData['webdavSyncDirection'], 'pull');
+      },
+      skip: _sqliteAvailable() ? false : 'sqlite3 native library unavailable',
+    );
+
     test(
       'reconstructs leaf settings into root map and rejects forbidden fields',
       () async {

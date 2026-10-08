@@ -254,7 +254,13 @@ void main() {
           (c) => c.actor == 'device-beta',
         );
 
-        await store.resolve(key, 'name', candRemote.id);
+        await store.resolveAll([
+          MergeConflictResolution(
+            recordKey: key,
+            field: 'name',
+            candidateId: candRemote.id,
+          ),
+        ]);
 
         expect(store.document.conflicts, isEmpty);
         expect(store.observed[key]?['name'], 'Local');
@@ -282,6 +288,218 @@ void main() {
         await completed.load();
         expect(completed.pendingApply, isNull);
         expect(completed.observed[key]?['name'], 'Remote');
+      },
+    );
+
+    test(
+      'resolves independent conflicts in one recoverable durable batch',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+        final key = syncRecordKey('folder', ['mixed-choice']);
+        await store.capture({
+          key: {'name': 'Local', 'order': 1},
+        });
+        final remote = MergeDocument()
+          ..captureLocal('device-beta', {}, {
+            key: {'name': 'Remote', 'order': 2},
+          });
+        store.document.merge(remote);
+        await store.markReceived('device-beta_1.json');
+
+        final conflicts = {
+          for (final conflict in store.document.conflicts)
+            conflict.field: conflict,
+        };
+        expect(conflicts.keys, containsAll(['name', 'order']));
+        final nameConflict = conflicts['name']!;
+        final orderConflict = conflicts['order']!;
+        final localName = nameConflict.candidates.firstWhere(
+          (candidate) => candidate.actor == 'device-alpha',
+        );
+        final remoteOrder = orderConflict.candidates.firstWhere(
+          (candidate) => candidate.actor == 'device-beta',
+        );
+
+        MergeConflictResolution select(
+          MergeConflict conflict,
+          MergeCandidate candidate,
+        ) => MergeConflictResolution(
+          recordKey: conflict.recordKey,
+          field: conflict.field,
+          candidateId: candidate.id,
+          expectedCandidateIds: Set.unmodifiable(
+            conflict.candidates.map((item) => item.id),
+          ),
+          expectedCandidateFingerprint: conflict.candidateFingerprint,
+        );
+
+        await store.resolveAll([
+          select(nameConflict, localName),
+          select(orderConflict, remoteOrder),
+        ]);
+
+        expect(store.document.conflicts, isEmpty);
+        expect(store.pendingApply![key], {'name': 'Local', 'order': 2});
+        expect(store.outbox, hasLength(2));
+        expect(
+          store.outbox.last.counter,
+          store.document.counterFor('device-alpha'),
+        );
+
+        final recovered = MergeStore(tempDir, 'device-alpha');
+        await recovered.load();
+        expect(recovered.document.conflicts, isEmpty);
+        expect(recovered.outbox.map((batch) => batch.id), [
+          for (final batch in store.outbox) batch.id,
+        ]);
+        expect(recovered.pendingApply![key], {'name': 'Local', 'order': 2});
+      },
+    );
+
+    test(
+      'rejects a stale later selection without persisting earlier resolutions',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+        final key = syncRecordKey('folder', ['stale-choice']);
+        await store.capture({
+          key: {'name': 'Local', 'order': 1},
+        });
+        final remote = MergeDocument()
+          ..captureLocal('device-beta', {}, {
+            key: {'name': 'Remote', 'order': 2},
+          });
+        store.document.merge(remote);
+        final displayed = {
+          for (final conflict in store.document.conflicts)
+            conflict.field: conflict,
+        };
+        final nameConflict = displayed['name']!;
+        final orderConflict = displayed['order']!;
+        final firstChoice = nameConflict.candidates.firstWhere(
+          (candidate) => candidate.actor == 'device-beta',
+        );
+        final staleChoice = orderConflict.candidates.firstWhere(
+          (candidate) => candidate.actor == 'device-beta',
+        );
+
+        final laterRemote = MergeDocument()
+          ..captureLocal('device-gamma', {}, {
+            key: {'order': 3},
+          });
+        store.document.merge(laterRemote);
+        await store.markReceived('device-gamma_1.json');
+        final currentOrder = store.document.conflicts.singleWhere(
+          (conflict) => conflict.field == 'order',
+        );
+        expect(
+          currentOrder.candidates.map((candidate) => candidate.id),
+          contains(staleChoice.id),
+        );
+        expect(currentOrder.candidates, hasLength(3));
+        final before = canonicalSyncJson(store.document.toJson());
+        final outboxIds = store.outbox.map((batch) => batch.id).toList();
+
+        await expectLater(
+          () => store.resolveAll([
+            MergeConflictResolution(
+              recordKey: nameConflict.recordKey,
+              field: nameConflict.field,
+              candidateId: firstChoice.id,
+              expectedCandidateIds: {
+                for (final candidate in nameConflict.candidates) candidate.id,
+              },
+            ),
+            MergeConflictResolution(
+              recordKey: orderConflict.recordKey,
+              field: orderConflict.field,
+              candidateId: staleChoice.id,
+              expectedCandidateIds: {
+                for (final candidate in orderConflict.candidates) candidate.id,
+              },
+            ),
+          ]),
+          throwsStateError,
+        );
+
+        expect(canonicalSyncJson(store.document.toJson()), before);
+        expect(store.outbox.map((batch) => batch.id), outboxIds);
+        expect(store.pendingApply, isNull);
+        final recovered = MergeStore(tempDir, 'device-alpha');
+        await recovered.load();
+        expect(recovered.document.conflicts, hasLength(2));
+        expect(recovered.pendingApply, isNull);
+        expect(recovered.outbox.map((batch) => batch.id), outboxIds);
+      },
+    );
+
+    test(
+      'rejects a changed accumulated duration even when candidate IDs survive',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+        final key = syncRecordKey('history', ['duration-choice', 0]);
+        await store.capture({
+          key: {'readDurationMs': 20000},
+        });
+        final initial = store.document.materialize();
+        final remote = store.document.clone();
+        await store.capture({
+          key: {'readDurationMs': 0},
+        });
+        final displayed = store.document.conflicts.singleWhere(
+          (conflict) => conflict.field == 'readDurationMs',
+        );
+        final selected = displayed.candidates.singleWhere(
+          (candidate) => candidate.id == 'accumulated_total',
+        );
+        final fingerprint = displayed.candidateFingerprint;
+        final candidateIds = displayed.candidates
+            .map((item) => item.id)
+            .toSet();
+
+        remote.captureLocal('device-beta', initial, {
+          key: {'readDurationMs': 25000},
+        });
+        store.document.merge(remote);
+        await store.save();
+        final current = store.document.conflicts.singleWhere(
+          (conflict) => conflict.field == 'readDurationMs',
+        );
+        expect(current.candidates.map((item) => item.id).toSet(), candidateIds);
+        expect(
+          current.candidates
+              .singleWhere((item) => item.id == selected.id)
+              .value,
+          25000,
+        );
+        final before = canonicalSyncJson(store.document.toJson());
+        await expectLater(
+          store.resolveAll([
+            MergeConflictResolution(
+              recordKey: key,
+              field: displayed.field,
+              candidateId: selected.id,
+              expectedCandidateIds: candidateIds,
+              expectedCandidateFingerprint: fingerprint,
+            ),
+          ]),
+          throwsStateError,
+        );
+        expect(canonicalSyncJson(store.document.toJson()), before);
+        expect(store.pendingApply, isNull);
+
+        await store.resolveAll([
+          MergeConflictResolution(
+            recordKey: key,
+            field: current.field,
+            candidateId: selected.id,
+            expectedCandidateIds: candidateIds,
+            expectedCandidateFingerprint: current.candidateFingerprint,
+          ),
+        ]);
+        expect(store.pendingApply![key]?['readDurationMs'], 25000);
       },
     );
 
@@ -1056,7 +1274,13 @@ void main() {
         );
 
         // Resolve in favor of variantA
-        await store.resolve(sourceKey, 'script', candidateA.id);
+        await store.resolveAll([
+          MergeConflictResolution(
+            recordKey: sourceKey,
+            field: 'script',
+            candidateId: candidateA.id,
+          ),
+        ]);
         expect(store.pendingApply, isNotNull);
         await store.completeApply(store.pendingApply!);
 
@@ -1468,20 +1692,42 @@ void main() {
       },
     );
 
-    test('resolve rejects conflicts in unavailable domain', () async {
+    test('resolveAll rejects conflicts in unavailable domains', () async {
       final store = MergeStore(tempDir, 'device-alpha');
       await store.load();
 
       final sourceKey = syncRecordKey('source', ['plugin']);
+      await store.capture({
+        sourceKey: {
+          'script': {'filename': 'plugin.js', 'content': 'local source'},
+        },
+      });
+      final remoteDoc = MergeDocument()
+        ..captureLocal('device-beta', {}, {
+          sourceKey: {
+            'script': {'filename': 'plugin.js', 'content': 'remote source'},
+          },
+        });
+      store.document.merge(remoteDoc);
+      final conflict = store.document.conflicts.single;
+      final candidate = conflict.candidates.first;
+
       await expectLater(
-        () => store.resolve(
-          sourceKey,
-          'script',
-          'candidate_1',
+        () => store.resolveAll(
+          [
+            MergeConflictResolution(
+              recordKey: sourceKey,
+              field: 'script',
+              candidateId: candidate.id,
+            ),
+          ],
           unavailableDomains: {'source'},
         ),
         throwsStateError,
       );
+      expect(store.document.conflicts, hasLength(1));
+      expect(store.outbox, hasLength(1));
+      expect(store.pendingApply, isNull);
     });
 
     test(
@@ -1506,10 +1752,14 @@ void main() {
         final candId = conflict.candidates.first.id;
 
         // Resolving conflict while 'source' is unavailable
-        await store.resolve(
-          folderKey,
-          'name',
-          candId,
+        await store.resolveAll(
+          [
+            MergeConflictResolution(
+              recordKey: folderKey,
+              field: 'name',
+              candidateId: candId,
+            ),
+          ],
           unavailableDomains: {'source'},
         );
 

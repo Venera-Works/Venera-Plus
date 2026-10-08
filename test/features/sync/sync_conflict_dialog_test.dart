@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
@@ -234,92 +233,285 @@ void main() {
     const actorA = 'device_12345678-1234-1234-1234-123456789abc';
     const actorB = 'device_87654321-4321-4321-4321-cba987654321';
 
-    testWidgets('resolves only the chosen field of a real engine conflict', (
+    testWidgets(
+      'stages independent choices, refreshes stale selections, and submits once',
+      (tester) async {
+        final key = syncRecordKey('history', ['comic', 1]);
+        final previous = {
+          key: <String, Object?>{
+            'title': 'Original',
+            'progress': {'ep': 1, 'page': 10},
+          },
+        };
+        final base = MergeDocument()..captureLocal('seed', {}, previous);
+        final left = MergeDocument.fromJson(base.toJson());
+        final right = MergeDocument.fromJson(base.toJson());
+        left.captureLocal(actorA, previous, {
+          key: {
+            'title': 'Left',
+            'progress': {'ep': 1, 'page': 5},
+          },
+        });
+        right.captureLocal(actorB, previous, {
+          key: {
+            'title': 'Right',
+            'progress': {'ep': 2, 'page': 8},
+          },
+        });
+        left.merge(right);
+        final conflicts = left.conflicts;
+        expect(conflicts, hasLength(2));
+        final titleConflict = conflicts.firstWhere(
+          (conflict) => conflict.field == 'title',
+        );
+        final progressConflict = conflicts.firstWhere(
+          (conflict) => conflict.field == 'progress',
+        );
+        final firstTitle = titleConflict.candidates.firstWhere(
+          (candidate) => candidate.actor == actorA,
+        );
+        final changedTitle = titleConflict.candidates.firstWhere(
+          (candidate) => candidate.actor == actorB,
+        );
+        final selectedProgress = progressConflict.candidates.firstWhere(
+          (candidate) => candidate.actor == actorB,
+        );
+        final calls = <List<MergeConflictResolution>>[];
+        final resolution = Completer<Res<bool>>();
+
+        Future<Res<bool>> resolve(
+          List<MergeConflictResolution> selections,
+        ) async {
+          calls.add(List.unmodifiable(selections));
+          final result = await resolution.future;
+          if (!result.error) {
+            for (final selection in selections) {
+              left.resolve(
+                'resolver',
+                selection.recordKey,
+                selection.field,
+                selection.candidateId,
+              );
+            }
+          }
+          return result;
+        }
+
+        Widget buildDialog(List<MergeConflict> active) => MaterialApp(
+          home: Scaffold(
+            body: SyncConflictDialog(
+              key: const ValueKey('batch-conflict-dialog'),
+              conflicts: active,
+              onResolve: resolve,
+            ),
+          ),
+        );
+
+        await tester.pumpWidget(buildDialog(conflicts));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(ValueKey((key, titleConflict.field, firstTitle.id))),
+        );
+        await tester.pump();
+        expect(
+          tester
+              .widget<FilledButton>(
+                find.widgetWithText(FilledButton, 'Resolve Selected'.tl),
+              )
+              .onPressed,
+          isNull,
+        );
+        expect(calls, isEmpty);
+        final changedTitleChoice = find.byKey(
+          ValueKey((key, titleConflict.field, changedTitle.id)),
+        );
+        await tester.ensureVisible(changedTitleChoice);
+        await tester.tap(changedTitleChoice);
+        await tester.pumpAndSettle();
+        expect(
+          find.descendant(
+            of: changedTitleChoice,
+            matching: find.text('Selected'.tl),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: find.byKey(ValueKey((key, titleConflict.field, firstTitle.id))),
+            matching: find.text('Choose'.tl),
+          ),
+          findsOneWidget,
+        );
+        expect(calls, isEmpty);
+        final progressChoice = find.byKey(
+          ValueKey((key, progressConflict.field, selectedProgress.id)),
+        );
+        await tester.ensureVisible(progressChoice);
+        await tester.tap(progressChoice);
+        await tester.pumpAndSettle();
+        expect(calls, isEmpty);
+        expect(left.conflicts, hasLength(2));
+
+        final lateDocument = MergeDocument()
+          ..captureLocal('late-device', {}, {
+            key: {'title': 'Late title'},
+          });
+        left.merge(lateDocument);
+        final updatedConflicts = left.conflicts;
+        await tester.pumpWidget(buildDialog(updatedConflicts));
+        await tester.pumpAndSettle();
+        final updatedTitle = updatedConflicts.firstWhere(
+          (conflict) => conflict.field == 'title',
+        );
+        final updatedProgress = updatedConflicts.firstWhere(
+          (conflict) => conflict.field == 'progress',
+        );
+        final lateTitle = updatedTitle.candidates.firstWhere(
+          (candidate) => candidate.actor == 'late-device',
+        );
+        final oldTitleChoice = find.byKey(
+          ValueKey((key, updatedTitle.field, changedTitle.id)),
+        );
+        await tester.ensureVisible(oldTitleChoice);
+        expect(
+          find.descendant(of: oldTitleChoice, matching: find.text('Choose'.tl)),
+          findsOneWidget,
+        );
+        final progressSelected = find.byKey(
+          ValueKey((key, updatedProgress.field, selectedProgress.id)),
+        );
+        await tester.ensureVisible(progressSelected);
+        expect(
+          find.descendant(
+            of: progressSelected,
+            matching: find.text('Selected'.tl),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          tester
+              .widget<FilledButton>(
+                find.widgetWithText(FilledButton, 'Resolve Selected'.tl),
+              )
+              .onPressed,
+          isNull,
+        );
+
+        final lateTitleChoice = find.byKey(
+          ValueKey((key, updatedTitle.field, lateTitle.id)),
+        );
+        await tester.ensureVisible(lateTitleChoice);
+        await tester.tap(lateTitleChoice);
+        await tester.pumpAndSettle();
+        expect(calls, isEmpty);
+        expect(left.conflicts, hasLength(2));
+        await tester.tap(find.text('Resolve Selected'.tl));
+        await tester.pump();
+
+        expect(calls, hasLength(1));
+        expect(
+          calls.single
+              .map((selection) => (selection.field, selection.candidateId))
+              .toSet(),
+          {('title', lateTitle.id), ('progress', selectedProgress.id)},
+        );
+        for (final selection in calls.single) {
+          final active = updatedConflicts.singleWhere(
+            (conflict) => conflict.field == selection.field,
+          );
+          expect(selection.expectedCandidateIds, {
+            for (final candidate in active.candidates) candidate.id,
+          });
+          expect(
+            selection.expectedCandidateFingerprint,
+            active.candidateFingerprint,
+          );
+        }
+        expect(
+          tester
+              .widget<OutlinedButton>(
+                find.widgetWithText(OutlinedButton, 'Close'.tl),
+              )
+              .onPressed,
+          isNull,
+        );
+        resolution.complete(const Res(true));
+        await tester.pumpAndSettle();
+        expect(left.conflicts, isEmpty);
+        expect(find.text('All conflicts resolved'.tl), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets('closing a staged conflict applies no resolution', (
       tester,
     ) async {
-      final key = syncRecordKey('history', ['comic', 1]);
+      final key = syncRecordKey('favorite', ['cancel-selection']);
       final previous = {
-        key: <String, Object?>{
-          'title': 'Original',
-          'progress': {'ep': 1, 'page': 10},
-        },
+        key: <String, Object?>{'title': 'Original'},
       };
       final base = MergeDocument()..captureLocal('seed', {}, previous);
       final left = MergeDocument.fromJson(base.toJson());
       final right = MergeDocument.fromJson(base.toJson());
       left.captureLocal(actorA, previous, {
-        key: {
-          'title': 'Left',
-          'progress': {'ep': 1, 'page': 5},
-        },
+        key: {'title': 'Left'},
       });
       right.captureLocal(actorB, previous, {
-        key: {
-          'title': 'Right',
-          'progress': {'ep': 2, 'page': 8},
-        },
+        key: {'title': 'Right'},
       });
       left.merge(right);
-      final conflicts = left.conflicts;
-      expect(conflicts, hasLength(2));
-      final chosen = conflicts.first;
-      final candidate = chosen.candidates.first;
-      final calls = <({String recordKey, String field, String candidateId})>[];
-      final resolution = Completer<Res<bool>>();
+      final conflict = left.conflicts.single;
+      final candidate = conflict.candidates.first;
+      final calls = <List<MergeConflictResolution>>[];
+
+      Future<Res<bool>> resolve(
+        List<MergeConflictResolution> selections,
+      ) async {
+        calls.add(List.unmodifiable(selections));
+        for (final selection in selections) {
+          left.resolve(
+            'resolver',
+            selection.recordKey,
+            selection.field,
+            selection.candidateId,
+          );
+        }
+        return const Res(true);
+      }
+
       await tester.pumpWidget(
         MaterialApp(
-          home: Scaffold(
-            body: SyncConflictDialog(
-              conflicts: conflicts,
-              onResolve:
-                  ({
-                    required recordKey,
-                    required field,
-                    required candidateId,
-                  }) async {
-                    calls.add((
-                      recordKey: recordKey,
-                      field: field,
-                      candidateId: candidateId,
-                    ));
-                    final result = await resolution.future;
-                    if (result.error) return result;
-                    left.resolve('resolver', recordKey, field, candidateId);
-                    return result;
-                  },
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: TextButton(
+                key: const ValueKey('open-conflicts'),
+                onPressed: () {
+                  showSyncConflictDialog(
+                    context,
+                    conflicts: [conflict],
+                    onResolve: resolve,
+                  );
+                },
+                child: const Text('Open conflicts'),
+              ),
             ),
           ),
         ),
       );
+      await tester.tap(find.byKey(const ValueKey('open-conflicts')));
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(ValueKey((key, chosen.field, candidate.id))));
-      await tester.pump();
-      expect(
-        tester
-            .widget<Button>(
-              find.byKey(ValueKey((key, chosen.field, candidate.id))),
-            )
-            .isLoading,
-        isTrue,
+      await tester.tap(
+        find.byKey(ValueKey((key, conflict.field, candidate.id))),
       );
-      final other = conflicts.last;
-      expect(
-        tester
-            .widget<Button>(
-              find.byKey(
-                ValueKey((key, other.field, other.candidates.first.id)),
-              ),
-            )
-            .isLoading,
-        isFalse,
-      );
-      resolution.complete(const Res(true));
       await tester.pumpAndSettle();
-      expect(calls, [
-        (recordKey: key, field: chosen.field, candidateId: candidate.id),
-      ]);
-      expect(left.conflicts.single.field, conflicts.last.field);
-      expect(find.byType(Card), findsOneWidget);
+      expect(find.text('Selected'.tl), findsOneWidget);
+      expect(calls, isEmpty);
+      expect(left.conflicts, hasLength(1));
+
+      await tester.tap(find.text('Close'.tl));
+      await tester.pumpAndSettle();
+      expect(calls, isEmpty);
+      expect(left.conflicts, hasLength(1));
       expect(tester.takeException(), isNull);
     });
 
@@ -359,16 +551,18 @@ void main() {
               home: Scaffold(
                 body: SyncConflictDialog(
                   conflicts: [conflict],
-                  onResolve:
-                      ({
-                        required recordKey,
-                        required field,
-                        required candidateId,
-                      }) async {
-                        calls.add(candidateId);
-                        left.resolve('resolver', recordKey, field, candidateId);
-                        return const Res(true);
-                      },
+                  onResolve: (resolutions) async {
+                    for (final resolution in resolutions) {
+                      calls.add(resolution.candidateId);
+                      left.resolve(
+                        'resolver',
+                        resolution.recordKey,
+                        resolution.field,
+                        resolution.candidateId,
+                      );
+                    }
+                    return const Res(true);
+                  },
                 ),
               ),
             ),
@@ -385,6 +579,10 @@ void main() {
           expect(find.byTooltip(actorB), findsOneWidget);
           expect(tester.takeException(), isNull);
           await tester.tap(find.byKey(ValueKey((key, 'presence', deleted.id))));
+          await tester.pumpAndSettle();
+          expect(calls, isEmpty);
+          expect(left.conflicts, hasLength(1));
+          await tester.tap(find.text('Resolve Selected'.tl));
           await tester.pumpAndSettle();
           expect(calls, [deleted.id]);
           expect(left.materialize().containsKey(key), isFalse);

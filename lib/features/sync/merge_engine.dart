@@ -481,6 +481,12 @@ class MergeConflict {
   final String recordKey;
   final String field;
   final List<MergeCandidate> candidates;
+
+  /// Duration candidate values can change as new contributions arrive, even
+  /// when the candidate IDs remain stable.
+  late final String candidateFingerprint = field == 'readDurationMs'
+      ? _digest(candidates.map((candidate) => candidate.toJson()).toList())
+      : '';
   MergeConflict({
     required this.recordKey,
     required this.field,
@@ -501,6 +507,27 @@ class MergeConflict {
   @override
   String toString() =>
       'MergeConflict(recordKey: $recordKey, field: $field, candidates: ${candidates.map((candidate) => candidate.safeLabel).join(', ')})';
+}
+
+/// One selected candidate for a currently active merge conflict.
+class MergeConflictResolution {
+  final String recordKey;
+  final String field;
+  final String candidateId;
+
+  /// Optional candidate-set snapshot used to reject newly arrived variants.
+  final Set<String>? expectedCandidateIds;
+
+  /// Optional value snapshot for synthetic candidates whose IDs are stable.
+  final String? expectedCandidateFingerprint;
+
+  const MergeConflictResolution({
+    required this.recordKey,
+    required this.field,
+    required this.candidateId,
+    this.expectedCandidateIds,
+    this.expectedCandidateFingerprint,
+  });
 }
 
 /// Lossless per-cell exact-dot merge. Counter floors allocate identities only.

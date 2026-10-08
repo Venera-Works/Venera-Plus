@@ -21,7 +21,7 @@ void main() {
       password: 'testpass',
     ).createClient();
     client.c.httpClientAdapter = IOHttpClientAdapter();
-    remote = MergeRemote(client, namespace: 'sync-v2');
+    remote = MergeRemote(client, deviceName: 'Device');
   });
 
   tearDown(() async {
@@ -47,43 +47,56 @@ void main() {
     return MergeBatch.create(actor: actor, counter: counter, document: doc);
   }
 
-  group('MergeRemote entry parsing, actor validation, and quoted strong ETag', () {
+  MergeRemoteEntry parseEntry(String path, String actor, {String? eTag}) {
+    return MergeRemoteEntry.tryParse(path, actor: actor, eTag: eTag)!;
+  }
+
+  group('MergeRemote entry parsing and quoted strong ETag', () {
+    test('parses a full device path with Unicode and spaces', () {
+      final digest = 'a' * 64;
+      const actor = 'uuid-actor-123-456';
+      const path = 'VeneraPlus/Workstation 机/7-';
+      final entry = MergeRemoteEntry.tryParse(
+        '$path$digest.json',
+        actor: actor,
+        eTag: '"strong-etag"',
+      );
+      expect(entry, isNotNull);
+      expect(entry!.actor, actor);
+      expect(entry.counter, 7);
+      expect(entry.digest, digest);
+      expect(entry.eTag, '"strong-etag"');
+      expect(entry.hasStrongEtag, isTrue);
+      expect(entry.filename, '$path$digest.json');
+    });
+
     test(
-      'parses filenames with actors containing hyphens and UUIDs strictly within namespace',
+      'strictly rejects traversal, actor-bearing names, and old namespaces',
       () {
         final digest = 'a' * 64;
-        final entry = MergeRemoteEntry.tryParse(
-          'sync-v2/uuid-actor-123-456-7-$digest.json',
-          eTag: '"strong-etag"',
+        for (final path in [
+          '../../etc/1-$digest.json',
+          'VeneraPlus/../Device/1-$digest.json',
+          'VeneraPlus/Device/../1-$digest.json',
+          'VeneraPlus/Device/uuid-actor-1-$digest.json',
+          'sync-v2/Device/1-$digest.json',
+          '.venera',
+        ]) {
+          expect(
+            MergeRemoteEntry.tryParse(path, actor: 'uuid-actor'),
+            isNull,
+            reason: path,
+          );
+        }
+        expect(
+          MergeRemoteEntry.tryParse(
+            'VeneraPlus/Device/1-$digest.json',
+            actor: '../other',
+          ),
+          isNull,
         );
-        expect(entry, isNotNull);
-        expect(entry!.actor, 'uuid-actor-123-456');
-        expect(entry.counter, 7);
-        expect(entry.digest, digest);
-        expect(entry.eTag, '"strong-etag"');
-        expect(entry.hasStrongEtag, isTrue);
-        expect(entry.filename, 'sync-v2/uuid-actor-123-456-7-$digest.json');
       },
     );
-
-    test('strictly rejects path traversal attempts in tryParse and upload', () {
-      final digest = 'a' * 64;
-      // Traversal in path
-      expect(
-        MergeRemoteEntry.tryParse('../../etc/actor-1-$digest.json'),
-        isNull,
-      );
-      expect(
-        MergeRemoteEntry.tryParse('sync-v2/../../../actor-1-$digest.json'),
-        isNull,
-      );
-
-      // Actor containing illegal characters or slashes
-      expect(
-        MergeRemoteEntry.tryParse('sync-v2/bad/actor-1-$digest.json'),
-        isNull,
-      );
-    });
 
     test(
       'strictly requires quoted strong validator format for conditional operations',
@@ -102,14 +115,19 @@ void main() {
       },
     );
 
-    test('rejects non-checkpoint filenames in tryParse', () {
-      expect(MergeRemoteEntry.tryParse('sync-v2/legacy-backup.venera'), isNull);
-      expect(
-        MergeRemoteEntry.tryParse('sync-v2/actor-notnum-hash.json'),
-        isNull,
-      );
-      expect(MergeRemoteEntry.tryParse('sync-v2/actor-1-short.json'), isNull);
-      expect(MergeRemoteEntry.tryParse(''), isNull);
+    test('rejects non-checkpoint filenames', () {
+      for (final path in [
+        'VeneraPlus/Device/device.json',
+        'VeneraPlus/Device/actor-notnum-hash.json',
+        'VeneraPlus/Device/1-short.json',
+        '',
+      ]) {
+        expect(
+          MergeRemoteEntry.tryParse(path, actor: 'actor'),
+          isNull,
+          reason: path,
+        );
+      }
     });
   });
 
@@ -130,9 +148,7 @@ void main() {
       expect(sha256.convert(raw).toString(), batch.id);
       final payload = jsonDecode(utf8.decode(raw)) as Map;
       expect(payload.keys.toSet(), {'actor', 'counter', 'document'});
-      final downloaded = await remote.download(
-        MergeRemoteEntry.tryParse(path)!,
-      );
+      final downloaded = await remote.download(parseEntry(path, batch.actor));
       expect(downloaded.document.materialize(), records);
       expect(downloaded.toJson(), batch.toJson());
     },
@@ -147,10 +163,15 @@ void main() {
         payload[extraKey] = batch.id;
         final bytes = utf8.encode(canonicalSyncJson(payload));
         final digest = sha256.convert(bytes).toString();
-        final path = 'sync-v2/invalid_wire-1-$digest.json';
+        final path = 'VeneraPlus/Device/1-$digest.json';
+        server.injectOwnership(
+          '/dav/VeneraPlus/Device',
+          actor: 'invalid_wire',
+          name: 'Device',
+        );
         server.injectFile('/dav/$path', bytes);
         await expectLater(
-          remote.download(MergeRemoteEntry.tryParse(path)!),
+          remote.download(parseEntry(path, batch.actor)),
           throwsA(isA<MergeRemoteCorruptException>()),
         );
       },
@@ -162,7 +183,7 @@ void main() {
     () async {
       final batch = createTestBatch(actor: 'unavailable', counter: 1);
       final path = await remote.upload(batch);
-      final entry = MergeRemoteEntry.tryParse(path)!;
+      final entry = parseEntry(path, batch.actor);
       for (final status in [401, 503]) {
         server.getStatuses['/dav/$path'] = status;
         await expectLater(
@@ -171,6 +192,10 @@ void main() {
         );
         expect(remote.warnings, isEmpty);
       }
+      server.getStatuses['/dav/VeneraPlus/${path.split('/')[1]}/device.json'] =
+          401;
+      await expectLater(remote.list(), throwsA(isA<MergeRemoteException>()));
+      expect(remote.warnings, isEmpty);
     },
   );
 
@@ -178,33 +203,56 @@ void main() {
     test(
       'two devices publish concurrently without overwriting each other',
       () async {
-        final batchA = createTestBatch(actor: 'device-alpha', counter: 1);
-        final batchB = createTestBatch(actor: 'device-beta', counter: 1);
+        final recordsA = {
+          syncRecordKey('folder', ['alpha']): <String, Object?>{
+            'name': 'Alpha',
+          },
+        };
+        final recordsB = {
+          syncRecordKey('folder', ['beta']): <String, Object?>{'name': 'Beta'},
+        };
+        final batchA = createTestBatch(
+          actor: 'device-alpha',
+          counter: 1,
+          records: recordsA,
+        );
+        final batchB = createTestBatch(
+          actor: 'device-beta',
+          counter: 1,
+          records: recordsB,
+        );
 
-        final pathA = await remote.upload(batchA);
-        final pathB = await remote.upload(batchB);
-
-        expect(pathA, isNot(equals(pathB)));
-        expect(pathA, startsWith('sync-v2/device-alpha-1-'));
-        expect(pathB, startsWith('sync-v2/device-beta-1-'));
+        final paths = await Future.wait([
+          remote.upload(batchA),
+          remote.upload(batchB),
+        ]);
+        expect(paths[0], isNot(paths[1]));
+        for (final path in paths) {
+          expect(path.split('/').first, 'VeneraPlus');
+          expect(
+            path.split('/').last,
+            matches(RegExp(r'^1-[0-9a-f]{64}\.json$')),
+          );
+        }
 
         final entries = await remote.list();
-        expect(entries.length, 2);
 
         final actors = entries.map((e) => e.actor).toSet();
         expect(actors, containsAll(['device-alpha', 'device-beta']));
 
         final downloadedA = await remote.download(
-          entries.firstWhere((e) => e.actor == 'device-alpha'),
+          entries.singleWhere((e) => e.actor == 'device-alpha'),
         );
         final downloadedB = await remote.download(
-          entries.firstWhere((e) => e.actor == 'device-beta'),
+          entries.singleWhere((e) => e.actor == 'device-beta'),
         );
 
         expect(downloadedA.actor, 'device-alpha');
         expect(downloadedB.actor, 'device-beta');
         expect(downloadedA.id, batchA.id);
         expect(downloadedB.id, batchB.id);
+        expect(downloadedA.document.materialize(), recordsA);
+        expect(downloadedB.document.materialize(), recordsB);
       },
     );
 
@@ -277,6 +325,94 @@ void main() {
       },
     );
   });
+  test(
+    'fails without publishing when the actor-hash fallback is owned',
+    () async {
+      const attemptedActor = 'attempted_actor';
+      final suffix = sha256
+          .convert(utf8.encode(attemptedActor))
+          .toString()
+          .substring(0, 8);
+      server.injectOwnership(
+        '/dav/VeneraPlus/Device',
+        actor: 'base_owner',
+        name: 'Device',
+      );
+      server.injectOwnership(
+        '/dav/VeneraPlus/Device-$suffix',
+        actor: 'fallback_owner',
+        name: 'Device-$suffix',
+      );
+
+      await expectLater(
+        remote.upload(createTestBatch(actor: attemptedActor, counter: 1)),
+        throwsA(isA<MergeRemoteConflictException>()),
+      );
+      expect(server.checkpointPutCount, 0);
+      expect(server.hasFile('/dav/VeneraPlus/Device/device.json'), isTrue);
+      expect(
+        server.hasFile('/dav/VeneraPlus/Device-$suffix/device.json'),
+        isTrue,
+      );
+    },
+  );
+
+  group('Device-directory ownership and discovery', () {
+    test('renamed device keeps its old checkpoints discoverable', () async {
+      final oldDevice = MergeRemote(remote.client, deviceName: 'Old Device');
+      final newDevice = MergeRemote(remote.client, deviceName: 'New Device');
+      final oldBatch = createTestBatch(actor: 'renamed_actor', counter: 1);
+      final newBatch = createTestBatch(actor: 'renamed_actor', counter: 2);
+
+      final oldPath = await oldDevice.upload(oldBatch);
+      final newPath = await newDevice.upload(newBatch);
+
+      expect(oldPath, startsWith('VeneraPlus/Old Device/1-'));
+      expect(newPath, startsWith('VeneraPlus/New Device/2-'));
+      expect(server.hasFile('/dav/VeneraPlus/Old Device/device.json'), isTrue);
+      expect(server.hasFile('/dav/VeneraPlus/New Device/device.json'), isTrue);
+
+      final entries = await newDevice.list();
+      expect(entries.map((entry) => entry.actor).toSet(), {'renamed_actor'});
+      expect(entries.map((entry) => entry.counter).toSet(), {1, 2});
+      expect(entries.map((entry) => entry.filename).toSet(), {
+        oldPath,
+        newPath,
+      });
+      expect(server.markerPutCount, 2);
+      expect(server.checkpointPutCount, 2);
+    });
+
+    test(
+      'does not inspect root .venera or the old sync-v2 namespace',
+      () async {
+        final legacySnapshot = Uint8List.fromList([1, 2, 3, 4]);
+        final legacyCheckpoint = Uint8List.fromList([5, 6, 7, 8]);
+        server.injectFile('/dav/.venera', legacySnapshot);
+        server.injectFile(
+          '/dav/sync-v2/legacy-actor-1-${'a' * 64}.json',
+          legacyCheckpoint,
+        );
+        final batch = createTestBatch(actor: 'current_actor', counter: 1);
+        await remote.upload(batch);
+
+        final entries = await remote.list();
+        expect(entries.map((entry) => entry.actor).toList(), ['current_actor']);
+        expect(server._files['/dav/.venera'], orderedEquals(legacySnapshot));
+        expect(
+          server._files['/dav/sync-v2/legacy-actor-1-${'a' * 64}.json'],
+          orderedEquals(legacyCheckpoint),
+        );
+        expect(
+          server.receivedRequests.any(
+            (request) =>
+                request.contains('/sync-v2') || request.contains('/.venera'),
+          ),
+          isFalse,
+        );
+      },
+    );
+  });
 
   group('Consumer fail-first, truncated file recovery, and valid SHA scenario', () {
     test(
@@ -326,13 +462,13 @@ void main() {
         expect(consumerBatch!.counter, 1);
         expect(consumerBatch.id, batch1.id);
         expect(corruptWarnings.length, 1);
-        expect(corruptWarnings.first, contains('device-recover-2-'));
+        expect(corruptWarnings.first, contains('/2-'));
 
         // 4. Authoring device retries uploading batch 2:
         // HTTP 412 is encountered. Upload inspects HEAD, obtains quoted strong ETag,
         // and safely replaces the truncated file using conditional If-Match: strongEtag.
         final recoveredPath = await remote.upload(batch2);
-        expect(recoveredPath, contains('device-recover-2-'));
+        expect(recoveredPath, startsWith('VeneraPlus/Device/2-'));
 
         // 5. Consumer refreshes listing and calls downloadLatestValid:
         // Now candidate 2 succeeds cleanly with valid SHA!
@@ -353,31 +489,23 @@ void main() {
     test('preserves mixed-case directory and filename over HTTP', () async {
       final customRemote = MergeRemote(
         remote.client,
-        namespace: 'Sync-V2-MixedCaseDir',
+        deviceName: 'My Device 机',
       );
 
       final batch = createTestBatch(actor: 'MyDevice-Actor', counter: 1);
       final uploadedPath = await customRemote.upload(batch);
 
-      expect(
-        uploadedPath,
-        startsWith('Sync-V2-MixedCaseDir/MyDevice-Actor-1-'),
-      );
+      expect(uploadedPath, startsWith('VeneraPlus/My Device 机/1-'));
 
       final entries = await customRemote.list();
       expect(entries.length, 1);
-      expect(
-        entries.first.filename,
-        startsWith('Sync-V2-MixedCaseDir/MyDevice-Actor-1-'),
-      );
+      expect(entries.first.filename, startsWith('VeneraPlus/My Device 机/1-'));
 
       final putRequests = server.receivedRequests
           .where((r) => r.startsWith('PUT '))
           .toList();
       expect(
-        putRequests.any(
-          (r) => r.contains('/Sync-V2-MixedCaseDir/MyDevice-Actor-1-'),
-        ),
+        putRequests.any((r) => r.contains('/VeneraPlus/My Device 机/1-')),
         isTrue,
       );
     });
@@ -494,7 +622,7 @@ void main() {
 
         final fakeDigest = 'b' * 64;
         server.injectFile(
-          '/dav/sync-v2/device-fallback-2-$fakeDigest.json',
+          '/dav/VeneraPlus/Device/2-$fakeDigest.json',
           Uint8List(0),
           eTag: '"etag-2"',
         );
@@ -527,7 +655,7 @@ void main() {
     );
 
     test(
-      'download throws MergeRemoteCorruptException on metadata mismatch between filename and payload',
+      'rejects checkpoint payload actor that disagrees with device ownership metadata',
       () async {
         final doc = MergeDocument();
         doc.captureLocal('legit-actor', const {}, {
@@ -543,11 +671,17 @@ void main() {
         );
         final digest = sha256.convert(bytes).toString();
 
-        final fakeFilename = 'sync-v2/legit-actor-1-$digest.json';
+        final fakeFilename = 'VeneraPlus/Device/1-$digest.json';
+        server.injectOwnership(
+          '/dav/VeneraPlus/Device',
+          actor: 'legit-actor',
+          name: 'Device',
+        );
         server.injectFile('/dav/$fakeFilename', bytes, eTag: '"etag-legit"');
 
         final entry = MergeRemoteEntry.tryParse(
           fakeFilename,
+          actor: 'legit-actor',
           eTag: '"etag-legit"',
         )!;
         expect(
@@ -600,7 +734,7 @@ void main() {
           final batchOther = createTestBatch(actor: 'other-actor', counter: 1);
           final pathOther = await remote.upload(batchOther);
           server.injectFile(
-            '/dav/legacy-backup.venera',
+            '/dav/.venera',
             Uint8List.fromList([1, 2, 3]),
             eTag: '"strong-legacy"',
           );
@@ -623,9 +757,27 @@ void main() {
           );
 
           final priorEntries = [
-            MergeRemoteEntry.tryParse(path1, eTag: '"strong-etag-1"')!,
-            MergeRemoteEntry.tryParse(path2, eTag: 'W/"weak-etag-2"')!,
-            MergeRemoteEntry.tryParse(pathOther, eTag: '"strong-etag-other"')!,
+            MergeRemoteEntry.tryParse(
+              path1,
+              actor: 'owner-actor',
+              eTag: '"strong-etag-1"',
+            )!,
+            MergeRemoteEntry.tryParse(
+              path2,
+              actor: 'owner-actor',
+              eTag: 'W/"weak-etag-2"',
+            )!,
+            MergeRemoteEntry.tryParse(
+              pathOther,
+              actor: 'other-actor',
+              eTag: '"strong-etag-other"',
+            )!,
+            // Forged listing identity cannot authorize deleting another owner's file.
+            MergeRemoteEntry.tryParse(
+              pathOther,
+              actor: 'owner-actor',
+              eTag: '"strong-etag-other"',
+            )!,
           ];
 
           // Compacting with batchUndominated must NOT delete batch1 because doc does not dominate doc1
@@ -668,7 +820,7 @@ void main() {
           expect(server.hasFile('/dav/$pathOther'), isTrue);
 
           // legacy .venera file => RETAINED
-          expect(server.hasFile('/dav/legacy-backup.venera'), isTrue);
+          expect(server.hasFile('/dav/.venera'), isTrue);
 
           // Conditional DELETE must have attached If-Match: "strong-etag-1"
           final deleteHeaders = server.deleteHeaderLogs;
@@ -687,11 +839,16 @@ class _LoopbackWebDavServer {
   final HttpServer _server;
   final Map<String, List<int>> _files = {};
   final Map<String, String> _etags = {};
+  final Set<String> _directories = {'/dav'};
   final List<String> receivedRequests = [];
   final List<Map<String, List<String>>> optionsHeaders = [];
   Map<String, List<String>>? lastPutHeaders;
+  Map<String, List<String>>? lastCheckpointPutHeaders;
+  final List<Map<String, List<String>>> markerPutHeaders = [];
   final List<Map<String, String>> deleteHeaderLogs = [];
   final Map<String, int> getStatuses = {};
+  int markerPutCount = 0;
+  int checkpointPutCount = 0;
 
   String? _redirectFrom;
   String? _redirectTo;
@@ -711,44 +868,126 @@ class _LoopbackWebDavServer {
     await _server.close(force: true);
   }
 
+  String _canonicalPath(String path) {
+    final decoded = Uri.decodeFull(path);
+    if (decoded.length > 1 && decoded.endsWith('/')) {
+      return decoded.substring(0, decoded.length - 1);
+    }
+    return decoded;
+  }
+
+  String _parentPath(String path) {
+    final separator = path.lastIndexOf('/');
+    if (separator <= 0) return '/';
+    return path.substring(0, separator);
+  }
+
+  void _addDirectoryTree(String path) {
+    var current = _canonicalPath(path);
+    while (current != '/' && current.isNotEmpty) {
+      _directories.add(current);
+      current = _parentPath(current);
+    }
+  }
+
+  String _encodeHref(String path, {bool directory = false}) {
+    final segments = path.split('/').map(Uri.encodeComponent).join('/');
+    return '$segments${directory ? '/' : ''}';
+  }
+
   void configureRedirect({
     required String fromPath,
     required String toPath,
     bool omitRedirectEtag = false,
   }) {
-    _redirectFrom = fromPath;
-    _redirectTo = toPath;
+    _redirectFrom = _canonicalPath(fromPath);
+    _redirectTo = _canonicalPath(toPath);
     _omitRedirectEtag = omitRedirectEtag;
-    if (_files.containsKey(fromPath)) {
-      _files[toPath] = _files[fromPath]!;
-      _etags[toPath] = _etags[fromPath] ?? '"redirect-etag"';
+    if (_files.containsKey(_redirectFrom)) {
+      _files[_redirectTo!] = _files[_redirectFrom!]!;
+      _etags[_redirectTo!] = _etags[_redirectFrom!] ?? '"redirect-etag"';
+      _addDirectoryTree(_redirectTo!);
     }
   }
 
   void injectFile(String path, List<int> content, {String? eTag}) {
-    _files[path] = content;
+    final canonical = _canonicalPath(path);
+    _addDirectoryTree(_parentPath(canonical));
+    _files[canonical] = content;
     if (eTag != null) {
-      _etags[path] = eTag;
+      _etags[canonical] = eTag;
     }
   }
 
+  void injectOwnership(
+    String directoryPath, {
+    required String actor,
+    required String name,
+  }) {
+    final canonicalDirectory = _canonicalPath(directoryPath);
+    _addDirectoryTree(canonicalDirectory);
+    injectFile(
+      '$canonicalDirectory/device.json',
+      utf8.encode(jsonEncode({'actor': actor, 'name': name})),
+    );
+  }
+
   void tamperFile(String path, List<int> newContent) {
-    _files[path] = newContent;
+    _files[_canonicalPath(path)] = newContent;
   }
 
   void setFileEtag(String path, String eTag) {
-    _etags[path] = eTag;
+    _etags[_canonicalPath(path)] = eTag;
   }
 
-  bool hasFile(String path) => _files.containsKey(path);
+  bool hasFile(String path) => _files.containsKey(_canonicalPath(path));
+
+  void _writePropfindResponse(
+    StringBuffer buffer,
+    String path, {
+    required bool isDirectory,
+    List<int>? content,
+    String? eTag,
+  }) {
+    final fileEtag =
+        eTag ?? (content == null ? null : '"etag-${sha256.convert(content)}"');
+    buffer.writeln('  <D:response>');
+    buffer.writeln(
+      '    <D:href>${_encodeHref(path, directory: isDirectory)}</D:href>',
+    );
+    buffer.writeln('    <D:propstat>');
+    buffer.writeln('      <D:prop>');
+    if (isDirectory) {
+      buffer.writeln(
+        '        <D:resourcetype><D:collection/></D:resourcetype>',
+      );
+    } else {
+      buffer.writeln('        <D:resourcetype/>');
+      buffer.writeln(
+        '        <D:getcontentlength>${content!.length}</D:getcontentlength>',
+      );
+      buffer.writeln(
+        '        <D:getcontenttype>application/json</D:getcontenttype>',
+      );
+      if (fileEtag != null) {
+        buffer.writeln('        <D:getetag>$fileEtag</D:getetag>');
+      }
+    }
+    buffer.writeln(
+      '        <D:getlastmodified>Wed, 07 Oct 2026 12:00:00 GMT</D:getlastmodified>',
+    );
+    buffer.writeln('      </D:prop>');
+    buffer.writeln('      <D:status>HTTP/1.1 200 OK</D:status>');
+    buffer.writeln('    </D:propstat>');
+    buffer.writeln('  </D:response>');
+  }
 
   Future<void> _handle(HttpRequest request) async {
-    final path = request.uri.path;
+    final path = _canonicalPath(request.uri.path);
     receivedRequests.add('${request.method} $path');
-
     final body = await request.fold<List<int>>(
       [],
-      (buf, chunk) => buf..addAll(chunk),
+      (buffer, chunk) => buffer..addAll(chunk),
     );
 
     if (request.method == 'OPTIONS') {
@@ -771,21 +1010,31 @@ class _LoopbackWebDavServer {
       }
       request.response.statusCode = HttpStatus.ok;
       final etag = _etags[path];
-      if (etag != null) {
-        request.response.headers.set('etag', etag);
-      }
+      if (etag != null) request.response.headers.set('etag', etag);
       request.response.headers.contentLength = content.length;
       await request.response.close();
       return;
     }
 
     if (request.method == 'MKCOL') {
-      request.response.statusCode = HttpStatus.created;
+      if (_directories.contains(path)) {
+        request.response.statusCode = HttpStatus.methodNotAllowed;
+      } else if (!_directories.contains(_parentPath(path))) {
+        request.response.statusCode = HttpStatus.conflict;
+      } else {
+        _directories.add(path);
+        request.response.statusCode = HttpStatus.created;
+      }
       await request.response.close();
       return;
     }
 
     if (request.method == 'PROPFIND') {
+      if (!_directories.contains(path)) {
+        request.response.statusCode = HttpStatus.notFound;
+        await request.response.close();
+        return;
+      }
       request.response.statusCode = HttpStatus.multiStatus;
       request.response.headers.contentType = ContentType(
         'application',
@@ -793,48 +1042,40 @@ class _LoopbackWebDavServer {
         charset: 'utf-8',
       );
 
-      final buf = StringBuffer();
-      buf.writeln('<?xml version="1.0" encoding="utf-8"?>');
-      buf.writeln('<D:multistatus xmlns:D="DAV:">');
-      buf.writeln('  <D:response>');
-      buf.writeln('    <D:href>$path</D:href>');
-      buf.writeln('    <D:propstat>');
-      buf.writeln(
-        '      <D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>',
-      );
-      buf.writeln('      <D:status>HTTP/1.1 200 OK</D:status>');
-      buf.writeln('    </D:propstat>');
-      buf.writeln('  </D:response>');
+      final buffer = StringBuffer()
+        ..writeln('<?xml version="1.0" encoding="utf-8"?>')
+        ..writeln('<D:multistatus xmlns:D="DAV:">');
+      _writePropfindResponse(buffer, path, isDirectory: true);
 
-      for (final entry in _files.entries) {
-        final filePath = entry.key;
-        final fileBytes = entry.value;
-        final fileEtag =
-            _etags[filePath] ?? '"etag-${sha256.convert(fileBytes)}"';
-
-        buf.writeln('  <D:response>');
-        buf.writeln('    <D:href>$filePath</D:href>');
-        buf.writeln('    <D:propstat>');
-        buf.writeln('      <D:prop>');
-        buf.writeln('        <D:resourcetype/>');
-        buf.writeln(
-          '        <D:getcontentlength>${fileBytes.length}</D:getcontentlength>',
-        );
-        buf.writeln(
-          '        <D:getcontenttype>application/json</D:getcontenttype>',
-        );
-        buf.writeln('        <D:getetag>$fileEtag</D:getetag>');
-        buf.writeln(
-          '        <D:getlastmodified>Wed, 07 Oct 2026 12:00:00 GMT</D:getlastmodified>',
-        );
-        buf.writeln('      </D:prop>');
-        buf.writeln('      <D:status>HTTP/1.1 200 OK</D:status>');
-        buf.writeln('    </D:propstat>');
-        buf.writeln('  </D:response>');
+      final directDirectories =
+          _directories
+              .where(
+                (directory) =>
+                    directory != path && _parentPath(directory) == path,
+              )
+              .toList()
+            ..sort();
+      for (final directory in directDirectories) {
+        _writePropfindResponse(buffer, directory, isDirectory: true);
       }
 
-      buf.writeln('</D:multistatus>');
-      request.response.write(buf.toString());
+      final directFiles =
+          _files.keys
+              .where((filePath) => _parentPath(filePath) == path)
+              .toList()
+            ..sort();
+      for (final filePath in directFiles) {
+        final bytes = _files[filePath]!;
+        _writePropfindResponse(
+          buffer,
+          filePath,
+          isDirectory: false,
+          content: bytes,
+          eTag: _etags[filePath],
+        );
+      }
+      buffer.writeln('</D:multistatus>');
+      request.response.write(buffer.toString());
       await request.response.close();
       return;
     }
@@ -845,6 +1086,14 @@ class _LoopbackWebDavServer {
         headersMap[name.toLowerCase()] = values;
       });
       lastPutHeaders = headersMap;
+      final isMarker = path.endsWith('/device.json');
+      if (isMarker) {
+        markerPutCount++;
+        markerPutHeaders.add(headersMap);
+      } else {
+        checkpointPutCount++;
+        lastCheckpointPutHeaders = headersMap;
+      }
 
       final ifNoneMatch = request.headers.value('if-none-match');
       if (ifNoneMatch == '*' && _files.containsKey(path)) {
@@ -863,13 +1112,13 @@ class _LoopbackWebDavServer {
         }
       }
 
-      if (truncateNextPut) {
+      _addDirectoryTree(_parentPath(path));
+      if (truncateNextPut && !isMarker) {
         truncateNextPut = false;
         _files[path] = body.sublist(0, math.min(10, body.length));
       } else {
         _files[path] = body;
       }
-
       _etags[path] = '"etag-${sha256.convert(_files[path]!)}"';
       request.response.statusCode = HttpStatus.created;
       await request.response.close();
@@ -896,7 +1145,6 @@ class _LoopbackWebDavServer {
         await request.response.close();
         return;
       }
-
       request.response.statusCode = HttpStatus.ok;
       request.response.headers.contentType = ContentType(
         'application',
@@ -905,9 +1153,7 @@ class _LoopbackWebDavServer {
       );
       if (!(_omitRedirectEtag && path == _redirectTo)) {
         final etag = _etags[path];
-        if (etag != null) {
-          request.response.headers.set('etag', etag);
-        }
+        if (etag != null) request.response.headers.set('etag', etag);
       }
       request.response.add(content);
       await request.response.close();
@@ -919,20 +1165,17 @@ class _LoopbackWebDavServer {
       final logMap = <String, String>{};
       if (ifMatch != null) logMap['if-match'] = ifMatch;
       deleteHeaderLogs.add(logMap);
-
       if (!_files.containsKey(path)) {
         request.response.statusCode = HttpStatus.notFound;
         await request.response.close();
         return;
       }
-
       final currentEtag = _etags[path];
       if (ifMatch != null && currentEtag != null && ifMatch != currentEtag) {
         request.response.statusCode = HttpStatus.preconditionFailed;
         await request.response.close();
         return;
       }
-
       _files.remove(path);
       _etags.remove(path);
       request.response.statusCode = HttpStatus.noContent;

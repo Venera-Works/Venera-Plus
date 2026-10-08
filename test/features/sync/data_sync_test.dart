@@ -70,6 +70,7 @@ void main() {
     appdata.implicitData['webdavSyncDirection'] = 'bidirectional';
     appdata.implicitData['webdavSyncTiming'] = 'manual';
     appdata.implicitData['syncDeviceId'] = 'test_device_1';
+    appdata.implicitData['webdavSyncDeviceName'] = 'Test Device';
   });
 
   tearDown(() async {
@@ -293,6 +294,7 @@ void main() {
             'user',
             'pass',
           ],
+          deviceName: 'Changed Device',
           excludedFields: '',
           direction: SyncDirection.bidirectional,
           timing: SyncTiming.manual,
@@ -306,6 +308,7 @@ void main() {
           'user',
           'pass',
         ]);
+        expect(appdata.implicitData['webdavSyncDeviceName'], 'Test Device');
         expect(sync.isSyncing, isFalse);
       },
     );
@@ -324,12 +327,21 @@ void main() {
           direction: SyncDirection.downloadOnly,
           timing: SyncTiming.scheduled,
           minutes: 60,
+          deviceName: 'My PC',
         );
 
         expect(result.success, isTrue);
         expect(DataSync.direction, SyncDirection.downloadOnly);
         expect(DataSync.timing, SyncTiming.scheduled);
         expect(DataSync.intervalMinutes, 60);
+        final saved =
+            jsonDecode(
+                  await File(
+                    '${tempDir.path}/implicitData.json',
+                  ).readAsString(),
+                )
+                as Map;
+        expect(saved['webdavSyncDeviceName'], 'My PC');
         expect(appdata.settings['webdav'], [
           'https://example.com/dav',
           'newuser',
@@ -368,12 +380,61 @@ void main() {
         final result = await sync.syncNow();
 
         expect(result.success, isTrue);
-        expect(
-          transport.remoteFiles.keys.any((k) => k.contains('sync-v2')),
-          isTrue,
-        );
+        final remote = MergeRemote(client);
+        final published = MergeDocument();
+        for (final entry in await remote.list()) {
+          published.merge((await remote.download(entry)).document);
+        }
+        expect(published.materialize(), localRecords);
         expect(sync.hasConflict, isFalse);
         expect(sync.statusSnapshot.conflictCount, 0);
+      },
+    );
+
+    test(
+      'namespace cutover publishes unchanged durable data without reading sync-v2',
+      () async {
+        final hash = MergeSyncCoordinator.computeEndpointHash(
+          'https://example.com/dav',
+          'user',
+        );
+        final store = MergeStore(
+          Directory('${tempDir.path}/sync_state_$hash'),
+          'test_device_1',
+        );
+        await store.load();
+        await store.capture(localRecords);
+        final oldBatch = store.outbox.single;
+        await store.acknowledge(oldBatch.id);
+        final oldPath =
+            'sync-v2/${oldBatch.actor}-${oldBatch.counter}-${oldBatch.id}.json';
+        final oldBytes = oldBatch.serializeBytes();
+        transport.remoteDirs.add('sync-v2');
+        transport.remoteFiles[oldPath] = oldBytes;
+
+        final sync = DataSync();
+        expect((await sync.syncNow()).success, isTrue);
+        final remote = sync.coordinator!.remote;
+        final initial = (await remote.list()).singleWhere(
+          (entry) => entry.actor == 'test_device_1',
+        );
+        expect(
+          (await remote.download(initial)).document.materialize(),
+          localRecords,
+        );
+        expect(transport.remoteFiles[oldPath], oldBytes);
+        expect(
+          transport.requests.any(
+            (request) => request.uri.path.contains('/sync-v2/'),
+          ),
+          isFalse,
+        );
+
+        expect((await sync.syncNow()).success, isTrue);
+        final subsequent = (await remote.list()).singleWhere(
+          (entry) => entry.actor == 'test_device_1',
+        );
+        expect(subsequent.filename, initial.filename);
       },
     );
 
@@ -508,68 +569,63 @@ void main() {
       },
     );
 
-    test(
-      'conflicts are exposed via conflicts getter and resolved via resolveConflict',
-      () async {
-        final coordinator = MergeSyncCoordinator(
-          endpointHash: 'hash3',
-          stateDirectory: Directory('${tempDir.path}/state3'),
-          actor: 'device_local',
-          store: MergeStore(
-            Directory('${tempDir.path}/state3'),
-            'device_local',
-          ),
-          remote: MergeRemote(client),
-          exportFavoritesOverride: () => {},
-          exportHistoryOverride: () async => {},
-          applyFavoritesOverride: (_) {},
-          applyHistoryOverride: (_) {},
-          exportPreferencesOverride: () async => localRecords,
-          applyPreferencesOverride: (records, {beforeCommit}) async {
-            beforeCommit?.call();
-            localRecords = Map.from(records);
-          },
-          getGenerationOverride: () => 0,
-        );
-        await coordinator.store.load();
+    test('a selected remote candidate is applied and published', () async {
+      final coordinator = MergeSyncCoordinator(
+        endpointHash: 'hash3',
+        stateDirectory: Directory('${tempDir.path}/state3'),
+        actor: 'device_local',
+        store: MergeStore(Directory('${tempDir.path}/state3'), 'device_local'),
+        remote: MergeRemote(client),
+        exportFavoritesOverride: () => {},
+        exportHistoryOverride: () async => {},
+        applyFavoritesOverride: (_) {},
+        applyHistoryOverride: (_) {},
+        exportPreferencesOverride: () async => localRecords,
+        applyPreferencesOverride: (records, {beforeCommit}) async {
+          beforeCommit?.call();
+          localRecords = Map.from(records);
+        },
+        getGenerationOverride: () => 0,
+      );
+      await coordinator.store.load();
 
-        // Device 1 writes setting A = 'apple'
-        localRecords[syncRecordKey('setting', ['fruit'])] = {'value': 'apple'};
-        await coordinator.store.capture(localRecords);
+      // Device 1 writes setting A = 'apple'
+      localRecords[syncRecordKey('setting', ['fruit'])] = {'value': 'apple'};
+      await coordinator.store.capture(localRecords);
 
-        // Device 2 writes setting A = 'banana'
-        final doc2 = MergeDocument();
-        doc2.captureLocal('device_remote', {}, {
-          syncRecordKey('setting', ['fruit']): {'value': 'banana'},
-        });
+      // Device 2 writes setting A = 'banana'
+      final doc2 = MergeDocument();
+      doc2.captureLocal('device_remote', {}, {
+        syncRecordKey('setting', ['fruit']): {'value': 'banana'},
+      });
 
-        // Merge doc2 into store
-        coordinator.store.document.merge(doc2);
+      // Merge doc2 into store
+      coordinator.store.document.merge(doc2);
 
-        expect(coordinator.hasConflict, isTrue);
-        expect(coordinator.conflictCount, 1);
-        final conflict = coordinator.conflicts.first;
-        expect(conflict.field, 'value');
-        expect(conflict.candidates, hasLength(2));
+      expect(coordinator.hasConflict, isTrue);
+      expect(coordinator.conflictCount, 1);
+      final conflict = coordinator.conflicts.first;
+      expect(conflict.field, 'value');
+      expect(conflict.candidates, hasLength(2));
 
-        final bananaCandidate = conflict.candidates.firstWhere(
-          (c) => c.value == 'banana',
-        );
+      final bananaCandidate = conflict.candidates.firstWhere(
+        (c) => c.value == 'banana',
+      );
 
-        // Resolve choosing banana
-        final resolveRes = await coordinator.resolveConflict(
+      // Resolve choosing banana
+      final resolveRes = await coordinator.resolveConflicts([
+        MergeConflictResolution(
           recordKey: conflict.recordKey,
           field: conflict.field,
           candidateId: bananaCandidate.id,
-          direction: SyncDirection.bidirectional,
-        );
+        ),
+      ], direction: SyncDirection.bidirectional);
 
-        expect(resolveRes.success, isTrue);
-        expect(coordinator.hasConflict, isFalse);
-        expect(coordinator.conflictCount, 0);
-        expect(localRecords[conflict.recordKey], {'value': 'banana'});
-      },
-    );
+      expect(resolveRes.success, isTrue);
+      expect(coordinator.hasConflict, isFalse);
+      expect(coordinator.conflictCount, 0);
+      expect(localRecords[conflict.recordKey], {'value': 'banana'});
+    });
 
     test(
       'downloadOnly direction merges remote checkpoints, resolves conflicts locally, but never uploads outbox',
@@ -677,9 +733,18 @@ void main() {
         );
         await coordinator.remote.upload(goodBatch);
 
-        // 2. Put a corrupted / truncated checkpoint into remote namespace for device_bad
+        // A corrupt checkpoint belongs to a separately identified device.
+        transport.remoteFiles['VeneraPlus/Bad Device/device.json'] =
+            Uint8List.fromList(
+              utf8.encode(
+                canonicalSyncJson({
+                  'actor': 'device_bad',
+                  'name': 'Bad Device',
+                }),
+              ),
+            );
         final badFilename =
-            'sync-v2/device_bad-1-deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef.json';
+            'VeneraPlus/Bad Device/1-deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef.json';
         transport.remoteFiles[badFilename] = Uint8List.fromList(
           utf8.encode('{"corrupted": true'),
         );
@@ -732,7 +797,7 @@ void main() {
         expect(coordinator.store.outbox, isNotEmpty);
         final initialBatch = coordinator.store.outbox.first;
         final targetRemotePath =
-            'sync-v2/${initialBatch.actor}-${initialBatch.counter}-${initialBatch.id}.json';
+            'VeneraPlus/Device/${initialBatch.counter}-${initialBatch.id}.json';
 
         // Inject divergent content to simulate a 412 precondition conflict
         transport.simulateConflictPaths.add(targetRemotePath);
@@ -746,11 +811,15 @@ void main() {
         expect(syncResult.success, isTrue);
         // All outbox batches (original + replacement) should be acknowledged
         expect(coordinator.store.outbox, isEmpty);
-        // Replacement file exists on remote
+        final replacement = (await coordinator.remote.list()).singleWhere(
+          (entry) =>
+              entry.actor == coordinator.actor &&
+              entry.counter > initialBatch.counter,
+        );
         expect(
-          transport.remoteFiles.keys.any(
-            (k) => k.contains('device_conflicted-2-'),
-          ),
+          (await coordinator.remote.download(
+            replacement,
+          )).document.dominates(initialBatch.document),
           isTrue,
         );
       },
@@ -998,10 +1067,12 @@ void main() {
           transport.requests.where((request) => request.method == 'PUT'),
           isNotEmpty,
         );
-        expect(
-          transport.remoteFiles.keys.any((key) => key.contains('sync-v2')),
-          isTrue,
-        );
+        final remote = MergeRemote(client);
+        final published = MergeDocument();
+        for (final entry in await remote.list()) {
+          published.merge((await remote.download(entry)).document);
+        }
+        expect(published.materialize(), localRecords);
         await expectLater(sync.waitForStartupMerge(), completes);
       },
     );
@@ -1455,6 +1526,23 @@ class _VirtualDavClient extends dav.Client {
     final prefix = (cleanPath == '/' || cleanPath.isEmpty) ? '' : '$cleanPath/';
 
     final files = <dav.File>[];
+    final childDirectories = <String>{};
+    for (final key in {
+      ...transport.remoteDirs,
+      ...transport.remoteFiles.keys,
+    }) {
+      if (!key.startsWith(prefix)) continue;
+      final relative = key.substring(prefix.length);
+      final separator = relative.indexOf('/');
+      if (separator > 0) {
+        childDirectories.add(relative.substring(0, separator));
+      } else if (relative.isNotEmpty && transport.remoteDirs.contains(key)) {
+        childDirectories.add(relative);
+      }
+    }
+    for (final name in childDirectories) {
+      files.add(dav.File(name: name, path: '$prefix$name', isDir: true));
+    }
     for (final entry in transport.remoteFiles.entries) {
       final key = entry.key;
       if (prefix.isEmpty || key.startsWith(prefix)) {
@@ -1504,6 +1592,14 @@ class _VirtualWebDavTransport implements HttpClientAdapter {
       return ResponseBody.fromString('Precondition Failed', 412);
     }
     if (options.method == 'PUT') {
+      final existing = remoteFiles[path];
+      if (existing != null && options.headers['If-None-Match'] == '*') {
+        return ResponseBody.fromString('Precondition Failed', 412);
+      }
+      final expectedEtag = options.headers['If-Match'];
+      if (expectedEtag != null && expectedEtag != remoteEtags[path]) {
+        return ResponseBody.fromString('Precondition Failed', 412);
+      }
       final bytesBuilder = BytesBuilder();
       if (requestStream != null) {
         await for (final chunk in requestStream) {

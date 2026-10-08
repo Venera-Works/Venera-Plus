@@ -345,6 +345,8 @@ class _WebdavSettingState extends State<_WebdavSetting> {
   String pass = "";
   String disableSync = "";
 
+  bool _deviceNameEdited = false;
+
   SyncDirection syncDirection = SyncDirection.bidirectional;
   SyncTiming syncTiming = SyncTiming.realtime;
   int syncInterval = 30;
@@ -352,17 +354,27 @@ class _WebdavSettingState extends State<_WebdavSetting> {
   late final TextEditingController userController;
   late final TextEditingController passController;
   late final TextEditingController fieldsController;
+  late final TextEditingController deviceNameController;
 
   bool isTesting = false;
 
   @override
   void initState() {
     super.initState();
+    var deviceName = '';
     if (appdata.settings['webdav'] is! List) {
       appdata.settings['webdav'] = [];
     }
     if (appdata.settings['disableSyncFields'].trim().isNotEmpty) {
       disableSync = appdata.settings['disableSyncFields'];
+    }
+    final savedDeviceName = appdata.implicitData['webdavSyncDeviceName'];
+    if (savedDeviceName is String && savedDeviceName.trim().isNotEmpty) {
+      try {
+        deviceName = normalizeSyncDeviceName(savedDeviceName);
+      } on FormatException {
+        deviceName = '';
+      }
     }
     var configs = appdata.settings['webdav'] as List;
     if (configs.length == 3 && configs.whereType<String>().length == 3) {
@@ -376,6 +388,10 @@ class _WebdavSettingState extends State<_WebdavSetting> {
     urlController = TextEditingController(text: url);
     userController = TextEditingController(text: user);
     passController = TextEditingController(text: pass);
+    deviceNameController = TextEditingController(text: deviceName);
+    if (deviceName.isEmpty) {
+      unawaited(_autofillDeviceName());
+    }
     fieldsController = TextEditingController(text: disableSync);
   }
 
@@ -384,6 +400,7 @@ class _WebdavSettingState extends State<_WebdavSetting> {
     urlController.dispose();
     userController.dispose();
     passController.dispose();
+    deviceNameController.dispose();
     fieldsController.dispose();
     super.dispose();
   }
@@ -425,6 +442,17 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                 ),
                 controller: passController,
                 onChanged: (value) => pass = value,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                decoration: InputDecoration(
+                  labelText: "Device name".tl,
+                  border: const OutlineInputBorder(),
+                ),
+                controller: deviceNameController,
+                onChanged: (_) {
+                  _deviceNameEdited = true;
+                },
               ),
               const SizedBox(height: 12),
               TextField(
@@ -630,8 +658,23 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                         url.trim().isEmpty &&
                         user.trim().isEmpty &&
                         pass.trim().isEmpty;
+                    final String? resolvedDeviceName;
+                    try {
+                      resolvedDeviceName = clear
+                          ? null
+                          : await _resolveDeviceNameForSave();
+                    } on FormatException {
+                      if (!mounted) return;
+                      setState(() => isTesting = false);
+                      context.showMessage(
+                        message: "Enter a valid device name".tl,
+                      );
+                      return;
+                    }
+                    if (!mounted) return;
                     final testResult = await DataSync().configure(
                       config: clear ? [] : [url.trim(), user, pass],
+                      deviceName: resolvedDeviceName,
                       excludedFields: disableSync,
                       direction: syncDirection,
                       timing: syncTiming,
@@ -655,6 +698,36 @@ class _WebdavSettingState extends State<_WebdavSetting> {
         ),
       ),
     );
+  }
+
+  Future<void> _autofillDeviceName() async {
+    final name = await readSyncDeviceName();
+    if (!mounted ||
+        _deviceNameEdited ||
+        deviceNameController.text.trim().isNotEmpty) {
+      return;
+    }
+    deviceNameController.text = name;
+  }
+
+  Future<String> _resolveDeviceNameForSave() async {
+    final current = deviceNameController.text;
+    if (current.trim().isNotEmpty || _deviceNameEdited) {
+      return normalizeSyncDeviceName(current);
+    }
+
+    final detected = await readSyncDeviceName();
+    if (!mounted) return detected;
+    final latest = deviceNameController.text;
+    if (_deviceNameEdited) {
+      final normalized = normalizeSyncDeviceName(latest);
+      deviceNameController.text = normalized;
+      return normalized;
+    }
+    final resolved = latest.trim().isEmpty ? detected : latest;
+    final normalized = normalizeSyncDeviceName(resolved);
+    deviceNameController.text = normalized;
+    return normalized;
   }
 
   BackupConfig get currentConfig =>

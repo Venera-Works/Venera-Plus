@@ -101,16 +101,11 @@ String formatCandidateSafePreview({
   return value.toString();
 }
 
-/// Shows the dialog to resolve sync conflicts item by item.
+/// Shows a dialog to stage one choice for every sync conflict before applying.
 Future<void> showSyncConflictDialog(
   BuildContext context, {
   List<MergeConflict>? conflicts,
-  Future<Res<bool>> Function({
-    required String recordKey,
-    required String field,
-    required String candidateId,
-  })?
-  onResolve,
+  Future<Res<bool>> Function(List<MergeConflictResolution>)? onResolve,
   DataSync? sync,
 }) async {
   return showDialog<void>(
@@ -135,13 +130,8 @@ class SyncConflictDialog extends StatefulWidget {
   /// Explicit conflicts list for an isolated dialog or test.
   final List<MergeConflict>? conflicts;
 
-  /// Custom resolver callback for test verification.
-  final Future<Res<bool>> Function({
-    required String recordKey,
-    required String field,
-    required String candidateId,
-  })?
-  onResolve;
+  /// Custom batch resolver callback for test verification.
+  final Future<Res<bool>> Function(List<MergeConflictResolution>)? onResolve;
 
   /// Optional DataSync instance.
   final DataSync? sync;
@@ -153,9 +143,16 @@ class SyncConflictDialog extends StatefulWidget {
 class _SyncConflictDialogState extends State<SyncConflictDialog> {
   late final DataSync _sync = widget.sync ?? DataSync();
   List<MergeConflict>? _localConflicts;
-  String? _resolvingCandidateId;
-  String? _resolvingRecordKey;
-  String? _resolvingField;
+  final Map<
+    (String, String),
+    ({
+      String candidateId,
+      Set<String> candidateIds,
+      String candidateFingerprint,
+    })
+  >
+  _selectedCandidates = {};
+  bool _isSubmitting = false;
 
   @override
   void initState() {
@@ -168,6 +165,18 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
   }
 
   @override
+  void didUpdateWidget(covariant SyncConflictDialog oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.conflicts == widget.conflicts) return;
+    if (oldWidget.conflicts == null) _sync.removeListener(_onSyncStateChanged);
+    if (widget.conflicts == null) _sync.addListener(_onSyncStateChanged);
+    _localConflicts = widget.conflicts == null
+        ? null
+        : List.of(widget.conflicts!);
+    _retainValidSelections(_activeConflicts);
+  }
+
+  @override
   void dispose() {
     if (widget.conflicts == null) {
       _sync.removeListener(_onSyncStateChanged);
@@ -176,13 +185,116 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
   }
 
   void _onSyncStateChanged() {
-    if (mounted) {
-      setState(() {});
-    }
+    if (!mounted) return;
+    _retainValidSelections(_activeConflicts);
+    setState(() {});
   }
 
   List<MergeConflict> get _activeConflicts =>
       _localConflicts ?? _sync.conflicts;
+
+  bool _sameCandidateIds(Set<String> selected, MergeConflict conflict) =>
+      selected.length == conflict.candidates.length &&
+      conflict.candidates.every((candidate) => selected.contains(candidate.id));
+
+  void _retainValidSelections(List<MergeConflict> conflicts) {
+    final active = {
+      for (final conflict in conflicts)
+        (conflict.recordKey, conflict.field): conflict,
+    };
+    _selectedCandidates.removeWhere((key, selected) {
+      final conflict = active[key];
+      return conflict == null ||
+          !_sameCandidateIds(selected.candidateIds, conflict) ||
+          conflict.candidateFingerprint != selected.candidateFingerprint ||
+          !conflict.candidates.any(
+            (candidate) => candidate.id == selected.candidateId,
+          );
+    });
+  }
+
+  void _selectCandidate(MergeConflict conflict, MergeCandidate candidate) {
+    if (_isSubmitting) return;
+    setState(() {
+      _selectedCandidates[(conflict.recordKey, conflict.field)] = (
+        candidateId: candidate.id,
+        candidateIds: Set.unmodifiable(
+          conflict.candidates.map((item) => item.id),
+        ),
+        candidateFingerprint: conflict.candidateFingerprint,
+      );
+    });
+  }
+
+  bool _allConflictsSelected(List<MergeConflict> conflicts) => conflicts.every((
+    conflict,
+  ) {
+    final selected = _selectedCandidates[(conflict.recordKey, conflict.field)];
+    return selected != null &&
+        _sameCandidateIds(selected.candidateIds, conflict) &&
+        selected.candidateFingerprint == conflict.candidateFingerprint &&
+        conflict.candidates.any(
+          (candidate) => candidate.id == selected.candidateId,
+        );
+  });
+
+  Future<void> _submitSelections() async {
+    if (_isSubmitting) return;
+    final conflicts = _activeConflicts;
+    _retainValidSelections(conflicts);
+    if (conflicts.isEmpty || !_allConflictsSelected(conflicts)) {
+      setState(() {});
+      return;
+    }
+    final resolutions = List<MergeConflictResolution>.unmodifiable([
+      for (final conflict in conflicts)
+        MergeConflictResolution(
+          recordKey: conflict.recordKey,
+          field: conflict.field,
+          candidateId:
+              _selectedCandidates[(conflict.recordKey, conflict.field)]!
+                  .candidateId,
+          expectedCandidateIds:
+              _selectedCandidates[(conflict.recordKey, conflict.field)]!
+                  .candidateIds,
+          expectedCandidateFingerprint:
+              _selectedCandidates[(conflict.recordKey, conflict.field)]!
+                  .candidateFingerprint,
+        ),
+    ]);
+    setState(() => _isSubmitting = true);
+    try {
+      final res = widget.onResolve != null
+          ? await widget.onResolve!(resolutions)
+          : await _sync.resolveConflicts(resolutions);
+      if (!mounted) return;
+      if (res.error) {
+        context.showMessage(
+          message: '${"Resolve failed".tl}: ${res.errorMessage ?? ""}',
+        );
+      } else if (res.dataOrNull != true) {
+        context.showMessage(message: 'Resolve failed'.tl);
+      } else {
+        final resolved = {
+          for (final resolution in resolutions)
+            (resolution.recordKey, resolution.field),
+        };
+        setState(() {
+          _selectedCandidates.removeWhere((key, _) => resolved.contains(key));
+          _localConflicts?.removeWhere(
+            (conflict) =>
+                resolved.contains((conflict.recordKey, conflict.field)),
+          );
+        });
+      }
+    } catch (error) {
+      if (mounted) {
+        context.showMessage(message: '${"Resolve failed".tl}: $error');
+      }
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
+  }
 
   String _formatDomain(String domain) {
     switch (domain) {
@@ -286,154 +398,127 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
     );
   }
 
-  Future<void> _resolveCandidate(
-    MergeConflict conflict,
-    MergeCandidate candidate,
-  ) async {
-    setState(() {
-      _resolvingCandidateId = candidate.id;
-      _resolvingRecordKey = conflict.recordKey;
-      _resolvingField = conflict.field;
-    });
-
-    try {
-      final res = widget.onResolve != null
-          ? await widget.onResolve!(
-              recordKey: conflict.recordKey,
-              field: conflict.field,
-              candidateId: candidate.id,
-            )
-          : await _sync.resolveConflict(
-              recordKey: conflict.recordKey,
-              field: conflict.field,
-              candidateId: candidate.id,
-            );
-
-      if (!mounted) return;
-      if (res.error) {
-        context.showMessage(
-          message:
-              '${"Resolve failed".tl}: ${res.errorMessage?.tl ?? res.errorMessage ?? ""}',
-        );
-      } else {
-        if (_localConflicts != null) {
-          setState(() {
-            _localConflicts!.removeWhere(
-              (c) =>
-                  c.recordKey == conflict.recordKey &&
-                  c.field == conflict.field,
-            );
-          });
-        }
-        context.showMessage(message: 'Conflict resolved'.tl);
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _resolvingCandidateId = null;
-          _resolvingRecordKey = null;
-          _resolvingField = null;
-        });
-      }
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final conflicts = _activeConflicts;
     final theme = Theme.of(context);
+    final canSubmit = conflicts.isNotEmpty && _allConflictsSelected(conflicts);
 
-    return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 580, maxHeight: 680),
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    conflicts.isEmpty
-                        ? Icons.check_circle_outline
-                        : Icons.sync_problem,
-                    color: conflicts.isEmpty
-                        ? theme.colorScheme.primary
-                        : theme.colorScheme.error,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      'Resolve Sync Conflicts'.tl,
-                      style: theme.textTheme.titleLarge,
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close),
-                    onPressed: () => Navigator.of(context).pop(),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                conflicts.isEmpty
-                    ? 'All conflicts resolved.'.tl
-                    : 'Found @count conflict(s). Choose a candidate for each item to resolve.'
-                          .tlParams({'count': conflicts.length}),
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: theme.textTheme.bodySmall?.color,
-                ),
-              ),
-              const SizedBox(height: 16),
-              if (conflicts.isEmpty) ...[
-                const Spacer(),
-                Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.check_circle,
-                        size: 56,
-                        color: theme.colorScheme.primary,
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        'All conflicts resolved'.tl,
-                        style: theme.textTheme.titleMedium,
-                      ),
-                    ],
-                  ),
-                ),
-                const Spacer(),
-                Button.filled(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: Text('Done'.tl),
-                ),
-              ] else ...[
-                Expanded(
-                  child: ListView.separated(
-                    itemCount: conflicts.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 12),
-                    itemBuilder: (context, index) {
-                      final conflict = conflicts[index];
-                      return _buildConflictCard(conflict, theme);
-                    },
-                  ),
-                ),
-                const SizedBox(height: 12),
+    return PopScope(
+      canPop: !_isSubmitting,
+      child: Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 580, maxHeight: 680),
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
                 Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
                   children: [
-                    Button.outlined(
-                      onPressed: () => Navigator.of(context).pop(),
-                      child: Text('Close'.tl),
+                    Icon(
+                      conflicts.isEmpty
+                          ? Icons.check_circle_outline
+                          : Icons.sync_problem,
+                      color: conflicts.isEmpty
+                          ? theme.colorScheme.primary
+                          : theme.colorScheme.error,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'Resolve Sync Conflicts'.tl,
+                        style: theme.textTheme.titleLarge,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: _isSubmitting
+                          ? null
+                          : () => Navigator.of(context).pop(),
                     ),
                   ],
                 ),
+                const SizedBox(height: 8),
+                Text(
+                  conflicts.isEmpty
+                      ? 'All conflicts resolved.'.tl
+                      : 'Found @count conflict(s). Choose a candidate for each item to resolve.'
+                            .tlParams({'count': conflicts.length}),
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.textTheme.bodySmall?.color,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                if (conflicts.isEmpty) ...[
+                  const Spacer(),
+                  Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.check_circle,
+                          size: 56,
+                          color: theme.colorScheme.primary,
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          'All conflicts resolved'.tl,
+                          style: theme.textTheme.titleMedium,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Spacer(),
+                  FilledButton(
+                    onPressed: _isSubmitting
+                        ? null
+                        : () => Navigator.of(context).pop(),
+                    child: Text('Done'.tl),
+                  ),
+                ] else ...[
+                  Expanded(
+                    child: ListView.separated(
+                      itemCount: conflicts.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 12),
+                      itemBuilder: (context, index) {
+                        final conflict = conflicts[index];
+                        return _buildConflictCard(conflict, theme);
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      OutlinedButton(
+                        onPressed: _isSubmitting
+                            ? null
+                            : () => Navigator.of(context).pop(),
+                        child: Text('Close'.tl),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton(
+                        onPressed: _isSubmitting || !canSubmit
+                            ? null
+                            : _submitSelections,
+                        child: _isSubmitting
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : Text('Resolve Selected'.tl),
+                      ),
+                    ],
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
@@ -514,11 +599,10 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
             ),
             const SizedBox(height: 10),
             ...conflict.candidates.map((cand) {
-              final isResolvingThis =
-                  _resolvingCandidateId == cand.id &&
-                  _resolvingRecordKey == conflict.recordKey &&
-                  _resolvingField == conflict.field;
-              final isResolvingAny = _resolvingCandidateId != null;
+              final isSelected =
+                  _selectedCandidates[(conflict.recordKey, conflict.field)]
+                      ?.candidateId ==
+                  cand.id;
 
               final valueLabel = _formatCandidateValue(
                 domain: domain,
@@ -535,11 +619,14 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
                   color: theme.colorScheme.surface,
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(
-                    color: cand.isDeleted
+                    color: isSelected
+                        ? theme.colorScheme.primary
+                        : cand.isDeleted
                         ? theme.colorScheme.error.withValues(alpha: 0.3)
                         : theme.colorScheme.outlineVariant.withValues(
                             alpha: 0.3,
                           ),
+                    width: isSelected ? 1.5 : 1,
                   ),
                 ),
                 child: Column(
@@ -548,11 +635,15 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
                     Row(
                       children: [
                         Icon(
-                          cand.isDeleted
+                          isSelected
+                              ? Icons.radio_button_checked
+                              : cand.isDeleted
                               ? Icons.delete_outline
                               : Icons.check_circle_outline,
                           size: 20,
-                          color: cand.isDeleted
+                          color: isSelected
+                              ? theme.colorScheme.primary
+                              : cand.isDeleted
                               ? theme.colorScheme.error
                               : theme.colorScheme.primary,
                         ),
@@ -621,13 +712,8 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
                           conflict.field,
                           cand.id,
                         )),
-                        isLoading: isResolvingThis,
-                        onPressed: () {
-                          if (!isResolvingAny) {
-                            _resolveCandidate(conflict, cand);
-                          }
-                        },
-                        child: Text('Choose'.tl),
+                        onPressed: () => _selectCandidate(conflict, cand),
+                        child: Text(isSelected ? 'Selected'.tl : 'Choose'.tl),
                       ),
                     ),
                   ],

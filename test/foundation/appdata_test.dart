@@ -410,7 +410,7 @@ void main() {
   );
 
   test(
-    'Bangumi secrets and pending progress remain local across real sync import',
+    'Bangumi connection and bindings sync while pending progress stays local',
     () async {
       final dataDir = Directory.systemTemp.createTempSync(
         'venera-appdata-bangumi-',
@@ -450,16 +450,10 @@ void main() {
       final implicitData = jsonDecode(
         File('${dataDir.path}/implicitData.json').readAsStringSync(),
       );
-      expect(syncData['settings'].containsKey('bangumiAccessToken'), isFalse);
-      expect(syncData['settings'].containsKey('bangumiUsername'), isFalse);
-      expect(
-        appdata.exportSyncSettings().containsKey('bangumiAccessToken'),
-        isFalse,
-      );
-      expect(
-        appdata.exportSyncSettings().containsKey('bangumiUsername'),
-        isFalse,
-      );
+      expect(syncData['settings']['bangumiAccessToken'], 'token');
+      expect(syncData['settings']['bangumiUsername'], 'alice');
+      expect(appdata.exportSyncSettings()['bangumiAccessToken'], 'token');
+      expect(appdata.exportSyncSettings()['bangumiUsername'], 'alice');
       expect(syncData['settings']['bangumiAutoSyncEnabled'], isFalse);
       expect(syncData['settings']['bangumiBindings'], isNotEmpty);
       expect(
@@ -480,8 +474,8 @@ void main() {
         'implicitData': {'bangumiPendingProgress': <String, dynamic>{}},
         'searchHistory': <String>[],
       });
-      expect(appdata.settings['bangumiAccessToken'], 'token');
-      expect(appdata.settings['bangumiUsername'], 'alice');
+      expect(appdata.settings['bangumiAccessToken'], 'remote-secret');
+      expect(appdata.settings['bangumiUsername'], 'remote-user');
       expect(appdata.settings['bangumiAutoSyncEnabled'], isTrue);
       expect(
         appdata.settings['bangumiBindings']['remote@comic']['subjectId'],
@@ -494,13 +488,13 @@ void main() {
       final persisted = jsonDecode(
         File('${dataDir.path}/appdata.json').readAsStringSync(),
       );
-      expect(persisted['settings']['bangumiAccessToken'], 'token');
-      expect(persisted['settings']['bangumiUsername'], 'alice');
+      expect(persisted['settings']['bangumiAccessToken'], 'remote-secret');
+      expect(persisted['settings']['bangumiUsername'], 'remote-user');
       final reexported = jsonDecode(
         File('${dataDir.path}/syncdata.json').readAsStringSync(),
       );
-      expect(reexported['settings'].containsKey('bangumiAccessToken'), isFalse);
-      expect(reexported['settings'].containsKey('bangumiUsername'), isFalse);
+      expect(reexported['settings']['bangumiAccessToken'], 'remote-secret');
+      expect(reexported['settings']['bangumiUsername'], 'remote-user');
     },
   );
 

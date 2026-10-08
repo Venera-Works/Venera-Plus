@@ -11,3 +11,4 @@ export 'sync_conflict_dialog.dart';
 export 'legacy_sync_reader.dart';
 export 'sync_preferences_adapter.dart';
 export 'sync_source_issues_dialog.dart';
+export 'sync_device.dart';

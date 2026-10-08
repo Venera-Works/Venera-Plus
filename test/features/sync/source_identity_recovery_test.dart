@@ -430,12 +430,13 @@ void main() {
             (c) => (c.value as Map)['content'] == contentB,
           );
 
-          final resolveRes = await coordinator.resolveConflict(
-            recordKey: sourceKey,
-            field: 'script',
-            candidateId: chosenCandidate.id,
-            direction: SyncDirection.downloadOnly,
-          );
+          final resolveRes = await coordinator.resolveConflicts([
+            MergeConflictResolution(
+              recordKey: sourceKey,
+              field: 'script',
+              candidateId: chosenCandidate.id,
+            ),
+          ], direction: SyncDirection.downloadOnly);
           expect(resolveRes.success, isTrue);
           expect(
             coordinator.store.document.conflicts.where(
@@ -659,7 +660,13 @@ void main() {
           final candidateB = conflict.candidates.firstWhere(
             (c) => (c.value as Map)['content'] == contentB,
           );
-          await coordinator.store.resolve(sourceKey, 'script', candidateB.id);
+          await coordinator.store.resolveAll([
+            MergeConflictResolution(
+              recordKey: sourceKey,
+              field: 'script',
+              candidateId: candidateB.id,
+            ),
+          ]);
 
           final desiredB = coordinator.store.document.materialize(
             preferred: coordinator.store.observed,

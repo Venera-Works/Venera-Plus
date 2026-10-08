@@ -521,12 +521,10 @@ class MergeStore {
     await save();
   }
 
-  /// Resolves, publishes and journals the target in the SAME durable commit.
-  /// The observed baseline remains the old business state until completeApply.
-  Future<void> resolve(
-    String recordKey,
-    String field,
-    String candidateId, {
+  /// Resolves a batch atomically in one durable state commit. The observed
+  /// baseline remains the old business state until completeApply.
+  Future<void> resolveAll(
+    List<MergeConflictResolution> resolutions, {
     Set<String> unavailableDomains = const {},
   }) async {
     _ensureCanAllocate();
@@ -536,23 +534,97 @@ class MergeStore {
         'Complete or cancel pending business apply before resolve',
       );
     }
-    final domain = syncRecordDomain(recordKey);
-    if (unavailableDomains.contains(domain)) {
-      throw StateError(
-        'Cannot resolve conflict for unavailable domain "$domain"',
+    if (resolutions.isEmpty) {
+      throw ArgumentError.value(
+        resolutions,
+        'resolutions',
+        'Must not be empty',
       );
     }
-    _document.resolve(actor, recordKey, field, candidateId);
-    _outbox.add(
-      MergeBatch.create(
-        actor: actor,
-        counter: _document.counterFor(actor),
-        document: _document.clone(),
-      ),
+
+    final stagedDocument = _document.clone();
+    final activeConflicts = {
+      for (final conflict in stagedDocument.conflicts)
+        (conflict.recordKey, conflict.field): conflict,
+    };
+    final selectedConflicts = <(String, String)>{};
+    for (final resolution in resolutions) {
+      if (resolution.recordKey.isEmpty ||
+          resolution.field.isEmpty ||
+          resolution.candidateId.isEmpty) {
+        throw ArgumentError.value(resolution, 'resolutions');
+      }
+      final key = (resolution.recordKey, resolution.field);
+      if (!selectedConflicts.add(key)) {
+        throw StateError('Duplicate conflict resolution request');
+      }
+      final conflict = activeConflicts[key];
+      if (conflict == null ||
+          !conflict.candidates.any(
+            (candidate) => candidate.id == resolution.candidateId,
+          )) {
+        throw StateError('Conflict candidate is invalid or stale');
+      }
+      final expectedCandidateIds = resolution.expectedCandidateIds;
+      if (expectedCandidateIds != null &&
+          (expectedCandidateIds.length != conflict.candidates.length ||
+              !conflict.candidates.every(
+                (candidate) => expectedCandidateIds.contains(candidate.id),
+              ))) {
+        throw StateError('Conflict candidate is invalid or stale');
+      }
+      if (resolution.expectedCandidateFingerprint != null &&
+          conflict.candidateFingerprint !=
+              resolution.expectedCandidateFingerprint) {
+        throw StateError('Conflict candidate is invalid or stale');
+      }
+      final domain = syncRecordDomain(resolution.recordKey);
+      if (unavailableDomains.contains(domain)) {
+        throw StateError(
+          'Cannot resolve conflict for unavailable domain "$domain"',
+        );
+      }
+    }
+
+    // Resolve ordinary cells before presence: a chosen deletion can make the
+    // record inactive, but must not invalidate another selection from this batch.
+    for (final resolution in resolutions) {
+      if (resolution.field == 'presence') continue;
+      stagedDocument.resolve(
+        actor,
+        resolution.recordKey,
+        resolution.field,
+        resolution.candidateId,
+      );
+    }
+    for (final resolution in resolutions) {
+      if (resolution.field != 'presence') continue;
+      stagedDocument.resolve(
+        actor,
+        resolution.recordKey,
+        resolution.field,
+        resolution.candidateId,
+      );
+    }
+
+    final checkpoint = MergeBatch.create(
+      actor: actor,
+      counter: stagedDocument.counterFor(actor),
+      document: stagedDocument.clone(),
     );
-    _pendingApply = _document.materialize(preferred: _observed);
-    _pendingUnavailableDomains = Set<String>.unmodifiable(unavailableDomains);
-    await save();
+    final pendingApply = stagedDocument.materialize(preferred: _observed);
+    final pendingUnavailableDomains = Set<String>.unmodifiable(
+      unavailableDomains,
+    );
+    _document = stagedDocument;
+    _outbox.add(checkpoint);
+    _pendingApply = pendingApply;
+    _pendingUnavailableDomains = pendingUnavailableDomains;
+    try {
+      await save();
+    } catch (error) {
+      throw MergeStorePersistenceException(error);
+    }
   }
 
   /// Successful return means both primary and backup contain this complete
@@ -900,4 +972,16 @@ class _StoreState {
 class _StoreActorMismatch extends StateError {
   _StoreActorMismatch(String expected, String actual)
     : super('Store actor mismatch: expected "$expected", found "$actual"');
+}
+
+/// The durable state replacement failed after the in-memory batch was staged.
+/// The on-disk commit may have succeeded, so callers must allow recovery before
+/// retrying a choice.
+class MergeStorePersistenceException implements Exception {
+  final Object cause;
+
+  const MergeStorePersistenceException(this.cause);
+
+  @override
+  String toString() => 'MergeStore persistence status is uncertain: $cause';
 }

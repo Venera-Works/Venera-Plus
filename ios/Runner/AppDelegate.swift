@@ -23,7 +23,10 @@ import Foundation // 添加此行
 
     let methodChannel = FlutterMethodChannel(name: "venera/method_channel", binaryMessenger: controller.binaryMessenger)
     methodChannel.setMethodCallHandler { (call, result) in
-      if call.method == "getProxy" {
+      if call.method == "getSyncDeviceName" {
+        let name = UIDevice.current.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        result(name.isEmpty ? UIDevice.current.model : name)
+      } else if call.method == "getProxy" {
         if let proxySettings = CFNetworkCopySystemProxySettings()?.takeUnretainedValue() as NSDictionary?,
           let dict = proxySettings.object(forKey: kCFNetworkProxiesHTTPProxy) as? NSDictionary,
           let host = dict.object(forKey: kCFNetworkProxiesHTTPProxy) as? String,

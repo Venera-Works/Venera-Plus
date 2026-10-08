@@ -24,6 +24,7 @@ import 'merge_remote.dart';
 import 'merge_store.dart';
 import 'merge_sync_coordinator.dart';
 import 'sync_preferences_adapter.dart';
+import 'sync_device.dart';
 
 enum _DataSyncTask { sync, upload, download, configure, resolve, repair }
 
@@ -298,6 +299,7 @@ class DataSync with ChangeNotifier {
     required SyncDirection direction,
     required SyncTiming timing,
     required int minutes,
+    String? deviceName,
   }) {
     final draft = List<String>.of(config);
     return _enqueue(_DataSyncTask.configure, () async {
@@ -313,6 +315,7 @@ class DataSync with ChangeNotifier {
         'webdavSyncIntervalMinutes',
         'webdavSyncLastAttempt',
         'webdavSyncPending',
+        'webdavSyncDeviceName',
       ];
       final oldImplicit = {
         for (final key in configKeys)
@@ -323,6 +326,7 @@ class DataSync with ChangeNotifier {
       var committed = false;
       try {
         MergeSyncCoordinator? prepared;
+        String? resolvedDeviceName;
         if (draft.isNotEmpty) {
           if (draft.length != 3) {
             return const Res.error('Invalid WebDAV configuration format');
@@ -336,6 +340,7 @@ class DataSync with ChangeNotifier {
             return const Res.error('WebDAV URL cannot be empty');
           }
           final client = _client(endpoint);
+          resolvedDeviceName = await _resolveDeviceName(deviceName);
           await client.ping();
           final hash = MergeSyncCoordinator.computeEndpointHash(
             endpoint.url,
@@ -345,7 +350,13 @@ class DataSync with ChangeNotifier {
           final directory =
               debugStateDirFactory?.call(hash) ??
               Directory(FilePath.join(App.dataPath, 'sync_state_$hash'));
-          prepared = _createCoordinator(hash, directory, actor, client);
+          prepared = _createCoordinator(
+            hash,
+            directory,
+            actor,
+            client,
+            resolvedDeviceName,
+          );
           // Validation/reconciliation may touch only endpoint metadata. Pending
           // business replay and legacy migration wait for the config commit.
           await prepared.store.load();
@@ -355,6 +366,9 @@ class DataSync with ChangeNotifier {
         mutated = true;
         appdata.settings['webdav'] = draft;
         appdata.settings['disableSyncFields'] = excludedFields;
+        if (resolvedDeviceName != null) {
+          appdata.implicitData['webdavSyncDeviceName'] = resolvedDeviceName;
+        }
         appdata.implicitData['webdavSyncDirection'] = direction.name;
         appdata.implicitData['webdavSyncTiming'] =
             (draft.isEmpty ? SyncTiming.manual : timing).name;
@@ -592,13 +606,14 @@ class DataSync with ChangeNotifier {
     Directory directory,
     String actor,
     dav.Client client,
+    String deviceName,
   ) {
     final coordinator = MergeSyncCoordinator(
       endpointHash: hash,
       stateDirectory: directory,
       actor: actor,
       store: MergeStore(directory, actor),
-      remote: MergeRemote(client),
+      remote: MergeRemote(client, deviceName: deviceName),
       exportPreferencesOverride: debugExportRecords,
       applyPreferencesOverride: debugApplyRecords,
       getGenerationOverride: () => _changeGeneration,
@@ -614,6 +629,15 @@ class DataSync with ChangeNotifier {
     return coordinator;
   }
 
+  Future<String> _resolveDeviceName([String? requested]) async {
+    if (requested != null) return normalizeSyncDeviceName(requested);
+    final saved = appdata.implicitData['webdavSyncDeviceName'];
+    if (saved is String && saved.trim().isNotEmpty) {
+      return normalizeSyncDeviceName(saved);
+    }
+    return normalizeSyncDeviceName(await readSyncDeviceName());
+  }
+
   Future<void> _ensureCoordinatorLoaded() async {
     if (_coordinator == null) {
       final endpoint = _validateConfig();
@@ -623,6 +647,9 @@ class DataSync with ChangeNotifier {
         endpoint.user,
       );
       final actor = await MergeSyncCoordinator.getOrCreateActorId();
+      final deviceName = await _resolveDeviceName();
+      appdata.implicitData['webdavSyncDeviceName'] = deviceName;
+      await appdata.writeImplicitData();
       final directory =
           debugStateDirFactory?.call(hash) ??
           Directory(FilePath.join(App.dataPath, 'sync_state_$hash'));
@@ -631,6 +658,7 @@ class DataSync with ChangeNotifier {
         directory,
         actor,
         _client(endpoint),
+        deviceName,
       );
       _coordinatorNeedsRecovery = true;
     }
@@ -666,23 +694,20 @@ class DataSync with ChangeNotifier {
     }, key: _DataSyncTask.download);
   }
 
-  Future<Res<bool>> resolveConflict({
-    required String recordKey,
-    required String field,
-    required String candidateId,
-  }) {
+  Future<Res<bool>> resolveConflicts(
+    List<MergeConflictResolution> resolutions,
+  ) {
+    final choices = List<MergeConflictResolution>.unmodifiable(resolutions);
     return _enqueue(_DataSyncTask.resolve, () async {
       await _ensureCoordinatorLoaded();
       if (_coordinator == null) {
         return const Res.error('WebDAV is not configured');
       }
-      return await _coordinator!.resolveConflict(
-        recordKey: recordKey,
-        field: field,
-        candidateId: candidateId,
+      return await _coordinator!.resolveConflicts(
+        choices,
         direction: direction,
       );
-    }, key: (_DataSyncTask.resolve, recordKey, field, candidateId));
+    });
   }
 
   Future<Res<bool>> repairSourceIssue({

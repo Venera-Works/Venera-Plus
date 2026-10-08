@@ -1,5 +1,9 @@
 {
   "zh_CN": {
+    "Device name": "设备名",
+    "Enter a valid device name": "请输入有效的设备名",
+    "Selected": "已选择",
+    "Resolve Selected": "确认选择",
     "Sync interval": "同步间隔",
     "Syncs at the selected interval while the app is running, following the selected direction. Overdue syncs run when the app reopens. Conflicting records and fields require an explicit candidate choice.": "应用运行期间按所选间隔与方向同步，重新打开时补做已到期同步。发生冲突的记录和字段需逐项明确选择候选版本。",
     "Wait for PDF imports to finish or cancel them before changing the local library.": "请等待 PDF 导入完成或取消导入后，再修改本地漫画库。",
@@ -284,7 +288,7 @@
     "Not connected": "未连接",
     "Bangumi Access Token": "Bangumi Access Token",
     "Apply for Access Token": "申请 Access Token",
-    "Your Access Token and Bangumi bindings are included in WebDAV app data sync.": "Access Token 与 Bangumi 条目绑定会参与 WebDAV 应用数据同步。",
+    "Your Bangumi account (Access Token and username) and bindings are included in WebDAV app data sync. Only sync with a trusted WebDAV server; pending submissions and retries stay on this device.": "Bangumi 账户（Access Token 和用户名）及条目绑定会参与 WebDAV 应用数据同步。请仅使用可信的 WebDAV 服务器；待提交进度和重试队列保留在本设备。",
     "Automatically sync after completing a chapter": "阅读完成章节后自动同步",
     "Automatic metadata scraping": "自动刮削",
     "When enabled, Bangumi will be used to scrape comic metadata.": "开启后将联动bangumi对漫画信息进行刮削",
@@ -973,6 +977,10 @@
     "Path copied to clipboard": "路径已复制到剪贴板"
   },
   "zh_TW": {
+    "Device name": "裝置名稱",
+    "Enter a valid device name": "請輸入有效的裝置名稱",
+    "Selected": "已選擇",
+    "Resolve Selected": "確認選擇",
     "Sync interval": "同步間隔",
     "Syncs at the selected interval while the app is running, following the selected direction. Overdue syncs run when the app reopens. Conflicting records and fields require an explicit candidate choice.": "應用程式執行期間按所選間隔與方向同步，重新開啟時補做已到期同步。發生衝突的記錄和欄位需逐項明確選擇候選版本。",
     "Wait for PDF imports to finish or cancel them before changing the local library.": "請等待 PDF 匯入完成或取消匯入後，再修改本機漫畫庫。",
@@ -1257,7 +1265,7 @@
     "Not connected": "未連線",
     "Bangumi Access Token": "Bangumi Access Token",
     "Apply for Access Token": "申請 Access Token",
-    "Your Access Token and Bangumi bindings are included in WebDAV app data sync.": "Access Token 與 Bangumi 條目綁定會參與 WebDAV 應用資料同步。",
+    "Your Bangumi account (Access Token and username) and bindings are included in WebDAV app data sync. Only sync with a trusted WebDAV server; pending submissions and retries stay on this device.": "Bangumi 帳戶（Access Token 和使用者名稱）及條目綁定會參與 WebDAV 應用資料同步。請僅使用可信的 WebDAV 伺服器；待提交進度和重試佇列保留在本裝置。",
     "Automatically sync after completing a chapter": "閱讀完成章節後自動同步",
     "Automatic metadata scraping": "自動刮削",
     "When enabled, Bangumi will be used to scrape comic metadata.": "開啟後將連動bangumi對漫畫資訊進行刮削",

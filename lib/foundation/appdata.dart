@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:venera_plus/foundation/sync_records.dart';
+import 'package:venera_plus/foundation/appdata_sync_policy.dart';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import 'package:venera_plus/foundation/app.dart';
@@ -221,71 +222,9 @@ class Appdata with Init {
         .toList();
   }
 
-  /// Settings that are always device-local or synchronized only by an
-  /// explicit opt-in policy.
-  static const _disableSync = {
-    "proxy",
-    "authorizationRequired",
-    "customImageProcessing",
-    "webdav",
-    "webdavAutoSync",
-    "webdavSyncMode",
-    "webdavSyncDirection",
-    "webdavSyncTiming",
-    "webdavSyncIntervalMinutes",
-    "webdavSyncPending",
-    "webdavSyncLastAttempt",
-    "webdavBaselineTarget",
-    "webdavLastSyncedRemoteFile",
-    "webdavLastSyncedRemoteVersion",
-    "webdavLastSyncedRemoteEtag",
-    "webdavProxyEnabled",
-    "backupWebdav",
-    "backupWebdavPath",
-    "backupWebdavSyncEnabled",
-    "webdavComicLibrary",
-    "webdavComicLibraryPath",
-    "webdavComicLibraryAutoSync",
-    "webdavComicLibrarySyncIntervalMinutes",
-    "webdavComicLibrarySyncEnabled",
-    "disableSyncFields",
-    "deviceId",
-    "deviceSpecificSettings",
-    "bangumiAccessToken",
-    "bangumiUsername",
-    "lastSyncTime",
-  };
-
-  static const _archiveSyncFields = {"backupWebdav", "backupWebdavPath"};
-
-  static const _comicLibrarySyncFields = {
-    "webdavComicLibrary",
-    "webdavComicLibraryPath",
-    "webdavComicLibraryAutoSync",
-    "webdavComicLibrarySyncIntervalMinutes",
-  };
-
-  static const _obsoleteSetting = "readLaterFolder";
-
   /// Returns the effective set of forbidden / device-local setting keys.
-  Set<String> getDisabledSyncFields({bool forExport = false}) {
-    final disabled = <String>{
-      ..._disableSync,
-      _obsoleteSetting,
-      'readingFolder',
-    };
-    if (settings["backupWebdavSyncEnabled"] == true) {
-      disabled.removeAll(_archiveSyncFields);
-    }
-    if (settings["webdavComicLibrarySyncEnabled"] == true) {
-      disabled.removeAll(_comicLibrarySyncFields);
-    }
-    final custom = settings["disableSyncFields"];
-    if (custom is String) {
-      disabled.addAll(splitField(custom));
-    }
-    return disabled;
-  }
+  Set<String> getDisabledSyncFields({bool forExport = false}) =>
+      getDisabledAppDataSyncFields(settings._data);
 
   /// Checks if a setting key is allowed to be exported or imported via sync.
   bool isSettingSyncAllowed(String rootKey) {
@@ -298,7 +237,8 @@ class Appdata with Init {
     final disabled = getDisabledSyncFields(forExport: true);
     final result = <String, dynamic>{};
     for (final entry in settings._data.entries) {
-      if (disabled.contains(entry.key) || entry.key == _obsoleteSetting) {
+      if (disabled.contains(entry.key) ||
+          entry.key == appdataObsoleteSyncSetting) {
         continue;
       }
       result[entry.key] = entry.value;
@@ -314,7 +254,7 @@ class Appdata with Init {
 
   /// Applies a single root setting if permitted.
   void applySyncSetting(String key, dynamic value) {
-    if (!isSettingSyncAllowed(key) || key == _obsoleteSetting) return;
+    if (!isSettingSyncAllowed(key) || key == appdataObsoleteSyncSetting) return;
     validateSyncSetting(key, value);
     settings[key] = value;
   }
@@ -323,7 +263,10 @@ class Appdata with Init {
   void applySyncSettingLeaf(List<String> path, dynamic value) {
     if (path.isEmpty) return;
     final rootKey = path.first;
-    if (!isSettingSyncAllowed(rootKey) || rootKey == _obsoleteSetting) return;
+    if (!isSettingSyncAllowed(rootKey) ||
+        rootKey == appdataObsoleteSyncSetting) {
+      return;
+    }
     if (path.length == 1) {
       applySyncSetting(rootKey, value);
       return;
@@ -357,7 +300,10 @@ class Appdata with Init {
   void removeSyncSettingLeaf(List<String> path) {
     if (path.isEmpty) return;
     final rootKey = path.first;
-    if (!isSettingSyncAllowed(rootKey) || rootKey == _obsoleteSetting) return;
+    if (!isSettingSyncAllowed(rootKey) ||
+        rootKey == appdataObsoleteSyncSetting) {
+      return;
+    }
     if (path.length == 1) {
       settings.remove(rootKey);
       return;
@@ -388,7 +334,7 @@ class Appdata with Init {
   /// Removes an eligible setting by key, strictly observing safety filtering.
   void removeSyncSetting(String key) {
     if (!isSettingSyncAllowed(key) ||
-        key == _obsoleteSetting ||
+        key == appdataObsoleteSyncSetting ||
         key == 'readingFolder') {
       return;
     }
@@ -416,20 +362,21 @@ class Appdata with Init {
         this.settings._data.remove('readingFolder');
       }
       for (var key in settings.keys) {
-        if (key == _obsoleteSetting) continue;
-        if (_archiveSyncFields.contains(key)) {
+        if (key == appdataObsoleteSyncSetting) continue;
+        if (appdataArchiveSyncFields.contains(key)) {
           if (archiveSyncEnabled) {
             this.settings[key] = settings[key];
           }
           continue;
         }
-        if (_comicLibrarySyncFields.contains(key)) {
+        if (appdataComicLibrarySyncFields.contains(key)) {
           if (comicLibrarySyncEnabled) {
             this.settings[key] = settings[key];
           }
           continue;
         }
-        if (!_disableSync.contains(key) && !customDisableSync.contains(key)) {
+        if (!appdataDefaultDisabledSyncFields.contains(key) &&
+            !customDisableSync.contains(key)) {
           this.settings[key] = settings[key];
         }
       }
@@ -559,7 +506,7 @@ class Appdata with Init {
     }
     final normalizedSettings = <String, dynamic>{};
     for (final entry in rawSettings.entries) {
-      if (entry.key is String && entry.key != _obsoleteSetting) {
+      if (entry.key is String && entry.key != appdataObsoleteSyncSetting) {
         final value = entry.key == 'initialPage'
             ? normalizeStartupPage(entry.value)
             : entry.value;

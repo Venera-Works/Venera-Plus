@@ -2,7 +2,7 @@
 
 中文版本：[data_sync.zh.md](data_sync.zh.md)
 
-Navigation: **Settings → Storage and Sync → Data Sync** (or click the top-bar sync button when not configured). Enter your WebDAV directory URL, username, and password; directory letter case must match the server. Use **Test Connection** to check access first.
+Navigation: **Settings → Storage and Sync → Data Sync** (or click the top-bar sync button when not configured). Enter your WebDAV directory URL, username, password, and device name; directory letter case must match the server. The device name defaults to the Android model, iOS device name, or desktop hostname. You can edit it, and it is stored only on this device. Use **Test Connection** to check access first.
 
 ## Multi-Device Merge and Scope
 
@@ -18,16 +18,17 @@ The new protocol merges **business records and fields using causal relationships
 | Search history | Membership and stable ordering are retained per keyword. Adding or searching a keyword again updates only that keyword, without renumbering untouched entries and creating false conflicts. Concurrent new keywords with equal order are displayed deterministically by keyword. The interface shows at most 50 entries; hidden overflow is not treated as deletion. |
 | Cookies | A complete cookie session merges atomically per normalized domain; cookies from separate logins are not mixed individually. |
 | Comic source scripts and sessions | Each source script revision is atomic, as is each source's `.data` session. Script bodies and login states are not spliced together. Local equal-content aliases of the same source identity collapse into a single canonical physical file without fake conflicts; differing contents are preserved as durable candidates before stale runtime aliases are deleted; source `.data` sessions are not cleared by normalization. |
+| Bangumi | Access Token, username, sync preferences, and comic bindings participate in settings sync. Bindings include subject metadata, episode/volume progress, and ratings. Pending submissions and failed retry queues stay on-device and are not transferred through WebDAV. |
 
 Local comic image files, downloaded comic archives, and images in the online library are not included. Comic archive backups and the online WebDAV comic library remain separate features.
 
-## Deletion and Item-Level Conflicts
+## Deletion and Batch Conflict Selection
 
 Deletions carry causal information too. A later deletion can supersede values already observed by that device; **deletion concurrent with an unseen edit on another device** retains a conflict. Deleting a parent history record must not simply clear chapters or favorite images concurrently added elsewhere.
 
 Even explicitly choosing to delete a parent history record preserves read chapters added concurrently. Local metadata retained to display those chapters is not synchronized as a newly created history record; actually reading again creates a new reading edit.
 
-Compatible field values merge automatically. Incompatible concurrent values remain durable candidates; an existing local active candidate is preferred until you explicitly handle the conflict. The conflict interface selects candidates by record and field, including explicit deletion candidates. A choice does not overwrite unrelated records globally. Unresolved conflicts do not prevent unrelated, conflict-free records from merging. **Successful transfer does not mean all conflicts are resolved.** Arbitrary concurrent edits to settings, ordering, scripts, or sessions are not guaranteed to merge automatically without conflict.
+Compatible field values merge automatically. Incompatible concurrent values remain durable candidates; an existing local active candidate is preferred until you explicitly handle the conflict. The dialog displays all record/field conflicts together. Select each candidate independently, including deletion, then click **Resolve Selected** to submit all choices once. Selecting does not apply or upload anything, and closing discards unsubmitted choices. A changed candidate requires a new selection rather than silently acknowledging a newly arrived edit. The whole batch is validated before one durable commit; later apply or publication failures report recovery status rather than claiming rollback. Unresolved conflicts do not prevent unrelated, conflict-free records from merging. **Successful transfer does not mean all conflicts are resolved.** Arbitrary concurrent edits to settings, ordering, scripts, or sessions are not guaranteed to merge automatically without conflict.
 
 A choice creates a new causal edit. Bidirectional and upload-only directions can publish it. Download-only retains the choice locally for later publication; switch to a direction that allows uploading to share it. See [Headless Mode](headless.en.md) for command-line handling.
 
@@ -77,9 +78,11 @@ If a recovery journal is corrupt or incomplete, export the original files and ba
 
 ## Cloud Format and Integrity
 
-The new protocol uses a separate **`sync-v2/`** directory, with publications named `actor-counter-SHA256.json`. Each immutable file is a **full causal checkpoint**, including known records, candidates, and deletions. It is neither a raw database replacement archive nor **a network batch containing only changed fields**. Record-level merging does not imply uploading only a few fields each time; transfer size still depends on the full checkpoint.
+All new sync files live under **`VeneraPlus/<device-name>/`** inside the user-configured WebDAV directory. The application creates these collections as needed. Checkpoints are named `counter-SHA256.json`, without repeating device information in the filename. Actor identity remains in the payload and is associated with the directory's `device.json` ownership metadata. Each immutable file is a **full causal checkpoint**, including known records, candidates, and deletions. It is neither a raw database replacement archive nor **a network batch containing only changed fields**. Record-level merging does not imply uploading only a few fields each time; transfer size still depends on the full checkpoint.
 
-Reads verify the SHA-256 in the filename, content format, and matching device/counter. GET redirects or missing ETags can still be validated by the content hash. Corrupt or partial candidate files are not committed checkpoints and cannot hide an older valid checkpoint from that device; multiple files with the same counter cannot be resolved by arbitrarily choosing one. Authentication and network failures are actual errors, not evidence that the server has no data.
+Path separators, URL delimiters, and control characters in device names are replaced with underscores, and unsafe trailing dots/spaces are removed. Empty or dot-only names are rejected. If another actor owns the same name, a stable short identifier is appended to the directory instead of overwriting that actor. Renaming preserves the internal actor identity and counters; old directories remain discoverable, with checkpoints subject to the same read and safe-cleanup rules. Synchronization reads every device directory, not just this device's directory. Existing local sync state publishes a full checkpoint when this actor has no checkpoint in the new namespace, even without new local edits.
+
+Reads verify the SHA-256 in the filename, content format, counter, and agreement between directory ownership and the payload actor. GET redirects or missing ETags can still be validated by the content hash. Corrupt or partial candidate files are not committed checkpoints and cannot hide an older valid checkpoint from that device; multiple files with the same counter cannot be resolved by arbitrarily choosing one. Authentication and network failures are actual errors, not evidence that the server has no data.
 
 Uploads use conditional creation and are read back and verified before acknowledgement. If a retry finds a bad file previously left by this device, repair requires verification and a strong ETag precondition, or publication of a replacement checkpoint preserving the intended changes. Unconditional overwrite is not allowed, and collisions or truncation are not success. Safe cleanup only considers **this device's** older files discovered before upload, proven causally covered by the new checkpoint, and protected by a strong ETag and `If-Match`. Other devices' files, concurrent new files, and legacy `.venera` archives are excluded. Servers without these conditional validators may retain more files.
 
@@ -88,11 +91,13 @@ Uploads use conditional creation and are read back and verified before acknowled
 The following do not participate in ordinary data synchronization and cannot be overwritten by remote content:
 
 - Data-sync WebDAV URL, username, password, and connection preferences.
-- This device's direction, timing, interval, excluded-field configuration, device identity, pending markers, and merge/recovery metadata.
+- This device's direction, timing, interval, device name, excluded-field configuration, device identity, pending markers, and merge/recovery metadata.
 - Local comic storage path (`local_path`), device-specific settings, and filtered proxy/local security settings.
-- Bangumi Access Token, username, pending progress submissions, and retry queues.
+- Bangumi pending progress submissions and retry queues.
 
 Excluded settings and optional settings whose sync switches are off are **out of scope**, not deletion instructions. Disabling a switch must not publish deletion of those settings to other devices, and remote imports do not replace locally excluded values.
+
+Bangumi Access Token, username, and bindings synchronize by default; corresponding settings can be disabled through the excluded-field configuration. **The Access Token is stored in remote checkpoints**, so only use a trusted WebDAV service. UI and CLI token candidates are masked; this does not encrypt cloud files.
 
 WebDAV comic library configuration and comic archive backup WebDAV configuration have separate sync switches, off by default. Endpoints and credentials can transfer and apply only if the exporting and importing devices each explicitly enable the corresponding switch. The switches themselves remain local. **These optional credentials, cookies, and comic source sessions may contain secrets and reside in cloud checkpoints when allowed to sync.** Use a trusted, access-controlled WebDAV service. Conflict UI and CLI provide safe summaries rather than raw cookie/session values, script bodies, or sensitive setting candidates. Masked display is not cloud encryption.
 
@@ -108,4 +113,4 @@ Initial legacy migration enforces limits: 512 MiB downloaded per archive, 1 GiB 
 
 Legacy archives support native ZIP64 directory records and signed/unsigned 32-bit or 64-bit data descriptors while retaining CRC, local/central-header consistency, path, entry-boundary, and expansion-limit checks. ZIP64 compatibility does not admit damaged or truncated archives. Source repairs use a **persistent local override layer** bound to the original archive SHA-256 and entry path. Retries apply the override in isolation without rewriting the cloud `.venera` or its original verified backup, and only complete domains still awaiting migration.
 
-**Every device sharing merge synchronization must upgrade to a client supporting `sync-v2`.** Old clients continue using the root whole-snapshot protocol; the two protocols do not continuously interoperate. You can manually export `.venera` backups before upgrading. Manual `.venera` import/export remains a separate backup/restore feature, not a synonym for forced upload/download overwrite or an alternative command for choosing an entire sync-conflict version.
+**Every device sharing merge synchronization must upgrade to the `VeneraPlus/<device-name>/` layout. Only one-time migration of root `.venera` archives remains compatible; old `sync-v2/` data is not read, migrated, or automatically deleted.** Clients using the old root whole-snapshot protocol or `sync-v2/` layout do not continuously interoperate with this layout. Export a `.venera` backup before upgrading. Data that exists only in old `sync-v2/` and has not reached a device must first be synced locally or exported with an old client. Manual `.venera` import/export remains a separate backup/restore feature, not a synonym for forced upload/download overwrite or an alternative command for choosing an entire sync-conflict version.

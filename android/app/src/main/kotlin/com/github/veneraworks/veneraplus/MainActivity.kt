@@ -110,6 +110,11 @@ class MainActivity : FlutterFragmentActivity() {
             "venera/method_channel"
         ).setMethodCallHandler { call, res ->
             when (call.method) {
+                "getSyncDeviceName" -> {
+                    val name = Build.MODEL.takeIf { it.isNotBlank() }
+                        ?: Build.DEVICE
+                    res.success(name)
+                }
                 "getProxy" -> res.success(getProxy())
                 "setScreenOn" -> {
                     val set = call.argument<Boolean>("set") ?: false
