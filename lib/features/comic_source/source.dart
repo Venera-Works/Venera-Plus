@@ -14,6 +14,7 @@ import 'favorites.dart';
 import 'models.dart';
 import 'normalization.dart';
 import 'types.dart';
+import 'source_files.dart';
 
 typedef ComicSourceListResolver = List<ComicSource> Function();
 typedef ComicSourceResolver = ComicSource? Function(String key);
@@ -204,12 +205,22 @@ class ComicSource {
 
   void stageDataWrites() => _stagingData = true;
 
-  Future<void> commitDataWrites() async {
+  bool get hasStagedDataWrite => _stagedSnapshot != null;
+
+  Future<void> commitDataWrites({
+    void Function(String snapshot)? beforeCommit,
+  }) async {
     await waitForDataWrites();
     while (_stagedSnapshot != null) {
       final snapshot = _stagedSnapshot!;
       _stagedSnapshot = null;
-      await _writeData(snapshot, suffix: '.update');
+      await _writeData(
+        snapshot,
+        suffix: '.update',
+        beforeCommit: beforeCommit == null
+            ? null
+            : () => beforeCommit(snapshot),
+      );
       _session.persistedSnapshot = snapshot;
       _notifyDataChanged();
     }
@@ -248,13 +259,21 @@ class ComicSource {
     }
   }
 
-  Future<void> _writeData(String snapshot, {String suffix = '.save'}) async {
+  Future<void> _writeData(
+    String snapshot, {
+    String suffix = '.save',
+    void Function()? beforeCommit,
+  }) async {
     final file = File("${App.dataPath}/comic_source/$key.data");
     await file.parent.create(recursive: true);
     final temporary = File('${file.path}$suffix');
     try {
       await temporary.writeAsString(snapshot, flush: true);
-      await temporary.rename(file.path);
+      await SourceFileMetadata.atomicReplace(
+        temporary,
+        file,
+        beforeCommit: beforeCommit,
+      );
     } finally {
       if (await temporary.exists()) await temporary.delete();
     }

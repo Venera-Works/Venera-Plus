@@ -23,11 +23,120 @@ class SyncLocalSnapshot {
   /// Whether local physical storage contains duplicate source identities needing normalization.
   final bool needsSourceNormalization;
 
+  /// Issues encountered during source scanning (empty/corrupted/unsupported scripts, session errors, etc.).
+  final List<SyncSourceIssue> sourceIssues;
+
+  /// Domains that could not be fully captured or verified (e.g. 'source', 'sourceSession').
+  final Set<String> unavailableDomains;
+
   const SyncLocalSnapshot({
     required this.records,
     this.sourceVariants = const {},
     this.needsSourceNormalization = false,
+    this.sourceIssues = const [],
+    this.unavailableDomains = const {},
   });
+}
+
+/// Issue encountered with a comic source or source session file during sync scan or migration.
+class SyncSourceIssue {
+  final String filename;
+  final String reason;
+
+  /// SHA-256 digest of the exact bytes observed when this issue was created.
+  /// Used to reject repair actions after the file has changed.
+  final String? contentDigest;
+  final String? sourceKey;
+  final String? backupPath;
+  final String? archiveName;
+  final bool recovered;
+
+  const SyncSourceIssue({
+    required this.filename,
+    required this.reason,
+    this.contentDigest,
+    this.sourceKey,
+    this.backupPath,
+    this.archiveName,
+    this.recovered = false,
+  });
+
+  SyncSourceIssue copyWith({
+    String? filename,
+    String? reason,
+    String? contentDigest,
+    String? sourceKey,
+    String? backupPath,
+    String? archiveName,
+    bool? recovered,
+  }) {
+    return SyncSourceIssue(
+      filename: filename ?? this.filename,
+      reason: reason ?? this.reason,
+      contentDigest: contentDigest ?? this.contentDigest,
+      sourceKey: sourceKey ?? this.sourceKey,
+      backupPath: backupPath ?? this.backupPath,
+      archiveName: archiveName ?? this.archiveName,
+      recovered: recovered ?? this.recovered,
+    );
+  }
+
+  Map<String, Object?> toJson() => {
+    'filename': filename,
+    'reason': reason,
+    if (contentDigest != null) 'contentDigest': contentDigest,
+    if (sourceKey != null) 'sourceKey': sourceKey,
+    if (backupPath != null) 'backupPath': backupPath,
+    if (archiveName != null) 'archiveName': archiveName,
+    'recovered': recovered,
+  };
+
+  factory SyncSourceIssue.fromJson(Map<String, Object?> json) {
+    final contentDigest = json['contentDigest'];
+    if (contentDigest != null &&
+        (contentDigest is! String ||
+            !RegExp(r'^[a-f0-9]{64}$').hasMatch(contentDigest))) {
+      throw const FormatException('Invalid source issue content digest');
+    }
+    return SyncSourceIssue(
+      filename: json['filename'] as String? ?? '',
+      reason: json['reason'] as String? ?? 'unknown',
+      contentDigest: contentDigest as String?,
+      sourceKey: json['sourceKey'] as String?,
+      backupPath: json['backupPath'] as String?,
+      archiveName: json['archiveName'] as String?,
+      recovered: json['recovered'] as bool? ?? false,
+    );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is SyncSourceIssue &&
+        other.filename == filename &&
+        other.reason == reason &&
+        other.contentDigest == contentDigest &&
+        other.sourceKey == sourceKey &&
+        other.backupPath == backupPath &&
+        other.archiveName == archiveName &&
+        other.recovered == recovered;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    filename,
+    reason,
+    contentDigest,
+    sourceKey,
+    backupPath,
+    archiveName,
+    recovered,
+  );
+
+  @override
+  String toString() =>
+      'SyncSourceIssue(filename: $filename, reason: $reason, '
+      'sourceKey: $sourceKey, backupPath: $backupPath, archiveName: $archiveName, recovered: $recovered)';
 }
 
 /// Encodes a record identity into a stable, unambiguous JSON-string key.

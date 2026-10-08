@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
-
+import 'dart:math';
 import '../../foundation/sync_records.dart';
 import 'merge_engine.dart';
 
@@ -23,6 +23,7 @@ class MergeStore {
   final Set<String> _received = {};
   final List<MergeBatch> _outbox = [];
   SyncRecords? _pendingApply;
+  Set<String> _pendingUnavailableDomains = const {};
   bool _initialized = false;
   bool _loaded = false;
   bool _saving = false;
@@ -46,6 +47,9 @@ class MergeStore {
   SyncRecords? get pendingApply =>
       _pendingApply == null ? null : cloneSyncRecords(_pendingApply!);
   List<MergeBatch> get outbox => List.unmodifiable(_outbox);
+  Set<String> get pendingUnavailableDomains =>
+      Set.unmodifiable(_pendingUnavailableDomains);
+  Set<String> get pendingScope => pendingUnavailableDomains;
 
   /// Recovery may have lost publication counters. The controller must reconcile
   /// OWN-actor remote checkpoints before replay/capture, even for an empty cloud.
@@ -123,6 +127,7 @@ class MergeStore {
       ..clear()
       ..addAll(state?.outbox ?? []);
     _pendingApply = state?.pendingApply;
+    _pendingUnavailableDomains = state?.pendingUnavailableDomains ?? const {};
     _initialized = state?.initialized ?? false;
     _recoveredFromBackup = recovered;
     _needsCounterReconciliation = recovered;
@@ -139,8 +144,10 @@ class MergeStore {
     MergeDocument? observation,
     SyncRecords? previous,
     Map<String, List<Map<String, Object?>>>? sourceVariants,
+    Set<String> unavailableDomains = const {},
   }) async {
     _ensureCanAllocate();
+    _validateUnavailableDomains(unavailableDomains);
     if (_pendingApply != null) {
       throw StateError(
         'Complete or cancel pending business apply before capture',
@@ -148,20 +155,44 @@ class MergeStore {
     }
     final current = _parseSyncRecords(records);
     final baseline = previous == null ? _observed : _parseSyncRecords(previous);
+
+    final filteredBaseline = unavailableDomains.isEmpty
+        ? baseline
+        : Map<String, Map<String, Object?>>.fromEntries(
+            baseline.entries.where(
+              (e) => !unavailableDomains.contains(syncRecordDomain(e.key)),
+            ),
+          );
+    final filteredCurrent = unavailableDomains.isEmpty
+        ? current
+        : Map<String, Map<String, Object?>>.fromEntries(
+            current.entries.where(
+              (e) => !unavailableDomains.contains(syncRecordDomain(e.key)),
+            ),
+          );
+
     final branch = observation?.clone() ?? _localObservation.clone();
     // Allocation and own cumulative prefixes are not remote causal observation.
     branch.setCounterFloor(actor, _document.counterFor(actor));
     final counter = branch.captureLocal(
       actor,
-      baseline,
-      current,
+      filteredBaseline,
+      filteredCurrent,
       bootstrap: !_initialized,
       contributionFloor: _document,
     );
 
     var newVariantsAdded = false;
-    if (sourceVariants != null && sourceVariants.isNotEmpty) {
-      for (final entry in sourceVariants.entries) {
+    final effectiveVariants =
+        (sourceVariants == null || unavailableDomains.isEmpty)
+        ? sourceVariants
+        : Map<String, List<Map<String, Object?>>>.fromEntries(
+            sourceVariants.entries.where(
+              (e) => !unavailableDomains.contains(syncRecordDomain(e.key)),
+            ),
+          );
+    if (effectiveVariants != null && effectiveVariants.isNotEmpty) {
+      for (final entry in effectiveVariants.entries) {
         final recordKey = entry.key;
         for (final script in entry.value) {
           final seedDoc = MergeDocument.createSourceVariantSeed(
@@ -190,7 +221,15 @@ class MergeStore {
           document: _document.clone(),
         ),
       );
-      _localObservation = branch.clone();
+      if (unavailableDomains.isEmpty) {
+        _localObservation = branch.clone();
+      } else {
+        _localObservation = _mergeLocalObservations(
+          oldLocal: _localObservation,
+          appliedObservation: branch,
+          unavailableDomains: unavailableDomains,
+        );
+      }
     } else if (newVariantsAdded) {
       final checkpointCounter = _document.reserveCounter(actor);
       _outbox.add(
@@ -202,14 +241,29 @@ class MergeStore {
       );
     }
 
+    final SyncRecords nextObserved;
+    if (unavailableDomains.isEmpty) {
+      nextObserved = current;
+    } else {
+      nextObserved = <String, Map<String, Object?>>{};
+      for (final entry in _observed.entries) {
+        if (unavailableDomains.contains(syncRecordDomain(entry.key))) {
+          nextObserved[entry.key] = entry.value;
+        }
+      }
+      for (final entry in filteredCurrent.entries) {
+        nextObserved[entry.key] = entry.value;
+      }
+    }
+
     final shouldSave =
         counter > 0 ||
         newVariantsAdded ||
         !_initialized ||
         _counterFloorDirty ||
-        !syncValuesEqual(_observed, current);
+        !syncValuesEqual(_observed, nextObserved);
     _initialized = true;
-    _observed = current;
+    _observed = nextObserved;
     if (shouldSave) await save();
     // Retain only local branch causality for subsequent generation-guard retries.
     // Never merge the incoming main document into the caller's observation.
@@ -246,9 +300,18 @@ class MergeStore {
   }
 
   /// Commits the apply target together with the document/outbox before DB writes.
-  Future<void> stageApply(SyncRecords records) async {
+  Future<void> stageApply(
+    SyncRecords records, {
+    Set<String> unavailableDomains = const {},
+  }) async {
     _ensureLoaded();
+    _validateUnavailableDomains(unavailableDomains);
     _pendingApply = _parseSyncRecords(records);
+    _pendingUnavailableDomains = Set<String>.unmodifiable({
+      ..._pendingUnavailableDomains,
+      ...unavailableDomains,
+    });
+    _validateUnavailableDomains(_pendingUnavailableDomains);
     await save();
   }
 
@@ -259,9 +322,16 @@ class MergeStore {
   Future<void> completeApply(
     SyncRecords records, {
     MergeDocument? observation,
+    Set<String> unavailableDomains = const {},
   }) async {
     _ensureLoaded();
+    _validateUnavailableDomains(unavailableDomains);
     if (_pendingApply == null) throw StateError('No business apply is staged');
+    final effectiveUnavailable = {
+      ..._pendingUnavailableDomains,
+      ...unavailableDomains,
+    };
+    _validateUnavailableDomains(effectiveUnavailable);
     final actual = _parseSyncRecords(records);
     if (observation != null || syncValuesEqual(actual, _pendingApply)) {
       final appliedObservation = observation ?? _document;
@@ -270,10 +340,34 @@ class MergeStore {
           'Applied observation is not covered by the document',
         );
       }
-      _localObservation = appliedObservation.clone();
+      if (effectiveUnavailable.isEmpty) {
+        _localObservation = appliedObservation.clone();
+      } else {
+        _localObservation = _mergeLocalObservations(
+          oldLocal: _localObservation,
+          appliedObservation: appliedObservation,
+          unavailableDomains: effectiveUnavailable,
+        );
+      }
     }
-    _observed = actual;
+    if (effectiveUnavailable.isEmpty) {
+      _observed = actual;
+    } else {
+      final updatedObserved = <String, Map<String, Object?>>{};
+      for (final entry in _observed.entries) {
+        if (effectiveUnavailable.contains(syncRecordDomain(entry.key))) {
+          updatedObserved[entry.key] = entry.value;
+        }
+      }
+      for (final entry in actual.entries) {
+        if (!effectiveUnavailable.contains(syncRecordDomain(entry.key))) {
+          updatedObserved[entry.key] = entry.value;
+        }
+      }
+      _observed = updatedObserved;
+    }
     _pendingApply = null;
+    _pendingUnavailableDomains = const {};
     _initialized = true;
     await save();
   }
@@ -283,6 +377,7 @@ class MergeStore {
   Future<void> cancelApply() async {
     _ensureLoaded();
     _pendingApply = null;
+    _pendingUnavailableDomains = const {};
     await save();
   }
 
@@ -297,24 +392,55 @@ class MergeStore {
     SyncRecords records, {
     SyncRecords? previous,
     Map<String, List<Map<String, Object?>>>? sourceVariants,
+    Set<String> unavailableDomains = const {},
   }) async {
     _ensureCanAllocate();
+    _validateUnavailableDomains(unavailableDomains);
     if (_pendingApply == null) throw StateError('No business apply is staged');
+    final effectiveUnavailable = {
+      ..._pendingUnavailableDomains,
+      ...unavailableDomains,
+    };
+    _validateUnavailableDomains(effectiveUnavailable);
     final actual = _parseSyncRecords(records);
     final target = _parseSyncRecords(previous ?? _pendingApply!);
+
+    final filteredTarget = effectiveUnavailable.isEmpty
+        ? target
+        : Map<String, Map<String, Object?>>.fromEntries(
+            target.entries.where(
+              (e) => !effectiveUnavailable.contains(syncRecordDomain(e.key)),
+            ),
+          );
+    final filteredActual = effectiveUnavailable.isEmpty
+        ? actual
+        : Map<String, Map<String, Object?>>.fromEntries(
+            actual.entries.where(
+              (e) => !effectiveUnavailable.contains(syncRecordDomain(e.key)),
+            ),
+          );
+
     final branch = MergeDocument();
     branch.setCounterFloor(actor, _document.counterFor(actor));
     final counter = branch.captureLocal(
       actor,
-      target,
-      actual,
+      filteredTarget,
+      filteredActual,
       bootstrap: false,
       contributionFloor: _document,
     );
 
     var newVariantsAdded = false;
-    if (sourceVariants != null && sourceVariants.isNotEmpty) {
-      for (final entry in sourceVariants.entries) {
+    final effectiveVariants =
+        (sourceVariants == null || effectiveUnavailable.isEmpty)
+        ? sourceVariants
+        : Map<String, List<Map<String, Object?>>>.fromEntries(
+            sourceVariants.entries.where(
+              (e) => !effectiveUnavailable.contains(syncRecordDomain(e.key)),
+            ),
+          );
+    if (effectiveVariants != null && effectiveVariants.isNotEmpty) {
+      for (final entry in effectiveVariants.entries) {
         final recordKey = entry.key;
         for (final script in entry.value) {
           final seedDoc = MergeDocument.createSourceVariantSeed(
@@ -333,7 +459,15 @@ class MergeStore {
 
     if (counter > 0) {
       _document.merge(branch);
-      _localObservation.merge(branch);
+      if (effectiveUnavailable.isEmpty) {
+        _localObservation.merge(branch);
+      } else {
+        _localObservation = _mergeLocalObservations(
+          oldLocal: _localObservation,
+          appliedObservation: branch,
+          unavailableDomains: effectiveUnavailable,
+        );
+      }
       _outbox.add(
         MergeBatch.create(
           actor: actor,
@@ -351,10 +485,24 @@ class MergeStore {
         ),
       );
     }
-    _observed =
-        actual; // These records really are present in the business stores.
+
+    if (effectiveUnavailable.isEmpty) {
+      _observed = actual;
+    } else {
+      final updatedObserved = <String, Map<String, Object?>>{};
+      for (final entry in _observed.entries) {
+        if (effectiveUnavailable.contains(syncRecordDomain(entry.key))) {
+          updatedObserved[entry.key] = entry.value;
+        }
+      }
+      for (final entry in filteredActual.entries) {
+        updatedObserved[entry.key] = entry.value;
+      }
+      _observed = updatedObserved;
+    }
     _initialized = true;
     _pendingApply = _document.materialize(preferred: actual);
+    _pendingUnavailableDomains = Set<String>.unmodifiable(effectiveUnavailable);
     await save();
     return cloneSyncRecords(_pendingApply!);
   }
@@ -378,12 +526,20 @@ class MergeStore {
   Future<void> resolve(
     String recordKey,
     String field,
-    String candidateId,
-  ) async {
+    String candidateId, {
+    Set<String> unavailableDomains = const {},
+  }) async {
     _ensureCanAllocate();
+    _validateUnavailableDomains(unavailableDomains);
     if (_pendingApply != null) {
       throw StateError(
         'Complete or cancel pending business apply before resolve',
+      );
+    }
+    final domain = syncRecordDomain(recordKey);
+    if (unavailableDomains.contains(domain)) {
+      throw StateError(
+        'Cannot resolve conflict for unavailable domain "$domain"',
       );
     }
     _document.resolve(actor, recordKey, field, candidateId);
@@ -395,6 +551,7 @@ class MergeStore {
       ),
     );
     _pendingApply = _document.materialize(preferred: _observed);
+    _pendingUnavailableDomains = Set<String>.unmodifiable(unavailableDomains);
     await save();
   }
 
@@ -406,7 +563,7 @@ class MergeStore {
     _saving = true;
     try {
       final content = canonicalSyncJson({
-        'schemaVersion': 1,
+        'schemaVersion': 2,
         'actor': actor,
         'document': _document.toJson(),
         'localObservation': _localObservation.toJson(),
@@ -414,6 +571,8 @@ class MergeStore {
         'received': _received.toList()..sort(),
         'outbox': _outbox.map((batch) => batch.toJson()).toList(),
         'pendingApply': _pendingApply,
+        'pendingUnavailableDomains': _pendingUnavailableDomains.toList()
+          ..sort(),
         'initialized': _initialized,
       });
       await _temporaryFile.writeAsString(content, flush: true);
@@ -452,20 +611,42 @@ class MergeStore {
 
   Future<_StoreState> _readState(File file) async {
     final decoded = jsonDecode(await file.readAsString());
-    if (decoded is! Map ||
-        !_hasExactKeys(decoded, const {
-          'schemaVersion',
-          'actor',
-          'document',
-          'observed',
-          'received',
-          'outbox',
-          'pendingApply',
-          'initialized',
-          'localObservation',
-        }) ||
-        decoded['schemaVersion'] is! int ||
-        decoded['schemaVersion'] != 1 ||
+    if (decoded is! Map || decoded['schemaVersion'] is! int) {
+      throw FormatException(
+        'Invalid complete merge state schema: ${file.path}',
+      );
+    }
+    final schema = decoded['schemaVersion'] as int;
+    if (schema != 1 && schema != 2) {
+      throw FormatException(
+        'Unsupported merge schema version: $schema in ${file.path}',
+      );
+    }
+    final requiredKeys = schema == 1
+        ? const {
+            'schemaVersion',
+            'actor',
+            'document',
+            'observed',
+            'received',
+            'outbox',
+            'pendingApply',
+            'initialized',
+            'localObservation',
+          }
+        : const {
+            'schemaVersion',
+            'actor',
+            'document',
+            'observed',
+            'received',
+            'outbox',
+            'pendingApply',
+            'pendingUnavailableDomains',
+            'initialized',
+            'localObservation',
+          };
+    if (!_hasExactKeys(decoded, requiredKeys) ||
         decoded['actor'] is! String ||
         (decoded['actor'] as String).isEmpty ||
         decoded['initialized'] is! bool ||
@@ -534,6 +715,30 @@ class MergeStore {
     if (decoded['actor'] != actor) {
       throw _StoreActorMismatch(actor, decoded['actor'] as String);
     }
+    final pendingUnavailableDomains = <String>{};
+    if (schema == 2) {
+      final rawDomains = decoded['pendingUnavailableDomains'];
+      if (rawDomains is! List) {
+        throw FormatException(
+          'pendingUnavailableDomains must be a list in ${file.path}',
+        );
+      }
+      for (final item in rawDomains) {
+        if (item is! String ||
+            !_validateUnavailableDomain(item) ||
+            !pendingUnavailableDomains.add(item)) {
+          throw FormatException(
+            'Invalid or duplicate pendingUnavailableDomains item in ${file.path}',
+          );
+        }
+      }
+      if (decoded['pendingApply'] == null &&
+          pendingUnavailableDomains.isNotEmpty) {
+        throw FormatException(
+          'pendingUnavailableDomains must be empty when pendingApply is null',
+        );
+      }
+    }
     return _StoreState(
       document,
       localObservation,
@@ -541,13 +746,28 @@ class MergeStore {
       received,
       outbox,
       pending,
+      pendingUnavailableDomains,
       decoded['initialized'] as bool,
     );
   }
 
+  static const _unavailableDomains = {'source', 'sourceSession'};
+
+  static bool _validateUnavailableDomain(String domain) =>
+      domain.isNotEmpty && _unavailableDomains.contains(domain);
+
+  static void _validateUnavailableDomains(Set<String> domains) {
+    if (!domains.every(_validateUnavailableDomain)) {
+      throw ArgumentError.value(
+        domains,
+        'unavailableDomains',
+        'Only source and sourceSession may be unavailable',
+      );
+    }
+  }
+
   static bool _hasExactKeys(Map map, Set<String> keys) =>
       map.length == keys.length && keys.every(map.containsKey);
-
   static Future<bool> _exists(File file) async =>
       await FileSystemEntity.type(file.path, followLinks: false) !=
       FileSystemEntityType.notFound;
@@ -593,6 +813,66 @@ class MergeStore {
     }
     throw FormatException('Invalid JSON business field');
   }
+
+  static MergeDocument _mergeLocalObservations({
+    required MergeDocument oldLocal,
+    required MergeDocument appliedObservation,
+    required Set<String> unavailableDomains,
+  }) {
+    final oldJson = oldLocal.toJson();
+    final appliedJson = appliedObservation.toJson();
+
+    final records = <String, Object?>{};
+    final eventDigests = <String, String>{};
+    final vclock = <String, int>{};
+
+    final oldRecords = (oldJson['records'] as Map).cast<String, Object?>();
+    final appliedRecords = (appliedJson['records'] as Map)
+        .cast<String, Object?>();
+
+    for (final entry in oldRecords.entries) {
+      if (unavailableDomains.contains(syncRecordDomain(entry.key))) {
+        records[entry.key] = entry.value;
+      }
+    }
+    for (final entry in appliedRecords.entries) {
+      if (!unavailableDomains.contains(syncRecordDomain(entry.key))) {
+        records[entry.key] = entry.value;
+      }
+    }
+
+    final oldDigests = (oldJson['eventDigests'] as Map).cast<String, String>();
+    final appliedDigests = (appliedJson['eventDigests'] as Map)
+        .cast<String, String>();
+
+    final presenceEvents = <String>{};
+    for (final entry in records.entries) {
+      final recordMap = entry.value as Map<String, Object?>;
+      final presence = recordMap['presence'] as Map<String, Object?>;
+      final seen = (presence['seen'] as Map).keys.cast<String>();
+      presenceEvents.addAll(seen);
+    }
+
+    for (final id in presenceEvents) {
+      final digest = appliedDigests[id] ?? oldDigests[id];
+      if (digest != null) {
+        eventDigests[id] = digest;
+      }
+      final dot = MergeDot.parse(id);
+      vclock[dot.actor] = max(vclock[dot.actor] ?? 0, dot.counter);
+    }
+
+    // A vector clock is global, but this view is only a proof of per-record
+    // observation. Rebuild actor floors from retained record events instead
+    // of carrying counters whose only evidence belongs to a blocked domain.
+
+    return MergeDocument.fromJson({
+      'schema': 3,
+      'vclock': vclock,
+      'eventDigests': eventDigests,
+      'records': records,
+    });
+  }
 }
 
 class _StoreState {
@@ -602,6 +882,7 @@ class _StoreState {
   final Set<String> received;
   final List<MergeBatch> outbox;
   final SyncRecords? pendingApply;
+  final Set<String> pendingUnavailableDomains;
   final bool initialized;
 
   _StoreState(
@@ -611,6 +892,7 @@ class _StoreState {
     this.received,
     this.outbox,
     this.pendingApply,
+    this.pendingUnavailableDomains,
     this.initialized,
   );
 }

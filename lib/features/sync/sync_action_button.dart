@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/features/sync/data_sync.dart';
 import 'package:venera_plus/features/sync/sync_conflict_dialog.dart';
+import 'package:venera_plus/features/sync/sync_source_issues_dialog.dart';
 import 'package:venera_plus/foundation/translations.dart';
 
 class SyncActionButton extends StatefulWidget {
@@ -65,20 +67,58 @@ class _SyncActionButtonState extends State<SyncActionButton>
     }
     if (!_sync.beginInteraction()) return;
     try {
-      if (!_sync.hasConflict) {
-        final result = await _sync.syncNow();
+      if (_sync.hasConflict) {
         if (!mounted) return;
-        if (!_sync.hasConflict) {
-          context.showMessage(
-            message: result.error
-                ? '${"Sync failed".tl}: ${result.errorMessage?.tl ?? ""}'
-                : 'Sync completed'.tl,
-          );
-          return;
-        }
+        await showSyncConflictDialog(context);
+        return;
       }
+      final currentSnapshot = _sync.statusSnapshot;
+      if (currentSnapshot.isPartial) {
+        if (!mounted) return;
+        await showSyncSourceIssuesDialog(
+          context,
+          issues: currentSnapshot.sourceIssues,
+          onRepair: (issue, content) => _sync.repairSourceIssue(
+            issue: issue,
+            replacementContent: content,
+          ),
+          onRetry: () => unawaited(_sync.syncNow()),
+          description:
+              'Some synchronization data is unavailable. Other data can sync independently.'
+                  .tl,
+        );
+        return;
+      }
+      final result = await _sync.syncNow();
       if (!mounted) return;
-      await showSyncConflictDialog(context);
+      if (_sync.hasConflict) {
+        await showSyncConflictDialog(context);
+        return;
+      }
+      final snapshot = _sync.statusSnapshot;
+      if (snapshot.isPartial && result.success) {
+        context.showMessage(message: 'Sync completed partially'.tl);
+        if (mounted) {
+          await showSyncSourceIssuesDialog(
+            context,
+            issues: snapshot.sourceIssues,
+            onRepair: (issue, content) => _sync.repairSourceIssue(
+              issue: issue,
+              replacementContent: content,
+            ),
+            onRetry: () => unawaited(_sync.syncNow()),
+            description:
+                'Sync completed partially. Unaffected data was synchronized successfully.'
+                    .tl,
+          );
+        }
+      } else {
+        context.showMessage(
+          message: result.error
+              ? '${"Sync failed".tl}: ${result.errorMessage?.tl ?? ""}'
+              : 'Sync completed'.tl,
+        );
+      }
     } finally {
       _sync.endInteraction();
     }
@@ -109,6 +149,13 @@ class _SyncActionButtonState extends State<SyncActionButton>
                 })
               : 'Sync Conflict'.tl;
           iconColor = Theme.of(context).colorScheme.error;
+        } else if (status.isPartial) {
+          iconData = Icons.sync_problem_outlined;
+          tooltip = status.sourceIssues.isNotEmpty
+              ? 'Sync completed with source issues (@count). Tap for details.'
+                    .tlParams({'count': status.sourceIssues.length})
+              : 'Sync completed with source issues. Tap to manage sources.'.tl;
+          iconColor = Theme.of(context).colorScheme.tertiary;
         } else {
           iconData = Icons.sync;
           tooltip = 'Sync Data'.tl;

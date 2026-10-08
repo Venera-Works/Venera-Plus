@@ -75,6 +75,99 @@ class MergeSyncCoordinator {
 
   int _getGeneration() => getGenerationOverride?.call() ?? 0;
 
+  List<SyncSourceIssue> _localSourceIssues = const [];
+  Set<String> _localUnavailableDomains = const {};
+  List<SyncSourceIssue> _legacySourceIssues = const [];
+  Set<String> _legacyUnavailableDomains = const {};
+  bool _legacyIssuesLoaded = false;
+
+  File get _legacyIssuesFile =>
+      File('${stateDirectory.path}/legacy_issues.json');
+
+  Future<void> _loadLegacyIssuesIfNeeded() async {
+    if (_legacyIssuesLoaded) return;
+    if (await _legacyIssuesFile.exists()) {
+      final decoded = jsonDecode(await _legacyIssuesFile.readAsString());
+      if (decoded is! Map ||
+          decoded['issues'] is! List ||
+          decoded['unavailableDomains'] is! List) {
+        throw FormatException(
+          'Invalid legacy issues metadata schema: ${_legacyIssuesFile.path}',
+        );
+      }
+      final issues = <SyncSourceIssue>[];
+      for (final item in decoded['issues'] as List) {
+        if (item is! Map) {
+          throw FormatException(
+            'Invalid legacy issue item in ${_legacyIssuesFile.path}',
+          );
+        }
+        issues.add(SyncSourceIssue.fromJson(item.cast<String, Object?>()));
+      }
+      final domains = <String>{};
+      for (final item in decoded['unavailableDomains'] as List) {
+        if (item is! String ||
+            !const {'source', 'sourceSession'}.contains(item) ||
+            !domains.add(item)) {
+          throw FormatException(
+            'Invalid legacy unavailable domain in ${_legacyIssuesFile.path}',
+          );
+        }
+      }
+      _legacySourceIssues = issues;
+      _legacyUnavailableDomains = domains;
+    }
+    _legacyIssuesLoaded = true;
+  }
+
+  Future<void> _saveLegacyIssues() async {
+    if (_legacySourceIssues.isEmpty && _legacyUnavailableDomains.isEmpty) {
+      if (await _legacyIssuesFile.exists()) {
+        await _legacyIssuesFile.delete();
+      }
+      return;
+    }
+    final tmpFile = File('${_legacyIssuesFile.path}.tmp');
+    final data = canonicalSyncJson({
+      'issues': _legacySourceIssues.map((i) => i.toJson()).toList(),
+      'unavailableDomains': _legacyUnavailableDomains.toList()..sort(),
+    });
+    await tmpFile.writeAsString(data, flush: true);
+    await tmpFile.rename(_legacyIssuesFile.path);
+  }
+
+  List<SyncSourceIssue> get sourceIssues {
+    final issues = List<SyncSourceIssue>.of(_localSourceIssues);
+    for (final issue in _legacySourceIssues) {
+      if (!issues.contains(issue)) issues.add(issue);
+    }
+    return List.unmodifiable(issues);
+  }
+
+  Set<String> get unavailableDomains => {
+    ..._localUnavailableDomains,
+    ..._legacyUnavailableDomains,
+  };
+
+  SyncRecords _approvedRecoveryRecords() {
+    final pending = store.pendingApply;
+    if (pending == null) return store.observed;
+    final blocked = store.pendingUnavailableDomains;
+    if (blocked.isEmpty) return pending;
+    final approved = <String, Map<String, Object?>>{};
+    for (final entry in store.observed.entries) {
+      if (blocked.contains(syncRecordDomain(entry.key))) {
+        approved[entry.key] = entry.value;
+      }
+    }
+    for (final entry in pending.entries) {
+      if (!blocked.contains(syncRecordDomain(entry.key))) {
+        approved[entry.key] = entry.value;
+      }
+    }
+    return approved;
+  }
+
   List<MergeConflict> get conflicts => store.document.conflicts;
   int get conflictCount => conflicts.length;
   bool get hasConflict => conflicts.isNotEmpty;
@@ -118,7 +211,9 @@ class MergeSyncCoordinator {
       final prefRecords = await exportPreferencesOverride!();
       prefSnapshot = SyncLocalSnapshot(records: prefRecords);
     } else {
-      prefSnapshot = await preferencesAdapter.exportSyncSnapshot();
+      prefSnapshot = await preferencesAdapter.exportSyncSnapshot(
+        recoveryRecords: _approvedRecoveryRecords(),
+      );
     }
     records.addAll(prefSnapshot.records);
 
@@ -126,6 +221,8 @@ class MergeSyncCoordinator {
       records: records,
       sourceVariants: prefSnapshot.sourceVariants,
       needsSourceNormalization: prefSnapshot.needsSourceNormalization,
+      sourceIssues: prefSnapshot.sourceIssues,
+      unavailableDomains: prefSnapshot.unavailableDomains,
     );
   }
 
@@ -137,6 +234,7 @@ class MergeSyncCoordinator {
   Future<void> applyAllRecords(
     SyncRecords records, {
     void Function()? beforeCommit,
+    Set<String> unavailableDomains = const {},
   }) async {
     void runSynchronousCommits() {
       beforeCommit?.call();
@@ -161,6 +259,7 @@ class MergeSyncCoordinator {
       await preferencesAdapter.applySyncRecords(
         records,
         beforeCommit: runSynchronousCommits,
+        unavailableDomains: unavailableDomains,
         hasPreservedSourceVariant: (recordKey, script) =>
             store.document.hasObservedFieldValue(recordKey, 'script', script),
       );
@@ -181,6 +280,8 @@ class MergeSyncCoordinator {
           records: _project(raw.records),
           sourceVariants: raw.sourceVariants,
           needsSourceNormalization: raw.needsSourceNormalization,
+          sourceIssues: raw.sourceIssues,
+          unavailableDomains: raw.unavailableDomains,
         );
         return (snapshot: projected, generation: generation);
       }
@@ -191,12 +292,35 @@ class MergeSyncCoordinator {
   Future<({SyncLocalSnapshot snapshot, int generation})> _captureStable({
     MergeDocument? observation,
   }) async {
+    if (exportPreferencesOverride == null) {
+      for (var attempt = 0; attempt < 16; attempt++) {
+        final gen = _getGeneration();
+        try {
+          await preferencesAdapter.recoverLocalSources(
+            recoveryRecords: _approvedRecoveryRecords(),
+            beforeCommit: () {
+              if (_getGeneration() != gen) throw ConcurrentEditException();
+            },
+          );
+          break;
+        } on ConcurrentEditException {
+          continue;
+        }
+      }
+    }
     final stable = await _stableExport();
+    _localSourceIssues = List<SyncSourceIssue>.from(
+      stable.snapshot.sourceIssues,
+    );
+    _localUnavailableDomains = Set<String>.from(
+      stable.snapshot.unavailableDomains,
+    );
     await store.capture(
       stable.snapshot.records,
       previous: _project(store.observed),
       observation: observation,
       sourceVariants: stable.snapshot.sourceVariants,
+      unavailableDomains: unavailableDomains,
     );
     return stable;
   }
@@ -215,9 +339,15 @@ class MergeSyncCoordinator {
   }) async {
     for (var attempt = 0; attempt < 16; attempt++) {
       final alreadyStaged = attempt == 0 && stagedGeneration != null;
+      final captured = alreadyStaged
+          ? null
+          : await _captureStable(observation: observation);
       final generation = alreadyStaged
           ? stagedGeneration
-          : (await _captureStable(observation: observation)).generation;
+          : captured!.generation;
+      final unavailable = alreadyStaged
+          ? store.pendingUnavailableDomains
+          : unavailableDomains;
       final desired = alreadyStaged
           ? store.pendingApply!
           : store.document.materialize(preferred: store.observed);
@@ -225,14 +355,21 @@ class MergeSyncCoordinator {
         _project(desired),
         _project(store.observed),
       );
-      if (!alreadyStaged) await store.stageApply(desired);
+      if (!alreadyStaged) {
+        await store.stageApply(desired, unavailableDomains: unavailable);
+      }
       void guard() {
         if (_getGeneration() != generation) throw ConcurrentEditException();
       }
 
       try {
         if (needsBusinessApply) {
-          await applyAllRecords(desired, beforeCommit: guard);
+          await applyAllRecords(
+            desired,
+            beforeCommit: guard,
+            unavailableDomains: unavailable,
+          );
+          await _finishApply();
         } else {
           guard();
         }
@@ -245,8 +382,8 @@ class MergeSyncCoordinator {
         observation: store.document.filterRecords(
           preferencesAdapter.shouldObserveRecord,
         ),
+        unavailableDomains: unavailable,
       );
-      if (needsBusinessApply) await _finishApply();
       await _captureStable();
       return;
     }
@@ -260,18 +397,27 @@ class MergeSyncCoordinator {
   ) async {
     for (var attempt = 0; attempt < 16; attempt++) {
       final current = attempt == 0 ? staged : await _captureStable();
-      if (!current.snapshot.needsSourceNormalization) {
+      if (!current.snapshot.needsSourceNormalization ||
+          current.snapshot.unavailableDomains.contains('source')) {
         return;
       }
       final generation = current.generation;
       final desired = current.snapshot.records;
-      await store.stageApply(desired);
+      await store.stageApply(
+        desired,
+        unavailableDomains: current.snapshot.unavailableDomains,
+      );
       void guard() {
         if (_getGeneration() != generation) throw ConcurrentEditException();
       }
 
       try {
-        await applyAllRecords(desired, beforeCommit: guard);
+        await applyAllRecords(
+          desired,
+          beforeCommit: guard,
+          unavailableDomains: current.snapshot.unavailableDomains,
+        );
+        await _finishApply();
       } on ConcurrentEditException {
         await store.cancelApply();
         continue;
@@ -279,8 +425,8 @@ class MergeSyncCoordinator {
       await store.completeApply(
         _project(desired),
         observation: store.localObservation,
+        unavailableDomains: current.snapshot.unavailableDomains,
       );
-      await _finishApply();
       await _captureStable();
       return;
     }
@@ -292,15 +438,27 @@ class MergeSyncCoordinator {
   /// A pending target may have been partly applied before a crash. Preserve the
   /// real profile as a concurrent branch before choosing any replacement target.
   Future<void> startupRecovery() async {
+    await _loadLegacyIssuesIfNeeded();
     await store.load();
     await reconcileBackupRecoveryIfNeeded();
     if (store.pendingApply != null) {
       final stable = await _stableExport();
       final pending = store.pendingApply!;
+      _localSourceIssues = List<SyncSourceIssue>.from(
+        stable.snapshot.sourceIssues,
+      );
+      _localUnavailableDomains = Set<String>.from(
+        stable.snapshot.unavailableDomains,
+      );
+      final effectiveUnavailable = {
+        ...store.pendingUnavailableDomains,
+        ...stable.snapshot.unavailableDomains,
+      };
       final desired = await store.recoverPendingApply(
         stable.snapshot.records,
         previous: _project(pending),
         sourceVariants: stable.snapshot.sourceVariants,
+        unavailableDomains: effectiveUnavailable,
       );
       try {
         await applyAllRecords(
@@ -310,7 +468,9 @@ class MergeSyncCoordinator {
               throw ConcurrentEditException();
             }
           },
+          unavailableDomains: effectiveUnavailable,
         );
+        await _finishApply();
       } on ConcurrentEditException {
         await store.cancelApply();
         await _applyMerged(store.localObservation);
@@ -321,8 +481,8 @@ class MergeSyncCoordinator {
         observation: store.document.filterRecords(
           preferencesAdapter.shouldObserveRecord,
         ),
+        unavailableDomains: effectiveUnavailable,
       );
-      await _finishApply();
     }
     final captured = await _captureStable();
     if (captured.snapshot.needsSourceNormalization) {
@@ -340,11 +500,20 @@ class MergeSyncCoordinator {
       return;
     }
 
+    await _loadLegacyIssuesIfNeeded();
+
     // Validate namespace evidence, but never let a newly published local v2 file
     // substitute for reading legacy roots during this endpoint's first cutover.
+    final remoteDocs = <MergeDocument>[];
     for (final entry in await remote.list(latestOnly: false)) {
       try {
-        await remote.download(entry);
+        final batch = await remote.download(entry);
+        remoteDocs.add(batch.document);
+        if (!applyToLocal) {
+          for (final v in batch.document.vclock.entries) {
+            store.document.setCounterFloor(v.key, v.value);
+          }
+        }
       } on MergeRemoteCorruptException catch (error) {
         Log.error('MergeSyncCoordinator', 'Uncommitted v2 artifact: $error');
       }
@@ -355,31 +524,99 @@ class MergeSyncCoordinator {
         Directory(
           '${stateDirectory.path}_legacy_scratch_${DateTime.now().millisecondsSinceEpoch}',
         );
+    final backupDir = Directory('${stateDirectory.path}/legacy_source_backups');
+    var hasUnhandledSourceIssues =
+        _legacySourceIssues.isNotEmpty || _legacyUnavailableDomains.isNotEmpty;
+    final accumulatedLegacyIssues = List<SyncSourceIssue>.of(
+      _legacySourceIssues,
+    );
+    final accumulatedLegacyDomains = Set<String>.of(_legacyUnavailableDomains);
     try {
+      final overrideDir = Directory('${stateDirectory.path}/legacy_overrides');
       final reader = LegacySyncReader(
         remote.client,
         scratch,
         preferences: preferencesAdapter,
+        verifiedSourceBackupDirectory: backupDir,
+        legacyOverrideDirectory: overrideDir,
       );
       final seeds = await reader.readSeeds();
+      if (seeds.isNotEmpty) {
+        // A fresh set of verified archives is authoritative for old legacy
+        // health; a resolved override removes its exact prior issue here.
+        hasUnhandledSourceIssues = false;
+        accumulatedLegacyIssues.clear();
+        accumulatedLegacyDomains.clear();
+      }
       if (seeds.isNotEmpty) {
         final observation = store.localObservation;
         await _captureStable(observation: observation);
         for (final seed in seeds) {
-          final seedActor = 'legacy_seed_${seed.id}';
-          final seedDoc = MergeDocument();
-          seedDoc.captureLocal(seedActor, {}, seed.records, bootstrap: true);
-          store.document.merge(seedDoc);
+          accumulatedLegacyDomains.addAll(seed.unavailableDomains);
+          if (seed.sourceIssues.isNotEmpty ||
+              seed.unavailableDomains.isNotEmpty) {
+            hasUnhandledSourceIssues = true;
+            for (final issue in seed.sourceIssues) {
+              if (!accumulatedLegacyIssues.contains(issue)) {
+                accumulatedLegacyIssues.add(issue);
+              }
+            }
+          }
+          bool isActorCovered(String actor) {
+            if (store.document.counterFor(actor) > 0) return true;
+            for (final doc in remoteDocs) {
+              if (doc.counterFor(actor) > 0) return true;
+            }
+            return false;
+          }
+
+          final baseActor = 'legacy_seed_${seed.id}';
+          final hasBaseCoverage = isActorCovered(baseActor);
+          if (hasBaseCoverage) {
+            // Full archive was previously seeded under baseActor; do NOT allocate new domain seeds
+            // as old reader never allowed partial migration and re-seeding would resurrect retired fields!
+            continue;
+          }
+
+          // Check per-domain coverage across validated local/remote docs
+          final domainsInSeed = seed.records.keys.map(syncRecordDomain).toSet();
           if (seed.sourceVariants.isNotEmpty) {
-            for (final entry in seed.sourceVariants.entries) {
-              final recordKey = entry.key;
-              for (final script in entry.value) {
-                final variantDoc = MergeDocument.createSourceVariantSeed(
-                  recordKey,
-                  script,
-                );
-                if (!store.document.dominates(variantDoc)) {
-                  store.document.merge(variantDoc);
+            domainsInSeed.add('source');
+          }
+
+          for (final domain in domainsInSeed) {
+            final domainActor = 'legacy_seed_${seed.id}_$domain';
+            if (isActorCovered(domainActor) ||
+                seed.unavailableDomains.contains(domain)) {
+              continue;
+            }
+
+            final domainRecords = Map<String, Map<String, Object?>>.fromEntries(
+              seed.records.entries.where(
+                (e) => syncRecordDomain(e.key) == domain,
+              ),
+            );
+            if (domainRecords.isNotEmpty) {
+              final domainDoc = MergeDocument();
+              domainDoc.captureLocal(
+                domainActor,
+                {},
+                domainRecords,
+                bootstrap: true,
+              );
+              store.document.merge(domainDoc);
+            }
+            if (domain == 'source' && seed.sourceVariants.isNotEmpty) {
+              for (final entry in seed.sourceVariants.entries) {
+                final recordKey = entry.key;
+                for (final script in entry.value) {
+                  final variantDoc = MergeDocument.createSourceVariantSeed(
+                    recordKey,
+                    script,
+                  );
+                  if (!store.document.dominates(variantDoc)) {
+                    store.document.merge(variantDoc);
+                  }
                 }
               }
             }
@@ -399,9 +636,18 @@ class MergeSyncCoordinator {
       }
     }
 
-    appdata.implicitData[markerKey] = true;
-    _cleanOldBaselineKeys();
-    await appdata.writeImplicitData();
+    if (hasUnhandledSourceIssues) {
+      _legacySourceIssues = accumulatedLegacyIssues;
+      _legacyUnavailableDomains = accumulatedLegacyDomains;
+      await _saveLegacyIssues();
+    } else {
+      _legacySourceIssues = const [];
+      _legacyUnavailableDomains = const {};
+      await _saveLegacyIssues();
+      appdata.implicitData[markerKey] = true;
+      _cleanOldBaselineKeys();
+      await appdata.writeImplicitData();
+    }
   }
 
   void _cleanOldBaselineKeys() {
@@ -528,9 +774,20 @@ class MergeSyncCoordinator {
     required SyncDirection direction,
   }) async {
     try {
+      final domain = syncRecordDomain(recordKey);
       final captured = await _captureStable();
+      if (unavailableDomains.contains(domain)) {
+        return Res.error(
+          'Cannot resolve conflict for unavailable domain "$domain"',
+        );
+      }
       final observation = store.localObservation;
-      await store.resolve(recordKey, field, candidateId);
+      await store.resolve(
+        recordKey,
+        field,
+        candidateId,
+        unavailableDomains: unavailableDomains,
+      );
       await _applyMerged(observation, stagedGeneration: captured.generation);
 
       if (direction != SyncDirection.downloadOnly) {

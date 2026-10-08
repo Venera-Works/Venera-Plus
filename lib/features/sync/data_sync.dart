@@ -1,7 +1,8 @@
 import 'dart:async';
 
-import 'package:collection/collection.dart';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/window_frame.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
@@ -9,6 +10,7 @@ import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/extensions.dart';
 import 'package:venera_plus/foundation/file_system.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/res.dart';
@@ -17,11 +19,13 @@ import 'package:venera_plus/network/cookie_jar.dart';
 import 'package:venera_plus/network/webdav.dart';
 import 'package:webdav_client/webdav_client.dart' as dav;
 
+import 'legacy_sync_reader.dart';
 import 'merge_remote.dart';
 import 'merge_store.dart';
 import 'merge_sync_coordinator.dart';
+import 'sync_preferences_adapter.dart';
 
-enum _DataSyncTask { sync, upload, download, configure, resolve }
+enum _DataSyncTask { sync, upload, download, configure, resolve, repair }
 
 class _SyncRequest {
   _SyncRequest(this.type, this.run, this.key);
@@ -48,6 +52,9 @@ class DataSyncStatusSnapshot {
     required this.lastError,
     this.hasConflict = false,
     this.conflictCount = 0,
+    this.sourceIssues = const [],
+    this.unavailableDomains = const {},
+    this.isPartial = false,
   });
 
   final bool isEnabled;
@@ -61,7 +68,9 @@ class DataSyncStatusSnapshot {
   final String? lastError;
   final bool hasConflict;
   final int conflictCount;
-
+  final List<SyncSourceIssue> sourceIssues;
+  final Set<String> unavailableDomains;
+  final bool isPartial;
   bool get shouldShow => isConfigured || isEnabled || isSyncing;
 
   String get title => isSyncing ? 'Syncing Data' : 'Sync Data';
@@ -230,6 +239,14 @@ class DataSync with ChangeNotifier {
   List<MergeConflict> get conflicts => _coordinator?.conflicts ?? const [];
   int get conflictCount => conflicts.length;
   bool get hasConflict => conflicts.isNotEmpty;
+
+  List<SyncSourceIssue> get sourceIssues =>
+      _coordinator?.sourceIssues ?? const [];
+  Set<String> get unavailableDomains =>
+      _coordinator?.unavailableDomains ?? const {};
+  bool get isPartial =>
+      unavailableDomains.isNotEmpty ||
+      sourceIssues.any((issue) => !issue.recovered);
 
   @visibleForTesting
   static DateTime Function()? debugNow;
@@ -547,6 +564,9 @@ class DataSync with ChangeNotifier {
     lastError: _lastError,
     hasConflict: hasConflict,
     conflictCount: conflictCount,
+    sourceIssues: sourceIssues,
+    unavailableDomains: unavailableDomains,
+    isPartial: isPartial,
   );
 
   WebDavEndpoint? _validateConfig() {
@@ -665,6 +685,184 @@ class DataSync with ChangeNotifier {
     }, key: (_DataSyncTask.resolve, recordKey, field, candidateId));
   }
 
+  Future<Res<bool>> repairSourceIssue({
+    required SyncSourceIssue issue,
+    required String replacementContent,
+  }) {
+    return _enqueue(
+      _DataSyncTask.repair,
+      () => _repairSourceIssueNow(
+        issue: issue,
+        replacementContent: replacementContent,
+      ),
+      key: (_DataSyncTask.repair, issue),
+    );
+  }
+
+  Future<Res<bool>> _repairSourceIssueNow({
+    required SyncSourceIssue issue,
+    required String replacementContent,
+  }) async {
+    await _ensureCoordinatorLoaded();
+    final coordinator = _coordinator;
+    if (coordinator == null) {
+      return const Res.error('Sync coordinator is not configured or available');
+    }
+    if (issue.recovered || !coordinator.sourceIssues.contains(issue)) {
+      return const Res.error(
+        'This source issue is no longer current. Refresh the issue list and retry.',
+      );
+    }
+
+    final isLegacy = issue.archiveName != null;
+    if (!isLegacy && issue.reason == 'journalCorrupted') {
+      return const Res.error(
+        'The recovery journal is incomplete. Export the original files and backups, restore a complete journal matching the current quarantine, then retry. Do not delete the journal or reinstall sources to bypass recovery.',
+      );
+    }
+    final normalizedFilename = issue.filename.replaceAll('\\', '/');
+    final filenameParts = normalizedFilename.split('/');
+    if (issue.filename.endsWith('.tmp') ||
+        issue.filename.endsWith('.stage') ||
+        filenameParts.any((part) => part == '.' || part == '..') ||
+        normalizedFilename.contains('\u0000') ||
+        normalizedFilename.contains(':')) {
+      return const Res.error(
+        'The selected file cannot safely repair this source issue.',
+      );
+    }
+    if (isLegacy) {
+      final validLegacyEntry =
+          !p.isAbsolute(normalizedFilename) &&
+          (filenameParts.length == 1 ||
+              (filenameParts.length == 2 &&
+                  filenameParts.first == 'comic_source')) &&
+          filenameParts.every((part) => part.isNotEmpty);
+      if (!validLegacyEntry) {
+        return const Res.error(
+          'The selected file cannot safely repair this source issue.',
+        );
+      }
+    } else {
+      final isRecoveryJournal =
+          normalizedFilename == '.quarantine/journal.json';
+      final isSafeLocalTarget =
+          !p.isAbsolute(normalizedFilename) &&
+          (filenameParts.length == 1 || isRecoveryJournal) &&
+          filenameParts.every((part) => part.isNotEmpty);
+      if (!isSafeLocalTarget) {
+        return const Res.error(
+          'The selected file cannot safely repair this source issue.',
+        );
+      }
+    }
+
+    if (isLegacy) {
+      final backupPath = issue.backupPath;
+      if (backupPath == null) {
+        return const Res.error('The verified original archive is unavailable.');
+      }
+      final backupFile = File(backupPath);
+      final backupName = p.basename(backupPath);
+      if (!RegExp(r'^[0-9a-f]{64}\.venera$').hasMatch(backupName) ||
+          !await backupFile.exists()) {
+        return const Res.error('The verified original archive is unavailable.');
+      }
+
+      final backupDirectory = Directory(
+        p.join(coordinator.stateDirectory.path, 'legacy_source_backups'),
+      );
+      if (!await backupDirectory.exists()) {
+        return const Res.error(
+          'The verified original archive is not bound to this sync endpoint.',
+        );
+      }
+      final expectedDirectoryPath = p.normalize(
+        p.absolute(backupDirectory.path),
+      );
+      final selectedFilePath = p.normalize(p.absolute(backupFile.path));
+      final expectedDirectoryRealPath = await backupDirectory
+          .resolveSymbolicLinks();
+      final stateDirectoryRealPath = await coordinator.stateDirectory
+          .resolveSymbolicLinks();
+      final expectedBackupRealPath = p.join(
+        stateDirectoryRealPath,
+        'legacy_source_backups',
+      );
+      final selectedFileRealPath = await backupFile.resolveSymbolicLinks();
+      if (!p.equals(expectedDirectoryRealPath, expectedBackupRealPath) ||
+          !p.equals(p.dirname(selectedFilePath), expectedDirectoryPath) ||
+          !p.equals(
+            p.dirname(selectedFileRealPath),
+            expectedDirectoryRealPath,
+          )) {
+        return const Res.error(
+          'The verified original archive is not bound to this sync endpoint.',
+        );
+      }
+
+      final archiveSha = backupName.substring(0, 64);
+      final actualSha = (await sha256.bind(backupFile.openRead()).first)
+          .toString()
+          .toLowerCase();
+      if (actualSha != archiveSha) {
+        return const Res.error(
+          'The verified original archive failed its content check.',
+        );
+      }
+
+      final overrideDir = Directory(
+        p.join(coordinator.stateDirectory.path, 'legacy_overrides'),
+      );
+      final bool registered;
+      try {
+        registered = await LegacySyncReader.registerLegacyOverride(
+          overrideDirectory: overrideDir,
+          archiveSha256: archiveSha,
+          entryFilename: issue.filename,
+          replacementContent: replacementContent,
+          expectedKey: issue.sourceKey,
+        );
+      } on FormatException {
+        return const Res.error(
+          'Legacy repair metadata or the selected file is invalid. The original archive remains available for export.',
+        );
+      }
+      if (!registered) {
+        return const Res.error(
+          'The selected file did not pass legacy repair validation.',
+        );
+      }
+    } else {
+      try {
+        final repaired = await coordinator.preferencesAdapter.repairLocalSource(
+          issue: issue,
+          replacementContent: replacementContent,
+        );
+        if (!repaired) {
+          return const Res.error(
+            'The selected file does not match this source issue. Refresh the issue list and retry.',
+          );
+        }
+      } on SourceRepairPendingException catch (error) {
+        if (!error.fileCommitted) rethrow;
+        if (hasConfiguration) unawaited(syncNow());
+        return Res.error(
+          error.reason == 'runtimeReloadDeferred'
+              ? 'Source file was saved. Runtime reload is deferred until source dependencies are available.'
+              : error.reason == 'runtimeReloadFailed'
+              ? 'Source file was saved, but runtime reload is still pending.'
+              : 'Source file was saved; repair completion is still pending.',
+        );
+      }
+    }
+
+    // Queue the network retry separately. Its later failure cannot undo this
+    // committed local repair or change its result.
+    if (hasConfiguration) unawaited(syncNow());
+    return const Res(true);
+  }
+
   Future<Res<bool>> _syncDataNow() async {
     if (debugSyncOverride != null) {
       return await debugSyncOverride!();
@@ -743,7 +941,9 @@ class DataSync with ChangeNotifier {
       }
     }
 
-    if (request.type != _DataSyncTask.configure && hasConfiguration) {
+    if (request.type != _DataSyncTask.configure &&
+        request.type != _DataSyncTask.repair &&
+        hasConfiguration) {
       appdata.implicitData['webdavSyncLastAttempt'] =
           _now.millisecondsSinceEpoch;
     }
@@ -751,13 +951,16 @@ class DataSync with ChangeNotifier {
     try {
       if (!_disposed) notifyListeners();
 
-      if (request.type != _DataSyncTask.configure && !hasConfiguration) {
+      if (request.type != _DataSyncTask.configure &&
+          request.type != _DataSyncTask.repair &&
+          !hasConfiguration) {
         result = const Res.error(
           'WebDAV is not configured. Please configure it first.',
         );
       } else {
         await _startupCompleter.future;
-        if (request.type != _DataSyncTask.configure) {
+        if (request.type != _DataSyncTask.configure &&
+            request.type != _DataSyncTask.repair) {
           if (!isReady) {
             try {
               await runZoned(
@@ -786,7 +989,8 @@ class DataSync with ChangeNotifier {
           request.run,
           zoneValues: {_importZoneKey: true},
         );
-        if (request.type != _DataSyncTask.configure) {
+        if (request.type != _DataSyncTask.configure &&
+            request.type != _DataSyncTask.repair) {
           appdata.implicitData['webdavSyncLastAttempt'] =
               _now.millisecondsSinceEpoch;
           if (result.success &&
@@ -798,9 +1002,18 @@ class DataSync with ChangeNotifier {
         }
       }
     } catch (error, stack) {
-      Log.error('Data Sync', error, stack);
-      result = Res.error(error.toString());
-      if (request.type != _DataSyncTask.configure) {
+      Log.error(
+        'Data Sync',
+        request.type == _DataSyncTask.repair ? 'Source repair failed' : error,
+        stack,
+      );
+      result = Res.error(
+        request.type == _DataSyncTask.repair
+            ? 'Source repair could not complete because local storage or runtime access failed.'
+            : error.toString(),
+      );
+      if (request.type != _DataSyncTask.configure &&
+          request.type != _DataSyncTask.repair) {
         appdata.implicitData['webdavSyncLastAttempt'] =
             _now.millisecondsSinceEpoch;
         try {

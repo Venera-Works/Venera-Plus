@@ -1206,6 +1206,21 @@ void main() {
           (state['outbox'] as List).first['counter'] = 1.5,
       'invalid batch document': (state) =>
           (state['outbox'] as List).first['document'] = {},
+      'missing pendingUnavailableDomains': (state) =>
+          state.remove('pendingUnavailableDomains'),
+      'invalid pendingUnavailableDomains type': (state) =>
+          state['pendingUnavailableDomains'] = {},
+      'invalid pendingUnavailableDomains item': (state) =>
+          state['pendingUnavailableDomains'] = [123],
+      'unsupported pendingUnavailableDomains item': (state) =>
+          state['pendingUnavailableDomains'] = ['cookies'],
+      'empty pendingUnavailableDomains item': (state) =>
+          state['pendingUnavailableDomains'] = [''],
+      'duplicate pendingUnavailableDomains item': (state) =>
+          state['pendingUnavailableDomains'] = ['source', 'source'],
+      'pendingUnavailableDomains with null pendingApply': (state) =>
+          state['pendingUnavailableDomains'] = ['source'],
+      'unsupported schema version': (state) => state['schemaVersion'] = 99,
     };
     for (final entry in invalidStates.entries) {
       test('rejects ${entry.key} in both persisted replicas', () async {
@@ -1255,6 +1270,295 @@ void main() {
           throwsFormatException,
         );
         expect(await File('${tempDir.path}/state.json').exists(), isFalse);
+      },
+    );
+
+    test(
+      'explicit lossless migration from existing schemaVersion1 state file',
+      () async {
+        final doc = MergeDocument();
+        final folderKey = syncRecordKey('folder', ['f1']);
+        doc.captureLocal('device-alpha', {}, {
+          folderKey: {'name': 'Legacy Folder'},
+        });
+        final batch = MergeBatch.create(
+          actor: 'device-alpha',
+          counter: 1,
+          document: doc.clone(),
+        );
+        final schema1State = {
+          'schemaVersion': 1,
+          'actor': 'device-alpha',
+          'document': doc.toJson(),
+          'localObservation': doc.toJson(),
+          'observed': {
+            folderKey: {'name': 'Legacy Folder'},
+          },
+          'received': <String>[],
+          'outbox': [batch.toJson()],
+          'pendingApply': null,
+          'initialized': true,
+        };
+        final jsonStr = jsonEncode(schema1State);
+        await File('${tempDir.path}/state.json').writeAsString(jsonStr);
+        await File('${tempDir.path}/state.json.bak').writeAsString(jsonStr);
+
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+
+        expect(store.observed.containsKey(folderKey), isTrue);
+        expect(store.pendingUnavailableDomains, isEmpty);
+        expect(store.outbox.length, 1);
+
+        // Subsequent save migrates cleanly to schemaVersion 2
+        await store.save();
+        final migrated =
+            jsonDecode(await File('${tempDir.path}/state.json').readAsString())
+                as Map<String, dynamic>;
+        expect(migrated['schemaVersion'], 2);
+        expect(migrated['pendingUnavailableDomains'], isEmpty);
+      },
+    );
+
+    test(
+      'scoped capture with unavailableDomains prevents false tombstones and preserves baseline',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+
+        final sourceKey = syncRecordKey('source', ['komiic']);
+        final favoriteKey = syncRecordKey('folder', ['fav1']);
+        final initialRecords = {
+          sourceKey: {
+            'script': {'filename': 'komiic.js', 'content': 'console.log(1)'},
+          },
+          favoriteKey: {'name': 'Favorites'},
+        };
+
+        await store.capture(initialRecords);
+        expect(store.observed.containsKey(sourceKey), isTrue);
+        expect(store.observed.containsKey(favoriteKey), isTrue);
+
+        // Next capture: source file became temporarily unreadable (empty/corrupted),
+        // so physical reading only saw favoriteKey with an updated name.
+        // We mark 'source' in unavailableDomains.
+        final readingWithoutSource = {
+          favoriteKey: {'name': 'Updated Favorites'},
+        };
+        await store.capture(
+          readingWithoutSource,
+          unavailableDomains: {'source'},
+        );
+
+        // Source baseline must be preserved; favorite must be updated
+        expect(store.observed.containsKey(sourceKey), isTrue);
+        expect(store.observed[favoriteKey]?['name'], 'Updated Favorites');
+
+        // Document must NOT have emitted a tombstone for source
+        expect(
+          store.document.hasObservedFieldValue(sourceKey, 'script', {
+            'filename': 'komiic.js',
+            'content': 'console.log(1)',
+          }),
+          isTrue,
+        );
+      },
+    );
+
+    test(
+      'completeApply with unavailableDomains does not adopt unapplied foreign source causality',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+
+        final sourceKey = syncRecordKey('source', ['remote_plugin']);
+        final histKey = syncRecordKey('history', ['comic_1']);
+        final localFav = syncRecordKey('folder', ['local_f']);
+
+        await store.capture({
+          localFav: {'name': 'Local'},
+        });
+
+        final remoteDoc = MergeDocument();
+        // A remote device published a new comic source and history record
+        // The blocked source was written at a later actor counter than history.
+        // Filtering only the record without its per-domain clock would wrongly
+        // acknowledge the source event as locally observed.
+        remoteDoc.captureLocal('device-beta', {}, {
+          histKey: {'readDurationMs': 1000},
+        });
+        remoteDoc.captureLocal(
+          'device-beta',
+          {
+            histKey: {'readDurationMs': 1000},
+          },
+          {
+            histKey: {'readDurationMs': 1000},
+            sourceKey: {
+              'script': {'filename': 'remote.js', 'content': 'valid'},
+            },
+          },
+        );
+        store.document.merge(remoteDoc);
+
+        final desired = store.document.materialize(preferred: store.observed);
+        await store.stageApply(desired, unavailableDomains: {'source'});
+
+        // Local system could only apply history (sources were unavailable/blocked)
+        final appliedSubset = {
+          localFav: {'name': 'Local'},
+          histKey: {'readDurationMs': 1000},
+        };
+
+        await store.completeApply(
+          appliedSubset,
+          observation: store.document,
+          unavailableDomains: {'source'},
+        );
+
+        expect(store.localObservation.counterFor('device-beta'), 1);
+        expect(store.observed.containsKey(histKey), isTrue);
+        expect(store.observed.containsKey(sourceKey), isFalse);
+
+        // Local observation must NOT adopt the foreign causality for source
+        // So if local device captures again without sourceKey, it will NOT allocate a tombstone!
+        final outboxBefore = store.outbox.length;
+        await store.capture({
+          localFav: {'name': 'Local'},
+          histKey: {'readDurationMs': 1000},
+        });
+        // No deletion allocated
+        expect(store.outbox.length, outboxBefore);
+        expect(store.document.counterFor('device-beta'), 2);
+
+        final restarted = MergeStore(tempDir, 'device-alpha');
+        await restarted.load();
+        expect(restarted.observed.containsKey(sourceKey), isFalse);
+        expect(restarted.localObservation.counterFor('device-beta'), 1);
+        expect(restarted.document.counterFor('device-beta'), 2);
+      },
+    );
+
+    test(
+      'stageApply unions pending unavailable domains across restaging and persists them',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+
+        final staged = {
+          syncRecordKey('folder', ['f1']): {'name': 'Staged'},
+        };
+        await store.stageApply(staged, unavailableDomains: {'source'});
+        await store.stageApply(staged, unavailableDomains: {'sourceSession'});
+        expect(store.pendingApply, isNotNull);
+        expect(store.pendingUnavailableDomains, {'source', 'sourceSession'});
+
+        // Simulate restart
+        final restarted = MergeStore(tempDir, 'device-alpha');
+        await restarted.load();
+        expect(restarted.pendingApply, isNotNull);
+        expect(restarted.pendingUnavailableDomains, {
+          'source',
+          'sourceSession',
+        });
+
+        await restarted.cancelApply();
+        expect(restarted.pendingApply, isNull);
+        expect(restarted.pendingUnavailableDomains, isEmpty);
+      },
+    );
+
+    test('resolve rejects conflicts in unavailable domain', () async {
+      final store = MergeStore(tempDir, 'device-alpha');
+      await store.load();
+
+      final sourceKey = syncRecordKey('source', ['plugin']);
+      await expectLater(
+        () => store.resolve(
+          sourceKey,
+          'script',
+          'candidate_1',
+          unavailableDomains: {'source'},
+        ),
+        throwsStateError,
+      );
+    });
+
+    test(
+      'resolve persists passed unavailableDomains so subsequent apply retains source exclusions',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+
+        final folderKey = syncRecordKey('folder', ['f1']);
+        await store.capture({
+          folderKey: {'name': 'Original'},
+        });
+
+        // Remote device modifies folder
+        final remoteDoc = MergeDocument();
+        remoteDoc.captureLocal('device-beta', {}, {
+          folderKey: {'name': 'Remote'},
+        });
+        store.document.merge(remoteDoc);
+
+        final conflict = store.document.conflicts.first;
+        final candId = conflict.candidates.first.id;
+
+        // Resolving conflict while 'source' is unavailable
+        await store.resolve(
+          folderKey,
+          'name',
+          candId,
+          unavailableDomains: {'source'},
+        );
+
+        expect(store.pendingApply, isNotNull);
+        expect(store.pendingUnavailableDomains, {'source'});
+
+        // Verify across reload
+        final reloaded = MergeStore(tempDir, 'device-alpha');
+        await reloaded.load();
+        expect(reloaded.pendingUnavailableDomains, {'source'});
+      },
+    );
+
+    test(
+      'completeApply and recoverPendingApply union caller exclusions with persisted scope',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+
+        final folderKey = syncRecordKey('folder', ['f1']);
+        final sessionKey = syncRecordKey('sourceSession', ['s1']);
+        final sourceKey = syncRecordKey('source', ['src1']);
+
+        await store.capture({
+          folderKey: {'name': 'F1'},
+          sessionKey: {'cookie': 'c1'},
+          sourceKey: {
+            'script': {'filename': 'src1.js', 'content': 'valid'},
+          },
+        });
+
+        // Stage apply with {'source'}
+        final staged = {
+          folderKey: {'name': 'F1_updated'},
+        };
+        await store.stageApply(staged, unavailableDomains: {'source'});
+        expect(store.pendingUnavailableDomains, {'source'});
+
+        // Replay/complete with caller providing {'sourceSession'}
+        // Union ensures BOTH 'source' and 'sourceSession' remain blocked
+        await store.completeApply(
+          staged,
+          unavailableDomains: {'sourceSession'},
+        );
+
+        // Both source and session baselines were preserved
+        expect(store.observed.containsKey(sourceKey), isTrue);
+        expect(store.observed.containsKey(sessionKey), isTrue);
+        expect(store.observed[folderKey]?['name'], 'F1_updated');
       },
     );
   });

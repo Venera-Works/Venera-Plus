@@ -3,7 +3,7 @@ import 'dart:ffi';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:archive/archive.dart';
+import 'package:archive/archive.dart' hide ZipFile;
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -16,6 +16,7 @@ import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/js_engine.dart';
 import 'package:venera_plus/foundation/sync_records.dart';
 import 'package:webdav_client/webdav_client.dart' as dav;
+import 'package:zip_flutter/zip_flutter.dart';
 
 bool _sqliteAvailable() {
   try {
@@ -31,6 +32,47 @@ const bool _ciRequireQuickJs = bool.fromEnvironment(
   'CI_REQUIRE_QUICKJS',
   defaultValue: false,
 );
+const bool _ciRequireNativeZip = bool.fromEnvironment(
+  'CI_REQUIRE_NATIVE_ZIP',
+  defaultValue: false,
+);
+
+String? _nativeZipLoadFailure() {
+  final libraryPath = Platform.isWindows
+      ? 'zip_flutter.dll'
+      : Platform.isLinux
+      ? 'libzip_flutter.so'
+      : 'zip_flutter.framework/zip_flutter';
+  try {
+    if (Platform.isWindows) {
+      for (final buildDir in [
+        'build/windows/x64/runner/Debug',
+        'build/windows/x64/runner/Release',
+      ]) {
+        final build = Directory(buildDir).absolute.path;
+        if (File('$build/zip_flutter.dll').existsSync()) {
+          DynamicLibrary.open('$build/zip_flutter.dll');
+          break;
+        }
+      }
+    } else if (Platform.isLinux) {
+      for (final buildDir in [
+        'build/linux/x64/debug/bundle/lib',
+        'build/linux/x64/release/bundle/lib',
+      ]) {
+        final build = Directory(buildDir).absolute.path;
+        if (File('$build/libzip_flutter.so').existsSync()) {
+          DynamicLibrary.open('$build/libzip_flutter.so');
+          break;
+        }
+      }
+    }
+    DynamicLibrary.open(libraryPath);
+    return null;
+  } catch (error) {
+    return '$libraryPath: $error';
+  }
+}
 
 String? _quickJsLoadFailure() {
   final libraryPath = Platform.isWindows
@@ -69,6 +111,67 @@ String? _quickJsLoadFailure() {
   } catch (error) {
     return '$libraryPath: $error';
   }
+}
+
+int _holdNoDeleteHandle(String filePath) {
+  final kernel32 = DynamicLibrary.open('kernel32.dll');
+  final getProcessHeap = kernel32
+      .lookupFunction<IntPtr Function(), int Function()>('GetProcessHeap');
+  final heapAlloc = kernel32
+      .lookupFunction<
+        Pointer<Void> Function(IntPtr, Uint32, IntPtr),
+        Pointer<Void> Function(int, int, int)
+      >('HeapAlloc');
+  final heapFree = kernel32
+      .lookupFunction<
+        Int32 Function(IntPtr, Uint32, Pointer<Void>),
+        int Function(int, int, Pointer<Void>)
+      >('HeapFree');
+  final createFileW = kernel32
+      .lookupFunction<
+        IntPtr Function(
+          Pointer<Uint16>,
+          Uint32,
+          Uint32,
+          Pointer<Void>,
+          Uint32,
+          Uint32,
+          IntPtr,
+        ),
+        int Function(Pointer<Uint16>, int, int, Pointer<Void>, int, int, int)
+      >('CreateFileW');
+
+  final heap = getProcessHeap();
+  final units = filePath.codeUnits;
+  final memory = heapAlloc(heap, 0, (units.length + 1) * 2);
+  if (memory == nullptr) {
+    throw StateError('Could not allocate Windows path');
+  }
+  final pathUnits = memory.cast<Uint16>().asTypedList(units.length + 1);
+  pathUnits.setRange(0, units.length, units);
+  pathUnits[units.length] = 0;
+  final handle = createFileW(
+    memory.cast<Uint16>(),
+    0x80000000, // GENERIC_READ
+    0x00000001 | 0x00000002, // FILE_SHARE_READ | FILE_SHARE_WRITE
+    nullptr,
+    3, // OPEN_EXISTING
+    0x80, // FILE_ATTRIBUTE_NORMAL
+    0,
+  );
+  heapFree(heap, 0, memory);
+  if (handle == -1 || handle == 0) {
+    throw StateError('CreateFileW failed for $filePath');
+  }
+  return handle;
+}
+
+void _closeWindowsHandle(int handle) {
+  DynamicLibrary.open(
+    'kernel32.dll',
+  ).lookupFunction<Int32 Function(IntPtr), int Function(int)>('CloseHandle')(
+    handle,
+  );
 }
 
 class _TestDavClient extends dav.Client {
@@ -277,9 +380,140 @@ Uint8List? _createHistoryDbBytes(Directory tempDir) {
   return bytes;
 }
 
+Uint8List _createCustomDescriptorArchive({
+  required String filename,
+  required List<int> content,
+  required int descriptorType,
+  int? overrideCrc,
+}) {
+  final nameBytes = utf8.encode(filename);
+  final contentBytes = Uint8List.fromList(content);
+  final uncompSize = contentBytes.length;
+  final compSize = contentBytes.length;
+  final crc = overrideCrc ?? getCrc32(contentBytes);
+
+  final builder = BytesBuilder();
+
+  final isBit3 = descriptorType != 5;
+  final localFlags = isBit3 ? 0x0008 : 0x0000;
+  final localCrc = descriptorType == 6 ? (crc ^ 0x9999) : (isBit3 ? 0 : crc);
+  final localComp = descriptorType == 5 ? 0xffffffff : (isBit3 ? 0 : compSize);
+  final localUncomp = descriptorType == 5
+      ? 0xffffffff
+      : (isBit3 ? 0 : uncompSize);
+
+  Uint8List localExtra = Uint8List(0);
+  if (descriptorType == 5) {
+    final extraData = ByteData(20);
+    extraData.setUint16(0, 0x0001, Endian.little);
+    extraData.setUint16(2, 16, Endian.little);
+    extraData.setUint64(4, 99999, Endian.little);
+    extraData.setUint64(12, 99999, Endian.little);
+    localExtra = extraData.buffer.asUint8List();
+  }
+
+  final localHeader = ByteData(30);
+  localHeader.setUint32(0, 0x04034b50, Endian.little);
+  localHeader.setUint16(4, 20, Endian.little);
+  localHeader.setUint16(6, localFlags, Endian.little);
+  localHeader.setUint16(8, 0, Endian.little);
+  localHeader.setUint16(10, 0, Endian.little);
+  localHeader.setUint16(12, 0, Endian.little);
+  localHeader.setUint32(14, localCrc, Endian.little);
+  localHeader.setUint32(18, localComp, Endian.little);
+  localHeader.setUint32(22, localUncomp, Endian.little);
+  localHeader.setUint16(26, nameBytes.length, Endian.little);
+  localHeader.setUint16(28, localExtra.length, Endian.little);
+
+  builder.add(localHeader.buffer.asUint8List());
+  builder.add(nameBytes);
+  if (localExtra.isNotEmpty) {
+    builder.add(localExtra);
+  }
+  builder.add(contentBytes);
+
+  if (isBit3) {
+    if (descriptorType == 0 || descriptorType == 6) {
+      final desc = ByteData(16);
+      desc.setUint32(0, 0x08074b50, Endian.little);
+      desc.setUint32(4, crc, Endian.little);
+      desc.setUint32(8, compSize, Endian.little);
+      desc.setUint32(12, uncompSize, Endian.little);
+      builder.add(desc.buffer.asUint8List());
+    } else if (descriptorType == 1) {
+      final desc = ByteData(24);
+      desc.setUint32(0, 0x08074b50, Endian.little);
+      desc.setUint32(4, crc, Endian.little);
+      desc.setUint64(8, compSize, Endian.little);
+      desc.setUint64(16, uncompSize, Endian.little);
+      builder.add(desc.buffer.asUint8List());
+    } else if (descriptorType == 2) {
+      final desc = ByteData(20);
+      desc.setUint32(0, crc, Endian.little);
+      desc.setUint64(4, compSize, Endian.little);
+      desc.setUint64(12, uncompSize, Endian.little);
+      builder.add(desc.buffer.asUint8List());
+    } else if (descriptorType == 3) {
+      final desc = ByteData(12);
+      desc.setUint32(0, crc, Endian.little);
+      desc.setUint32(4, compSize, Endian.little);
+      desc.setUint32(8, uncompSize, Endian.little);
+      builder.add(desc.buffer.asUint8List());
+    } else if (descriptorType == 4) {
+      final desc = ByteData(24);
+      desc.setUint32(0, 0x08074b50, Endian.little);
+      desc.setUint32(4, crc, Endian.little);
+      desc.setUint32(8, 0, Endian.little);
+      desc.setUint32(12, 0, Endian.little);
+      desc.setUint64(16, 0x12345678, Endian.little);
+      builder.add(desc.buffer.asUint8List());
+    }
+  }
+
+  final centralDirOffset = builder.length;
+
+  final cdHeader = ByteData(46);
+  cdHeader.setUint32(0, 0x02014b50, Endian.little);
+  cdHeader.setUint16(4, 20, Endian.little);
+  cdHeader.setUint16(6, 20, Endian.little);
+  cdHeader.setUint16(8, localFlags, Endian.little);
+  cdHeader.setUint16(10, 0, Endian.little);
+  cdHeader.setUint16(12, 0, Endian.little);
+  cdHeader.setUint16(14, 0, Endian.little);
+  cdHeader.setUint32(16, crc, Endian.little);
+  cdHeader.setUint32(20, compSize, Endian.little);
+  cdHeader.setUint32(24, uncompSize, Endian.little);
+  cdHeader.setUint16(28, nameBytes.length, Endian.little);
+  cdHeader.setUint16(30, 0, Endian.little);
+  cdHeader.setUint16(32, 0, Endian.little);
+  cdHeader.setUint16(34, 0, Endian.little);
+  cdHeader.setUint16(36, 0, Endian.little);
+  cdHeader.setUint32(38, 0, Endian.little);
+  cdHeader.setUint32(42, 0, Endian.little);
+  builder.add(cdHeader.buffer.asUint8List());
+  builder.add(nameBytes);
+
+  final centralDirSize = builder.length - centralDirOffset;
+
+  final eocd = ByteData(22);
+  eocd.setUint32(0, 0x06054b50, Endian.little);
+  eocd.setUint16(4, 0, Endian.little);
+  eocd.setUint16(6, 0, Endian.little);
+  eocd.setUint16(8, 1, Endian.little);
+  eocd.setUint16(10, 1, Endian.little);
+  eocd.setUint32(12, centralDirSize, Endian.little);
+  eocd.setUint32(16, centralDirOffset, Endian.little);
+  eocd.setUint16(20, 0, Endian.little);
+  builder.add(eocd.buffer.asUint8List());
+
+  return builder.toBytes();
+}
+
 void main() {
   final quickJsFailure = _quickJsLoadFailure();
   final quickJsAvailable = quickJsFailure == null;
+  final nativeZipFailure = _nativeZipLoadFailure();
+  final nativeZipAvailable = nativeZipFailure == null;
 
   late Directory tempDir;
   late Directory scratchDir;
@@ -1205,14 +1439,292 @@ void main() {
       );
 
       test(
-        'unresolvable legacy comic source script fails safely and cleans scratch directory',
+        'unresolvable legacy comic source script preserves archive in backup directory and returns partial seed',
         () async {
+          final backupDir = Directory(p.join(tempDir.path, 'source_backups'));
           final archiveBytes = _createVeneraArchive(
+            appdataJson: '{"settings":{"testKey":"preserved"}}',
             comicSources: {'broken.js': '// empty script without key'},
           );
 
           transport.files['500-1.venera'] = archiveBytes;
           client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
+
+          final reader = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+          );
+
+          final seeds = await reader.readSeeds();
+
+          expect(seeds.length, equals(1));
+          final seed = seeds.first;
+          expect(
+            seed.records[syncRecordKey('setting', ['testKey'])]?['value'],
+            equals('preserved'),
+          );
+          expect(seed.sourceIssues, isNotEmpty);
+          expect(seed.unavailableDomains, contains('source'));
+          final issue = seed.sourceIssues.first;
+          expect(issue.archiveName, equals('500-1.venera'));
+          expect(issue.backupPath, isNotNull);
+          expect(File(issue.backupPath!).existsSync(), isTrue);
+          expect(
+            File(issue.backupPath!).readAsBytesSync(),
+            equals(archiveBytes),
+          );
+
+          expect(scratchDir.listSync(), isEmpty);
+        },
+      );
+    },
+    skip: (_ciRequireQuickJs || quickJsAvailable) ? false : quickJsFailure,
+  );
+
+  group(
+    'LegacySyncReader Native ZIP64 and Descriptor Integrity',
+    () {
+      setUp(() {
+        if (_ciRequireNativeZip && nativeZipFailure != null) {
+          fail(
+            'CI_REQUIRE_NATIVE_ZIP=true requires zip_flutter native library, '
+            'but it failed to load: $nativeZipFailure',
+          );
+        }
+      });
+
+      test(
+        'native zip_flutter generated archive with version20 small entries and ZIP64 descriptor is accepted with exact data and CRC',
+        () async {
+          final appdataFile = File(p.join(tempDir.path, 'source_appdata.json'))
+            ..writeAsStringSync(
+              jsonEncode({
+                'settings': {'themeMode': 'dark'},
+              }),
+            );
+          final sourceFile = File(p.join(tempDir.path, 'source_native.js'))
+            ..writeAsStringSync(
+              'class NativeSrc extends ComicSource { key = "my_native_src"; }',
+            );
+          final nativeZipFile = File(
+            p.join(tempDir.path, 'native_archive.venera'),
+          );
+
+          final zip = ZipFile.open(nativeZipFile.path);
+          zip.addFile('appdata.json', appdataFile.path);
+          zip.addFile('comic_source/my_native_src.js', sourceFile.path);
+          zip.close();
+
+          final nativeBytes = nativeZipFile.readAsBytesSync();
+          transport.files['200-1.venera'] = nativeBytes;
+          client.remoteFiles = [dav.File(name: '200-1.venera', isDir: false)];
+
+          final reader = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+          );
+          final seeds = await reader.readSeeds();
+
+          expect(seeds.length, equals(1));
+          final seed = seeds.first;
+          expect(
+            seed.id,
+            equals(sha256.convert(nativeBytes).toString().toLowerCase()),
+          );
+          final settingKey = syncRecordKey('setting', ['themeMode']);
+          expect(seed.records[settingKey]?['value'], equals('dark'));
+          final sourceKey = syncRecordKey('source', ['my_native_src']);
+          expect(seed.records.containsKey(sourceKey), isTrue);
+          expect(seed.sourceIssues, isEmpty);
+          expect(seed.unavailableDomains, isEmpty);
+          expect(scratchDir.listSync(), isEmpty);
+        },
+      );
+      test(
+        'native zip_flutter generated archive with appdata, source script, and session data is parsed cleanly and migrates without issue',
+        () async {
+          final appdataFile =
+              File(p.join(tempDir.path, 'source_appdata_full.json'))
+                ..writeAsStringSync(
+                  jsonEncode({
+                    'settings': {'themeMode': 'system'},
+                  }),
+                );
+          final sourceFile = File(p.join(tempDir.path, 'source_native_full.js'))
+            ..writeAsStringSync(
+              'class FullSrc extends ComicSource { key = "full_native_src"; }',
+            );
+          final sessionFile =
+              File(p.join(tempDir.path, 'source_native_full.data'))
+                ..writeAsStringSync(
+                  jsonEncode({'account': 'user123', 'token': 'abc_tok'}),
+                );
+          final nativeZipFile = File(
+            p.join(tempDir.path, 'native_full_archive.venera'),
+          );
+
+          final zip = ZipFile.open(nativeZipFile.path);
+          zip.addFile('appdata.json', appdataFile.path);
+          zip.addFile('comic_source/full_native_src.js', sourceFile.path);
+          zip.addFile('comic_source/full_native_src.data', sessionFile.path);
+          zip.close();
+
+          final nativeBytes = nativeZipFile.readAsBytesSync();
+          transport.files['200-1.venera'] = nativeBytes;
+          client.remoteFiles = [dav.File(name: '200-1.venera', isDir: false)];
+
+          final reader = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+          );
+          final seeds = await reader.readSeeds();
+
+          expect(seeds.length, equals(1));
+          final seed = seeds.first;
+          expect(
+            seed.id,
+            equals(sha256.convert(nativeBytes).toString().toLowerCase()),
+          );
+          final settingKey = syncRecordKey('setting', ['themeMode']);
+          expect(seed.records[settingKey]?['value'], equals('system'));
+          final sourceKey = syncRecordKey('source', ['full_native_src']);
+          expect(seed.records.containsKey(sourceKey), isTrue);
+          final sessionRecordKey = syncRecordKey('sourceSession', [
+            'full_native_src',
+          ]);
+          expect(seed.records.containsKey(sessionRecordKey), isTrue);
+          expect(seed.sourceIssues, isEmpty);
+          expect(seed.unavailableDomains, isEmpty);
+          expect(scratchDir.listSync(), isEmpty);
+        },
+      );
+
+      test(
+        'native zip_flutter generated archive with broken script preserves backup, and durable override repairs it on fresh reader',
+        () async {
+          final backupDir = Directory(p.join(tempDir.path, 'native_backups'));
+          final overrideDir = Directory(
+            p.join(tempDir.path, 'native_overrides'),
+          );
+          final appdataFile =
+              File(p.join(tempDir.path, 'source_appdata_broken.json'))
+                ..writeAsStringSync(
+                  jsonEncode({
+                    'settings': {'theme': 'dark'},
+                  }),
+                );
+          final brokenSourceFile = File(
+            p.join(tempDir.path, 'source_broken.js'),
+          )..writeAsStringSync('// broken script without key');
+          final nativeZipFile = File(
+            p.join(tempDir.path, 'native_broken_archive.venera'),
+          );
+
+          final zip = ZipFile.open(nativeZipFile.path);
+          zip.addFile('appdata.json', appdataFile.path);
+          zip.addFile('comic_source/broken.js', brokenSourceFile.path);
+          zip.close();
+
+          final nativeBytes = nativeZipFile.readAsBytesSync();
+          final archiveHash = sha256
+              .convert(nativeBytes)
+              .toString()
+              .toLowerCase();
+          transport.files['200-1.venera'] = nativeBytes;
+          client.remoteFiles = [dav.File(name: '200-1.venera', isDir: false)];
+
+          final reader1 = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+          final seeds1 = await reader1.readSeeds();
+          expect(seeds1.length, equals(1));
+          expect(seeds1.first.sourceIssues, isNotEmpty);
+          final backupFile = File(
+            p.join(backupDir.path, '$archiveHash.venera'),
+          );
+          expect(backupFile.existsSync(), isTrue);
+          expect(backupFile.readAsBytesSync(), equals(nativeBytes));
+
+          await LegacySyncReader.registerLegacyOverride(
+            overrideDirectory: overrideDir,
+            archiveSha256: archiveHash,
+            entryFilename: 'broken.js',
+            replacementContent:
+                'class RepairedNative extends ComicSource { key = "repaired_native"; }',
+            expectedKey: 'repaired_native',
+          );
+
+          final freshScratch = Directory(
+            p.join(tempDir.path, 'fresh_scratch_native'),
+          )..createSync();
+          final reader2 = LegacySyncReader(
+            client,
+            freshScratch,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+          final seeds2 = await reader2.readSeeds();
+          expect(seeds2.length, equals(1));
+          expect(seeds2.first.sourceIssues, isEmpty);
+          expect(seeds2.first.unavailableDomains, isEmpty);
+          expect(
+            seeds2.first.records.containsKey(
+              syncRecordKey('source', ['repaired_native']),
+            ),
+            isTrue,
+          );
+          expect(backupFile.readAsBytesSync(), equals(nativeBytes));
+        },
+      );
+
+      test(
+        'descriptor corruption: forged uncompressed size in 64-bit descriptor is rejected',
+        () async {
+          final appdataFile = File(p.join(tempDir.path, 'forged_appdata.json'))
+            ..writeAsStringSync(
+              jsonEncode({
+                'settings': {'themeMode': 'dark'},
+              }),
+            );
+          final nativeZipFile = File(
+            p.join(tempDir.path, 'native_forged.venera'),
+          );
+
+          final zip = ZipFile.open(nativeZipFile.path);
+          zip.addFile('appdata.json', appdataFile.path);
+          zip.close();
+
+          final bytes = Uint8List.fromList(nativeZipFile.readAsBytesSync());
+          final data = ByteData.sublistView(bytes);
+          var descOffset = -1;
+          for (var i = 0; i <= bytes.length - 24; i++) {
+            if (data.getUint32(i, Endian.little) == 0x08074b50) {
+              descOffset = i;
+              break;
+            }
+          }
+          expect(descOffset, isNot(equals(-1)));
+          final originalUncompressedSize = data.getUint64(
+            descOffset + 16,
+            Endian.little,
+          );
+          data.setUint64(
+            descOffset + 16,
+            originalUncompressedSize + 100,
+            Endian.little,
+          );
+
+          transport.files['200-1.venera'] = bytes;
+          client.remoteFiles = [dav.File(name: '200-1.venera', isDir: false)];
 
           final reader = LegacySyncReader(
             client,
@@ -1224,7 +1736,1725 @@ void main() {
             reader.readSeeds(),
             throwsA(isA<FormatException>()),
           );
+          expect(scratchDir.listSync(), isEmpty);
+        },
+      );
 
+      test(
+        'descriptor corruption: CRC mismatch in 64-bit descriptor is rejected',
+        () async {
+          final appdataFile = File(p.join(tempDir.path, 'bad_crc_appdata.json'))
+            ..writeAsStringSync(
+              jsonEncode({
+                'settings': {'themeMode': 'dark'},
+              }),
+            );
+          final nativeZipFile = File(
+            p.join(tempDir.path, 'native_bad_crc.venera'),
+          );
+
+          final zip = ZipFile.open(nativeZipFile.path);
+          zip.addFile('appdata.json', appdataFile.path);
+          zip.close();
+
+          final bytes = Uint8List.fromList(nativeZipFile.readAsBytesSync());
+          final data = ByteData.sublistView(bytes);
+          var descOffset = -1;
+          for (var i = 0; i <= bytes.length - 24; i++) {
+            if (data.getUint32(i, Endian.little) == 0x08074b50) {
+              descOffset = i;
+              break;
+            }
+          }
+          expect(descOffset, isNot(equals(-1)));
+          final originalCrc = data.getUint32(descOffset + 4, Endian.little);
+          data.setUint32(
+            descOffset + 4,
+            originalCrc ^ 0xabcdef12,
+            Endian.little,
+          );
+
+          transport.files['200-1.venera'] = bytes;
+          client.remoteFiles = [dav.File(name: '200-1.venera', isDir: false)];
+
+          final reader = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+          );
+
+          await expectLater(
+            reader.readSeeds(),
+            throwsA(isA<FormatException>()),
+          );
+          expect(scratchDir.listSync(), isEmpty);
+        },
+      );
+
+      test(
+        'descriptor corruption: forged compressed size in 64-bit descriptor is rejected',
+        () async {
+          final appdataFile =
+              File(p.join(tempDir.path, 'bad_comp_appdata.json'))
+                ..writeAsStringSync(
+                  jsonEncode({
+                    'settings': {'themeMode': 'dark'},
+                  }),
+                );
+          final nativeZipFile = File(
+            p.join(tempDir.path, 'native_bad_comp.venera'),
+          );
+
+          final zip = ZipFile.open(nativeZipFile.path);
+          zip.addFile('appdata.json', appdataFile.path);
+          zip.close();
+
+          final bytes = Uint8List.fromList(nativeZipFile.readAsBytesSync());
+          final data = ByteData.sublistView(bytes);
+          var descOffset = -1;
+          for (var i = 0; i <= bytes.length - 24; i++) {
+            if (data.getUint32(i, Endian.little) == 0x08074b50) {
+              descOffset = i;
+              break;
+            }
+          }
+          expect(descOffset, isNot(equals(-1)));
+          final originalCompSize = data.getUint64(
+            descOffset + 8,
+            Endian.little,
+          );
+          data.setUint64(descOffset + 8, originalCompSize + 50, Endian.little);
+
+          transport.files['200-1.venera'] = bytes;
+          client.remoteFiles = [dav.File(name: '200-1.venera', isDir: false)];
+
+          final reader = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+          );
+
+          await expectLater(
+            reader.readSeeds(),
+            throwsA(isA<FormatException>()),
+          );
+          expect(scratchDir.listSync(), isEmpty);
+        },
+      );
+
+      test('truncated data descriptor is rejected before extraction', () async {
+        final appdataFile = File(p.join(tempDir.path, 'trunc_appdata.json'))
+          ..writeAsStringSync(
+            jsonEncode({
+              'settings': {'themeMode': 'dark'},
+            }),
+          );
+        final nativeZipFile = File(p.join(tempDir.path, 'native_trunc.venera'));
+
+        final zip = ZipFile.open(nativeZipFile.path);
+        zip.addFile('appdata.json', appdataFile.path);
+        zip.close();
+
+        final originalBytes = nativeZipFile.readAsBytesSync();
+        final data = ByteData.sublistView(originalBytes);
+        var descOffset = -1;
+        for (var i = 0; i <= originalBytes.length - 24; i++) {
+          if (data.getUint32(i, Endian.little) == 0x08074b50) {
+            descOffset = i;
+            break;
+          }
+        }
+        expect(descOffset, isNot(equals(-1)));
+
+        final truncatedBytes = Uint8List.fromList([
+          ...originalBytes.sublist(0, descOffset + 8),
+          ...originalBytes.sublist(descOffset + 24),
+        ]);
+
+        transport.files['200-1.venera'] = truncatedBytes;
+        client.remoteFiles = [dav.File(name: '200-1.venera', isDir: false)];
+
+        final reader = LegacySyncReader(
+          client,
+          scratchDir,
+          preferences: preferences,
+        );
+
+        await expectLater(reader.readSeeds(), throwsA(isA<FormatException>()));
+        expect(scratchDir.listSync(), isEmpty);
+      });
+
+      test(
+        'overlapping local entries are rejected independently of descriptor width',
+        () async {
+          final file1 = File(p.join(tempDir.path, 'entry1.json'))
+            ..writeAsStringSync(
+              jsonEncode({
+                'settings': {'key1': 'value1'},
+              }),
+            );
+          final file2 = File(p.join(tempDir.path, 'entry2.json'))
+            ..writeAsStringSync(
+              jsonEncode({
+                'settings': {'key2': 'value2'},
+              }),
+            );
+          final nativeZipFile = File(
+            p.join(tempDir.path, 'native_overlap.venera'),
+          );
+
+          final zip = ZipFile.open(nativeZipFile.path);
+          zip.addFile('appdata.json', file1.path);
+          zip.addFile('syncdata.json', file2.path);
+          zip.close();
+
+          final bytes = Uint8List.fromList(nativeZipFile.readAsBytesSync());
+          for (var i = 0; i <= bytes.length - 46; i++) {
+            if (bytes[i] == 0x50 &&
+                bytes[i + 1] == 0x4b &&
+                bytes[i + 2] == 0x01 &&
+                bytes[i + 3] == 0x02) {
+              final fnameLen = ByteData.sublistView(
+                bytes,
+              ).getUint16(i + 28, Endian.little);
+              final name = utf8.decode(
+                bytes.sublist(i + 46, i + 46 + fnameLen),
+              );
+              if (name == 'syncdata.json') {
+                ByteData.sublistView(bytes).setUint32(i + 42, 5, Endian.little);
+                break;
+              }
+            }
+          }
+
+          transport.files['200-1.venera'] = bytes;
+          client.remoteFiles = [dav.File(name: '200-1.venera', isDir: false)];
+
+          final reader = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+          );
+
+          await expectLater(
+            reader.readSeeds(),
+            throwsA(isA<FormatException>()),
+          );
+          expect(scratchDir.listSync(), isEmpty);
+        },
+      );
+    },
+    skip: (_ciRequireNativeZip || nativeZipAvailable)
+        ? false
+        : nativeZipFailure,
+  );
+
+  group('LegacySyncReader Verified Source Backup and Partial Migration', () {
+    test(
+      'invalid comic source preserves verified archive in backup directory and returns partial seed',
+      () async {
+        final backupDir = Directory(p.join(tempDir.path, 'verified_backups'));
+        final archiveBytes = _createVeneraArchive(
+          appdataJson: jsonEncode({
+            'settings': {'theme': 'system'},
+          }),
+          comicSources: {'broken.js': '// empty or invalid script without key'},
+        );
+
+        transport.files['500-1.venera'] = archiveBytes;
+        client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
+
+        final reader = LegacySyncReader(
+          client,
+          scratchDir,
+          preferences: preferences,
+          verifiedSourceBackupDirectory: backupDir,
+        );
+
+        final seeds = await reader.readSeeds();
+
+        expect(seeds.length, equals(1));
+        final seed = seeds.first;
+        final settingKey = syncRecordKey('setting', ['theme']);
+        expect(seed.records[settingKey]?['value'], equals('system'));
+
+        expect(seed.sourceIssues, isNotEmpty);
+        expect(seed.unavailableDomains, contains('source'));
+        final issue = seed.sourceIssues.first;
+        expect(issue.archiveName, equals('500-1.venera'));
+        expect(issue.backupPath, isNotNull);
+        expect(File(issue.backupPath!).existsSync(), isTrue);
+        expect(File(issue.backupPath!).readAsBytesSync(), equals(archiveBytes));
+
+        expect(scratchDir.listSync(), isEmpty);
+      },
+    );
+
+    test(
+      'corrupt ZIP archive throws FormatException and creates no backup',
+      () async {
+        final backupDir = Directory(p.join(tempDir.path, 'corrupt_backups'));
+        final corruptBytes = Uint8List.fromList([1, 2, 3, 4, 5, 6, 7, 8]);
+
+        transport.files['500-1.venera'] = corruptBytes;
+        client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
+
+        final reader = LegacySyncReader(
+          client,
+          scratchDir,
+          preferences: preferences,
+          verifiedSourceBackupDirectory: backupDir,
+        );
+
+        await expectLater(reader.readSeeds(), throwsA(isA<FormatException>()));
+
+        if (backupDir.existsSync()) {
+          expect(backupDir.listSync(), isEmpty);
+        }
+        expect(scratchDir.listSync(), isEmpty);
+      },
+    );
+
+    test(
+      'omitted backup directory falls back to durable profile source_backups',
+      () async {
+        final archiveBytes = _createVeneraArchive(
+          appdataJson: jsonEncode({
+            'settings': {'theme': 'system'},
+          }),
+          comicSources: {'broken.js': '// empty or invalid script without key'},
+        );
+
+        transport.files['500-1.venera'] = archiveBytes;
+        client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
+
+        final reader = LegacySyncReader(
+          client,
+          scratchDir,
+          preferences: preferences,
+        );
+
+        final seeds = await reader.readSeeds();
+
+        expect(seeds.length, equals(1));
+        final seed = seeds.first;
+        expect(seed.sourceIssues, isNotEmpty);
+        expect(seed.unavailableDomains, contains('source'));
+        final issue = seed.sourceIssues.first;
+        expect(issue.backupPath, isNotNull);
+        expect(File(issue.backupPath!).existsSync(), isTrue);
+        expect(
+          p.canonicalize(p.dirname(issue.backupPath!)),
+          equals(p.canonicalize(p.join(App.dataPath, 'source_backups'))),
+        );
+        expect(scratchDir.listSync(), isEmpty);
+      },
+    );
+  });
+  group('LegacySyncReader Descriptor Boundaries and Variants', () {
+    test(
+      'positive coverage: 32-bit signed descriptor (16 bytes) is accepted',
+      () async {
+        final bytes = _createCustomDescriptorArchive(
+          filename: 'appdata.json',
+          content: utf8.encode('{"settings":{"testKey":"32_signed"}}'),
+          descriptorType: 0,
+        );
+        transport.files['200-1.venera'] = bytes;
+        client.remoteFiles = [dav.File(name: '200-1.venera', isDir: false)];
+
+        final reader = LegacySyncReader(
+          client,
+          scratchDir,
+          preferences: preferences,
+        );
+        final seeds = await reader.readSeeds();
+
+        expect(seeds.length, equals(1));
+        final settingKey = syncRecordKey('setting', ['testKey']);
+        expect(seeds.first.records[settingKey]?['value'], equals('32_signed'));
+        expect(scratchDir.listSync(), isEmpty);
+      },
+    );
+
+    test(
+      'positive coverage: 64-bit unsigned descriptor (20 bytes) is accepted',
+      () async {
+        final bytes = _createCustomDescriptorArchive(
+          filename: 'appdata.json',
+          content: utf8.encode('{"settings":{"testKey":"64_unsigned"}}'),
+          descriptorType: 2,
+        );
+        transport.files['200-1.venera'] = bytes;
+        client.remoteFiles = [dav.File(name: '200-1.venera', isDir: false)];
+
+        final reader = LegacySyncReader(
+          client,
+          scratchDir,
+          preferences: preferences,
+        );
+        final seeds = await reader.readSeeds();
+
+        expect(seeds.length, equals(1));
+        final settingKey = syncRecordKey('setting', ['testKey']);
+        expect(
+          seeds.first.records[settingKey]?['value'],
+          equals('64_unsigned'),
+        );
+        expect(scratchDir.listSync(), isEmpty);
+      },
+    );
+
+    test(
+      'positive coverage: 32-bit unsigned descriptor (12 bytes) is accepted',
+      () async {
+        final bytes = _createCustomDescriptorArchive(
+          filename: 'appdata.json',
+          content: utf8.encode('{"settings":{"testKey":"32_unsigned"}}'),
+          descriptorType: 3,
+        );
+        transport.files['200-1.venera'] = bytes;
+        client.remoteFiles = [dav.File(name: '200-1.venera', isDir: false)];
+
+        final reader = LegacySyncReader(
+          client,
+          scratchDir,
+          preferences: preferences,
+        );
+        final seeds = await reader.readSeeds();
+
+        expect(seeds.length, equals(1));
+        final settingKey = syncRecordKey('setting', ['testKey']);
+        expect(
+          seeds.first.records[settingKey]?['value'],
+          equals('32_unsigned'),
+        );
+        expect(scratchDir.listSync(), isEmpty);
+      },
+    );
+
+    test(
+      'descriptor CRC matching the optional signature is still verified against content',
+      () async {
+        final bytes = _createCustomDescriptorArchive(
+          filename: 'appdata.json',
+          content: utf8.encode('{"settings":{"testKey":"crc_match_sig"}}'),
+          descriptorType: 3,
+          overrideCrc: 0x08074b50,
+        );
+        transport.files['200-1.venera'] = bytes;
+        client.remoteFiles = [dav.File(name: '200-1.venera', isDir: false)];
+
+        final reader = LegacySyncReader(
+          client,
+          scratchDir,
+          preferences: preferences,
+        );
+        await expectLater(reader.readSeeds(), throwsA(isA<FormatException>()));
+        expect(scratchDir.listSync(), isEmpty);
+      },
+    );
+
+    test(
+      'empty-entry descriptor corruption: forged 64-bit descriptor trailing bytes for empty entry are rejected',
+      () async {
+        final bytes = _createCustomDescriptorArchive(
+          filename: 'appdata.json',
+          content: utf8.encode(''),
+          descriptorType: 4,
+        );
+        transport.files['200-1.venera'] = bytes;
+        client.remoteFiles = [dav.File(name: '200-1.venera', isDir: false)];
+
+        final reader = LegacySyncReader(
+          client,
+          scratchDir,
+          preferences: preferences,
+        );
+
+        await expectLater(reader.readSeeds(), throwsA(isA<FormatException>()));
+        expect(scratchDir.listSync(), isEmpty);
+      },
+    );
+
+    test(
+      'no-descriptor entry with 0xffffffff size verifies local ZIP64 extra field and rejects mismatch',
+      () async {
+        final bytes = _createCustomDescriptorArchive(
+          filename: 'appdata.json',
+          content: utf8.encode('{"settings":{"testKey":"bad_extra"}}'),
+          descriptorType: 5,
+        );
+        transport.files['200-1.venera'] = bytes;
+        client.remoteFiles = [dav.File(name: '200-1.venera', isDir: false)];
+
+        final reader = LegacySyncReader(
+          client,
+          scratchDir,
+          preferences: preferences,
+        );
+
+        await expectLater(reader.readSeeds(), throwsA(isA<FormatException>()));
+        expect(scratchDir.listSync(), isEmpty);
+      },
+    );
+
+    test(
+      'bit 3 entry with local nonzero CRC contradicting central header is rejected',
+      () async {
+        final bytes = _createCustomDescriptorArchive(
+          filename: 'appdata.json',
+          content: utf8.encode('{"settings":{"testKey":"bad_local_crc"}}'),
+          descriptorType: 6,
+        );
+        transport.files['200-1.venera'] = bytes;
+        client.remoteFiles = [dav.File(name: '200-1.venera', isDir: false)];
+
+        final reader = LegacySyncReader(
+          client,
+          scratchDir,
+          preferences: preferences,
+        );
+
+        await expectLater(reader.readSeeds(), throwsA(isA<FormatException>()));
+        expect(scratchDir.listSync(), isEmpty);
+      },
+    );
+    test(
+      'corrupted descriptor variant causes reader to reject archive and leave scratch clean',
+      () async {
+        final bytes = _createCustomDescriptorArchive(
+          filename: 'appdata.json',
+          content: utf8.encode('{"settings":{"testKey":"corrupt_pad"}}'),
+          descriptorType: 6,
+        );
+        transport.files['200-1.venera'] = bytes;
+        client.remoteFiles = [dav.File(name: '200-1.venera', isDir: false)];
+
+        final reader = LegacySyncReader(
+          client,
+          scratchDir,
+          preferences: preferences,
+        );
+
+        await expectLater(reader.readSeeds(), throwsA(isA<FormatException>()));
+        expect(scratchDir.listSync(), isEmpty);
+      },
+    );
+  });
+
+  group(
+    'LegacySyncReader Durable Overrides and Process Restart',
+    () {
+      setUp(() {
+        if (_ciRequireQuickJs && quickJsFailure != null) {
+          fail(
+            'CI_REQUIRE_QUICKJS=true requires QuickJS native library, '
+            'but it failed to load: $quickJsFailure',
+          );
+        }
+      });
+      test(
+        'fresh reader / restart: selected repair survives reader restart, leaves other entries and durable backup unmutated',
+        () async {
+          final backupDir = Directory(p.join(tempDir.path, 'override_backups'))
+            ..createSync(recursive: true);
+          final overrideDir = Directory(
+            p.join(tempDir.path, 'endpoint_overrides'),
+          )..createSync(recursive: true);
+          final archiveBytes = _createVeneraArchive(
+            appdataJson: jsonEncode({
+              'settings': {'theme': 'dark'},
+            }),
+            comicSources: {'broken.js': '// empty script'},
+          );
+          final archiveHash = sha256
+              .convert(archiveBytes)
+              .toString()
+              .toLowerCase();
+
+          transport.files['500-1.venera'] = archiveBytes;
+          client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
+
+          final reader1 = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+          final seeds1 = await reader1.readSeeds();
+          expect(seeds1.single.sourceIssues, isNotEmpty);
+          expect(seeds1.single.unavailableDomains, contains('source'));
+          final backupFile = File(
+            p.join(backupDir.path, '$archiveHash.venera'),
+          );
+          expect(backupFile.existsSync(), isTrue);
+          expect(backupFile.readAsBytesSync(), equals(archiveBytes));
+
+          final registered = await LegacySyncReader.registerLegacyOverride(
+            overrideDirectory: overrideDir,
+            archiveSha256: archiveHash,
+            entryFilename: 'broken.js',
+            replacementContent:
+                'class RepairedSrc extends ComicSource { key = "repaired_src"; }',
+            expectedKey: 'repaired_src',
+          );
+          expect(registered, isTrue);
+
+          final manifestFile = File(
+            p.join(overrideDir.path, archiveHash, 'manifest.json'),
+          );
+          expect(manifestFile.existsSync(), isTrue);
+          final manifest = jsonDecode(manifestFile.readAsStringSync()) as Map;
+          expect(manifest['archiveSha256'], equals(archiveHash));
+          expect((manifest['entries'] as Map).containsKey('broken.js'), isTrue);
+
+          final freshScratch = Directory(
+            p.join(tempDir.path, 'fresh_scratch_restart'),
+          )..createSync();
+          final reader2 = LegacySyncReader(
+            client,
+            freshScratch,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+          final seeds2 = await reader2.readSeeds();
+          expect(seeds2.single.sourceIssues, isEmpty);
+          expect(seeds2.single.unavailableDomains, isEmpty);
+          expect(
+            seeds2.single.records.containsKey(
+              syncRecordKey('source', ['repaired_src']),
+            ),
+            isTrue,
+          );
+          final settingKey = syncRecordKey('setting', ['theme']);
+          expect(seeds2.single.records[settingKey]?['value'], equals('dark'));
+
+          expect(backupFile.readAsBytesSync(), equals(archiveBytes));
+        },
+      );
+
+      test(
+        'fresh reader / restart: session .data override replaces invalid session and resolves issue',
+        () async {
+          final backupDir = Directory(p.join(tempDir.path, 'session_backups'))
+            ..createSync(recursive: true);
+          final overrideDir = Directory(
+            p.join(tempDir.path, 'session_overrides'),
+          )..createSync(recursive: true);
+          final archiveBytes = _createVeneraArchive(
+            comicSources: {
+              'custom_src.js':
+                  'class CustomSrc extends ComicSource { key = "custom_src"; }',
+              'custom_src.data': '{ invalid json ...',
+            },
+          );
+          final archiveHash = sha256
+              .convert(archiveBytes)
+              .toString()
+              .toLowerCase();
+
+          transport.files['500-1.venera'] = archiveBytes;
+          client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
+
+          final reader1 = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+          final seeds1 = await reader1.readSeeds();
+          expect(seeds1.single.sourceIssues, isNotEmpty);
+          expect(
+            seeds1.single.sourceIssues.any(
+              (i) =>
+                  i.reason == 'invalidSession' && i.sourceKey == 'custom_src',
+            ),
+            isTrue,
+          );
+
+          await LegacySyncReader.registerLegacyOverride(
+            overrideDirectory: overrideDir,
+            archiveSha256: archiveHash,
+            entryFilename: 'comic_source/custom_src.data',
+            replacementContent: jsonEncode({
+              'token': 'secret123',
+              'user': 'john',
+            }),
+            expectedKey: 'custom_src',
+          );
+
+          final freshScratch = Directory(
+            p.join(tempDir.path, 'session_scratch_restart'),
+          )..createSync();
+          final reader2 = LegacySyncReader(
+            client,
+            freshScratch,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+          final seeds2 = await reader2.readSeeds();
+          expect(seeds2.single.sourceIssues, isEmpty);
+          expect(seeds2.single.unavailableDomains, isEmpty);
+          final sessionKey = syncRecordKey('sourceSession', ['custom_src']);
+          expect(seeds2.single.records.containsKey(sessionKey), isTrue);
+          expect(
+            seeds2.single.records[sessionKey]?['data'],
+            equals({'token': 'secret123', 'user': 'john'}),
+          );
+        },
+      );
+
+      test(
+        'malicious override: path traversal attempts are rejected at registration',
+        () async {
+          final overrideDir = Directory(
+            p.join(tempDir.path, 'traversal_overrides'),
+          )..createSync();
+          final dummyHash = 'a' * 64;
+
+          for (final badPath in [
+            '../evil.js',
+            'comic_source/../../evil.js',
+            '/root/evil.js',
+            'C:\\evil.js',
+            'C:/evil.js',
+            'comic_source/subdir/evil.js',
+            '..\\evil.js',
+            'comic_source\\..\\..\\evil.js',
+            'comic_source/evil\u0000.js',
+          ]) {
+            await expectLater(
+              LegacySyncReader.registerLegacyOverride(
+                overrideDirectory: overrideDir,
+                archiveSha256: dummyHash,
+                entryFilename: badPath,
+                replacementContent:
+                    'class Evil extends ComicSource { key = "evil"; }',
+              ),
+              throwsA(isA<FormatException>()),
+            );
+          }
+        },
+      );
+
+      test(
+        'malicious override: invalid archive SHA is rejected at registration',
+        () async {
+          final overrideDir = Directory(
+            p.join(tempDir.path, 'bad_sha_overrides'),
+          )..createSync();
+          for (final badSha in ['not_a_sha', '1234', 'a' * 63, 'g' * 64]) {
+            await expectLater(
+              LegacySyncReader.registerLegacyOverride(
+                overrideDirectory: overrideDir,
+                archiveSha256: badSha,
+                entryFilename: 'test.js',
+                replacementContent:
+                    'class T extends ComicSource { key = "t"; }',
+              ),
+              throwsA(isA<FormatException>()),
+            );
+          }
+        },
+      );
+
+      test(
+        'malicious override: key mismatch between replacement script and expectedKey is rejected at registration',
+        () async {
+          final overrideDir = Directory(
+            p.join(tempDir.path, 'key_mismatch_overrides'),
+          )..createSync();
+          final dummyHash = 'b' * 64;
+
+          await expectLater(
+            LegacySyncReader.registerLegacyOverride(
+              overrideDirectory: overrideDir,
+              archiveSha256: dummyHash,
+              entryFilename: 'test.js',
+              replacementContent:
+                  'class T extends ComicSource { key = "actual_key"; }',
+              expectedKey: 'expected_different_key',
+            ),
+            throwsA(isA<FormatException>()),
+          );
+        },
+      );
+
+      test(
+        'malicious override: replacement exceeding text budget is rejected at registration',
+        () async {
+          final overrideDir = Directory(
+            p.join(tempDir.path, 'budget_overrides'),
+          )..createSync();
+          final dummyHash = 'c' * 64;
+          final hugeContent = ' ' * (16 * 1024 * 1024 + 1);
+
+          await expectLater(
+            LegacySyncReader.registerLegacyOverride(
+              overrideDirectory: overrideDir,
+              archiveSha256: dummyHash,
+              entryFilename: 'huge.js',
+              replacementContent: hugeContent,
+            ),
+            throwsA(isA<FormatException>()),
+          );
+        },
+      );
+
+      test(
+        'malicious override: invalid session JSON does not leak payload in error message',
+        () async {
+          final overrideDir = Directory(
+            p.join(tempDir.path, 'session_leak_overrides'),
+          )..createSync();
+          final dummyHash = 'd' * 64;
+          const secretToken = 'TOP_SECRET_AUTH_COOKIE_VALUE_NEVER_LEAK';
+          final brokenPayload = '{"auth": "$secretToken", syntax_error';
+
+          try {
+            await LegacySyncReader.registerLegacyOverride(
+              overrideDirectory: overrideDir,
+              archiveSha256: dummyHash,
+              entryFilename: 'my_src.data',
+              replacementContent: brokenPayload,
+              expectedKey: 'my_src',
+            );
+            fail('Should have thrown FormatException');
+          } on FormatException catch (e) {
+            expect(e.message.contains(secretToken), isFalse);
+            expect(e.message, contains('Invalid session JSON'));
+          }
+        },
+      );
+
+      test(
+        'malicious override on disk: forged manifest pointing to new unrelated file throws FormatException on read',
+        () async {
+          final backupDir = Directory(p.join(tempDir.path, 'unrelated_backups'))
+            ..createSync();
+          final overrideDir = Directory(
+            p.join(tempDir.path, 'unrelated_overrides'),
+          )..createSync();
+          final archiveBytes = _createVeneraArchive(
+            comicSources: {'broken.js': '// empty script'},
+          );
+          final archiveHash = sha256
+              .convert(archiveBytes)
+              .toString()
+              .toLowerCase();
+
+          transport.files['500-1.venera'] = archiveBytes;
+          client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
+
+          await LegacySyncReader.registerLegacyOverride(
+            overrideDirectory: overrideDir,
+            archiveSha256: archiveHash,
+            entryFilename: 'broken.js',
+            replacementContent:
+                'class RepairedSrc extends ComicSource { key = "repaired_src"; }',
+          );
+
+          final manifestFile = File(
+            p.join(overrideDir.path, archiveHash, 'manifest.json'),
+          );
+          final manifest =
+              jsonDecode(manifestFile.readAsStringSync())
+                  as Map<String, dynamic>;
+          final entries = Map<String, dynamic>.from(manifest['entries'] as Map);
+          final evilSha = sha256
+              .convert(
+                utf8.encode('class Evil extends ComicSource { key = "evil"; }'),
+              )
+              .toString()
+              .toLowerCase();
+          entries['evil_unrelated.js'] = {
+            'filename': 'evil_unrelated.js',
+            'entryPath': 'comic_source/evil_unrelated.js',
+            'contentSha256': evilSha,
+            'type': 'script',
+            'expectedKey': 'evil',
+            'relativeFilePath': 'files/$evilSha',
+          };
+          manifest['entries'] = entries;
+          manifestFile.writeAsStringSync(jsonEncode(manifest));
+          File(p.join(overrideDir.path, archiveHash, 'files', evilSha))
+            ..writeAsStringSync(
+              'class Evil extends ComicSource { key = "evil"; }',
+            );
+
+          final reader = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+
+          await expectLater(
+            reader.readSeeds(),
+            throwsA(isA<FormatException>()),
+          );
+          expect(scratchDir.listSync(), isEmpty);
+        },
+      );
+
+      test(
+        'malicious override on disk: forged manifest with path traversal relativeFilePath throws FormatException on read',
+        () async {
+          final backupDir = Directory(
+            p.join(tempDir.path, 'traversal_disk_backups'),
+          )..createSync();
+          final overrideDir = Directory(
+            p.join(tempDir.path, 'traversal_disk_overrides'),
+          )..createSync();
+          final archiveBytes = _createVeneraArchive(
+            comicSources: {'broken.js': '// empty script'},
+          );
+          final archiveHash = sha256
+              .convert(archiveBytes)
+              .toString()
+              .toLowerCase();
+
+          transport.files['500-1.venera'] = archiveBytes;
+          client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
+
+          await LegacySyncReader.registerLegacyOverride(
+            overrideDirectory: overrideDir,
+            archiveSha256: archiveHash,
+            entryFilename: 'broken.js',
+            replacementContent:
+                'class RepairedSrc extends ComicSource { key = "repaired_src"; }',
+          );
+
+          final manifestFile = File(
+            p.join(overrideDir.path, archiveHash, 'manifest.json'),
+          );
+          final manifest =
+              jsonDecode(manifestFile.readAsStringSync())
+                  as Map<String, dynamic>;
+          final entries = Map<String, dynamic>.from(manifest['entries'] as Map);
+          entries['broken.js']['relativeFilePath'] = '../outside.js';
+          manifest['entries'] = entries;
+          manifestFile.writeAsStringSync(jsonEncode(manifest));
+
+          final reader = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+
+          await expectLater(
+            reader.readSeeds(),
+            throwsA(isA<FormatException>()),
+          );
+          expect(scratchDir.listSync(), isEmpty);
+        },
+      );
+
+      test(
+        'malicious override on disk: tampered replacement content hash mismatch throws FormatException on read',
+        () async {
+          final backupDir = Directory(
+            p.join(tempDir.path, 'tamper_hash_backups'),
+          )..createSync();
+          final overrideDir = Directory(
+            p.join(tempDir.path, 'tamper_hash_overrides'),
+          )..createSync();
+          final archiveBytes = _createVeneraArchive(
+            comicSources: {'broken.js': '// empty script'},
+          );
+          final archiveHash = sha256
+              .convert(archiveBytes)
+              .toString()
+              .toLowerCase();
+
+          transport.files['500-1.venera'] = archiveBytes;
+          client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
+
+          await LegacySyncReader.registerLegacyOverride(
+            overrideDirectory: overrideDir,
+            archiveSha256: archiveHash,
+            entryFilename: 'broken.js',
+            replacementContent:
+                'class RepairedSrc extends ComicSource { key = "repaired_src"; }',
+          );
+
+          final manifestFile = File(
+            p.join(overrideDir.path, archiveHash, 'manifest.json'),
+          );
+          final manifest =
+              jsonDecode(manifestFile.readAsStringSync())
+                  as Map<String, dynamic>;
+          final entry = manifest['entries']['broken.js'] as Map;
+          final relPath = entry['relativeFilePath'] as String;
+          final replFile = File(p.join(overrideDir.path, archiveHash, relPath));
+          replFile.writeAsStringSync(
+            'class Tampered extends ComicSource { key = "tampered"; }',
+          );
+          final reader = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+
+          await expectLater(
+            reader.readSeeds(),
+            throwsA(isA<FormatException>()),
+          );
+          expect(scratchDir.listSync(), isEmpty);
+        },
+      );
+
+      test(
+        'malicious override on disk: forged expectedKey mismatching script probed key throws FormatException on read',
+        () async {
+          final backupDir = Directory(
+            p.join(tempDir.path, 'tamper_key_backups'),
+          )..createSync();
+          final overrideDir = Directory(
+            p.join(tempDir.path, 'tamper_key_overrides'),
+          )..createSync();
+          final archiveBytes = _createVeneraArchive(
+            comicSources: {'broken.js': '// empty script'},
+          );
+          final archiveHash = sha256
+              .convert(archiveBytes)
+              .toString()
+              .toLowerCase();
+
+          transport.files['500-1.venera'] = archiveBytes;
+          client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
+
+          await LegacySyncReader.registerLegacyOverride(
+            overrideDirectory: overrideDir,
+            archiveSha256: archiveHash,
+            entryFilename: 'broken.js',
+            replacementContent:
+                'class RepairedSrc extends ComicSource { key = "repaired_src"; }',
+          );
+
+          final manifestFile = File(
+            p.join(overrideDir.path, archiveHash, 'manifest.json'),
+          );
+          final manifest =
+              jsonDecode(manifestFile.readAsStringSync())
+                  as Map<String, dynamic>;
+          final entries = Map<String, dynamic>.from(manifest['entries'] as Map);
+          entries['broken.js']['expectedKey'] = 'different_key';
+          manifest['entries'] = entries;
+          manifestFile.writeAsStringSync(jsonEncode(manifest));
+
+          final reader = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+
+          await expectLater(
+            reader.readSeeds(),
+            throwsA(isA<FormatException>()),
+          );
+          expect(scratchDir.listSync(), isEmpty);
+        },
+      );
+
+      test(
+        'malicious override on disk: forged session key mismatching filename throws FormatException on read',
+        () async {
+          final backupDir = Directory(
+            p.join(tempDir.path, 'session_tamper_backups'),
+          )..createSync();
+          final overrideDir = Directory(
+            p.join(tempDir.path, 'session_tamper_overrides'),
+          )..createSync();
+          final archiveBytes = _createVeneraArchive(
+            comicSources: {
+              'my_src.js':
+                  'class MySrc extends ComicSource { key = "my_src"; }',
+              'my_src.data': '{"token": "old"}',
+            },
+          );
+          final archiveHash = sha256
+              .convert(archiveBytes)
+              .toString()
+              .toLowerCase();
+
+          transport.files['500-1.venera'] = archiveBytes;
+          client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
+
+          await LegacySyncReader.registerLegacyOverride(
+            overrideDirectory: overrideDir,
+            archiveSha256: archiveHash,
+            entryFilename: 'my_src.data',
+            replacementContent: '{"token": "new"}',
+            expectedKey: 'my_src',
+          );
+
+          final manifestFile = File(
+            p.join(overrideDir.path, archiveHash, 'manifest.json'),
+          );
+          final manifest =
+              jsonDecode(manifestFile.readAsStringSync())
+                  as Map<String, dynamic>;
+          final entries = Map<String, dynamic>.from(manifest['entries'] as Map);
+          entries['my_src.data']['expectedKey'] = 'forged_mismatched_key';
+          manifest['entries'] = entries;
+          manifestFile.writeAsStringSync(jsonEncode(manifest));
+
+          final reader = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+
+          await expectLater(
+            reader.readSeeds(),
+            throwsA(isA<FormatException>()),
+          );
+          expect(scratchDir.listSync(), isEmpty);
+        },
+      );
+      test(
+        'parenthesized legacy basenames komiic(0).js and jm(0).js repair after restart',
+        () async {
+          final backupDir = Directory(p.join(tempDir.path, 'alias_backups'))
+            ..createSync(recursive: true);
+          final overrideDir = Directory(p.join(tempDir.path, 'alias_overrides'))
+            ..createSync(recursive: true);
+          final archiveBytes = _createVeneraArchive(
+            comicSources: {
+              'komiic(0).js': '// empty or broken komiic script',
+              'jm(0).js': '// empty or broken jm script',
+            },
+          );
+          final archiveHash = sha256
+              .convert(archiveBytes)
+              .toString()
+              .toLowerCase();
+
+          transport.files['500-1.venera'] = archiveBytes;
+          client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
+
+          final reader1 = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+          final seeds1 = await reader1.readSeeds();
+          expect(seeds1.single.sourceIssues, hasLength(2));
+          expect(
+            seeds1.single.sourceIssues.map((i) => i.filename),
+            containsAll(['komiic(0).js', 'jm(0).js']),
+          );
+
+          final ok = await LegacySyncReader.registerLegacyOverride(
+            overrideDirectory: overrideDir,
+            archiveSha256: archiveHash,
+            entryFilename: 'comic_source/komiic(0).js',
+            replacementContent:
+                'class Komiic extends ComicSource { key = "komiic"; }',
+            expectedKey: 'komiic',
+          );
+          expect(ok, isTrue);
+          await LegacySyncReader.registerLegacyOverride(
+            overrideDirectory: overrideDir,
+            archiveSha256: archiveHash,
+            entryFilename: 'jm(0).js',
+            replacementContent: 'class Jm extends ComicSource { key = "jm"; }',
+            expectedKey: 'jm',
+          );
+
+          final freshScratch = Directory(
+            p.join(tempDir.path, 'fresh_alias_scratch'),
+          )..createSync();
+          final reader2 = LegacySyncReader(
+            client,
+            freshScratch,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+          final seeds2 = await reader2.readSeeds();
+          expect(seeds2.single.sourceIssues, isEmpty);
+          expect(seeds2.single.unavailableDomains, isEmpty);
+          expect(
+            seeds2.single.records.containsKey(
+              syncRecordKey('source', ['komiic']),
+            ),
+            isTrue,
+          );
+          expect(
+            seeds2.single.records.containsKey(syncRecordKey('source', ['jm'])),
+            isTrue,
+          );
+        },
+      );
+
+      test(
+        'first publication retries from a durable empty genesis after pointer interruption',
+        () async {
+          final backupDir = Directory(
+            p.join(tempDir.path, 'genesis_retry_backups'),
+          )..createSync(recursive: true);
+          final overrideDir = Directory(
+            p.join(tempDir.path, 'genesis_retry_overrides'),
+          )..createSync(recursive: true);
+          final archiveBytes = _createVeneraArchive(
+            comicSources: {'broken.js': '// broken original'},
+          );
+          final archiveHash = sha256
+              .convert(archiveBytes)
+              .toString()
+              .toLowerCase();
+          transport.files['500-1.venera'] = archiveBytes;
+          client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
+
+          final initialReader = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+          final initialSeeds = await initialReader.readSeeds();
+          expect(initialSeeds.single.sourceIssues, isNotEmpty);
+          final backupFile = File(
+            p.join(backupDir.path, '$archiveHash.venera'),
+          );
+          expect(backupFile.readAsBytesSync(), equals(archiveBytes));
+
+          // Model a crash after atomic bootstrap publication but before the first
+          // repair pointer commit. Genesis is initialized state, not completion.
+          final archiveOverrideDir = Directory(
+            p.join(overrideDir.path, archiveHash),
+          )..createSync();
+          final filesDir = Directory(p.join(archiveOverrideDir.path, 'files'))
+            ..createSync();
+          final genesisManifestFile = File(
+            p.join(archiveOverrideDir.path, 'manifest.json'),
+          );
+          final genesisRaw = jsonEncode({
+            'archiveSha256': archiveHash,
+            'entries': <String, Object?>{},
+            'state': 'genesis',
+          });
+          genesisManifestFile.writeAsStringSync(genesisRaw, flush: true);
+
+          final genesisScratch = Directory(
+            p.join(tempDir.path, 'fresh_genesis_scratch'),
+          )..createSync();
+          final genesisReader = LegacySyncReader(
+            client,
+            genesisScratch,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+          final genesisSeeds = await genesisReader.readSeeds();
+          expect(
+            genesisSeeds.single.sourceIssues.any(
+              (issue) => issue.filename == 'broken.js',
+            ),
+            isTrue,
+          );
+          expect(genesisSeeds.single.unavailableDomains, contains('source'));
+
+          const repairedContent =
+              'class Recovered extends ComicSource { key = "recovered"; }';
+          final repairedSha = sha256
+              .convert(utf8.encode(repairedContent))
+              .toString();
+          final repairedFile = File(p.join(filesDir.path, repairedSha));
+          if (Platform.isWindows) {
+            final handle = _holdNoDeleteHandle(genesisManifestFile.path);
+            try {
+              await expectLater(
+                LegacySyncReader.registerLegacyOverride(
+                  overrideDirectory: overrideDir,
+                  archiveSha256: archiveHash,
+                  entryFilename: 'broken.js',
+                  replacementContent: repairedContent,
+                  expectedKey: 'recovered',
+                ),
+                throwsA(isA<FileSystemException>()),
+              );
+              expect(
+                genesisManifestFile.readAsStringSync(),
+                equals(genesisRaw),
+              );
+              expect(repairedFile.readAsStringSync(), equals(repairedContent));
+            } finally {
+              _closeWindowsHandle(handle);
+            }
+          }
+
+          // Retry validates/reuses the immutable blob, then commits the pointer.
+          await LegacySyncReader.registerLegacyOverride(
+            overrideDirectory: overrideDir,
+            archiveSha256: archiveHash,
+            entryFilename: 'broken.js',
+            replacementContent: repairedContent,
+            expectedKey: 'recovered',
+          );
+          final committedManifest =
+              jsonDecode(genesisManifestFile.readAsStringSync()) as Map;
+          expect(committedManifest.containsKey('state'), isFalse);
+          expect(
+            (committedManifest['entries'] as Map).containsKey('broken.js'),
+            isTrue,
+          );
+
+          final freshScratch = Directory(
+            p.join(tempDir.path, 'fresh_genesis_retry_scratch'),
+          )..createSync();
+          final freshReader = LegacySyncReader(
+            client,
+            freshScratch,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+          final recoveredSeeds = await freshReader.readSeeds();
+          expect(recoveredSeeds.single.sourceIssues, isEmpty);
+          expect(
+            recoveredSeeds.single.records.containsKey(
+              syncRecordKey('source', ['recovered']),
+            ),
+            isTrue,
+          );
+          expect(backupFile.readAsBytesSync(), equals(archiveBytes));
+        },
+      );
+
+      test(
+        'locked second manifest commit preserves prior repair after fresh-reader restart',
+        () async {
+          final backupDir = Directory(
+            p.join(tempDir.path, 'locked_commit_backups'),
+          )..createSync(recursive: true);
+          final overrideDir = Directory(
+            p.join(tempDir.path, 'locked_commit_overrides'),
+          )..createSync(recursive: true);
+          final archiveBytes = _createVeneraArchive(
+            comicSources: {
+              'broken1.js': '// broken original one',
+              'broken2.js': '// broken original two',
+            },
+          );
+          final archiveHash = sha256
+              .convert(archiveBytes)
+              .toString()
+              .toLowerCase();
+          transport.files['500-1.venera'] = archiveBytes;
+          client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
+
+          final initialReader = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+          expect(
+            (await initialReader.readSeeds()).single.sourceIssues,
+            hasLength(2),
+          );
+
+          const firstRepair =
+              'class FirstRepair extends ComicSource { key = "first_repair"; }';
+          const secondRepair =
+              'class SecondRepair extends ComicSource { key = "second_repair"; }';
+          await LegacySyncReader.registerLegacyOverride(
+            overrideDirectory: overrideDir,
+            archiveSha256: archiveHash,
+            entryFilename: 'broken1.js',
+            replacementContent: firstRepair,
+            expectedKey: 'first_repair',
+          );
+
+          final archiveOverrideDir = Directory(
+            p.join(overrideDir.path, archiveHash),
+          );
+          final manifestFile = File(
+            p.join(archiveOverrideDir.path, 'manifest.json'),
+          );
+          final lastCommittedManifest = manifestFile.readAsStringSync();
+          final firstSha = sha256.convert(utf8.encode(firstRepair)).toString();
+          final secondSha = sha256
+              .convert(utf8.encode(secondRepair))
+              .toString();
+          final firstFile = File(
+            p.join(archiveOverrideDir.path, 'files', firstSha),
+          );
+          expect(firstFile.readAsStringSync(), equals(firstRepair));
+
+          final handle = _holdNoDeleteHandle(manifestFile.path);
+          try {
+            await expectLater(
+              LegacySyncReader.registerLegacyOverride(
+                overrideDirectory: overrideDir,
+                archiveSha256: archiveHash,
+                entryFilename: 'broken2.js',
+                replacementContent: secondRepair,
+                expectedKey: 'second_repair',
+              ),
+              throwsA(isA<FileSystemException>()),
+            );
+            expect(
+              manifestFile.readAsStringSync(),
+              equals(lastCommittedManifest),
+            );
+            expect(firstFile.readAsStringSync(), equals(firstRepair));
+            expect(
+              File(
+                p.join(archiveOverrideDir.path, 'files', secondSha),
+              ).readAsStringSync(),
+              equals(secondRepair),
+            );
+          } finally {
+            _closeWindowsHandle(handle);
+          }
+
+          final freshScratch = Directory(
+            p.join(tempDir.path, 'fresh_locked_commit_scratch'),
+          )..createSync();
+          final freshReader = LegacySyncReader(
+            client,
+            freshScratch,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+          final seeds = await freshReader.readSeeds();
+          expect(
+            seeds.single.sourceIssues.map((issue) => issue.filename),
+            contains('broken2.js'),
+          );
+          expect(
+            seeds.single.sourceIssues.any(
+              (issue) => issue.filename == 'broken1.js',
+            ),
+            isFalse,
+          );
+          expect(
+            seeds.single.records.containsKey(
+              syncRecordKey('source', ['first_repair']),
+            ),
+            isTrue,
+          );
+          expect(
+            File(
+              p.join(backupDir.path, '$archiveHash.venera'),
+            ).readAsBytesSync(),
+            equals(archiveBytes),
+          );
+        },
+        skip: Platform.isWindows
+            ? false
+            : 'Windows file sharing semantics are required',
+      );
+      test(
+        'missing pointer in an existing override directory fails closed',
+        () async {
+          final backupDir = Directory(
+            p.join(tempDir.path, 'missing_pointer_backups'),
+          )..createSync(recursive: true);
+          final overrideDir = Directory(
+            p.join(tempDir.path, 'missing_pointer_overrides'),
+          )..createSync(recursive: true);
+          final archiveBytes = _createVeneraArchive(
+            comicSources: {'broken.js': '// broken original'},
+          );
+          final archiveHash = sha256
+              .convert(archiveBytes)
+              .toString()
+              .toLowerCase();
+          transport.files['500-1.venera'] = archiveBytes;
+          client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
+
+          final initialReader = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+          expect(
+            (await initialReader.readSeeds()).single.sourceIssues,
+            isNotEmpty,
+          );
+          const repair = 'class Repair extends ComicSource { key = "repair"; }';
+          await LegacySyncReader.registerLegacyOverride(
+            overrideDirectory: overrideDir,
+            archiveSha256: archiveHash,
+            entryFilename: 'broken.js',
+            replacementContent: repair,
+            expectedKey: 'repair',
+          );
+
+          final archiveOverrideDir = Directory(
+            p.join(overrideDir.path, archiveHash),
+          );
+          final manifestFile = File(
+            p.join(archiveOverrideDir.path, 'manifest.json'),
+          );
+          final repairSha = sha256.convert(utf8.encode(repair)).toString();
+          final repairFile = File(
+            p.join(archiveOverrideDir.path, 'files', repairSha),
+          );
+          manifestFile.deleteSync();
+
+          final reader = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+          await expectLater(
+            reader.readSeeds(),
+            throwsA(isA<FormatException>()),
+          );
+          await expectLater(
+            LegacySyncReader.registerLegacyOverride(
+              overrideDirectory: overrideDir,
+              archiveSha256: archiveHash,
+              entryFilename: 'another.js',
+              replacementContent:
+                  'class Another extends ComicSource { key = "another"; }',
+            ),
+            throwsA(isA<FormatException>()),
+          );
+          expect(manifestFile.existsSync(), isFalse);
+          expect(repairFile.readAsStringSync(), equals(repair));
+          expect(
+            File(
+              p.join(backupDir.path, '$archiveHash.venera'),
+            ).readAsBytesSync(),
+            equals(archiveBytes),
+          );
+          expect(scratchDir.listSync(), isEmpty);
+        },
+      );
+
+      test(
+        'second-repair failure leaves first committed repair intact and usable across fresh reader restart',
+        () async {
+          final backupDir = Directory(
+            p.join(tempDir.path, 'second_repair_backups'),
+          )..createSync(recursive: true);
+          final overrideDir = Directory(
+            p.join(tempDir.path, 'second_repair_overrides'),
+          )..createSync(recursive: true);
+          final archiveBytes = _createVeneraArchive(
+            appdataJson: jsonEncode({
+              'settings': {'theme': 'system'},
+            }),
+            comicSources: {
+              'broken1.js': '// empty 1',
+              'broken2.js': '// empty 2',
+            },
+          );
+          final archiveHash = sha256
+              .convert(archiveBytes)
+              .toString()
+              .toLowerCase();
+
+          transport.files['500-1.venera'] = archiveBytes;
+          client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
+
+          final reader1 = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+          final seeds1 = await reader1.readSeeds();
+          expect(seeds1.single.sourceIssues.length, equals(2));
+          final backupFile = File(
+            p.join(backupDir.path, '$archiveHash.venera'),
+          );
+          expect(backupFile.existsSync(), isTrue);
+          expect(backupFile.readAsBytesSync(), equals(archiveBytes));
+
+          // 1. Commit first valid repair for broken1.js
+          const v1Content = 'class Src1 extends ComicSource { key = "src1"; }';
+          final v1Sha = sha256
+              .convert(utf8.encode(v1Content))
+              .toString()
+              .toLowerCase();
+          await LegacySyncReader.registerLegacyOverride(
+            overrideDirectory: overrideDir,
+            archiveSha256: archiveHash,
+            entryFilename: 'broken1.js',
+            replacementContent: v1Content,
+            expectedKey: 'src1',
+          );
+
+          final manifestFile = File(
+            p.join(overrideDir.path, archiveHash, 'manifest.json'),
+          );
+          expect(manifestFile.existsSync(), isTrue);
+          final v1ManifestRaw = manifestFile.readAsStringSync();
+          final v1File = File(
+            p.join(overrideDir.path, archiveHash, 'files', v1Sha),
+          );
+          expect(v1File.existsSync(), isTrue);
+          expect(v1File.readAsStringSync(), equals(v1Content));
+
+          // 2. Corrupt manifest before second repair attempt
+          const corruptManifestRaw = 'corrupted json payload {';
+          manifestFile.writeAsStringSync(corruptManifestRaw);
+          const v2Content = 'class Src2 extends ComicSource { key = "src2"; }';
+          final v2Sha = sha256.convert(utf8.encode(v2Content)).toString();
+
+          // Attempt second repair on broken2.js: must fail without touching v1File
+          await expectLater(
+            LegacySyncReader.registerLegacyOverride(
+              overrideDirectory: overrideDir,
+              archiveSha256: archiveHash,
+              entryFilename: 'broken2.js',
+              replacementContent: v2Content,
+              expectedKey: 'src2',
+            ),
+            throwsA(isA<FormatException>()),
+          );
+
+          // Failed registration leaves both the pointer and immutable blob set as-is.
+          expect(manifestFile.readAsStringSync(), equals(corruptManifestRaw));
+          expect(v1File.existsSync(), isTrue);
+          expect(v1File.readAsStringSync(), equals(v1Content));
+          expect(
+            File(
+              p.join(overrideDir.path, archiveHash, 'files', v2Sha),
+            ).existsSync(),
+            isFalse,
+          );
+          expect(
+            Directory(
+              p.join(overrideDir.path, archiveHash, 'files'),
+            ).listSync().map((entity) => p.basename(entity.path)),
+            unorderedEquals([v1Sha]),
+          );
+
+          // Restore committed manifest to simulate recovery
+          manifestFile.writeAsStringSync(v1ManifestRaw);
+
+          // Fresh reader / restart: first repair is cleanly applied and available
+          final freshScratch = Directory(
+            p.join(tempDir.path, 'fresh_second_repair_scratch'),
+          )..createSync();
+          final reader2 = LegacySyncReader(
+            client,
+            freshScratch,
+            preferences: preferences,
+            verifiedSourceBackupDirectory: backupDir,
+            legacyOverrideDirectory: overrideDir,
+          );
+          final seeds2 = await reader2.readSeeds();
+          expect(
+            seeds2.single.sourceIssues.any((i) => i.filename == 'broken1.js'),
+            isFalse,
+          );
+          expect(
+            seeds2.single.sourceIssues.any((i) => i.filename == 'broken2.js'),
+            isTrue,
+          );
+          expect(
+            seeds2.single.records.containsKey(
+              syncRecordKey('source', ['src1']),
+            ),
+            isTrue,
+          );
+
+          // True immutable original archive proof: backup bytes never mutated
+          expect(backupFile.readAsBytesSync(), equals(archiveBytes));
+        },
+      );
+
+      test(
+        'public register and replay reject path relocation across comic_source boundary',
+        () async {
+          final overrideDir = Directory(p.join(tempDir.path, 'reloc_overrides'))
+            ..createSync();
+          final dummyHash = 'e' * 64;
+
+          // Register rejects non-comic_source paths
+          for (final badPath in [
+            'database/test.js',
+            'other/test.js',
+            'appdata.json',
+            'comic_source/nested/sub.js',
+          ]) {
+            await expectLater(
+              LegacySyncReader.registerLegacyOverride(
+                overrideDirectory: overrideDir,
+                archiveSha256: dummyHash,
+                entryFilename: badPath,
+                replacementContent:
+                    'class T extends ComicSource { key = "t"; }',
+              ),
+              throwsA(isA<FormatException>()),
+            );
+          }
+
+          // Replay rejects forged entryPath
+          final archiveBytes = _createVeneraArchive(
+            comicSources: {'broken.js': '// broken'},
+          );
+          final archiveHash = sha256
+              .convert(archiveBytes)
+              .toString()
+              .toLowerCase();
+          transport.files['500-1.venera'] = archiveBytes;
+          client.remoteFiles = [dav.File(name: '500-1.venera', isDir: false)];
+
+          await LegacySyncReader.registerLegacyOverride(
+            overrideDirectory: overrideDir,
+            archiveSha256: archiveHash,
+            entryFilename: 'broken.js',
+            replacementContent:
+                'class RepairedSrc extends ComicSource { key = "repaired_src"; }',
+          );
+
+          // Forged entryPath in manifest
+          final manifestFile = File(
+            p.join(overrideDir.path, archiveHash, 'manifest.json'),
+          );
+          final manifest =
+              jsonDecode(manifestFile.readAsStringSync())
+                  as Map<String, dynamic>;
+          final entries = Map<String, dynamic>.from(manifest['entries'] as Map);
+          entries['broken.js']['entryPath'] = 'other_dir/broken.js';
+          manifest['entries'] = entries;
+          manifestFile.writeAsStringSync(jsonEncode(manifest));
+
+          final reader = LegacySyncReader(
+            client,
+            scratchDir,
+            preferences: preferences,
+            legacyOverrideDirectory: overrideDir,
+          );
+          await expectLater(
+            reader.readSeeds(),
+            throwsA(isA<FormatException>()),
+          );
           expect(scratchDir.listSync(), isEmpty);
         },
       );

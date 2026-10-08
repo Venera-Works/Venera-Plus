@@ -1,5 +1,8 @@
 import 'dart:convert';
 import 'dart:async';
+import 'dart:io';
+
+import 'package:path/path.dart' as p;
 
 import 'package:flutter/widgets.dart';
 import 'package:venera_plus/foundation/app.dart';
@@ -20,6 +23,7 @@ import 'models.dart';
 import 'normalization.dart';
 import 'parser.dart';
 import 'source.dart';
+import 'source_files.dart';
 import 'source_repositories.dart';
 
 typedef RuntimeComicSourcesProvider = Iterable<ComicSource> Function();
@@ -142,10 +146,12 @@ class ComicSourceManager with ChangeNotifier, Init {
     await JsEngine().ensureInit();
     final loaded = <ComicSource>[];
     final path = "${App.dataPath}/comic_source";
-    if (!(await Directory(path).exists())) {
-      await Directory(path).create();
+    final sourceDirectory = Directory(path);
+    if (!(await sourceDirectory.exists())) {
+      await sourceDirectory.create();
     } else {
-      await for (var entity in Directory(path).list()) {
+      await recoverInterruptedPublications(sourceDirectory);
+      await for (var entity in sourceDirectory.list(followLinks: false)) {
         if (entity is File && entity.path.endsWith(".js")) {
           try {
             var source = await ComicSourceParser().parse(
@@ -203,8 +209,9 @@ class ComicSourceManager with ChangeNotifier, Init {
         await source.loadData();
       }
       await directory.create(recursive: true);
+      await recoverInterruptedPublications(directory);
       final files = await directory
-          .list()
+          .list(followLinks: false)
           .where((entity) => entity is File && entity.path.endsWith('.js'))
           .toList();
       if (files.isNotEmpty) {
@@ -214,10 +221,13 @@ class ComicSourceManager with ChangeNotifier, Init {
       for (final entity in files) {
         final file = entity as File;
         final script = await file.readAsString();
-        final key = await ComicSourceParser.probeKey(script, file.path);
-        if (key == null || loaded.any((source) => source.key == key)) {
+        final probe = await ComicSourceParser.probeKey(script, file.path);
+        final key = probe.key;
+        if (!probe.isSuccess ||
+            key == null ||
+            loaded.any((source) => source.key == key)) {
           throw ComicSourceParseException(
-            'Invalid or duplicate source identity',
+            'Invalid or duplicate source identity: ${probe.failure?.name ?? "duplicate"}',
           );
         }
         final parser = ComicSourceParser();
@@ -309,22 +319,189 @@ class ComicSourceManager with ChangeNotifier, Init {
     ).timeout(const Duration(seconds: 15));
   }
 
-  Map<String, dynamic> _snapshotPages() => {
-    for (final key in [
-      'explore_pages',
-      'categories',
-      'favorites',
-      'searchSources',
-    ])
+  static const _pageSettingKeys = [
+    'explore_pages',
+    'categories',
+    'favorites',
+    'searchSources',
+  ];
+
+  Map<String, dynamic> _snapshotPages() => _snapshotPageSettings();
+
+  static Map<String, dynamic> _snapshotPageSettings() => {
+    for (final key in _pageSettingKeys)
       key: appdata.settings[key] == null
           ? null
           : List.from(appdata.settings[key]),
   };
 
   void _restorePages(Map<String, dynamic> pages) {
+    _applyPageSettings(pages);
+  }
+
+  static void _applyPageSettings(Map<String, dynamic> pages) {
     for (final entry in pages.entries) {
       appdata.settings[entry.key] = entry.value;
     }
+  }
+
+  Map<String, dynamic> _pagesAfterRegistration(ComicSource source) {
+    final explorePages = List<dynamic>.from(
+      appdata.settings['explore_pages'] ?? <String>[],
+    );
+    final categoryPages = List<dynamic>.from(
+      appdata.settings['categories'] ?? <String>[],
+    );
+    final networkFavorites = List<dynamic>.from(
+      appdata.settings['favorites'] ?? <String>[],
+    );
+    final searchValue = appdata.settings['searchSources'];
+    final searchPages = searchValue == null
+        ? _sources
+              .where((item) => item.searchPageData != null)
+              .map((item) => item.key)
+              .toList()
+        : List<dynamic>.from(searchValue);
+
+    if (source.explorePages.isNotEmpty) {
+      for (final page in source.explorePages) {
+        if (!explorePages.contains(page.title)) explorePages.add(page.title);
+      }
+    }
+    if (source.categoryData != null &&
+        !categoryPages.contains(source.categoryData!.key)) {
+      categoryPages.add(source.categoryData!.key);
+    }
+    if (source.favoriteData != null &&
+        !networkFavorites.contains(source.favoriteData!.key)) {
+      networkFavorites.add(source.favoriteData!.key);
+    }
+    if (source.searchPageData != null && !searchPages.contains(source.key)) {
+      searchPages.add(source.key);
+    }
+
+    return {
+      'explore_pages': explorePages.toSet().toList(),
+      'categories': categoryPages.toSet().toList(),
+      'favorites': networkFavorites.toSet().toList(),
+      'searchSources': searchPages.toSet().toList(),
+    };
+  }
+
+  bool _restorePagesIfUnchanged(
+    Map<String, dynamic> original,
+    Map<String, dynamic>? expected,
+  ) {
+    final current = _snapshotPages();
+    if (_sameJsonValue(current, original)) return true;
+    if (expected == null || !_sameJsonValue(current, expected)) return false;
+    _restorePages(original);
+    return true;
+  }
+
+  static bool _sameJsonValue(Object? left, Object? right) {
+    if (identical(left, right)) return true;
+    if (left is Map && right is Map) {
+      if (left.length != right.length) return false;
+      for (final entry in left.entries) {
+        if (!right.containsKey(entry.key) ||
+            !_sameJsonValue(entry.value, right[entry.key])) {
+          return false;
+        }
+      }
+      return true;
+    }
+    if (left is List && right is List) {
+      if (left.length != right.length) return false;
+      for (var i = 0; i < left.length; i++) {
+        if (!_sameJsonValue(left[i], right[i])) return false;
+      }
+      return true;
+    }
+    return left == right;
+  }
+
+  Future<bool> _restoreOriginIfUnchanged(
+    String key,
+    SourceOrigin? original,
+    SourceOrigin? expected,
+    bool writeAttempted,
+  ) async {
+    final current = SourceRepositories.instance.originFor(key);
+    if (_sameJsonValue(current?.toJson(), original?.toJson())) return true;
+    if (!writeAttempted ||
+        !_sameJsonValue(current?.toJson(), expected?.toJson())) {
+      return false;
+    }
+    await SourceRepositories.instance.setOrigin(key, original);
+    return _sameJsonValue(
+      SourceRepositories.instance.originFor(key)?.toJson(),
+      original?.toJson(),
+    );
+  }
+
+  static void _verifySessionWriteTarget(
+    File sessionFile, {
+    required String? originalDigest,
+    required Set<String> publicationWriteDigests,
+    required String snapshot,
+  }) {
+    final currentDigest = sessionFile.existsSync()
+        ? SourceFileMetadata.digest(sessionFile.readAsStringSync())
+        : null;
+    if (currentDigest != originalDigest &&
+        (currentDigest == null ||
+            !publicationWriteDigests.contains(currentDigest))) {
+      throw const FileSystemException(
+        'The source session changed during publication.',
+      );
+    }
+    publicationWriteDigests.add(SourceFileMetadata.digest(snapshot));
+  }
+
+  Future<void> _restoreSessionAfterFailedInstall(
+    File sessionFile, {
+    required bool hadOriginalSession,
+    required String? originalContent,
+    required String? originalDigest,
+    required String? newDigest,
+    required bool writeAttempted,
+  }) async {
+    if (!await sessionFile.exists()) return;
+    final currentDigest = SourceFileMetadata.digest(
+      await sessionFile.readAsString(),
+    );
+    if (currentDigest == originalDigest && hadOriginalSession) return;
+    if (!writeAttempted || newDigest == null || currentDigest != newDigest) {
+      return;
+    }
+    if (!hadOriginalSession) {
+      await sessionFile.delete();
+      return;
+    }
+    final restoreDigest = originalDigest;
+    if (originalContent == null ||
+        restoreDigest == null ||
+        restoreDigest != SourceFileMetadata.digest(originalContent)) {
+      return;
+    }
+    final temporary = File(
+      '${sessionFile.path}.${DateTime.now().microsecondsSinceEpoch}.restore',
+    );
+    if (await temporary.exists()) return;
+    await temporary.writeAsString(originalContent, flush: true);
+    if (SourceFileMetadata.digest(await temporary.readAsString()) !=
+        restoreDigest) {
+      throw const FileSystemException(
+        'Source session restore verification failed',
+      );
+    }
+    await _safeSameFsSwap(
+      source: temporary,
+      target: sessionFile,
+      expectedSourceDigest: restoreDigest,
+      expectedTargetDigest: newDigest,
+    );
   }
 
   Future<ComicSource> installScript({
@@ -336,40 +513,128 @@ class ComicSourceManager with ChangeNotifier, Init {
   }) => _mutate(() async {
     beforeInstall();
     final oldPages = _snapshotPages();
+    final parser = ComicSourceParser();
     ComicSource? source;
     SourceOrigin? oldOrigin;
-    final parser = ComicSourceParser();
+    File? sessionFile;
+    String? originalSessionContent;
+    String? originalSessionDigest;
+    String? newSessionDigest;
+    var sessionWriteExpected = false;
+    Map<String, dynamic>? newPages;
+    var hadOriginalSession = false;
+    var sessionWriteAttempted = false;
+    var originWriteAttempted = false;
+    var settingsWriteStarted = false;
     try {
       fileName = fileName.replaceAll(RegExp(r'[^a-zA-Z0-9_.()-]'), '_');
+      final originFilename = fileName.endsWith('.js')
+          ? fileName
+          : '$fileName.js';
       source = await parser.createAndParse(
         js,
         fileName,
         expectedKey: expectedKey,
         retainRollback: true,
+        deferMetadata: true,
       );
       oldOrigin = SourceRepositories.instance.originFor(source.key);
+      sessionFile = File(
+        p.join(p.dirname(source.filePath), '${source.key}.data'),
+      );
+      hadOriginalSession = await sessionFile.exists();
+      if (hadOriginalSession) {
+        originalSessionContent = await sessionFile.readAsString();
+        originalSessionDigest = SourceFileMetadata.digest(
+          originalSessionContent,
+        );
+      }
       _sources.add(source);
       source.stageDataWrites();
       await _initializeSource(source);
+      sessionWriteExpected = source.hasStagedDataWrite;
+      newSessionDigest = sessionWriteExpected
+          ? SourceFileMetadata.digest(jsonEncode(source.data))
+          : null;
+      newPages = _pagesAfterRegistration(source);
       _registerSourcePages(source);
+      settingsWriteStarted = true;
+      originWriteAttempted = true;
       await SourceRepositories.instance.setOrigin(source.key, origin);
-      await source.commitDataWrites();
+      sessionWriteAttempted = true;
+      if (sessionWriteExpected) {
+        final publicationWriteDigests = <String>{};
+        await source.commitDataWrites(
+          beforeCommit: (snapshot) => _verifySessionWriteTarget(
+            sessionFile!,
+            originalDigest: originalSessionDigest,
+            publicationWriteDigests: publicationWriteDigests,
+            snapshot: snapshot,
+          ),
+        );
+      } else {
+        await source.commitDataWrites();
+      }
+      await SourceFileMetadata.recordValidated(
+        Directory(p.dirname(source.filePath)),
+        key: source.key,
+        filename: p.basename(source.filePath),
+        content: js,
+        originFilename: originFilename,
+      );
       parser.commit();
       notifyListeners();
       return source;
-    } catch (_) {
-      parser.rollback();
+    } catch (error, stackTrace) {
+      try {
+        parser.rollback();
+      } catch (_) {}
       if (source != null) {
         _sources.removeWhere((s) => s.key == source!.key);
         JsEngine().runCode(
           'delete ComicSource.sources[${jsonEncode(source.key)}];',
         );
-        await File(source.filePath).deleteIfExists();
-        _restorePages(oldPages);
-        await SourceRepositories.instance.setOrigin(source.key, oldOrigin);
+        final sourceFile = File(source.filePath);
+        try {
+          if (await sourceFile.exists() &&
+              SourceFileMetadata.digest(await sourceFile.readAsString()) ==
+                  SourceFileMetadata.digest(js)) {
+            await sourceFile.delete();
+          }
+        } catch (_) {}
+        if (sessionFile != null) {
+          try {
+            await _restoreSessionAfterFailedInstall(
+              sessionFile,
+              hadOriginalSession: hadOriginalSession,
+              originalContent: originalSessionContent,
+              originalDigest: originalSessionDigest,
+              newDigest: newSessionDigest,
+              writeAttempted: sessionWriteAttempted,
+            );
+          } catch (_) {}
+        }
+        var pagesRestored = false;
+        try {
+          pagesRestored = _restorePagesIfUnchanged(oldPages, newPages);
+        } catch (_) {}
+        var originRestored = false;
+        try {
+          originRestored = await _restoreOriginIfUnchanged(
+            source.key,
+            oldOrigin,
+            origin,
+            originWriteAttempted,
+          );
+        } catch (_) {}
+        if (settingsWriteStarted && pagesRestored && originRestored) {
+          try {
+            await appdata.saveData(false);
+          } catch (_) {}
+        }
       }
       notifyListeners();
-      rethrow;
+      Error.throwWithStackTrace(error, stackTrace);
     }
   });
 
@@ -394,14 +659,132 @@ class ComicSourceManager with ChangeNotifier, Init {
       throw ComicSourceParseException('The source is no longer installed.');
     }
     source = _sources[index];
+
+    final probe = await ComicSourceParser.probeKey(js);
+    if (!probe.isSuccess || probe.key != source.key) {
+      throw ComicSourceParseException(
+        'Failed to probe replacement comic source: ${probe.failure?.name ?? "key mismatch"}',
+      );
+    }
+
     final parser = ComicSourceParser();
-    final originalScript = await File(source.filePath).readAsString();
+    final activeFile = File(source.filePath);
+    final sourceDir = Directory(p.dirname(source.filePath));
+    final journal = SourcePublicationJournal(sourceDir);
+    if (await journal.read() != null) {
+      throw const FileSystemException(
+        'An earlier source publication still needs recovery.',
+      );
+    }
+
+    await source.waitForDataWrites();
+    final originalScript = await activeFile.readAsString();
+    final originalDigest = SourceFileMetadata.digest(originalScript);
+    final newDigest = SourceFileMetadata.digest(js);
     final oldPages = _snapshotPages();
     final oldOrigin = SourceRepositories.instance.originFor(source.key);
-    var changedSettings = false;
-    var wroteOrigin = false;
-    var wroteScript = false;
+    final sessionFile = File(p.join(sourceDir.path, '${source.key}.data'));
+    final hadOriginalSession = await sessionFile.exists();
+    final originalSessionContent = hadOriginalSession
+        ? await sessionFile.readAsString()
+        : null;
+    final originalSessionDigest = originalSessionContent == null
+        ? null
+        : SourceFileMetadata.digest(originalSessionContent);
+    final publicationId = SourceFileMetadata.digest(
+      '${source.key}_${DateTime.now().microsecondsSinceEpoch}_$newDigest',
+    );
+    final stageFile = File('${activeFile.path}.$publicationId.stage');
+    final backupFile = File('${activeFile.path}.$publicationId.bak');
+    final sessionBackupFile = hadOriginalSession
+        ? File('${sessionFile.path}.$publicationId.bak')
+        : null;
+    var journalRecorded = false;
+    String? newSessionDigest;
+    var sessionWriteExpected = false;
+    Map<String, dynamic>? newPages;
+    var settingsWriteStarted = false;
+    var originWriteAttempted = false;
+    var sessionWriteAttempted = false;
+
+    SourcePublicationJournalEntry journalEntry({
+      required String? newSessionDigest,
+      required bool sessionWriteExpected,
+      required Map<String, dynamic>? newPages,
+      required SourcePublicationStage stage,
+    }) => SourcePublicationJournalEntry(
+      publicationId: publicationId,
+      key: source.key,
+      targetPath: activeFile.path,
+      stagePath: stageFile.path,
+      backupPath: backupFile.path,
+      sessionBackupPath: sessionBackupFile?.path,
+      originalDigest: originalDigest,
+      newDigest: newDigest,
+      originalSessionDigest: originalSessionDigest,
+      newSessionDigest: newSessionDigest,
+      sessionWriteExpected: sessionWriteExpected,
+      hadOriginalSession: hadOriginalSession,
+      originalPages: oldPages,
+      newPages: newPages,
+      hadOriginalOrigin: oldOrigin != null,
+      originalOrigin: oldOrigin?.toJson(),
+      originChanges: origin != null,
+      newOrigin: origin?.toJson(),
+      stage: stage,
+      timestamp: DateTime.now(),
+    );
+
     try {
+      if (await stageFile.exists() ||
+          await backupFile.exists() ||
+          (sessionBackupFile != null && await sessionBackupFile.exists())) {
+        throw const FileSystemException(
+          'A source publication artifact already exists.',
+        );
+      }
+
+      await stageFile.writeAsString(js, flush: true);
+      final stagedContent = await stageFile.readAsString();
+      if (SourceFileMetadata.digest(stagedContent) != newDigest) {
+        throw const FileSystemException('Staged script verification failed');
+      }
+      final stagedProbe = await ComicSourceParser.probeKey(
+        stagedContent,
+        stageFile.path,
+      );
+      if (!stagedProbe.isSuccess || stagedProbe.key != source.key) {
+        throw const FileSystemException(
+          'Staged script identity verification failed',
+        );
+      }
+
+      await backupFile.writeAsString(originalScript, flush: true);
+      if (SourceFileMetadata.digest(await backupFile.readAsString()) !=
+          originalDigest) {
+        throw const FileSystemException('Backup verification failed');
+      }
+      if (sessionBackupFile != null) {
+        await sessionBackupFile.writeAsString(
+          originalSessionContent!,
+          flush: true,
+        );
+        if (SourceFileMetadata.digest(await sessionBackupFile.readAsString()) !=
+            originalSessionDigest) {
+          throw const FileSystemException('Session backup verification failed');
+        }
+      }
+
+      await journal.record(
+        journalEntry(
+          newSessionDigest: null,
+          sessionWriteExpected: false,
+          newPages: null,
+          stage: SourcePublicationStage.staged,
+        ),
+      );
+      journalRecorded = true;
+
       final replacement = await parser.parse(
         js,
         source.filePath,
@@ -415,54 +798,491 @@ class ComicSourceManager with ChangeNotifier, Init {
       replacement.stageDataWrites();
       _sources[index] = replacement;
       await _initializeSource(replacement);
-      final temporary = File('${source.filePath}.update');
-      try {
-        await temporary.writeAsString(js, flush: true);
-        await temporary.rename(source.filePath);
-        wroteScript = true;
-      } finally {
-        await temporary.deleteIfExists();
+
+      sessionWriteExpected = replacement.hasStagedDataWrite;
+      newSessionDigest = sessionWriteExpected
+          ? SourceFileMetadata.digest(jsonEncode(replacement.data))
+          : null;
+      newPages = _pagesAfterRegistration(replacement);
+      await journal.record(
+        journalEntry(
+          newSessionDigest: newSessionDigest,
+          sessionWriteExpected: sessionWriteExpected,
+          newPages: newPages,
+          stage: SourcePublicationStage.staged,
+        ),
+      );
+
+      if (SourceFileMetadata.digest(await activeFile.readAsString()) !=
+          originalDigest) {
+        throw const FileSystemException(
+          'The installed source changed during publication.',
+        );
       }
+      await _safeSameFsSwap(
+        source: stageFile,
+        target: activeFile,
+        expectedSourceDigest: newDigest,
+        expectedTargetDigest: originalDigest,
+      );
+      if (SourceFileMetadata.digest(await activeFile.readAsString()) !=
+          newDigest) {
+        throw const FileSystemException(
+          'Published script verification failed.',
+        );
+      }
+
+      await journal.updateStage(SourcePublicationStage.renamed);
       _registerSourcePages(replacement);
       validate();
-      changedSettings = true;
+      settingsWriteStarted = true;
       if (origin != null) {
+        originWriteAttempted = true;
         await SourceRepositories.instance.setOrigin(source.key, origin);
-        wroteOrigin = true;
       } else {
         await appdata.saveData();
       }
-      await replacement.commitDataWrites();
+
+      if (sessionWriteExpected) {
+        final sessionExists = await sessionFile.exists();
+        if (sessionExists != hadOriginalSession ||
+            (sessionExists &&
+                SourceFileMetadata.digest(await sessionFile.readAsString()) !=
+                    originalSessionDigest)) {
+          throw const FileSystemException(
+            'The source session changed during publication.',
+          );
+        }
+      }
+      sessionWriteAttempted = true;
+      if (sessionWriteExpected) {
+        final publicationWriteDigests = <String>{};
+        await replacement.commitDataWrites(
+          beforeCommit: (snapshot) => _verifySessionWriteTarget(
+            sessionFile,
+            originalDigest: originalSessionDigest,
+            publicationWriteDigests: publicationWriteDigests,
+            snapshot: snapshot,
+          ),
+        );
+      } else {
+        await replacement.commitDataWrites();
+      }
+      await SourceFileMetadata.recordValidated(
+        sourceDir,
+        key: source.key,
+        filename: p.basename(source.filePath),
+        content: js,
+        publicationId: publicationId,
+      );
+
       parser.commit();
       clearSourceUpdate(source.key);
+      await _cleanupPublicationArtifacts(
+        stageFile: stageFile,
+        backupFile: backupFile,
+        sessionBackupFile: sessionBackupFile,
+        newDigest: newDigest,
+        originalDigest: originalDigest,
+        originalSessionDigest: originalSessionDigest,
+      );
+      await journal.clear();
       notifyListeners();
-    } catch (_) {
+    } catch (error, stackTrace) {
       _sources[index] = source;
-      parser.rollback();
-      if (wroteScript) {
-        await File(source.filePath).writeAsString(originalScript, flush: true);
+
+      var rollbackComplete = true;
+      try {
+        parser.rollback();
+      } catch (_) {
+        rollbackComplete = false;
       }
-      _restorePages(oldPages);
-      if (changedSettings) {
-        if (origin != null) {
-          final currentOrigin = SourceRepositories.instance.originFor(
-            source.key,
-          );
-          if (wroteOrigin &&
-              currentOrigin?.kind == origin.kind &&
-              currentOrigin?.repositoryId == origin.repositoryId &&
-              currentOrigin?.repositoryName == origin.repositoryName &&
-              currentOrigin?.url == origin.url) {
-            await SourceRepositories.instance.setOrigin(source.key, oldOrigin);
-          }
-        } else {
+
+      try {
+        rollbackComplete &= await _recoverPublicationScript(
+          targetFile: activeFile,
+          backupFile: backupFile,
+          key: source.key,
+          originalDigest: originalDigest,
+          newDigest: newDigest,
+        );
+      } catch (_) {
+        rollbackComplete = false;
+      }
+      try {
+        final sessionRestored = await _recoverPublicationSession(
+          SourcePublicationJournalEntry(
+            publicationId: publicationId,
+            key: source.key,
+            targetPath: activeFile.path,
+            stagePath: stageFile.path,
+            backupPath: backupFile.path,
+            sessionBackupPath: sessionBackupFile?.path,
+            originalDigest: originalDigest,
+            newDigest: newDigest,
+            originalSessionDigest: originalSessionDigest,
+            newSessionDigest: newSessionDigest,
+            sessionWriteExpected: sessionWriteExpected,
+            hadOriginalSession: hadOriginalSession,
+            originalPages: oldPages,
+            newPages: newPages,
+            hadOriginalOrigin: oldOrigin != null,
+            originalOrigin: oldOrigin?.toJson(),
+            originChanges: origin != null,
+            newOrigin: origin?.toJson(),
+            stage: SourcePublicationStage.staged,
+            timestamp: DateTime.now(),
+          ),
+          sessionFile: sessionFile,
+          sessionBackupFile: sessionBackupFile,
+          writeAttempted: sessionWriteAttempted,
+        );
+        rollbackComplete &= sessionRestored;
+      } catch (_) {
+        rollbackComplete = false;
+      }
+      var pagesRestored = false;
+      try {
+        pagesRestored = _restorePagesIfUnchanged(oldPages, newPages);
+        rollbackComplete &= pagesRestored;
+      } catch (_) {
+        rollbackComplete = false;
+      }
+      var originRestored = false;
+      try {
+        originRestored = await _restoreOriginIfUnchanged(
+          source.key,
+          oldOrigin,
+          origin,
+          originWriteAttempted,
+        );
+        rollbackComplete &= originRestored;
+      } catch (_) {
+        rollbackComplete = false;
+      }
+      if (settingsWriteStarted && pagesRestored && originRestored) {
+        try {
           await appdata.saveData(false);
+        } catch (_) {
+          rollbackComplete = false;
+        }
+      }
+
+      if (rollbackComplete || !journalRecorded) {
+        await _cleanupPublicationArtifacts(
+          stageFile: stageFile,
+          backupFile: backupFile,
+          sessionBackupFile: sessionBackupFile,
+          newDigest: newDigest,
+          originalDigest: originalDigest,
+          originalSessionDigest: originalSessionDigest,
+        );
+        if (journalRecorded && rollbackComplete) {
+          await journal.clear();
         }
       }
       notifyListeners();
-      rethrow;
+      Error.throwWithStackTrace(error, stackTrace);
     }
   }
+
+  /// Recovers any interrupted source publications or rollbacks before scanning.
+  /// Uses durable journal proof to replay or roll back without overwriting manual edits.
+  static Future<void> recoverInterruptedPublications(
+    Directory directory,
+  ) async {
+    if (!await directory.exists()) return;
+
+    final journal = SourcePublicationJournal(directory);
+    final entry = await journal.read();
+    if (entry == null) return;
+
+    final targetFile = File(entry.targetPath);
+    final backupFile = File(entry.backupPath);
+    final stageFile = File(entry.stagePath);
+    final sessionFile = File(p.join(directory.path, '${entry.key}.data'));
+    final sessionBackupFile = entry.sessionBackupPath == null
+        ? null
+        : File(entry.sessionBackupPath!);
+    final metadata = await SourceFileMetadata.read(directory);
+    final hasCommitMarker =
+        metadata[entry.key]?['publicationId'] == entry.publicationId;
+
+    if (hasCommitMarker) {
+      if (await targetFile.exists() &&
+          SourceFileMetadata.digest(await targetFile.readAsString()) ==
+              entry.newDigest) {
+        await _cleanupPublicationArtifacts(
+          stageFile: stageFile,
+          backupFile: backupFile,
+          sessionBackupFile: sessionBackupFile,
+          newDigest: entry.newDigest,
+          originalDigest: entry.originalDigest,
+          originalSessionDigest: entry.originalSessionDigest,
+        );
+        await journal.clear();
+      }
+      return;
+    }
+
+    final scriptRestored = await _recoverPublicationScript(
+      targetFile: targetFile,
+      backupFile: backupFile,
+      key: entry.key,
+      originalDigest: entry.originalDigest,
+      newDigest: entry.newDigest,
+    );
+    final sessionRestored = await _recoverPublicationSession(
+      entry,
+      sessionFile: sessionFile,
+      sessionBackupFile: sessionBackupFile,
+      writeAttempted: entry.sessionWriteExpected == true,
+    );
+    final pagesRestored = await _recoverPublicationPages(entry);
+    final originRestored = await _recoverPublicationOrigin(entry);
+    if (!scriptRestored ||
+        !sessionRestored ||
+        !pagesRestored ||
+        !originRestored) {
+      return;
+    }
+
+    await _cleanupPublicationArtifacts(
+      stageFile: stageFile,
+      backupFile: backupFile,
+      sessionBackupFile: sessionBackupFile,
+      newDigest: entry.newDigest,
+      originalDigest: entry.originalDigest,
+      originalSessionDigest: entry.originalSessionDigest,
+    );
+    await journal.clear();
+  }
+
+  static Future<bool> _recoverPublicationScript({
+    required File targetFile,
+    required File backupFile,
+    required String key,
+    required String? originalDigest,
+    required String newDigest,
+  }) async {
+    if (originalDigest == null) return false;
+    String? expectedTargetDigest;
+    if (await targetFile.exists()) {
+      final targetDigest = SourceFileMetadata.digest(
+        await targetFile.readAsString(),
+      );
+      if (targetDigest == originalDigest) return true;
+      if (targetDigest != newDigest) return false;
+      expectedTargetDigest = targetDigest;
+    }
+
+    if (!await backupFile.exists()) return false;
+    final backupContent = await backupFile.readAsString();
+    if (SourceFileMetadata.digest(backupContent) != originalDigest) {
+      return false;
+    }
+    final probe = await ComicSourceParser.probeKey(
+      backupContent,
+      backupFile.path,
+    );
+    if (!probe.isSuccess || probe.key != key) return false;
+
+    try {
+      await _safeSameFsSwap(
+        source: backupFile,
+        target: targetFile,
+        expectedSourceDigest: originalDigest,
+        expectedTargetDigest: expectedTargetDigest,
+      );
+    } catch (_) {
+      return false;
+    }
+    if (!await targetFile.exists()) return false;
+    final restoredContent = await targetFile.readAsString();
+    if (SourceFileMetadata.digest(restoredContent) != originalDigest) {
+      return false;
+    }
+    final restoredProbe = await ComicSourceParser.probeKey(
+      restoredContent,
+      targetFile.path,
+    );
+    return restoredProbe.isSuccess && restoredProbe.key == key;
+  }
+
+  static Future<bool> _recoverPublicationSession(
+    SourcePublicationJournalEntry entry, {
+    required File sessionFile,
+    required File? sessionBackupFile,
+    required bool writeAttempted,
+  }) async {
+    final exists = await sessionFile.exists();
+    final currentDigest = exists
+        ? SourceFileMetadata.digest(await sessionFile.readAsString())
+        : null;
+    if (entry.hadOriginalSession &&
+        entry.originalSessionDigest != null &&
+        currentDigest == entry.originalSessionDigest) {
+      return true;
+    }
+    if (!entry.hadOriginalSession && !exists) return true;
+    if (!writeAttempted ||
+        entry.sessionWriteExpected != true ||
+        entry.newSessionDigest == null ||
+        currentDigest != entry.newSessionDigest) {
+      return false;
+    }
+
+    if (!entry.hadOriginalSession) {
+      await sessionFile.delete();
+      return !await sessionFile.exists();
+    }
+
+    final originalSessionDigest = entry.originalSessionDigest;
+    if (sessionBackupFile == null ||
+        originalSessionDigest == null ||
+        !await sessionBackupFile.exists()) {
+      return false;
+    }
+    final originalSession = await sessionBackupFile.readAsString();
+    if (SourceFileMetadata.digest(originalSession) != originalSessionDigest) {
+      return false;
+    }
+    try {
+      await _safeSameFsSwap(
+        source: sessionBackupFile,
+        target: sessionFile,
+        expectedSourceDigest: originalSessionDigest,
+        expectedTargetDigest: currentDigest,
+      );
+    } catch (_) {
+      return false;
+    }
+    return await sessionFile.exists() &&
+        SourceFileMetadata.digest(await sessionFile.readAsString()) ==
+            entry.originalSessionDigest;
+  }
+
+  static Future<bool> _recoverPublicationPages(
+    SourcePublicationJournalEntry entry,
+  ) async {
+    final original = entry.originalPages;
+    if (original == null) {
+      return entry.stage == SourcePublicationStage.staged;
+    }
+    final oldPages = Map<String, dynamic>.from(original);
+    final current = _snapshotPageSettings();
+    if (_sameJsonValue(current, oldPages)) return true;
+    final newPagesValue = entry.newPages;
+    if (newPagesValue == null) return false;
+    final newPages = Map<String, dynamic>.from(newPagesValue);
+    if (!_sameJsonValue(current, newPages)) return false;
+    _applyPageSettings(oldPages);
+    await appdata.saveData(false);
+    return true;
+  }
+
+  static Future<bool> _recoverPublicationOrigin(
+    SourcePublicationJournalEntry entry,
+  ) async {
+    final originChanges = entry.originChanges;
+    if (originChanges == null) {
+      return entry.stage == SourcePublicationStage.staged;
+    }
+    if (!originChanges) return true;
+
+    final hadOriginalOrigin = entry.hadOriginalOrigin;
+    if (hadOriginalOrigin == null ||
+        (hadOriginalOrigin && entry.originalOrigin == null)) {
+      return false;
+    }
+    final original = hadOriginalOrigin
+        ? _sourceOriginFromRecord(entry.originalOrigin)
+        : null;
+    if (hadOriginalOrigin && original == null) return false;
+    final current = SourceRepositories.instance.originFor(entry.key);
+    if (_sameJsonValue(current?.toJson(), original?.toJson())) return true;
+    final expected = _sourceOriginFromRecord(entry.newOrigin);
+    if (!_sameJsonValue(current?.toJson(), expected?.toJson())) return false;
+    await SourceRepositories.instance.setOrigin(entry.key, original);
+    return _sameJsonValue(
+      SourceRepositories.instance.originFor(entry.key)?.toJson(),
+      original?.toJson(),
+    );
+  }
+
+  static SourceOrigin? _sourceOriginFromRecord(Map<String, Object?>? record) {
+    final kind = record?['kind'];
+    if (kind is! String) return null;
+    final repositoryId = record?['repositoryId'];
+    final repositoryName = record?['repositoryName'];
+    final url = record?['url'];
+    return SourceOrigin(
+      kind: kind,
+      repositoryId: repositoryId is String ? repositoryId : null,
+      repositoryName: repositoryName is String ? repositoryName : null,
+      url: url is String ? url : null,
+    );
+  }
+
+  static Future<void> _cleanupPublicationArtifacts({
+    required File stageFile,
+    required File backupFile,
+    required File? sessionBackupFile,
+    required String newDigest,
+    required String? originalDigest,
+    required String? originalSessionDigest,
+  }) async {
+    await _deleteFileIfDigestMatches(stageFile, newDigest);
+    if (originalDigest != null) {
+      await _deleteFileIfDigestMatches(backupFile, originalDigest);
+    }
+    if (sessionBackupFile != null && originalSessionDigest != null) {
+      await _deleteFileIfDigestMatches(
+        sessionBackupFile,
+        originalSessionDigest,
+      );
+    }
+  }
+
+  static Future<void> _deleteFileIfDigestMatches(
+    File file,
+    String expectedDigest,
+  ) async {
+    try {
+      if (await file.exists() &&
+          SourceFileMetadata.digest(await file.readAsString()) ==
+              expectedDigest) {
+        await file.delete();
+      }
+    } catch (_) {
+      // Unverified or locked artifacts remain available for manual recovery.
+    }
+  }
+
+  /// Atomically replaces a same-directory file without a rename-to-old gap.
+  static Future<void> _safeSameFsSwap({
+    required File source,
+    required File target,
+    required String expectedSourceDigest,
+    required String? expectedTargetDigest,
+  }) => SourceFileMetadata.atomicReplace(
+    source,
+    target,
+    beforeCommit: () {
+      final currentSourceDigest = source.existsSync()
+          ? SourceFileMetadata.digest(source.readAsStringSync())
+          : null;
+      final currentTargetDigest = target.existsSync()
+          ? SourceFileMetadata.digest(target.readAsStringSync())
+          : null;
+      if (currentSourceDigest != expectedSourceDigest ||
+          currentTargetDigest != expectedTargetDigest) {
+        throw const FileSystemException(
+          'A source publication file changed before atomic replacement.',
+        );
+      }
+    },
+  );
 
   Future<void> uninstallScript(ComicSource source) => _mutate(() async {
     await File(source.filePath).deleteIfExists();
@@ -484,39 +1304,9 @@ class ComicSourceManager with ChangeNotifier, Init {
   }
 
   void _registerSourcePages(ComicSource source) {
-    var explorePages = appdata.settings['explore_pages'] ?? <String>[];
-    var categoryPages = appdata.settings['categories'] ?? <String>[];
-    var networkFavorites = appdata.settings['favorites'] ?? <String>[];
-    final searchPages =
-        appdata.settings['searchSources'] ??
-        _sources
-            .where((item) => item.searchPageData != null)
-            .map((item) => item.key)
-            .toList();
-
-    if (source.explorePages.isNotEmpty) {
-      for (var page in source.explorePages) {
-        if (!explorePages.contains(page.title)) {
-          explorePages.add(page.title);
-        }
-      }
+    for (final entry in _pagesAfterRegistration(source).entries) {
+      appdata.settings[entry.key] = entry.value;
     }
-    if (source.categoryData != null &&
-        !categoryPages.contains(source.categoryData!.key)) {
-      categoryPages.add(source.categoryData!.key);
-    }
-    if (source.favoriteData != null &&
-        !networkFavorites.contains(source.favoriteData!.key)) {
-      networkFavorites.add(source.favoriteData!.key);
-    }
-    if (source.searchPageData != null && !searchPages.contains(source.key)) {
-      searchPages.add(source.key);
-    }
-
-    appdata.settings['explore_pages'] = explorePages.toSet().toList();
-    appdata.settings['categories'] = categoryPages.toSet().toList();
-    appdata.settings['favorites'] = networkFavorites.toSet().toList();
-    appdata.settings['searchSources'] = searchPages.toSet().toList();
   }
 
   bool get isEmpty => _sources.isEmpty;

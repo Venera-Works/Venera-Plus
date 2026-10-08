@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -7,7 +8,12 @@ import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/foundation/js_engine.dart';
 
+const bool _ciRequireQuickJs = bool.fromEnvironment(
+  'CI_REQUIRE_QUICKJS',
+  defaultValue: false,
+);
 void main() {
   late Directory root;
   late String previousDataPath;
@@ -19,8 +25,36 @@ void main() {
   late LocalFavoritesManager? previousFavorites;
   var initialDataPath = Directory.systemTemp.path;
   var initialCachePath = Directory.systemTemp.path;
+  var nativeAvailable = false;
+  Object? nativeLoadError;
 
   setUpAll(() {
+    try {
+      if (Platform.isWindows) {
+        final build = Directory(
+          'build/windows/x64/runner/Release',
+        ).absolute.path;
+        if (File('$build/flutter_windows.dll').existsSync()) {
+          DynamicLibrary.open('$build/flutter_windows.dll');
+          DynamicLibrary.open('$build/flutter_qjs_plugin.dll');
+        }
+      }
+      DynamicLibrary.open(
+        Platform.isWindows
+            ? 'flutter_qjs_plugin.dll'
+            : Platform.isLinux
+            ? 'libflutter_qjs_plugin.so'
+            : 'flutter_qjs.framework/flutter_qjs',
+      );
+      nativeAvailable = true;
+    } catch (e) {
+      nativeAvailable = false;
+      nativeLoadError = e;
+    }
+    final initJs = File('assets/init.js');
+    if (initJs.existsSync()) {
+      JsEngine.cacheJsInit(initJs.readAsBytesSync());
+    }
     try {
       initialDataPath = App.dataPath;
     } catch (_) {}
@@ -167,6 +201,121 @@ void main() {
       );
     },
   );
+
+  test(
+    'archive restore rejects unsafe comic source scripts before business commit and leaves live files intact',
+    () async {
+      if (_ciRequireQuickJs && !nativeAvailable) {
+        fail(
+          'CI_REQUIRE_QUICKJS=true requires QuickJS native library, but it failed to load: $nativeLoadError',
+        );
+      }
+      var beforeCommitCalled = false;
+      configureAppDataArchiveExtractorForTesting((archive, destination) async {
+        final sourceDir = Directory('${destination.path}/comic_source')
+          ..createSync();
+        File('${sourceDir.path}/unsafe.js').writeAsStringSync('''
+class UnsafeSource extends ComicSource {
+  key = "unsafe_key";
+  constructor() {
+    super();
+    sendMessage({method: "http", url: "https://evil.test"});
+  }
+}
+''');
+        File('${destination.path}/appdata.json').writeAsStringSync(
+          jsonEncode({
+            'settings': {'cacheSize': 512},
+          }),
+        );
+      });
+
+      final archive = _createArchive(root, {});
+      await expectLater(
+        importAppData(archive, beforeCommit: () => beforeCommitCalled = true),
+        throwsA(isA<FormatException>()),
+      );
+
+      expect(beforeCommitCalled, isFalse);
+      expect(appdata.settings['cacheSize'], 2048);
+      expect(Directory('${App.dataPath}/comic_source').existsSync(), isFalse);
+    },
+    skip: nativeAvailable
+        ? false
+        : (_ciRequireQuickJs
+              ? false
+              : 'QuickJS native library unavailable; run with platform build DLLs on PATH.'),
+  );
+
+  test(
+    'archive restore rejects duplicate comic source identities across archive files',
+    () async {
+      if (_ciRequireQuickJs && !nativeAvailable) {
+        fail(
+          'CI_REQUIRE_QUICKJS=true requires QuickJS native library, but it failed to load: $nativeLoadError',
+        );
+      }
+      var beforeCommitCalled = false;
+      configureAppDataArchiveExtractorForTesting((archive, destination) async {
+        final sourceDir = Directory('${destination.path}/comic_source')
+          ..createSync();
+        File('${sourceDir.path}/first.js').writeAsStringSync('''
+class DupA extends ComicSource {
+  key = "same_key";
+}
+''');
+        File('${sourceDir.path}/second.js').writeAsStringSync('''
+class DupB extends ComicSource {
+  key = "same_key";
+}
+''');
+        File('${destination.path}/appdata.json').writeAsStringSync(
+          jsonEncode({
+            'settings': {'cacheSize': 512},
+          }),
+        );
+      });
+
+      final archive = _createArchive(root, {});
+      await expectLater(
+        importAppData(archive, beforeCommit: () => beforeCommitCalled = true),
+        throwsA(isA<FormatException>()),
+      );
+
+      expect(beforeCommitCalled, isFalse);
+      expect(appdata.settings['cacheSize'], 2048);
+    },
+    skip: nativeAvailable
+        ? false
+        : (_ciRequireQuickJs
+              ? false
+              : 'QuickJS native library unavailable; run with platform build DLLs on PATH.'),
+  );
+
+  test('archive restore rejects malformed sidecar metadata', () async {
+    var beforeCommitCalled = false;
+    configureAppDataArchiveExtractorForTesting((archive, destination) async {
+      final sourceDir = Directory('${destination.path}/comic_source')
+        ..createSync();
+      File(
+        '${sourceDir.path}/.sync_source_names.json',
+      ).writeAsStringSync('corrupt json {');
+      File('${destination.path}/appdata.json').writeAsStringSync(
+        jsonEncode({
+          'settings': {'cacheSize': 512},
+        }),
+      );
+    });
+
+    final archive = _createArchive(root, {});
+    await expectLater(
+      importAppData(archive, beforeCommit: () => beforeCommitCalled = true),
+      throwsA(anything),
+    );
+
+    expect(beforeCommitCalled, isFalse);
+    expect(appdata.settings['cacheSize'], 2048);
+  });
 }
 
 File _createArchive(Directory root, Map<String, dynamic> appData) {
