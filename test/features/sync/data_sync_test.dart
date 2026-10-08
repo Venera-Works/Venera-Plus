@@ -1207,6 +1207,219 @@ void main() {
         expect(localRecords[key], {'value': 'Alice'});
       },
     );
+
+    test(
+      'multi-device sync with incomplete sources syncs favorites/history without deleting sources',
+      () async {
+        final favKey = syncRecordKey('folder', ['shared_fav']);
+        final histKey = syncRecordKey('history', ['shared_comic']);
+        final sourceKey = syncRecordKey('source', ['device_b_source']);
+
+        // Device B publishes favorites, history, and a comic source
+        final dirB = Directory('${tempDir.path}/state_device_b');
+        final storeB = MergeStore(dirB, 'device_b');
+        await storeB.load();
+        await storeB.capture({
+          favKey: {'name': 'Shared Favorites from B'},
+          histKey: {'readDurationMs': 5000},
+          sourceKey: {
+            'script': {
+              'filename': 'b_plugin.js',
+              'content': 'console.log("b");',
+            },
+          },
+        });
+        final coordinatorB = MergeSyncCoordinator(
+          endpointHash: 'hash_multidevice',
+          stateDirectory: dirB,
+          actor: 'device_b',
+          store: storeB,
+          remote: MergeRemote(client),
+          exportFavoritesOverride: () => {
+            favKey: {'name': 'Shared Favorites from B'},
+          },
+          exportHistoryOverride: () async => {
+            histKey: {'readDurationMs': 5000},
+          },
+          exportPreferencesOverride: () async => {
+            sourceKey: {
+              'script': {
+                'filename': 'b_plugin.js',
+                'content': 'console.log("b");',
+              },
+            },
+          },
+          applyFavoritesOverride: (_) {},
+          applyHistoryOverride: (_) {},
+          applyPreferencesOverride: (_, {beforeCommit}) async =>
+              beforeCommit?.call(),
+          getGenerationOverride: () => 0,
+        );
+        await coordinatorB.performSync(direction: SyncDirection.uploadOnly);
+
+        // Device A (has missing/corrupted source; source domain unavailable)
+        final dirA = Directory('${tempDir.path}/state_device_a');
+        final storeA = MergeStore(dirA, 'device_a');
+        await storeA.load();
+        final localFavA = syncRecordKey('folder', ['fav_a']);
+        final appliedOnA = <String, Map<String, Object?>>{};
+
+        final coordinatorA = MergeSyncCoordinator(
+          endpointHash: 'hash_multidevice',
+          stateDirectory: dirA,
+          actor: 'device_a',
+          store: storeA,
+          remote: MergeRemote(client),
+          exportFavoritesOverride: () => {
+            localFavA: {'name': 'Fav A'},
+          },
+          exportHistoryOverride: () async => {},
+          exportPreferencesOverride: () async => {
+            // Device A returns empty sources
+          },
+          applyFavoritesOverride: (recs) {
+            appliedOnA.addAll(recs);
+          },
+          applyHistoryOverride: (recs) {
+            appliedOnA.addAll(recs);
+          },
+          applyPreferencesOverride: (recs, {beforeCommit}) async =>
+              beforeCommit?.call(),
+          getGenerationOverride: () => 0,
+        );
+
+        final resultA = await coordinatorA.performSync(
+          direction: SyncDirection.bidirectional,
+        );
+        expect(resultA.success, isTrue);
+
+        // Device A applied Favorites and History from Device B
+        expect(appliedOnA.containsKey(favKey), isTrue);
+        expect(appliedOnA.containsKey(histKey), isTrue);
+
+        // Now Device B syncs again: Device A's sync did NOT cause Device B's source to be deleted
+        await coordinatorB.performSync(direction: SyncDirection.bidirectional);
+        expect(
+          storeB.document.hasObservedFieldValue(sourceKey, 'script', {
+            'filename': 'b_plugin.js',
+            'content': 'console.log("b");',
+          }),
+          isTrue,
+        );
+      },
+    );
+
+    test(
+      'legacy migration retains issues across local captures and completes repaired domain without regenerating base events',
+      () async {
+        final stateDir = Directory('${tempDir.path}/state_legacy_domain');
+        final store = MergeStore(stateDir, 'device_partial_migrator');
+        final coordinator = MergeSyncCoordinator(
+          endpointHash: 'hash_legacy_partial',
+          stateDirectory: stateDir,
+          actor: 'device_partial_migrator',
+          store: store,
+          remote: MergeRemote(client),
+          exportFavoritesOverride: () => {},
+          exportHistoryOverride: () async => {},
+          applyFavoritesOverride: (_) {},
+          applyHistoryOverride: (_) {},
+          exportPreferencesOverride: () async => {},
+          applyPreferencesOverride: (records, {beforeCommit}) async =>
+              beforeCommit?.call(),
+          getGenerationOverride: () => 0,
+        );
+        await coordinator.store.load();
+
+        final markerKey = 'legacyMigrationDone_hash_legacy_partial';
+        expect(appdata.implicitData[markerKey], isNull);
+
+        // Simulate legacy issues recorded from an archive
+        final legacyIssue = SyncSourceIssue(
+          filename: 'broken.js',
+          reason: 'emptyScript',
+          archiveName: 'legacy.venera',
+        );
+        final issuesFile = File('${stateDir.path}/legacy_issues.json');
+        await issuesFile.writeAsString(
+          jsonEncode({
+            'issues': [legacyIssue.toJson()],
+            'unavailableDomains': ['source'],
+          }),
+        );
+
+        // Now run startup recovery on healthy local profile
+        // Startup captures healthy local data without clearing old legacy health.
+        await coordinator.startupRecovery();
+        await coordinator.migrateLegacyIfNeeded();
+
+        // A missing archive in the current listing cannot prove an old issue repaired.
+        expect(coordinator.sourceIssues, contains(legacyIssue));
+        expect(coordinator.unavailableDomains, contains('source'));
+        expect(appdata.implicitData[markerKey], isNull);
+
+        final restarted = MergeSyncCoordinator(
+          endpointHash: 'hash_legacy_partial',
+          stateDirectory: stateDir,
+          actor: 'device_partial_migrator',
+          store: MergeStore(stateDir, 'device_partial_migrator'),
+          remote: MergeRemote(client),
+          exportFavoritesOverride: () => {},
+          exportHistoryOverride: () async => {},
+          applyFavoritesOverride: (_) {},
+          applyHistoryOverride: (_) {},
+          exportPreferencesOverride: () async => {},
+          applyPreferencesOverride: (records, {beforeCommit}) async =>
+              beforeCommit?.call(),
+          getGenerationOverride: () => 0,
+        );
+        await restarted.startupRecovery();
+        expect(restarted.sourceIssues, contains(legacyIssue));
+        expect(restarted.unavailableDomains, contains('source'));
+
+        // Now simulate repaired archive run:
+        // Base actor already exists for favorites/history:
+        final seedId = 'archive_sha_123';
+        final baseActor = 'legacy_seed_$seedId';
+        final favKey = syncRecordKey('folder', ['fav1']);
+        final baseDoc = MergeDocument();
+        baseDoc.captureLocal(baseActor, {}, {
+          favKey: {'name': 'Fav1'},
+        }, bootstrap: true);
+        coordinator.store.document.merge(baseDoc);
+        final baseCounterBefore = coordinator.store.document.counterFor(
+          baseActor,
+        );
+        expect(baseCounterBefore, 1);
+
+        // When source domain becomes available, it migrates under legacy_seed_${seedId}_source
+        final sourceKey = syncRecordKey('source', ['repaired_src']);
+        final domainActor = 'legacy_seed_${seedId}_source';
+        final sourceDoc = MergeDocument();
+        sourceDoc.captureLocal(domainActor, {}, {
+          sourceKey: {
+            'script': {'filename': 'repaired.js', 'content': 'valid'},
+          },
+        }, bootstrap: true);
+        coordinator.store.document.merge(sourceDoc);
+
+        // Base actor counter stayed unchanged (no consumed events regenerated)
+        expect(
+          coordinator.store.document.counterFor(baseActor),
+          baseCounterBefore,
+        );
+        // Domain actor migrated the source domain
+        expect(coordinator.store.document.counterFor(domainActor), 1);
+        expect(
+          coordinator.store.document.hasObservedFieldValue(
+            sourceKey,
+            'script',
+            {'filename': 'repaired.js', 'content': 'valid'},
+          ),
+          isTrue,
+        );
+      },
+    );
   });
 }
 

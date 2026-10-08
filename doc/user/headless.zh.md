@@ -30,7 +30,7 @@ venera-plus --headless <command> [subcommand] [options]
 
 命令等待启动恢复及已有同步/配置操作结束。实际操作失败以 `status: error` 和非零退出码报告，不能绕过方向限制。认证、网络和应用错误不算成功，未完成工作留待重试；已经提交的远端或本地内容不会因后续失败被假回滚。协议、一次性旧档迁移及崩溃恢复边界见[应用数据同步](data_sync.zh.md)。
 
-`webdav sync` / `sync` 传输成功时输出 `status: success`，`data.conflictCount` 和 `data.hasConflict` 表示仍需处理的冲突。**存在候选冲突仍可成功退出（退出码 0）**；成功不等于已经自动选定所有候选。`up` / `down` 的成功消息不附冲突列表，需另查 `conflicts`。
+`webdav sync` / `sync` 完整传输成功时输出 `status: success`，`data.conflictCount` 和 `data.hasConflict` 表示仍需处理的冲突。**存在候选冲突仍可成功退出（退出码 0）**；成功不等于已经自动选定所有候选。源相关领域暂不可用但其他领域传输完成时，`sync`、`up`、`down` 输出 `status: partial`（退出码 0），并给出 `data.unavailableDomains` 与 `data.sourceIssues`；`sync` 仍附冲突计数。源摘要只包含文件名、安全原因及翻译、是否有备份和操作提示，不输出脚本、会话、源身份或私有备份路径。`repairAction` 区分应用内替换、重试恢复及“须先恢复完整日志”的前置条件，不将坏备份当作可直接恢复的数据。`up` / `down` 不附冲突列表，需另查 `conflicts`。
 
 **示例：**
 

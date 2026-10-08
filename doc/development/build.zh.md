@@ -73,9 +73,22 @@ git diff --check
 
 CI 会使用 `flutter test --coverage` 生成 `coverage/lcov.info`，在工作流摘要中显示行覆盖率，并上传报告产物。当前覆盖率用于建立可见基线，尚未设置统一硬阈值；涉及关键业务路径的改动仍必须增加针对性测试。
 
-PR 还会运行 `依赖安全审查` 和 `PR 平台冒烟构建`。依赖审查会阻止引入高危或严重漏洞依赖；当改动涉及业务代码、原生平台目录、依赖、构建脚本、工作流，或 `test/integration/`、`test/driver/` 及 `test/features/sync/legacy_sync_reader_test.dart`、`test/features/sync/source_identity_recovery_test.dart` 原生测试时，平台工作流会执行 Android Debug（arm64 编译门禁与 x86_64 模拟器环境原生集成测试）和 Windows Debug（应用构建、QuickJS 源迁移与标识恢复原生测试、真实启动脚本与原生集成测试）。CI 变更检测精确匹配这两个原生测试目录及上述源测试文件，不扩大触发范围到所有 `test/`；文档等不影响构建的改动会跳过这两个平台任务。
+PR 还会运行 `依赖安全审查` 和 `PR 平台冒烟构建`。依赖审查会阻止引入高危或严重漏洞依赖；当改动涉及业务代码、原生平台目录、依赖、构建脚本、工作流，或 `test/integration/`、`test/driver/`、`test/features/sync/legacy_sync_reader_test.dart`、`test/features/sync/source_identity_recovery_test.dart` 及 `test/features/comic_source/` 下的 `source_parser_test.dart`、`source_lifecycle_test.dart`、`source_files_test.dart` 时，平台工作流会执行 Android Debug（arm64 编译门禁与 x86_64 模拟器环境原生集成测试）和 Windows Debug（应用构建、QuickJS/ZIP64 迁移与源恢复原生测试、真实启动脚本与原生集成测试）。CI 精确匹配这些原生测试目录和文件，不扩大触发范围到所有 `test/`；文档等不影响构建的改动会跳过平台任务。
 
-旧同步档迁移与源标识恢复测试将 SQLite 收藏、历史模式迁移与依赖 QuickJS 的漫画源脚本原生执行分开。普通 `flutter test --coverage` 环境缺少 QuickJS 原生库时，仅跳过各自对应的原生测试组（`LegacySyncReader QuickJS Source Migration` 与 `SourceIdentityRecovery QuickJS`），数据库迁移仍独立执行。Windows PR 平台任务在已有 Debug 构建后检查 `flutter_qjs_plugin.dll` 与 `flutter_windows.dll`，将产物目录加入 `PATH`，再运行 `flutter test --no-pub --reporter=expanded --dart-define=CI_REQUIRE_QUICKJS=true --name 'LegacySyncReader QuickJS Source Migration|SourceIdentityRecovery QuickJS' test/features/sync/legacy_sync_reader_test.dart test/features/sync/source_identity_recovery_test.dart`。该严格开关要求真实原生运行时，缺库时必须失败而非跳过；测试组覆盖计算键脚本与会话迁移、相同别名物理文件规范化保留逻辑名、同键异内容生成持久化冲突候选及重启后不复活、无证明直接破坏性应用拒绝、以及通过真实 Windows `CreateFileW` 共享冲突（无删除共享）模拟旧文件删除失败并在释放后通过日志无重复键错误恢复，不新增应用构建步骤。
+旧同步档迁移与源恢复测试将 SQLite 收藏、历史模式迁移与 QuickJS 脚本执行、原生 ZIP64 写包分开。普通测试环境缺少某个原生库时，仅跳过依赖该库的原生场景，数据库迁移仍独立执行。Windows PR 任务在**已有 Debug 构建后**检查 `flutter_qjs_plugin.dll`、`flutter_windows.dll` 与 `zip_flutter.dll`，将产物目录加入 `PATH`，并使用两个严格开关：
+
+```powershell
+flutter test --no-pub --reporter=expanded `
+  --dart-define=CI_REQUIRE_QUICKJS=true --dart-define=CI_REQUIRE_NATIVE_ZIP=true `
+  --name 'LegacySyncReader QuickJS Source Migration|LegacySyncReader Durable Overrides and Process Restart|SourceIdentityRecovery QuickJS|LegacySyncReader Native ZIP64|ComicSourceParser\.probeKey metadata sandboxing|source runtime transactions|SourceFileMetadata' `
+  test/features/sync/legacy_sync_reader_test.dart `
+  test/features/sync/source_identity_recovery_test.dart `
+  test/features/comic_source/source_parser_test.dart `
+  test/features/comic_source/source_lifecycle_test.dart `
+  test/features/comic_source/source_files_test.dart
+```
+
+严格开关要求真实原生库，缺库时必须失败而非跳过。场景覆盖计算键与纯辅助 API、会话迁移、同身份别名与逻辑修订名、部分提交后已解决候选不复活、无证明破坏性应用拒绝、真实 Windows 无删除共享锁恢复、发布字节/会话保护、原生 ZIP64 描述符与 CRC/边界校验，以及旧档修复覆盖层的持久重启。此步骤不新增应用构建；本机验证仍须遵守构建权限，可只读使用已有兼容 DLL 和已准备的 native assets，不得为跑测试擅自触发原生编译。
 
 原生集成测试与驱动已统一收敛至 `test/` 目录：场景入口为 `test/integration/platform_smoke.dart`，宿主端驱动为 `test/driver/platform_smoke_driver.dart`。为避免被日常 `flutter test --coverage` 默认发现与覆盖率统计收集，两个入口刻意省略了 `_test.dart` 后缀；旧根目录 `integration_test/` 与 `test_driver/` 已彻底移除，不保留兼容入口。
 

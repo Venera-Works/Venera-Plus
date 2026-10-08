@@ -115,6 +115,59 @@ List<Map<String, Object?>> headlessSyncConflictPreviews(
     },
 ];
 
+/// Formats only safe, actionable issue metadata for CLI output.
+List<Map<String, Object?>> headlessSyncSourceIssuePreviews(
+  List<SyncSourceIssue> issues,
+) {
+  const safeReasons = {
+    'emptyScript',
+    'missingEntryClass',
+    'syntaxError',
+    'unsupportedHostApi',
+    'timeout',
+    'memoryLimit',
+    'invalidKey',
+    'evaluationError',
+    'runtimeFailure',
+    'invalidSession',
+    'readFailure',
+    'identityMismatch',
+    'quarantineFailure',
+    'quarantineFailed',
+    'metadataCorrupted',
+    'journalCorrupted',
+    'concurrentModification',
+    'writeFailure',
+    'runtimeReloadDeferred',
+    'runtimeReloadFailed',
+    'repairPending',
+  };
+  return [
+    for (final issue in issues)
+      {
+        'filename': issue.filename,
+        'reason': safeReasons.contains(issue.reason) ? issue.reason : 'unknown',
+        'reasonText': syncSourceIssueReasonText(
+          safeReasons.contains(issue.reason) ? issue.reason : 'unknown',
+        ),
+        'hasBackup': issue.backupPath != null,
+        if (issue.archiveName != null) 'archiveName': issue.archiveName,
+        'originalBackupAction': issue.backupPath == null
+            ? null
+            : 'exportForForensicsInApp',
+        if (!issue.recovered)
+          'repairAction': switch (issue.reason) {
+            'journalCorrupted' => 'requiresCompleteJournalBeforeRetry',
+            'repairPending' ||
+            'runtimeReloadDeferred' ||
+            'runtimeReloadFailed' => 'retryRecoveryInApp',
+            _ => 'replaceFileInApp',
+          },
+        'recovered': issue.recovered,
+      },
+  ];
+}
+
 Future<void> runHeadlessMode(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   if (args.contains('--ignore-disheadless-log')) {
@@ -396,10 +449,24 @@ Future<void> _handleWebdavTransfer({required bool upload}) async {
     });
     exit(1);
   }
-  cliPrint({
-    'status': 'success',
-    'message': upload ? 'Upload complete.' : 'Download complete.',
-  });
+  final snapshot = DataSync().statusSnapshot;
+  if (snapshot.isPartial) {
+    cliPrint({
+      'status': 'partial',
+      'message': upload
+          ? 'Upload completed with partial sources.'
+          : 'Download completed with partial sources.',
+      'data': {
+        'sourceIssues': headlessSyncSourceIssuePreviews(snapshot.sourceIssues),
+        'unavailableDomains': snapshot.unavailableDomains.toList()..sort(),
+      },
+    });
+  } else {
+    cliPrint({
+      'status': 'success',
+      'message': upload ? 'Upload complete.' : 'Download complete.',
+    });
+  }
 }
 
 Future<void> _handleWebdavSync() async {
@@ -414,15 +481,29 @@ Future<void> _handleWebdavSync() async {
     });
     exit(1);
   }
+  final snapshot = DataSync().statusSnapshot;
   final conflicts = DataSync().conflicts;
-  cliPrint({
-    'status': 'success',
-    'message': 'Sync complete.',
-    'data': {
-      'conflictCount': conflicts.length,
-      'hasConflict': conflicts.isNotEmpty,
-    },
-  });
+  if (snapshot.isPartial) {
+    cliPrint({
+      'status': 'partial',
+      'message': 'Sync completed with partial sources.',
+      'data': {
+        'conflictCount': conflicts.length,
+        'hasConflict': conflicts.isNotEmpty,
+        'sourceIssues': headlessSyncSourceIssuePreviews(snapshot.sourceIssues),
+        'unavailableDomains': snapshot.unavailableDomains.toList()..sort(),
+      },
+    });
+  } else {
+    cliPrint({
+      'status': 'success',
+      'message': 'Sync complete.',
+      'data': {
+        'conflictCount': conflicts.length,
+        'hasConflict': conflicts.isNotEmpty,
+      },
+    });
+  }
 }
 
 Future<void> _handleWebdavConflicts() async {

@@ -140,4 +140,49 @@ void main() {
       );
     }
   });
+
+  test(
+    'headless source issue previews expose translated safe repair actions without payloads',
+    () {
+      const issues = [
+        SyncSourceIssue(
+          filename: 'komiic.js',
+          reason: 'emptyScript',
+          sourceKey: 'secret-source-key',
+          backupPath: '/private/secret/backup.js',
+          archiveName: 'legacy.venera',
+          recovered: false,
+        ),
+        SyncSourceIssue(filename: 'corrupted.js', reason: 'password=secret'),
+        SyncSourceIssue(
+          filename: '.recovery_journal.json',
+          reason: 'repairPending',
+        ),
+        SyncSourceIssue(
+          filename: '.quarantine_journal.json',
+          reason: 'journalCorrupted',
+        ),
+      ];
+
+      final output = headlessSyncSourceIssuePreviews(issues);
+      expect(output[0]['reason'], 'emptyScript');
+      expect(output[0]['hasBackup'], isTrue);
+      expect(output[0]['originalBackupAction'], 'exportForForensicsInApp');
+      expect(output[0]['repairAction'], 'replaceFileInApp');
+
+      expect(output[1]['reason'], 'unknown');
+      expect(output[1]['hasBackup'], isFalse);
+      expect(output[1]['originalBackupAction'], isNull);
+      expect(output[1]['repairAction'], 'replaceFileInApp');
+      expect(output[2]['reason'], 'repairPending');
+      expect(output[2]['repairAction'], 'retryRecoveryInApp');
+      expect(output[3]['repairAction'], 'requiresCompleteJournalBeforeRetry');
+
+      final encoded = jsonEncode(output);
+      expect(encoded, isNot(contains('secret')));
+      expect(encoded, isNot(contains('password')));
+      expect(encoded, isNot(contains('backupPath')));
+      expect(encoded, isNot(contains('sourceKey')));
+    },
+  );
 }

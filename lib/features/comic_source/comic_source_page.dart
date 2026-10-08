@@ -23,9 +23,9 @@ import 'package:venera_plus/foundation/file_interaction.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 
-import 'parser.dart';
 import 'source_translation.dart';
 import 'source_repositories.dart';
+import 'parser.dart' show ComicSourceParseException, compareSemVer;
 
 class ComicSourcePage extends StatelessWidget {
   const ComicSourcePage({super.key});
@@ -386,7 +386,11 @@ class _BodyState extends State<_Body> {
       var fileName = file.name;
       var bytes = await file.readAsBytes();
       var content = utf8.decode(bytes);
-      await addSource(content, fileName);
+      await addSource(
+        content,
+        fileName,
+        origin: const SourceOrigin(kind: 'file'),
+      );
     } catch (e, s) {
       App.rootContext.showMessage(message: e.toString());
       Log.error("Add comic source", "$e\n$s");
@@ -421,7 +425,11 @@ class _BodyState extends State<_Body> {
         cancelToken: token,
       );
       if (content == null || token.isCancelled || !mounted) return;
-      await addSource(content, fileName);
+      await addSource(
+        content,
+        fileName,
+        origin: SourceOrigin(kind: 'url', url: uri.toString()),
+      );
     } catch (e, s) {
       if (token.isCancelled || !mounted) return;
       context.showMessage(message: _sourceErrorMessage(e));
@@ -431,11 +439,17 @@ class _BodyState extends State<_Body> {
     }
   }
 
-  Future<void> addSource(String js, String fileName) async {
-    var comicSource = await ComicSourceParser().createAndParse(js, fileName);
-    ComicSourceManager().add(comicSource);
-    _addAllPagesWithComicSource(comicSource);
-    appdata.saveData();
+  Future<void> addSource(
+    String js,
+    String fileName, {
+    required SourceOrigin origin,
+  }) async {
+    await ComicSourceManager().installScript(
+      js: js,
+      fileName: fileName,
+      origin: origin,
+      beforeInstall: () {},
+    );
     App.forceRebuild();
   }
 }
@@ -726,44 +740,6 @@ void _validatePages() {
   appdata.settings['explore_pages'] = explorePages.toSet().toList();
   appdata.settings['categories'] = categoryPages.toSet().toList();
   appdata.settings['favorites'] = networkFavorites.toSet().toList();
-
-  appdata.saveData();
-}
-
-void _addAllPagesWithComicSource(ComicSource source) {
-  var explorePages = appdata.settings['explore_pages'];
-  var categoryPages = appdata.settings['categories'];
-  var networkFavorites = appdata.settings['favorites'];
-  final searchPages =
-      appdata.settings['searchSources'] ??
-      ComicSource.all()
-          .where((item) => item.searchPageData != null)
-          .map((item) => item.key)
-          .toList();
-
-  if (source.explorePages.isNotEmpty) {
-    for (var page in source.explorePages) {
-      if (!explorePages.contains(page.title)) {
-        explorePages.add(page.title);
-      }
-    }
-  }
-  if (source.categoryData != null &&
-      !categoryPages.contains(source.categoryData!.key)) {
-    categoryPages.add(source.categoryData!.key);
-  }
-  if (source.favoriteData != null &&
-      !networkFavorites.contains(source.favoriteData!.key)) {
-    networkFavorites.add(source.favoriteData!.key);
-  }
-  if (source.searchPageData != null && !searchPages.contains(source.key)) {
-    searchPages.add(source.key);
-  }
-
-  appdata.settings['explore_pages'] = explorePages.toSet().toList();
-  appdata.settings['categories'] = categoryPages.toSet().toList();
-  appdata.settings['favorites'] = networkFavorites.toSet().toList();
-  appdata.settings['searchSources'] = searchPages.toSet().toList();
 
   appdata.saveData();
 }

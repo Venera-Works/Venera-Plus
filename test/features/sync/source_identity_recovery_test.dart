@@ -7,7 +7,10 @@ import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
+import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/sync/source_recovery.dart';
 import 'package:venera_plus/features/sync/sync.dart';
+import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/js_engine.dart';
 import 'package:webdav_client/webdav_client.dart' as dav;
@@ -667,10 +670,7 @@ void main() {
           final holdHandle = _holdNoDeleteHandle(staleFile.path);
 
           try {
-            await coordinator.applyAllRecords(
-              coordinator.store.pendingApply!,
-              beforeCommit: () => selectedFile.deleteSync(),
-            );
+            await coordinator.applyAllRecords(coordinator.store.pendingApply!);
             fail(
               'Expected FileSystemException when deleting locked stale file',
             );
@@ -910,6 +910,1037 @@ void main() {
           final scriptRecord =
               localSnapshot.records[localSourceKey]!['script'] as Map;
           expect(scriptRecord['content'], equals(scriptContent));
+        },
+      );
+
+      test(
+        'empty artifact next to valid alias normalizes safely, quarantines empty file, and preserves session intact without tombstones',
+        () async {
+          final profileDir = Directory(
+            p.join(tempDir.path, 'profile_empty_alias'),
+          )..createSync(recursive: true);
+          App.dataPath = profileDir.path;
+          App.cachePath = profileDir.path;
+          final sourceDir = Directory(p.join(profileDir.path, 'comic_source'))
+            ..createSync(recursive: true);
+
+          const keyParts = ['komiic', 'alias', 'test'];
+          final computedKey = keyParts.join('_');
+          final scriptContent = _generateComputedSourceScript(
+            classPrefix: 'KomiicAlias',
+            keyParts: keyParts,
+            version: '1.0.0',
+            name: 'Komiic Source',
+          );
+
+          final emptyFile = File(p.join(sourceDir.path, 'komiic.js'))
+            ..writeAsStringSync('');
+          File(p.join(sourceDir.path, 'komiic(0).js'))
+            ..writeAsStringSync(scriptContent);
+          File(
+            p.join(sourceDir.path, '.sync_source_names.json'),
+          ).writeAsStringSync(
+            jsonEncode({
+              computedKey: {
+                'filename': 'komiic.js',
+                'revisions': <String, String>{},
+              },
+            }),
+          );
+          final sessionFile = File(p.join(sourceDir.path, '$computedKey.data'))
+            ..writeAsStringSync(jsonEncode({'token': 'keep_me_alive'}));
+
+          final adapter = SyncPreferencesAdapter(dataPath: profileDir.path);
+          await adapter.recoverLocalSources();
+          final snapshot = await adapter.exportSyncSnapshot();
+
+          final sourceKey = syncRecordKey('source', [computedKey]);
+          final sessionKey = syncRecordKey('sourceSession', [computedKey]);
+
+          expect(snapshot.records.containsKey(sourceKey), isTrue);
+          expect(snapshot.records.containsKey(sessionKey), isTrue);
+          expect(snapshot.unavailableDomains.contains('source'), isFalse);
+          expect(
+            snapshot.unavailableDomains.contains('sourceSession'),
+            isFalse,
+          );
+
+          expect(emptyFile.existsSync(), isFalse);
+          final quarantineDir = Directory(
+            p.join(sourceDir.path, '.quarantine'),
+          );
+          expect(quarantineDir.existsSync(), isTrue);
+
+          expect(sessionFile.existsSync(), isTrue);
+          expect(
+            jsonDecode(sessionFile.readAsStringSync())['token'],
+            'keep_me_alive',
+          );
+
+          final recoveredIssues = snapshot.sourceIssues.where(
+            (i) => i.filename == 'komiic.js',
+          );
+          expect(recoveredIssues, isNotEmpty);
+          expect(recoveredIssues.first.recovered, isTrue);
+          expect(recoveredIssues.first.backupPath, isNotNull);
+        },
+      );
+
+      test(
+        'sole damaged known file restores from approved recoveryRecords, while unapproved damaged file remains visibly unresolved without recreating absent scripts',
+        () async {
+          final profileDir = Directory(
+            p.join(tempDir.path, 'profile_damaged_repair'),
+          )..createSync(recursive: true);
+          App.dataPath = profileDir.path;
+          App.cachePath = profileDir.path;
+          final sourceDir = Directory(p.join(profileDir.path, 'comic_source'))
+            ..createSync(recursive: true);
+
+          const keyParts = ['repaired', 'known', 'source'];
+          final computedKey = keyParts.join('_');
+          final approvedScript = _generateComputedSourceScript(
+            classPrefix: 'RepairedKnown',
+            keyParts: keyParts,
+            version: '2.0.0',
+            name: 'Approved Body Source',
+          );
+
+          final damagedFile = File(p.join(sourceDir.path, 'repaired_known.js'))
+            ..writeAsStringSync('{{{ syntax error not valid javascript');
+
+          final unapprovedFile = File(
+            p.join(sourceDir.path, 'unapproved_corrupt.js'),
+          )..writeAsStringSync('invalid syntax corrupt body');
+
+          File(
+            p.join(sourceDir.path, '.sync_source_names.json'),
+          ).writeAsStringSync(
+            jsonEncode({
+              computedKey: {
+                'filename': 'repaired_known.js',
+                'revisions': <String, String>{},
+              },
+              'unapproved_key': {
+                'filename': 'unapproved_corrupt.js',
+                'revisions': <String, String>{},
+              },
+            }),
+          );
+
+          final adapter = SyncPreferencesAdapter(dataPath: profileDir.path);
+
+          final absentKey = 'plain_absent_key';
+          final absentScript = _generateComputedSourceScript(
+            classPrefix: 'PlainAbsent',
+            keyParts: [absentKey],
+            version: '1.0.0',
+            name: 'Absent Source',
+          );
+
+          final recoveryRecords = <String, Map<String, Object?>>{
+            syncRecordKey('source', [computedKey]): {
+              'script': {
+                'filename': 'repaired_known.js',
+                'content': approvedScript,
+              },
+            },
+            syncRecordKey('source', [absentKey]): {
+              'script': {
+                'filename': 'plain_absent.js',
+                'content': absentScript,
+              },
+            },
+          };
+
+          await adapter.recoverLocalSources(recoveryRecords: recoveryRecords);
+          final snapshot = await adapter.exportSyncSnapshot(
+            recoveryRecords: recoveryRecords,
+          );
+
+          final canonicalRepaired = File(
+            p.join(
+              sourceDir.path,
+              SourceFileMetadata.physicalName(computedKey),
+            ),
+          );
+          expect(canonicalRepaired.existsSync(), isTrue);
+          expect(canonicalRepaired.readAsStringSync(), approvedScript);
+
+          expect(damagedFile.existsSync(), isFalse);
+
+          expect(unapprovedFile.existsSync(), isTrue);
+          expect(
+            unapprovedFile.readAsStringSync(),
+            'invalid syntax corrupt body',
+          );
+
+          final absentFile = File(
+            p.join(sourceDir.path, SourceFileMetadata.physicalName(absentKey)),
+          );
+          expect(absentFile.existsSync(), isFalse);
+          expect(
+            snapshot.records.containsKey(syncRecordKey('source', [absentKey])),
+            isFalse,
+          );
+
+          expect(snapshot.unavailableDomains, contains('source'));
+          expect(
+            snapshot.sourceIssues.any(
+              (i) => i.filename == 'unapproved_corrupt.js' && !i.recovered,
+            ),
+            isTrue,
+          );
+        },
+      );
+
+      test(
+        'unknown bad script and unsupportedHostApi script remain explicit partial blockers across restart',
+        () async {
+          final profileDir = Directory(
+            p.join(tempDir.path, 'profile_unknown_forbidden'),
+          )..createSync(recursive: true);
+          App.dataPath = profileDir.path;
+          App.cachePath = profileDir.path;
+          final sourceDir = Directory(p.join(profileDir.path, 'comic_source'))
+            ..createSync(recursive: true);
+
+          final unknownFile = File(p.join(sourceDir.path, 'unknown_bad.js'))
+            ..writeAsStringSync('corrupt syntax bad');
+
+          final forbiddenHostScript = '''
+class ForbiddenHostSource extends ComicSource {
+  name = "Forbidden Host";
+  key = "forbidden_host_key";
+  version = "1.0.0";
+  minAppVersion = "1.0.0";
+  constructor() {
+    super();
+    Network.setCookies("https://example.com", []);
+  }
+}
+''';
+          final forbiddenFile = File(
+            p.join(sourceDir.path, 'forbidden_host.js'),
+          )..writeAsStringSync(forbiddenHostScript);
+
+          appdata.settings['someExportableSetting'] = 'exported_value_42';
+
+          final adapter1 = SyncPreferencesAdapter(dataPath: profileDir.path);
+          await adapter1.recoverLocalSources();
+          final snapshot1 = await adapter1.exportSyncSnapshot();
+
+          final settingKey = syncRecordKey('setting', [
+            'someExportableSetting',
+          ]);
+          expect(snapshot1.records.containsKey(settingKey), isTrue);
+          expect(snapshot1.unavailableDomains, contains('source'));
+          // Unknown invalid bytes remain in place and never gain a quarantine tombstone.
+          expect(unknownFile.existsSync(), isTrue);
+          expect(unknownFile.readAsStringSync(), 'corrupt syntax bad');
+          expect(
+            Directory(
+              p.join(sourceDir.path, '.quarantine', 'records'),
+            ).existsSync(),
+            isFalse,
+          );
+
+          // Forbidden host file was NOT quarantined (left in place)
+          expect(forbiddenFile.existsSync(), isTrue);
+
+          // Re-instantiate adapter on restarted profile directory
+          final adapter2 = SyncPreferencesAdapter(dataPath: profileDir.path);
+          final snapshot2 = await adapter2.exportSyncSnapshot();
+
+          // The hash-bound issue persists across restart without deleting the file.
+          expect(unknownFile.existsSync(), isTrue);
+          expect(snapshot2.unavailableDomains, contains('source'));
+          expect(snapshot2.records.containsKey(settingKey), isTrue);
+          final restartedIssue = snapshot2.sourceIssues.firstWhere(
+            (i) => i.filename == 'unknown_bad.js' && !i.recovered,
+          );
+          expect(
+            restartedIssue.contentDigest,
+            sha256.convert(utf8.encode('corrupt syntax bad')).toString(),
+          );
+        },
+      );
+
+      test(
+        'manual valid reinstall at an unknown quarantine filename proves its key without losing original backup bytes',
+        () async {
+          final profileDir = Directory(
+            p.join(tempDir.path, 'profile_manual_reinstall'),
+          )..createSync(recursive: true);
+          final sourceDir = Directory(p.join(profileDir.path, 'comic_source'))
+            ..createSync(recursive: true);
+          const key = 'repaired_source';
+          final replacement = _generateComputedSourceScript(
+            classPrefix: 'ReinstalledSource',
+            keyParts: ['repaired', 'source'],
+            version: '1.0.0',
+            name: 'Reinstalled Source',
+          );
+          const originalBytes = 'unrecognized original bytes';
+          final originalFile = File(p.join(sourceDir.path, 'unrecognized.js'))
+            ..writeAsStringSync(originalBytes);
+          final quarantine = SourceQuarantineManager(sourceDir);
+          final record = await quarantine.quarantineFile(
+            originalFile,
+            reason: 'syntaxError',
+          );
+          expect(record, isNotNull);
+          originalFile.writeAsStringSync(replacement);
+
+          final adapter = SyncPreferencesAdapter(dataPath: profileDir.path);
+          await adapter.recoverLocalSources();
+          final snapshot = await adapter.exportSyncSnapshot();
+          final updated = (await quarantine.readJournal()).single;
+          final canonicalFile = File(
+            p.join(sourceDir.path, SourceFileMetadata.physicalName(key)),
+          );
+
+          expect(updated.recovered, isTrue);
+          expect(updated.sourceKey, isNull);
+          expect(updated.recoveredByKey, key);
+          expect(File(record!.backupPath).readAsStringSync(), originalBytes);
+          expect(originalFile.readAsStringSync(), replacement);
+          expect(canonicalFile.readAsStringSync(), replacement);
+          expect(snapshot.unavailableDomains.contains('source'), isFalse);
+          expect(
+            snapshot.sourceIssues.any(
+              (issue) => issue.filename == 'unrecognized.js' && issue.recovered,
+            ),
+            isTrue,
+          );
+        },
+      );
+
+      test(
+        'applySyncRecords with unavailableDomains skips blocked source and session domains without overwriting or deleting, and settings-only apply does not reload sources',
+        () async {
+          final profileDir = Directory(
+            p.join(tempDir.path, 'profile_partial_apply'),
+          )..createSync(recursive: true);
+          App.dataPath = profileDir.path;
+          App.cachePath = profileDir.path;
+          final sourceDir = Directory(p.join(profileDir.path, 'comic_source'))
+            ..createSync(recursive: true);
+
+          final localScript = _generateComputedSourceScript(
+            classPrefix: 'LocalUntouched',
+            keyParts: ['local_untouched'],
+            version: '1.0.0',
+            name: 'Local Untouched',
+          );
+          final localFile = File(p.join(sourceDir.path, 'local_untouched.js'))
+            ..writeAsStringSync(localScript);
+          final localSession = File(
+            p.join(sourceDir.path, 'local_untouched.data'),
+          )..writeAsStringSync(jsonEncode({'session': 'local_preserved'}));
+
+          final adapter = SyncPreferencesAdapter(dataPath: profileDir.path);
+
+          final incomingRecords = <String, Map<String, Object?>>{
+            syncRecordKey('setting', ['testSettingOnly']): {
+              'value': 'applied_ok',
+            },
+            syncRecordKey('source', ['local_untouched']): {
+              'script': {
+                'filename': 'local_untouched.js',
+                'content': 'foreign remote content that should not overwrite',
+              },
+            },
+          };
+
+          await adapter.applySyncRecords(
+            incomingRecords,
+            unavailableDomains: {'source', 'sourceSession'},
+          );
+
+          expect(localFile.existsSync(), isTrue);
+          expect(localFile.readAsStringSync(), equals(localScript));
+
+          expect(localSession.existsSync(), isTrue);
+          expect(
+            jsonDecode(localSession.readAsStringSync())['session'],
+            'local_preserved',
+          );
+
+          expect(appdata.settings['testSettingOnly'], 'applied_ok');
+        },
+      );
+
+      test(
+        'readLegacySnapshot reports issues and blocked domains without destroying bad bytes or modifying live profile',
+        () async {
+          final legacyDir = Directory(p.join(tempDir.path, 'legacy_extracted'))
+            ..createSync(recursive: true);
+          final sourceDir = Directory(p.join(legacyDir.path, 'comic_source'))
+            ..createSync(recursive: true);
+
+          final validScript = _generateComputedSourceScript(
+            classPrefix: 'LegacyValid',
+            keyParts: ['legacy_valid'],
+            version: '1.0.0',
+            name: 'Legacy Valid',
+          );
+          File(
+            p.join(sourceDir.path, 'legacy_valid.js'),
+          ).writeAsStringSync(validScript);
+
+          final badFile = File(p.join(sourceDir.path, 'legacy_corrupt.js'))
+            ..writeAsStringSync('corrupt legacy bytes');
+
+          File(p.join(legacyDir.path, 'appdata.json')).writeAsStringSync(
+            jsonEncode({
+              'settings': {'legacySettingKey': 'legacy_val'},
+            }),
+          );
+
+          final profileDir = Directory(p.join(tempDir.path, 'live_profile'))
+            ..createSync(recursive: true);
+          final adapter = SyncPreferencesAdapter(dataPath: profileDir.path);
+
+          final snapshot = await adapter.readLegacySnapshot(legacyDir);
+
+          expect(
+            snapshot.records.containsKey(
+              syncRecordKey('setting', ['legacySettingKey']),
+            ),
+            isTrue,
+          );
+          expect(
+            snapshot.records.containsKey(
+              syncRecordKey('source', ['legacy_valid']),
+            ),
+            isTrue,
+          );
+
+          expect(snapshot.unavailableDomains, contains('source'));
+          expect(
+            snapshot.sourceIssues.any((i) => i.filename == 'legacy_corrupt.js'),
+            isTrue,
+          );
+
+          expect(badFile.existsSync(), isTrue);
+          expect(badFile.readAsStringSync(), 'corrupt legacy bytes');
+
+          final liveSourceDir = Directory(
+            p.join(profileDir.path, 'comic_source'),
+          );
+          expect(liveSourceDir.existsSync(), isFalse);
+        },
+      );
+
+      test(
+        'Windows locked writes and OS failures propagate as source issues without unhandled crash',
+        () async {
+          final profileDir = Directory(
+            p.join(tempDir.path, 'profile_locked_writes'),
+          )..createSync(recursive: true);
+          App.dataPath = profileDir.path;
+          App.cachePath = profileDir.path;
+          final sourceDir = Directory(p.join(profileDir.path, 'comic_source'))
+            ..createSync(recursive: true);
+
+          const keyParts = ['locked', 'write', 'key'];
+          final computedKey = keyParts.join('_');
+          final scriptContent = _generateComputedSourceScript(
+            classPrefix: 'LockedWrite',
+            keyParts: keyParts,
+            version: '1.0.0',
+            name: 'Locked Write Source',
+          );
+
+          final corruptFile = File(p.join(sourceDir.path, 'locked_corrupt.js'))
+            ..writeAsStringSync('corrupt bytes');
+          File(
+            p.join(sourceDir.path, '.sync_source_names.json'),
+          ).writeAsStringSync(
+            jsonEncode({
+              computedKey: {
+                'filename': 'locked_corrupt.js',
+                'revisions': <String, String>{},
+              },
+            }),
+          );
+
+          int? handle;
+          if (Platform.isWindows) {
+            handle = _holdNoDeleteHandle(corruptFile.path);
+          }
+
+          try {
+            final issues = await SourceRecovery.recoverLocalSources(
+              sourceDir,
+              recoveryRecords: {
+                syncRecordKey('source', [computedKey]): {
+                  'script': {
+                    'filename': 'locked_corrupt.js',
+                    'content': scriptContent,
+                  },
+                },
+              },
+            );
+
+            if (Platform.isWindows && handle != 0) {
+              expect(
+                issues.any(
+                  (i) => i.filename == 'locked_corrupt.js' && !i.recovered,
+                ),
+                isTrue,
+              );
+            }
+          } finally {
+            if (handle != null && handle != 0) {
+              _closeHandle(handle);
+            }
+          }
+        },
+      );
+
+      test(
+        'corrupt quarantine journal emits journalCorrupted blocker without erasing file, and strict schema validation rejects malformed records',
+        () async {
+          final profileDir = Directory(
+            p.join(tempDir.path, 'profile_corrupt_journal'),
+          )..createSync(recursive: true);
+          App.dataPath = profileDir.path;
+          App.cachePath = profileDir.path;
+          final sourceDir = Directory(p.join(profileDir.path, 'comic_source'))
+            ..createSync(recursive: true);
+          final quarantineDir = Directory(p.join(sourceDir.path, '.quarantine'))
+            ..createSync(recursive: true);
+
+          final journalFile = File(p.join(quarantineDir.path, 'journal.json'))
+            ..writeAsStringSync('{ malformed json not array [');
+
+          final adapter = SyncPreferencesAdapter(dataPath: profileDir.path);
+          final snapshot = await adapter.exportSyncSnapshot();
+
+          expect(snapshot.unavailableDomains, contains('source'));
+          expect(
+            snapshot.sourceIssues.any(
+              (i) =>
+                  i.filename == '.quarantine/journal.json' &&
+                  i.reason == 'journalCorrupted',
+            ),
+            isTrue,
+          );
+          // Journal file was NOT erased
+          expect(journalFile.existsSync(), isTrue);
+          expect(
+            journalFile.readAsStringSync(),
+            '{ malformed json not array [',
+          );
+
+          // Strict validation of schema fields in SourceQuarantineRecord.fromJson
+          expect(
+            () => SourceQuarantineRecord.fromJson({
+              'originalPath': '',
+              'filename': 'valid.js',
+              'originalHash': '123',
+              'backupPath': '/path',
+              'reason': 'syntaxError',
+              'timestamp': '2026-01-01',
+              'fileSize': 10,
+              'recovered': false,
+            }),
+            throwsFormatException,
+          );
+        },
+      );
+
+      test(
+        'concurrent edit detected immediately before destructive removal preserves user edits and propagates beforeCommit exceptions',
+        () async {
+          final profileDir = Directory(
+            p.join(tempDir.path, 'profile_concurrent_edit'),
+          )..createSync(recursive: true);
+          App.dataPath = profileDir.path;
+          App.cachePath = profileDir.path;
+          final sourceDir = Directory(p.join(profileDir.path, 'comic_source'))
+            ..createSync(recursive: true);
+
+          const keyParts = ['concurrent', 'edit', 'test'];
+          final computedKey = keyParts.join('_');
+          final scriptContent = _generateComputedSourceScript(
+            classPrefix: 'ConcurrentEdit',
+            keyParts: keyParts,
+            version: '1.0.0',
+            name: 'Concurrent Edit Source',
+          );
+
+          final candidateFile = File(
+            p.join(sourceDir.path, 'concurrent_file.js'),
+          )..writeAsStringSync('initial bad syntax {{{');
+          File(
+            p.join(sourceDir.path, '.sync_source_names.json'),
+          ).writeAsStringSync(
+            jsonEncode({
+              computedKey: {
+                'filename': 'concurrent_file.js',
+                'revisions': <String, String>{},
+              },
+            }),
+          );
+
+          // Test that beforeCommit exceptions propagate cleanly without being swallowed
+          await expectLater(
+            SourceRecovery.recoverLocalSources(
+              sourceDir,
+              recoveryRecords: {
+                syncRecordKey('source', [computedKey]): {
+                  'script': {
+                    'filename': 'concurrent_file.js',
+                    'content': scriptContent,
+                  },
+                },
+              },
+              beforeCommit: () {
+                // Modify file right at commit transition
+                candidateFile.writeAsStringSync(
+                  'concurrent manual edit by user',
+                );
+                throw StateError('Aborting commit: conflict detected');
+              },
+            ),
+            throwsA(isA<StateError>()),
+          );
+
+          // Unpreserved user edit was NEVER removed
+          expect(candidateFile.existsSync(), isTrue);
+          expect(
+            candidateFile.readAsStringSync(),
+            'concurrent manual edit by user',
+          );
+        },
+      );
+
+      test(
+        'repairLocalSource safely repairs quarantined issue, publishes canonical script, and marks issue recovered',
+        () async {
+          final profileDir = Directory(
+            p.join(tempDir.path, 'profile_targeted_repair'),
+          )..createSync(recursive: true);
+          App.dataPath = profileDir.path;
+          App.cachePath = profileDir.path;
+          final sourceDir = Directory(p.join(profileDir.path, 'comic_source'))
+            ..createSync(recursive: true);
+
+          const keyParts = ['targeted', 'repair', 'key'];
+          final computedKey = keyParts.join('_');
+          final validReplacement = _generateComputedSourceScript(
+            classPrefix: 'TargetedRepair',
+            keyParts: keyParts,
+            version: '2.0.0',
+            name: 'Targeted Repaired Source',
+          );
+
+          final corruptFile = File(p.join(sourceDir.path, 'targeted_bad.js'))
+            ..writeAsStringSync('invalid syntax bad');
+
+          final adapter = SyncPreferencesAdapter(dataPath: profileDir.path);
+          final initialSnapshot = await adapter.exportSyncSnapshot();
+          expect(initialSnapshot.unavailableDomains, contains('source'));
+          final issue = initialSnapshot.sourceIssues.firstWhere(
+            (i) => i.filename == 'targeted_bad.js',
+          );
+          corruptFile.writeAsStringSync('concurrent manual edit');
+          expect(
+            await adapter.repairLocalSource(
+              issue: issue,
+              replacementContent: validReplacement,
+            ),
+            isFalse,
+          );
+          expect(corruptFile.readAsStringSync(), 'concurrent manual edit');
+          corruptFile.writeAsStringSync('invalid syntax bad');
+
+          final success = await adapter.repairLocalSource(
+            issue: issue,
+            replacementContent: validReplacement,
+          );
+          expect(success, isTrue);
+
+          final canonical = File(
+            p.join(
+              sourceDir.path,
+              SourceFileMetadata.physicalName(computedKey),
+            ),
+          );
+          expect(canonical.existsSync(), isTrue);
+          expect(canonical.readAsStringSync(), equals(validReplacement));
+
+          expect(corruptFile.existsSync(), isFalse);
+
+          final quarantineRecords = await SourceQuarantineManager(
+            sourceDir,
+          ).readJournal();
+          expect(quarantineRecords.single.recovered, isTrue);
+          expect(
+            File(quarantineRecords.single.backupPath).readAsStringSync(),
+            'invalid syntax bad',
+          );
+
+          final nextSnapshot = await adapter.exportSyncSnapshot();
+          expect(nextSnapshot.unavailableDomains.contains('source'), isFalse);
+
+          expect(
+            nextSnapshot.records.containsKey(
+              syncRecordKey('source', [computedKey]),
+            ),
+            isTrue,
+          );
+        },
+      );
+      test(
+        'selected session and metadata repairs preserve exact backups and commit strict replacements',
+        () async {
+          final profileDir = Directory(
+            p.join(tempDir.path, 'profile_session_metadata_repair'),
+          )..createSync(recursive: true);
+          final sourceDir = Directory(p.join(profileDir.path, 'comic_source'))
+            ..createSync(recursive: true);
+          const sessionKey = 'repair_session';
+          const originalSession = 'invalid session bytes {{{';
+          final sessionFile = File(p.join(sourceDir.path, '$sessionKey.data'))
+            ..writeAsStringSync(originalSession);
+          final adapter = SyncPreferencesAdapter(dataPath: profileDir.path);
+          var snapshot = await adapter.exportSyncSnapshot();
+          final sessionIssue = snapshot.sourceIssues.firstWhere(
+            (issue) => issue.filename == '$sessionKey.data',
+          );
+          const repairedSession = '{"token":"preserved-login"}';
+          expect(
+            await adapter.repairLocalSource(
+              issue: sessionIssue,
+              replacementContent: repairedSession,
+            ),
+            isTrue,
+          );
+          expect(sessionFile.readAsStringSync(), repairedSession);
+
+          const backupSidecar =
+              '{"last_source":{"filename":"last_source.js","revisions":{},"publicationId":"last_publication"}}';
+          final sidecar = File(
+            p.join(sourceDir.path, SourceFileMetadata.sidecarFileName),
+          )..writeAsStringSync('corrupt sidecar bytes');
+          final sidecarBackup = File('${sidecar.path}.bak')
+            ..writeAsStringSync(backupSidecar);
+          snapshot = await adapter.exportSyncSnapshot();
+          final metadataIssue = snapshot.sourceIssues.firstWhere(
+            (issue) => issue.filename == SourceFileMetadata.sidecarFileName,
+          );
+          const repairedMetadata =
+              '{"repaired_source":{"filename":"repaired.js","revisions":{},"publicationId":"manual_publication"}}';
+          expect(
+            await adapter.repairLocalSource(
+              issue: metadataIssue,
+              replacementContent: repairedMetadata,
+            ),
+            isTrue,
+          );
+          expect(sidecar.readAsStringSync(), repairedMetadata);
+          expect(sidecarBackup.readAsStringSync(), backupSidecar);
+          final names = await SourceFileMetadata.read(sourceDir);
+          expect(
+            names['repaired_source']?['publicationId'],
+            'manual_publication',
+          );
+
+          final quarantineRecords = await SourceQuarantineManager(
+            sourceDir,
+          ).readJournal();
+          expect(
+            quarantineRecords
+                .where((record) => record.filename == '$sessionKey.data')
+                .single
+                .recovered,
+            isTrue,
+          );
+          expect(
+            quarantineRecords
+                .where(
+                  (record) =>
+                      record.filename == SourceFileMetadata.sidecarFileName,
+                )
+                .single
+                .recovered,
+            isTrue,
+          );
+          expect(
+            quarantineRecords.map(
+              (record) => File(record.backupPath).readAsStringSync(),
+            ),
+            contains(originalSession),
+          );
+        },
+      );
+
+      test(
+        'rejects ambiguous logical-filename matches when multiple keys share the same filename',
+        () async {
+          final profileDir = Directory(
+            p.join(tempDir.path, 'profile_ambiguous_match'),
+          )..createSync(recursive: true);
+          App.dataPath = profileDir.path;
+          App.cachePath = profileDir.path;
+          final sourceDir = Directory(p.join(profileDir.path, 'comic_source'))
+            ..createSync(recursive: true);
+
+          const key1 = 'plugin_author_one';
+          const key2 = 'plugin_author_two';
+
+          File(
+            p.join(sourceDir.path, 'plugin.js'),
+          ).writeAsStringSync('corrupt plugin syntax {{{');
+
+          File(
+            p.join(sourceDir.path, '.sync_source_names.json'),
+          ).writeAsStringSync(
+            jsonEncode({
+              key1: {'filename': 'plugin.js', 'revisions': <String, String>{}},
+              key2: {'filename': 'plugin.js', 'revisions': <String, String>{}},
+            }),
+          );
+
+          final adapter = SyncPreferencesAdapter(dataPath: profileDir.path);
+          await adapter.recoverLocalSources();
+
+          final snapshot = await adapter.exportSyncSnapshot();
+          expect(snapshot.unavailableDomains, contains('source'));
+          expect(
+            snapshot.sourceIssues.any(
+              (i) => i.filename == 'plugin.js' && !i.recovered,
+            ),
+            isTrue,
+          );
+
+          final canon1 = File(
+            p.join(sourceDir.path, SourceFileMetadata.physicalName(key1)),
+          );
+          final canon2 = File(
+            p.join(sourceDir.path, SourceFileMetadata.physicalName(key2)),
+          );
+          expect(canon1.existsSync(), isFalse);
+          expect(canon2.existsSync(), isFalse);
+        },
+      );
+
+      test(
+        'treats runtimeFailure as unavailable rather than corrupt, preserving script in place',
+        () async {
+          final profileDir = Directory(
+            p.join(tempDir.path, 'profile_runtime_failure'),
+          )..createSync(recursive: true);
+          App.dataPath = profileDir.path;
+          App.cachePath = profileDir.path;
+          final sourceDir = Directory(p.join(profileDir.path, 'comic_source'))
+            ..createSync(recursive: true);
+
+          const keyParts = ['runtime', 'fail', 'source'];
+          final computedKey = keyParts.join('_');
+          final scriptContent = _generateComputedSourceScript(
+            classPrefix: 'RuntimeFail',
+            keyParts: keyParts,
+            version: '1.0.0',
+            name: 'Runtime Failure Source',
+          );
+
+          final scriptFile = File(p.join(sourceDir.path, 'runtime_script.js'))
+            ..writeAsStringSync(scriptContent);
+
+          File(
+            p.join(sourceDir.path, '.sync_source_names.json'),
+          ).writeAsStringSync(
+            jsonEncode({
+              computedKey: {
+                'filename': 'runtime_script.js',
+                'revisions': <String, String>{},
+              },
+            }),
+          );
+
+          // Simulate probeKey returning runtimeFailure (or infrastructure error)
+          // SourceRecovery treats runtimeFailure as isUnavailableNotCorrupt: true!
+          final problemFile = ProblematicSourceFile(
+            file: scriptFile,
+            filename: 'runtime_script.js',
+            content: scriptContent,
+            bytes: utf8.encode(scriptContent),
+            initialDigest: sha256
+                .convert(utf8.encode(scriptContent))
+                .toString(),
+            failureName: 'runtimeFailure',
+            isCorruptOrEmpty: false, // runtimeFailure is NOT corrupt!
+            initialStat: scriptFile.statSync(),
+          );
+          expect(problemFile.isCorruptOrEmpty, isFalse);
+
+          final adapter = SyncPreferencesAdapter(dataPath: profileDir.path);
+          await adapter.recoverLocalSources();
+
+          // Script file was NOT deleted or quarantined
+          expect(scriptFile.existsSync(), isTrue);
+          expect(scriptFile.readAsStringSync(), equals(scriptContent));
+        },
+      );
+
+      test(
+        'reconciles unresolved quarantine records when approved recovery body is supplied, preserving backups and clearing domain blocker',
+        () async {
+          final profileDir = Directory(
+            p.join(tempDir.path, 'profile_reconcile_quarantine'),
+          )..createSync(recursive: true);
+          App.dataPath = profileDir.path;
+          App.cachePath = profileDir.path;
+          final sourceDir = Directory(p.join(profileDir.path, 'comic_source'))
+            ..createSync(recursive: true);
+          final quarantineDir = Directory(p.join(sourceDir.path, '.quarantine'))
+            ..createSync(recursive: true);
+          final recordsDir = Directory(p.join(quarantineDir.path, 'records'))
+            ..createSync(recursive: true);
+
+          const keyParts = ['reconcile', 'quarantine', 'key'];
+          final computedKey = keyParts.join('_');
+          final approvedScript = _generateComputedSourceScript(
+            classPrefix: 'ReconcileQuarantine',
+            keyParts: keyParts,
+            version: '1.0.0',
+            name: 'Reconciled Source',
+          );
+
+          final originalHash = sha256
+              .convert(utf8.encode('bad bytes'))
+              .toString();
+          final backupFile = File(
+            p.join(recordsDir.path, '${originalHash}_previously_bad.js'),
+          )..writeAsStringSync('bad bytes');
+
+          // Journal with unresolved quarantine entry
+          final journalRecord = SourceQuarantineRecord(
+            originalPath: p.canonicalize(
+              p.join(sourceDir.path, 'previously_bad.js'),
+            ),
+            filename: 'previously_bad.js',
+            originalHash: originalHash,
+            backupPath: p.canonicalize(backupFile.path),
+            reason: 'syntaxError',
+            timestamp: DateTime.now().toUtc(),
+            fileSize: 9,
+            sourceKey: computedKey,
+            recovered: false,
+          );
+          final qManager = SourceQuarantineManager(sourceDir);
+          File(
+            p.join(quarantineDir.path, 'journal.json'),
+          ).writeAsStringSync(jsonEncode([journalRecord.toJson()]));
+
+          final adapter = SyncPreferencesAdapter(dataPath: profileDir.path);
+          // Initial export has source domain blocked by persistent quarantine journal
+          final snapshot1 = await adapter.exportSyncSnapshot();
+          expect(snapshot1.unavailableDomains, contains('source'));
+
+          // Supply approved recoveryRecords
+          final recoveryRecords = <String, Map<String, Object?>>{
+            syncRecordKey('source', [computedKey]): {
+              'script': {
+                'filename': 'previously_bad.js',
+                'content': approvedScript,
+              },
+            },
+          };
+
+          await adapter.recoverLocalSources(recoveryRecords: recoveryRecords);
+
+          // Backup bytes in .quarantine/records/ were NOT deleted
+          expect(backupFile.existsSync(), isTrue);
+          expect(backupFile.readAsStringSync(), 'bad bytes');
+
+          // Canonical script was published
+          final canonicalFile = File(
+            p.join(
+              sourceDir.path,
+              SourceFileMetadata.physicalName(computedKey),
+            ),
+          );
+          expect(canonicalFile.existsSync(), isTrue);
+          expect(canonicalFile.readAsStringSync(), equals(approvedScript));
+
+          // Journal entry is now recovered: true!
+          final updatedJournal = await qManager.readJournal();
+          expect(updatedJournal.first.recovered, isTrue);
+
+          // Subsequent export has source domain available!
+          final snapshot2 = await adapter.exportSyncSnapshot();
+          expect(snapshot2.unavailableDomains.contains('source'), isFalse);
+          expect(
+            snapshot2.records.containsKey(
+              syncRecordKey('source', [computedKey]),
+            ),
+            isTrue,
+          );
+        },
+      );
+
+      test(
+        'malformed session file blocks sourceSession but leaves source records available',
+        () async {
+          final profileDir = Directory(
+            p.join(tempDir.path, 'profile_bad_session_dep'),
+          )..createSync(recursive: true);
+          App.dataPath = profileDir.path;
+          App.cachePath = profileDir.path;
+          final sourceDir = Directory(p.join(profileDir.path, 'comic_source'))
+            ..createSync(recursive: true);
+
+          const keyParts = ['healthy', 'source', 'key'];
+          final computedKey = keyParts.join('_');
+          final scriptContent = _generateComputedSourceScript(
+            classPrefix: 'HealthySource',
+            keyParts: keyParts,
+            version: '1.0.0',
+            name: 'Healthy Source',
+          );
+
+          File(p.join(sourceDir.path, 'healthy_source.js'))
+            ..writeAsStringSync(scriptContent);
+          File(p.join(sourceDir.path, '$computedKey.data'))
+            ..writeAsStringSync('corrupt json not map {{{');
+
+          final adapter = SyncPreferencesAdapter(dataPath: profileDir.path);
+          final snapshot = await adapter.exportSyncSnapshot();
+
+          // Session damage is scoped to sourceSession; validated scripts remain exportable.
+          expect(snapshot.unavailableDomains, contains('sourceSession'));
+          expect(snapshot.unavailableDomains.contains('source'), isFalse);
+          expect(
+            snapshot.sourceIssues.any(
+              (i) =>
+                  i.filename == '$computedKey.data' &&
+                  i.reason == 'invalidSession',
+            ),
+            isTrue,
+          );
+
+          // Apply settings while sourceSession is unavailable.
+          final incoming = <String, Map<String, Object?>>{
+            ...snapshot.records,
+            syncRecordKey('setting', ['appliedSettingDep']): {
+              'value': 'success_dep',
+            },
+          };
+
+          await adapter.applySyncRecords(
+            incoming,
+            unavailableDomains: snapshot.unavailableDomains,
+          );
+
+          // finishApply must succeed safely without throwing due to malformed session
+          await adapter.finishApply();
+          expect(appdata.settings['appliedSettingDep'], equals('success_dep'));
         },
       );
     },

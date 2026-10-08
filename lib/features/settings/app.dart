@@ -549,6 +549,61 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                   ],
                 ),
               ),
+              if (DataSync().statusSnapshot.isPartial) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.errorContainer.withValues(alpha: 0.5),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.error.withValues(alpha: 0.3),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.warning_amber_rounded,
+                        size: 20,
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Some synchronization data is unavailable. Other data can sync independently.'
+                              .tl,
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onErrorContainer,
+                              ),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () => showSyncSourceIssuesDialog(
+                          context,
+                          issues: DataSync().statusSnapshot.sourceIssues,
+                          onRepair: (issue, content) =>
+                              DataSync().repairSourceIssue(
+                                issue: issue,
+                                replacementContent: content,
+                              ),
+                          onRetry: () => DataSync().syncNow(),
+                          description:
+                              'Some synchronization data is unavailable. Other data can sync independently.'
+                                  .tl,
+                        ),
+                        child: Text('View Details'.tl),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               const SizedBox(height: 16),
               Row(
                 children: [

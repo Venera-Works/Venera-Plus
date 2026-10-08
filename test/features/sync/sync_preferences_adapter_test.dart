@@ -51,6 +51,66 @@ String? _quickJsLoadFailure() {
   }
 }
 
+int _holdNoDeleteHandle(String filePath) {
+  final kernel32 = DynamicLibrary.open('kernel32.dll');
+  final getProcessHeap = kernel32
+      .lookupFunction<IntPtr Function(), int Function()>('GetProcessHeap');
+  final heapAlloc = kernel32
+      .lookupFunction<
+        Pointer<Void> Function(IntPtr, Uint32, IntPtr),
+        Pointer<Void> Function(int, int, int)
+      >('HeapAlloc');
+  final heapFree = kernel32
+      .lookupFunction<
+        Int32 Function(IntPtr, Uint32, Pointer<Void>),
+        int Function(int, int, Pointer<Void>)
+      >('HeapFree');
+  final createFileW = kernel32
+      .lookupFunction<
+        IntPtr Function(
+          Pointer<Uint16>,
+          Uint32,
+          Uint32,
+          Pointer<Void>,
+          Uint32,
+          Uint32,
+          IntPtr,
+        ),
+        int Function(Pointer<Uint16>, int, int, Pointer<Void>, int, int, int)
+      >('CreateFileW');
+
+  final units = filePath.codeUnits;
+  final pathMemory = heapAlloc(
+    getProcessHeap(),
+    0,
+    (units.length + 1) * sizeOf<Uint16>(),
+  );
+  final nativePath = pathMemory.cast<Uint16>().asTypedList(units.length + 1);
+  nativePath.setRange(0, units.length, units);
+  nativePath[units.length] = 0;
+  final handle = createFileW(
+    pathMemory.cast<Uint16>(),
+    0x80000000,
+    0x00000001 | 0x00000002,
+    nullptr,
+    3,
+    0x80,
+    0,
+  );
+  heapFree(getProcessHeap(), 0, pathMemory);
+  if (handle == -1 || handle == 0) {
+    throw StateError('CreateFileW failed for $filePath');
+  }
+  return handle;
+}
+
+void _closeNoDeleteHandle(int handle) {
+  final kernel32 = DynamicLibrary.open('kernel32.dll');
+  final closeHandle = kernel32
+      .lookupFunction<Int32 Function(IntPtr), int Function(int)>('CloseHandle');
+  closeHandle(handle);
+}
+
 String _sourceScript(String key) =>
     '''
 // A commented/example key and unrelated config must not define source identity.
@@ -424,17 +484,135 @@ class TestComicSource extends ComicSource {
     );
 
     test(
-      'fails entire capture if a script key cannot be resolved, preventing false deletions',
+      'unknown source candidates remain observational while healthy domains sync',
       () async {
         final comicSourceDir = Directory('${tempDir.path}/comic_source')
           ..createSync();
-        final scriptFile = File('${comicSourceDir.path}/unresolvable.js');
-        scriptFile.writeAsStringSync('// empty script with no key');
+        final badBytes = '// empty script with no key'.codeUnits;
+        final scriptFile = File('${comicSourceDir.path}/unresolvable.js')
+          ..writeAsBytesSync(badBytes);
+        final healthyContent = _sourceScript('healthy_source');
+        final healthyFile = File('${comicSourceDir.path}/healthy_source.js')
+          ..writeAsStringSync(healthyContent);
+        appdata.settings['theme_mode'] = 'light';
+        appdata.setFullSearchHistory(['search-survives']);
 
         final adapter = SyncPreferencesAdapter();
-        await expectLater(
-          adapter.exportSyncSnapshot(),
-          throwsA(isA<FormatException>()),
+        final snapshot = await adapter.exportSyncSnapshot();
+        final healthyKey = syncRecordKey('source', ['healthy_source']);
+        expect(snapshot.unavailableDomains, contains('source'));
+        expect(
+          snapshot.sourceIssues.any(
+            (issue) => issue.filename == 'unresolvable.js' && !issue.recovered,
+          ),
+          isTrue,
+        );
+        expect(snapshot.records, contains(healthyKey));
+        expect(
+          snapshot.records,
+          contains(syncRecordKey('setting', ['theme_mode'])),
+        );
+        expect(
+          snapshot.records,
+          contains(syncRecordKey('search', ['search-survives'])),
+        );
+        expect(
+          snapshot.records.keys.any(
+            (recordKey) =>
+                syncRecordDomain(recordKey) == 'source' &&
+                syncRecordIdentity(recordKey).first == 'unresolvable',
+          ),
+          isFalse,
+        );
+
+        await adapter.applySyncRecords({
+          syncRecordKey('setting', ['theme_mode']): {'value': 'dark'},
+          healthyKey: {
+            'script': {
+              'filename': 'healthy_source.js',
+              'content': 'blocked source body',
+            },
+          },
+        }, unavailableDomains: snapshot.unavailableDomains);
+
+        expect(scriptFile.readAsBytesSync(), badBytes);
+        expect(healthyFile.readAsStringSync(), healthyContent);
+        expect(appdata.settings['theme_mode'], 'dark');
+      },
+      skip: quickJsSkip,
+    );
+    test(
+      'corrupt or pending source recovery journals block false source deletion',
+      () async {
+        final sourceDir = Directory('${tempDir.path}/comic_source')
+          ..createSync();
+        final journal = File(p.join(sourceDir.path, '.recovery_journal.json'));
+        const settingKey = 'theme_mode';
+        appdata.settings[settingKey] = 'dark';
+        final pendingJournal = jsonEncode({
+          'status': 'planned',
+          'timestamp': DateTime.utc(2026, 10, 8).toIso8601String(),
+          'entries': [
+            {
+              'key': 'missing_source',
+              'filename': 'missing_source.js',
+              'canonicalName': SourceFileMetadata.physicalName(
+                'missing_source',
+              ),
+              'expectedDigest': List.filled(64, 'a').join(),
+              'replacementContent': _sourceScript('missing_source'),
+              'logicalFilename': 'missing_source.js',
+              'reason': 'syntaxError',
+            },
+          ],
+        });
+
+        for (final (content, reason) in [
+          ('{', 'journalCorrupted'),
+          (pendingJournal, 'repairPending'),
+        ]) {
+          await journal.writeAsString(content, flush: true);
+          final snapshot = await SyncPreferencesAdapter().exportSyncSnapshot();
+          final issue = snapshot.sourceIssues.singleWhere(
+            (item) => item.filename == '.recovery_journal.json',
+          );
+          expect(snapshot.unavailableDomains, contains('source'));
+          expect(issue.reason, reason);
+          expect(await File(issue.backupPath!).readAsString(), content);
+          expect(
+            snapshot.records.keys.any(
+              (recordKey) => syncRecordDomain(recordKey) == 'source',
+            ),
+            isFalse,
+          );
+          expect(
+            snapshot.records,
+            contains(syncRecordKey('setting', [settingKey])),
+          );
+          journal.deleteSync();
+        }
+      },
+    );
+
+    test(
+      'cleared recovery journal does not leave a cached source blocker',
+      () async {
+        final sourceDir = Directory('${tempDir.path}/comic_source')
+          ..createSync();
+        final journal = File(p.join(sourceDir.path, '.recovery_journal.json'))
+          ..writeAsStringSync('{');
+        final adapter = SyncPreferencesAdapter();
+
+        await adapter.recoverLocalSources();
+        journal.deleteSync();
+        final snapshot = await adapter.exportSyncSnapshot();
+
+        expect(snapshot.unavailableDomains, isNot(contains('source')));
+        expect(
+          snapshot.sourceIssues.any(
+            (issue) => issue.filename == '.recovery_journal.json',
+          ),
+          isFalse,
         );
       },
     );
@@ -503,7 +681,7 @@ class TestComicSource extends ComicSource {
     );
 
     test(
-      'staged source files swapped atomically, beforeCommit invoked before swap',
+      'source, session and metadata stages are final-directory siblings before commit',
       () async {
         final comicSourceDir = Directory('${tempDir.path}/comic_source')
           ..createSync();
@@ -524,19 +702,29 @@ class TestComicSource extends ComicSource {
 
         var beforeCommitRan = false;
         var fileExistsDuringBeforeCommit = true;
+        var siblingStagesDuringBeforeCommit = 0;
 
         final adapter = SyncPreferencesAdapter();
         await adapter.applySyncRecords(
           records,
+          hasPreservedSourceVariant: (_, _) => true,
           beforeCommit: () {
             beforeCommitRan = true;
-            // At beforeCommit time, old_source still exists and new_source is not yet committed
             fileExistsDuringBeforeCommit = scriptFile.existsSync();
+            siblingStagesDuringBeforeCommit = comicSourceDir
+                .listSync()
+                .whereType<File>()
+                .where((file) => p.basename(file.path).startsWith('.sync_'))
+                .where(
+                  (file) => p.equals(p.dirname(file.path), comicSourceDir.path),
+                )
+                .length;
           },
         );
 
         expect(beforeCommitRan, isTrue);
         expect(fileExistsDuringBeforeCommit, isTrue);
+        expect(siblingStagesDuringBeforeCommit, 3);
 
         // After commit, new_source is committed and old_source is deleted
         final newScript = comicSourceDir
@@ -555,6 +743,224 @@ class TestComicSource extends ComicSource {
         expect(scriptFile.existsSync(), isFalse);
       },
       skip: quickJsSkip,
+    );
+
+    test(
+      'unreadable source session blocks runtime reload but not validated source capture',
+      () async {
+        final sourceDir = Directory('${tempDir.path}/comic_source')
+          ..createSync();
+        const key = 'session_dependency_source';
+        final originalContent = _sourceScript(key);
+        final updatedContent =
+            '$originalContent\n// incoming source revision\n';
+        final sourceFile = File(p.join(sourceDir.path, '$key.js'))
+          ..writeAsStringSync(originalContent);
+        const invalidSessionBytes = 'corrupt session JSON {{{';
+        final sessionFile = File(p.join(sourceDir.path, '$key.data'))
+          ..writeAsStringSync(invalidSessionBytes);
+        final adapter = SyncPreferencesAdapter();
+
+        final snapshot = await adapter.exportSyncSnapshot();
+        final sourceKey = syncRecordKey('source', [key]);
+        expect(snapshot.unavailableDomains, contains('sourceSession'));
+        expect(snapshot.unavailableDomains, isNot(contains('source')));
+        expect(snapshot.records, contains(sourceKey));
+
+        await adapter.applySyncRecords(
+          {
+            sourceKey: {
+              'script': {'filename': '$key.js', 'content': updatedContent},
+            },
+          },
+          hasPreservedSourceVariant: (_, _) => true,
+          unavailableDomains: snapshot.unavailableDomains,
+        );
+
+        expect(sessionFile.readAsStringSync(), invalidSessionBytes);
+        expect(sourceFile.existsSync(), isFalse);
+        expect(
+          File(
+            p.join(sourceDir.path, SourceFileMetadata.physicalName(key)),
+          ).readAsStringSync(),
+          updatedContent,
+        );
+        await expectLater(
+          adapter.finishApply(),
+          throwsA(
+            isA<SourceRepairPendingException>().having(
+              (error) => error.reason,
+              'reason',
+              'runtimeReloadDeferred',
+            ),
+          ),
+        );
+      },
+      skip: quickJsSkip,
+    );
+
+    test(
+      'metadata commit keeps logical identity, physical digest proof and publicationId',
+      () async {
+        final sourceDir = Directory('${tempDir.path}/comic_source')
+          ..createSync();
+        const key = 'metadata_source';
+        const logicalName = 'original_logical.js';
+        const incomingName = 'incoming_logical.js';
+        final physicalName = SourceFileMetadata.physicalName(key);
+        final oldContent = _sourceScript(key);
+        final incomingContent = '$oldContent\n// verified incoming revision\n';
+        final oldDigest = SourceFileMetadata.digest(oldContent);
+        final incomingDigest = SourceFileMetadata.digest(incomingContent);
+        final canonicalFile = File(p.join(sourceDir.path, physicalName))
+          ..writeAsStringSync(oldContent);
+        final aliasFile = File(p.join(sourceDir.path, 'old_alias.js'))
+          ..writeAsStringSync(oldContent);
+        final previousMetadata = jsonEncode({
+          key: {
+            'filename': logicalName,
+            'revisions': {oldDigest: logicalName},
+            'files': {physicalName: oldDigest, 'old_alias.js': oldDigest},
+            'aliases': [physicalName, 'old_alias.js', logicalName],
+            'publicationId': 'current-publication-proof',
+          },
+        });
+        final sidecar = File(
+          p.join(sourceDir.path, SourceFileMetadata.sidecarFileName),
+        )..writeAsStringSync(previousMetadata);
+        final oldBackup = File('${sidecar.path}.bak')
+          ..writeAsStringSync('{"stale":"verified-backup"}');
+
+        await SyncPreferencesAdapter().applySyncRecords({
+          syncRecordKey('source', [key]): {
+            'script': {'filename': incomingName, 'content': incomingContent},
+          },
+        }, hasPreservedSourceVariant: (_, _) => true);
+
+        final metadata = (await SourceFileMetadata.read(sourceDir))[key]!;
+        expect(metadata['filename'], incomingName);
+        expect(metadata['publicationId'], 'current-publication-proof');
+        expect((metadata['files'] as Map).cast<String, String>(), {
+          physicalName: incomingDigest,
+        });
+        expect((metadata['revisions'] as Map)[oldDigest], logicalName);
+        expect((metadata['revisions'] as Map)[incomingDigest], incomingName);
+        expect(
+          metadata['aliases'],
+          containsAll([
+            physicalName,
+            'old_alias.js',
+            logicalName,
+            incomingName,
+          ]),
+        );
+        expect(canonicalFile.readAsStringSync(), incomingContent);
+        expect(aliasFile.existsSync(), isFalse);
+        expect(oldBackup.readAsStringSync(), previousMetadata);
+      },
+      skip: quickJsSkip,
+    );
+
+    test(
+      'source byte changes at the commit boundary abort before replacing or deleting',
+      () async {
+        final sourceDir = Directory('${tempDir.path}/comic_source')
+          ..createSync();
+        const key = 'guarded_source';
+        final physicalName = SourceFileMetadata.physicalName(key);
+        final originalContent = _sourceScript(key);
+        final incomingContent =
+            '$originalContent\n// incoming approved revision\n';
+        final sourceFile = File(p.join(sourceDir.path, physicalName))
+          ..writeAsStringSync(originalContent);
+
+        await expectLater(
+          SyncPreferencesAdapter().applySyncRecords(
+            {
+              syncRecordKey('source', [key]): {
+                'script': {
+                  'filename': 'guarded_source.js',
+                  'content': incomingContent,
+                },
+              },
+            },
+            hasPreservedSourceVariant: (_, _) => true,
+            beforeCommit: () {
+              sourceFile.writeAsStringSync('manual nonempty user edit');
+            },
+          ),
+          throwsA(isA<StateError>()),
+        );
+
+        expect(sourceFile.readAsStringSync(), 'manual nonempty user edit');
+        expect(
+          File(
+            p.join(sourceDir.path, SourceFileMetadata.sidecarFileName),
+          ).existsSync(),
+          isFalse,
+        );
+      },
+      skip: quickJsSkip,
+    );
+
+    test(
+      'locked canonical source retains aliases and the verified metadata backup',
+      () async {
+        final sourceDir = Directory('${tempDir.path}/comic_source')
+          ..createSync();
+        const key = 'locked_source';
+        const logicalName = 'locked_logical.js';
+        final physicalName = SourceFileMetadata.physicalName(key);
+        final originalContent = _sourceScript(key);
+        final incomingContent = '$originalContent\n// replacement revision\n';
+        final oldDigest = SourceFileMetadata.digest(originalContent);
+        final canonical = File(p.join(sourceDir.path, physicalName))
+          ..writeAsStringSync(originalContent);
+        final alias = File(p.join(sourceDir.path, 'locked_alias.js'))
+          ..writeAsStringSync(originalContent);
+        final oldMetadata = jsonEncode({
+          key: {
+            'filename': logicalName,
+            'revisions': {oldDigest: logicalName},
+            'files': {physicalName: oldDigest, 'locked_alias.js': oldDigest},
+            'aliases': [physicalName, 'locked_alias.js', logicalName],
+            'publicationId': 'locked-publication-proof',
+          },
+        });
+        final sidecar = File(
+          p.join(sourceDir.path, SourceFileMetadata.sidecarFileName),
+        )..writeAsStringSync(oldMetadata);
+        final oldBackup = jsonEncode({
+          'older_source': {
+            'filename': 'older_source.js',
+            'revisions': <String, String>{},
+          },
+        });
+        final backup = File('${sidecar.path}.bak')
+          ..writeAsStringSync(oldBackup);
+
+        final handle = _holdNoDeleteHandle(canonical.path);
+        try {
+          await expectLater(
+            SyncPreferencesAdapter().applySyncRecords({
+              syncRecordKey('source', [key]): {
+                'script': {'filename': logicalName, 'content': incomingContent},
+              },
+            }, hasPreservedSourceVariant: (_, _) => true),
+            throwsA(isA<FileSystemException>()),
+          );
+        } finally {
+          _closeNoDeleteHandle(handle);
+        }
+
+        expect(canonical.readAsStringSync(), originalContent);
+        expect(alias.readAsStringSync(), originalContent);
+        expect(sidecar.readAsStringSync(), oldMetadata);
+        expect(backup.readAsStringSync(), oldBackup);
+      },
+      skip: !Platform.isWindows
+          ? 'Windows sharing lock semantics are required'
+          : quickJsSkip,
     );
 
     test(
@@ -611,7 +1017,11 @@ class TestComicSource extends ComicSource {
     );
 
     test('rejects a mismatched script identity before commit', () async {
-      var committed = false;
+      final directory = Directory(p.join(tempDir.path, 'comic_source'))
+        ..createSync();
+      final installed = File(p.join(directory.path, 'plugin.js'));
+      final original = _sourceScript('sync_a');
+      await installed.writeAsString(original, flush: true);
       final adapter = SyncPreferencesAdapter();
       await expectLater(
         adapter.applySyncRecords({
@@ -621,17 +1031,10 @@ class TestComicSource extends ComicSource {
               'content': '// key = "sync_a";\n${_sourceScript('sync_b')}',
             },
           },
-        }, beforeCommit: () => committed = true),
+        }),
         throwsFormatException,
       );
-      expect(committed, isFalse);
-      expect(
-        Directory('${tempDir.path}/comic_source')
-            .listSync()
-            .whereType<File>()
-            .where((file) => file.path.endsWith('.js')),
-        isEmpty,
-      );
+      expect(await installed.readAsString(), original);
     }, skip: quickJsSkip);
 
     test(
@@ -1106,7 +1509,7 @@ class IsolatedSource extends ComicSource {
         );
         addTearDown(JsEngine.debugResetSourceDataBridge);
         final sourcesBefore = manager.all();
-        final key = await ComicSourceParser.probeKey('''
+        final result = await ComicSourceParser.probeKey('''
 const key = ["computed", "key"].join("_");
 class MetadataOnly extends ComicSource {
   key = key;
@@ -1123,7 +1526,9 @@ class MetadataOnly extends ComicSource {
   }
 }
 ''');
-        expect(key, 'computed_key');
+        expect(result.key, 'computed_key');
+        expect(result.failure, isNull);
+        expect(result.isSuccess, isTrue);
         expect(calls, 0);
         expect(manager.all(), sourcesBefore);
         expect(jar.exportAllCookiesGroupedByDomain(), isEmpty);
@@ -1139,12 +1544,14 @@ class MetadataOnly extends ComicSource {
           '({ callback: () => "invalid" })',
           'Promise.resolve("invalid")',
         ]) {
-          final key = await ComicSourceParser.probeKey('''
+          final result = await ComicSourceParser.probeKey('''
 class InvalidMetadata extends ComicSource {
   key = $expression;
 }
 ''');
-          expect(key, isNull);
+          expect(result.key, isNull);
+          expect(result.failure, isNotNull);
+          expect(result.isSuccess, isFalse);
         }
       },
       skip: quickJsSkip,

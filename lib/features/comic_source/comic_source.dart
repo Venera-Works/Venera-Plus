@@ -12,3 +12,4 @@ export 'source.dart';
 export 'source_translation.dart';
 export 'tags_translation.dart';
 export 'types.dart';
+export 'source_files.dart';

@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:isolate';
 
+import 'package:path/path.dart' as p;
 import 'package:flutter/foundation.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/foundation/app.dart';
@@ -146,10 +148,11 @@ Future<void> importAppData(
       FilePath.join(cacheDirPath, 'comic_source'),
     );
     if (extractedSources.existsSync()) {
-      await copyDirectory(
-        extractedSources,
-        Directory(FilePath.join(stageDir.path, 'comic_source')),
+      final stagedSources = Directory(
+        FilePath.join(stageDir.path, 'comic_source'),
       );
+      await copyDirectory(extractedSources, stagedSources);
+      await _validateIncomingSources(stagedSources);
     }
     historyFile = stageDir.joinFile('history.db');
     localFavoriteFile = stageDir.joinFile('local_favorite.db');
@@ -262,6 +265,59 @@ Future<void> importAppData(
   }
   if (success && importedSettingsChanged) {
     await _notifyAppDataSettingsChanged();
+  }
+}
+
+Future<void> _validateIncomingSources(Directory comicSourceDir) async {
+  if (!await comicSourceDir.exists()) return;
+
+  final entities = await comicSourceDir.list().toList();
+  final seenKeys = <String>{};
+
+  for (final entity in entities) {
+    if (entity is! File) {
+      throw const FormatException(
+        'Unexpected directory inside archive comic_source',
+      );
+    }
+    final name = p.basename(entity.path);
+    SourceFileMetadata.validateFileName(name);
+
+    if (name == SourceFileMetadata.sidecarFileName) {
+      await SourceFileMetadata.read(comicSourceDir);
+      continue;
+    }
+
+    if (name.endsWith('.js')) {
+      final content = await entity.readAsString();
+      final probe = await ComicSourceParser.probeKey(content, entity.path);
+      if (!probe.isSuccess || probe.key == null) {
+        throw FormatException(
+          'Invalid or unsafe comic source script in archive "$name": '
+          '${probe.failure?.name ?? "unknown"}',
+        );
+      }
+      final key = probe.key!;
+      if (!seenKeys.add(key)) {
+        throw FormatException(
+          'Duplicate comic source identity in archive: $key ($name)',
+        );
+      }
+      continue;
+    }
+
+    if (name.endsWith('.data')) {
+      final key = name.substring(0, name.length - 5);
+      SourceFileMetadata.validateKey(key);
+      final raw = await entity.readAsString();
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) {
+        throw FormatException('Invalid source session format in "$name"');
+      }
+      continue;
+    }
+
+    throw FormatException('Unexpected file in archive comic_source: $name');
   }
 }
 

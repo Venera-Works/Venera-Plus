@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter_qjs/flutter_qjs.dart';
+import 'package:path/path.dart' as p;
+import 'package:uuid/uuid.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/extensions.dart';
 import 'package:venera_plus/foundation/file_system.dart';
@@ -18,6 +21,7 @@ import 'js_bridge.dart';
 import 'models.dart';
 import 'normalization.dart';
 import 'source.dart';
+import 'source_files.dart';
 import 'types.dart';
 
 /// return true if ver1 > ver2
@@ -88,42 +92,135 @@ class SourceAlreadyInstalledException extends ComicSourceParseException {
   final String key;
 }
 
+enum ComicSourceKeyProbeFailure {
+  emptyScript,
+  missingEntryClass,
+  syntaxError,
+  unsupportedHostApi,
+  timeout,
+  memoryLimit,
+  invalidKey,
+  evaluationError,
+  runtimeFailure,
+}
+
+class ComicSourceKeyProbeResult {
+  final String? key;
+  final ComicSourceKeyProbeFailure? failure;
+  final String? blockedMethod;
+  final int? line;
+  final String? reason;
+
+  const ComicSourceKeyProbeResult.success(this.key)
+    : failure = null,
+      blockedMethod = null,
+      line = null,
+      reason = null;
+
+  const ComicSourceKeyProbeResult.failure(
+    this.failure, {
+    this.blockedMethod,
+    this.line,
+    this.reason,
+  }) : key = null;
+
+  bool get isSuccess => key != null && failure == null;
+
+  @override
+  String toString() => isSuccess
+      ? 'ComicSourceKeyProbeResult.success($key)'
+      : 'ComicSourceKeyProbeResult.failure($failure, blockedMethod: $blockedMethod, line: $line, reason: $reason)';
+}
+
 class ComicSourceParser {
-  /// Reads metadata in a separate QuickJS runtime with no host bridges.
+  /// Reads metadata in a separate QuickJS runtime with local random/UUID
+  /// helpers only.
   /// Candidate constructors and getters cannot access live HTTP, cookies,
   /// installed sources, UI, or source sessions, even before conflict selection.
-  static Future<String?> probeKey(String js, [String? filePath]) async {
-    FlutterQjs? runtime;
-    try {
-      final className = sourceClassName(js);
-      final definitions = await JsEngine.loadApiDefinitions();
-      runtime = FlutterQjs(timeout: 1000, memoryLimit: 32 * 1024 * 1024);
-      JSRef.freeRecursive(
-        runtime.evaluate('''
-        Object.defineProperty(globalThis, 'sendMessage', {
-          value: () => { throw new Error('Host I/O unavailable during metadata probing'); },
-          writable: false, configurable: false
-        });
-        const appVersion = ${jsonEncode(App.version)};
-        void 0;
-      '''),
+  static Future<ComicSourceKeyProbeResult> probeKey(
+    String js, [
+    String? filePath,
+  ]) async {
+    final trimmed = js.replaceFirst('\uFEFF', '').trim();
+    if (trimmed.isEmpty) {
+      return const ComicSourceKeyProbeResult.failure(
+        ComicSourceKeyProbeFailure.emptyScript,
+        reason: 'Empty script',
       );
+    }
+
+    String className;
+    try {
+      className = sourceClassName(js);
+    } catch (_) {
+      return const ComicSourceKeyProbeResult.failure(
+        ComicSourceKeyProbeFailure.missingEntryClass,
+        reason: 'Missing entry class extending ComicSource',
+      );
+    }
+
+    FlutterQjs? runtime;
+    var candidatePhaseStarted = false;
+    try {
+      final definitions = await JsEngine.loadApiDefinitions();
+      final random = math.Random();
+      runtime = FlutterQjs(timeout: 1000, memoryLimit: 32 * 1024 * 1024);
+      unawaited(runtime.dispatch());
+
+      final setGlobalFunc =
+          runtime.evaluate('(key, value) => { this[key] = value; }')
+              as JSInvokable;
+      try {
+        setGlobalFunc([
+          'sendMessage',
+          (dynamic message) {
+            if (message is Map && message['method'] == 'random') {
+              final num min = (message['min'] ?? 0) as num;
+              final num max = (message['max'] ?? 1) as num;
+              final String type = message['type'] as String;
+              final value = min + (max - min) * random.nextDouble();
+              return type == 'double' ? value : value.toInt();
+            }
+            if (message is Map && message['method'] == 'uuid') {
+              return const Uuid().v1();
+            }
+            throw 'UnsupportedHostApiException';
+          },
+        ]);
+        setGlobalFunc(['appVersion', App.version]);
+      } finally {
+        setGlobalFunc.free();
+      }
+
       JSRef.freeRecursive(
         runtime.evaluate('$definitions\n;void 0;', name: '<metadata-api>'),
       );
+
+      candidatePhaseStarted = true;
       final dynamic key = runtime.evaluate('''(() => {
         ${js.replaceFirst('\uFEFF', '').replaceAll('\r\n', '\n')}
-        return ((key) => typeof key === 'string' ? key : null)(
-          new $className().key
-        );
+        const instance = new $className();
+        return instance.key;
       })()''', name: filePath ?? '<metadata>');
       try {
-        return key is String && key.isNotEmpty ? key : null;
+        if (key is String && SourceFileMetadata.isValidKey(key)) {
+          return ComicSourceKeyProbeResult.success(key);
+        }
+        return const ComicSourceKeyProbeResult.failure(
+          ComicSourceKeyProbeFailure.invalidKey,
+          reason: 'Key is invalid or not a stable identifier',
+        );
       } finally {
         JSRef.freeRecursive(key);
       }
-    } catch (_) {
-      return null;
+    } catch (e) {
+      if (!candidatePhaseStarted) {
+        return const ComicSourceKeyProbeResult.failure(
+          ComicSourceKeyProbeFailure.runtimeFailure,
+          reason: 'Runtime failure during environment initialization',
+        );
+      }
+      return _classifyProbeError(e);
     } finally {
       try {
         runtime?.close();
@@ -131,6 +228,67 @@ class ComicSourceParser {
         runtime?.port.close();
       }
     }
+  }
+
+  static ComicSourceKeyProbeResult _classifyProbeError(Object e) {
+    if (e is TimeoutException) {
+      return const ComicSourceKeyProbeResult.failure(
+        ComicSourceKeyProbeFailure.timeout,
+        reason: 'Timeout during probing',
+      );
+    }
+
+    final errStr = e.toString();
+    final lower = errStr.toLowerCase();
+
+    if (lower.contains('unsupportedhostapiexception')) {
+      return const ComicSourceKeyProbeResult.failure(
+        ComicSourceKeyProbeFailure.unsupportedHostApi,
+        reason: 'Unsupported host API invoked during metadata probing',
+      );
+    }
+
+    if (lower.contains('interrupted') || lower.contains('timeout')) {
+      return const ComicSourceKeyProbeResult.failure(
+        ComicSourceKeyProbeFailure.timeout,
+        reason: 'Execution timed out',
+      );
+    }
+
+    if (lower.contains('out of memory') || lower.contains('stack overflow')) {
+      return const ComicSourceKeyProbeResult.failure(
+        ComicSourceKeyProbeFailure.memoryLimit,
+        reason: 'Memory limit exceeded',
+      );
+    }
+
+    if (lower.contains('syntaxerror')) {
+      int? line;
+      final lineMatch = RegExp(r':(\d+)(?::\d+)?').firstMatch(errStr);
+      if (lineMatch != null) {
+        line = int.tryParse(lineMatch.group(1)!);
+      }
+      return ComicSourceKeyProbeResult.failure(
+        ComicSourceKeyProbeFailure.syntaxError,
+        line: line,
+        reason: 'Syntax error',
+      );
+    }
+
+    if (e is JSError ||
+        lower.contains('referenceerror') ||
+        lower.contains('typeerror') ||
+        lower.contains('rangeerror')) {
+      return const ComicSourceKeyProbeResult.failure(
+        ComicSourceKeyProbeFailure.evaluationError,
+        reason: 'Evaluation error in candidate constructor or key getter',
+      );
+    }
+
+    return const ComicSourceKeyProbeResult.failure(
+      ComicSourceKeyProbeFailure.runtimeFailure,
+      reason: 'Runtime failure during probing',
+    );
   }
 
   JSInvokable? _restore;
@@ -154,37 +312,96 @@ class ComicSourceParser {
 
   String? _name;
 
+  /// Parses a source script and registers it with the active runtime.
+  /// Set [deferMetadata] when the caller owns the final metadata commit.
   Future<ComicSource> createAndParse(
     String js,
     String fileName, {
     String? expectedKey,
     bool retainRollback = false,
+    bool deferMetadata = false,
   }) async {
-    if (!fileName.endsWith(".js")) {
-      fileName = "$fileName.js";
+    final probe = await ComicSourceParser.probeKey(js);
+    if (!probe.isSuccess || probe.key == null) {
+      throw ComicSourceParseException(
+        'Failed to probe comic source key: ${probe.failure?.name ?? "unknown"}',
+      );
     }
-    var file = File(FilePath.join(App.dataPath, "comic_source", fileName));
-    if (file.existsSync()) {
+    final key = probe.key!;
+    if (expectedKey != null && key != expectedKey) {
+      throw ComicSourceParseException(
+        'Source key mismatch: expected $expectedKey, got $key',
+      );
+    }
+
+    if (!fileName.endsWith('.js')) {
+      fileName = '$fileName.js';
+    }
+    fileName = p.basename(fileName);
+    SourceFileMetadata.validateFileName(fileName);
+
+    final sourceDir = Directory(FilePath.join(App.dataPath, 'comic_source'));
+    await sourceDir.create(recursive: true);
+
+    var file = File(FilePath.join(sourceDir.path, fileName));
+    if (await file.exists()) {
       int i = 0;
-      while (file.existsSync()) {
-        file = File(
-          FilePath.join(
-            App.dataPath,
-            "comic_source",
-            "${fileName.split('.').first}($i).js",
-          ),
-        );
+      while (await file.exists()) {
+        final baseName = fileName.substring(0, fileName.length - 3);
+        file = File(FilePath.join(sourceDir.path, '$baseName($i).js'));
         i++;
       }
     }
+
+    final targetFilename = p.basename(file.path);
+    final stageFile = File(
+      FilePath.join(sourceDir.path, '$targetFilename.stage'),
+    );
+    final expectedDigest = SourceFileMetadata.digest(js);
     try {
-      await file.writeAsString(js);
-      return await parse(
+      await stageFile.writeAsString(js, flush: true);
+      final stagedContent = await stageFile.readAsString();
+      if (stagedContent != js) {
+        throw const FileSystemException(
+          'Staged source content verification failed',
+        );
+      }
+      await SourceFileMetadata.atomicReplace(
+        stageFile,
+        file,
+        beforeCommit: () {
+          final stagedDigest = stageFile.existsSync()
+              ? SourceFileMetadata.digest(stageFile.readAsStringSync())
+              : null;
+          if (file.existsSync() || stagedDigest != expectedDigest) {
+            throw const FileSystemException(
+              'Staged source changed or target appeared before commit',
+            );
+          }
+        },
+      );
+    } catch (_) {
+      await stageFile.deleteIfExists();
+      rethrow;
+    }
+
+    try {
+      final source = await parse(
         js,
         file.path,
-        expectedKey: expectedKey,
+        expectedKey: expectedKey ?? key,
         retainRollback: retainRollback,
       );
+      if (!deferMetadata) {
+        await SourceFileMetadata.recordValidated(
+          sourceDir,
+          key: source.key,
+          filename: targetFilename,
+          content: js,
+          originFilename: fileName,
+        );
+      }
+      return source;
     } catch (e) {
       await file.deleteIfExists();
       rethrow;
