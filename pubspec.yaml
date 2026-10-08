@@ -2,7 +2,7 @@ name: venera_plus
 description: "A comic app."
 publish_to: 'none'
 homepage: https://github.com/Venera-Works/Venera-Plus
-version: 3.0.0-beta1+20
+version: 3.0.0-beta2+21
 
 environment:
   sdk: '>=3.8.0 <4.0.0'
