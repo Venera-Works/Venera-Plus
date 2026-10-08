@@ -2,7 +2,7 @@
 
 中文版本：[data_sync.zh.md](data_sync.zh.md)
 
-Navigation: **Settings → Storage and Sync → Data Sync** (or click the top-bar sync button when not configured). Enter your WebDAV directory URL, username, password, and device name; directory letter case must match the server. The device name defaults to the Android model, iOS device name, or desktop hostname. You can edit it, and it is stored only on this device. Use **Test Connection** to check access first.
+Navigation: **Settings → Storage and Sync → Data Sync** (or click the top-bar sync button when not configured). Enter your WebDAV directory URL, username, password, and device name; directory letter case must match the server. The name defaults to the Android model, iOS device name, or desktop hostname and can be edited. Its configuration is local, but the remote directory and device metadata carry the name, so do not put sensitive information in it. Use **Test Connection** to check access first.
 
 ## Multi-Device Merge and Scope
 
@@ -11,7 +11,7 @@ The new protocol merges **business records and fields using causal relationships
 | Domain | Merge granularity and boundaries |
 |---|---|
 | Favorite folders and comics | Folders have stable identities that survive renaming. Favorites are identified by folder, comic, and source type; names, ordering, and comic metadata merge as separate fields. Independent folders with the same name are not forcibly combined; local display names can distinguish them. The role shared by Home and automatic update checks (`reading`) binds to a folder identity. It is unbound by default and can be assigned to any local favorites folder. |
-| Reading history | Identified by comic and source type. Metadata fields merge separately; **current progress**, including chapter, page, group, and time, is one indivisible candidate. Positions from two devices are not spliced together or resolved by taking the highest page. Reading an earlier chapter again is a valid edit; concurrent positions require a candidate choice. |
+| Reading history | Identified by comic and source type. Metadata fields merge separately; **current progress**, including chapter, page, group, and time, is one indivisible candidate. Positions are not spliced together or resolved by taking the highest page. Candidates at the same position with otherwise identical contents and only different valid timestamps merge to the newer timestamp; actual position differences still require a choice. Reading an earlier chapter again is a valid edit. |
 | Read chapters and favorite images | Each read chapter and each favorite image is an independent record. Concurrent additions of different chapters or images coexist rather than competing over one whole episode array. Field differences between images of the same comic are retained, rather than overwritten because local display data shares an aggregate row. |
 | Reading duration | A shared migrated legacy duration base is deduplicated, not added once per copy. New positive contributions from each device are then added; this is **not the maximum of total durations**. Resets, reductions, or incompatible legacy bases retain candidates requiring a choice instead of silently disappearing. |
 | Settings | Allowed settings merge by key and nested object leaf; lists remain whole values. Concurrent edits to the same setting can still conflict. Filtering is described below. |
@@ -22,13 +22,33 @@ The new protocol merges **business records and fields using causal relationships
 
 Local comic image files, downloaded comic archives, and images in the online library are not included. Comic archive backups and the online WebDAV comic library remain separate features.
 
+### Category Scope
+
+Settings provides seven independently configurable groups, all enabled by default. Existing optional WebDAV-credential switches remain off by default:
+
+| Category | Contents |
+|---|---|
+| Settings | Application settings allowed to synchronize |
+| Favorites | Folders, comic favorites, and folder-role bindings as one group |
+| Reading history | Progress, duration, and read chapters as one group |
+| Favorite images | Image-favorite records, not the original image files |
+| Search history | Keywords and ordering |
+| Source scripts | Comic source script revisions |
+| Login state | Cookies and comic source `.data` sessions as one group |
+
+Disabling a category stops new capture and remote application for that domain. It is **not a deletion instruction** and does not retract already captured pending content or erase old cloud candidates. Scope is device-local. The login-state group does not include settings such as the Bangumi Token; see the secrets section below.
+
 ## Deletion and Batch Conflict Selection
 
 Deletions carry causal information too. A later deletion can supersede values already observed by that device; **deletion concurrent with an unseen edit on another device** retains a conflict. Deleting a parent history record must not simply clear chapters or favorite images concurrently added elsewhere.
 
 Even explicitly choosing to delete a parent history record preserves read chapters added concurrently. Local metadata retained to display those chapters is not synchronized as a newly created history record; actually reading again creates a new reading edit.
 
-Compatible field values merge automatically. Incompatible concurrent values remain durable candidates; an existing local active candidate is preferred until you explicitly handle the conflict. The dialog displays all record/field conflicts together. Select each candidate independently, including deletion, then click **Resolve Selected** to submit all choices once. Selecting does not apply or upload anything, and closing discards unsubmitted choices. A changed candidate requires a new selection rather than silently acknowledging a newly arrived edit. The whole batch is validated before one durable commit; later apply or publication failures report recovery status rather than claiming rollback. Unresolved conflicts do not prevent unrelated, conflict-free records from merging. **Successful transfer does not mean all conflicts are resolved.** Arbitrary concurrent edits to settings, ordering, scripts, or sessions are not guaranteed to merge automatically without conflict.
+Compatible field values merge automatically. Incompatible concurrent values remain durable candidates, with an existing local active candidate preferred until explicitly handled. The dialog groups conflicts by category and supports search and an unselected-only filter. Bulk-select matching local values or a specified device's candidates within the current filter; items without a matching candidate are not guessed. Candidates show device names, available timestamps, and safe previews, distinguishing field deletion from whole-record deletion.
+
+**You do not need to select everything.** **Resolve Selected** submits only selected items and leaves the rest for later batches. Selection itself does not apply or upload anything; closing discards unsubmitted choices. Changed candidates require a new selection rather than silently acknowledging newly arrived edits. The selected batch is validated before one durable commit; subsequent application/publication failures report recovery status rather than claiming rollback. Unresolved conflicts do not block unrelated conflict-free records. **Successful transfer does not mean all conflicts are resolved.**
+
+After selecting a device in bulk, you may explicitly remember it as the preferred candidate for ordinary settings. This is off by default. The preference applies only when that device has a candidate for an ordinary setting; it does not automatically resolve secrets, deletions, scripts, sessions, or differing reading positions, and is not a universal latest-timestamp policy. Open conflict review from sync settings to clear the preference, even when no conflicts remain. Arbitrary concurrent settings, ordering, scripts, and sessions cannot always merge automatically without conflict.
 
 The conflict title, instructions, and candidate list scroll together. On narrow screens or with enlarged text, footer actions wrap while Close and Resolve remain accessible.
 
@@ -47,10 +67,14 @@ The top-bar sync icon runs the selected direction and rotates during actual queu
 | Timing | Trigger |
 |---|---|
 | Manual | Explicit sync actions or commands trigger transfers; saving configuration does not itself trigger the first transfer. |
-| Real-time | Local edits trigger synchronization except in download-only direction. Startup and resume also check the server; resume checks are at least ten minutes apart. |
+| Real-time | Real local edits are coalesced for upload; unchanged saves, simple page switches, and device-local-only saves do not publish checkpoints. Remote checks are independent, approximately every ten minutes while running, with overdue checks on startup/resume. Download-only never uploads because of local edits. |
 | Scheduled | Runs every 5, 15, 30, 60, 180, or 360 minutes (default 30). |
 
-Scheduled mode batches edits within the interval. New edits during a transfer remain pending. Failures retain unfinished work for retry or later scheduling. Timers run only with the application process; this is not an OS background keep-alive service and does not wake the OS after exit. Startup/resume catch up overdue work, and system suspension may cause delays. The interval restarts from attempt completion.
+Real-time uploading waits **10 seconds** after the latest edit, with at least **60 seconds** between automatic upload attempts. Continuous editing schedules a batch within **2 minutes** under normal runnable conditions. Leaving the reader or entering the background requests a flush, without bypassing direction, minimum intervals, or failure backoff and without guaranteeing continued OS execution. Manual sync immediately joins the serialized queue and bypasses these automatic timing delays.
+
+Scheduled mode batches edits within its interval, measured from attempt completion. Changes made during transfer remain pending. Automatic failures use increasing backoff; authentication errors pause automatic retries until credentials are corrected and configuration is saved or a manual retry is made. Timers run only with the application process, not as an OS background keep-alive service. They do not wake the OS after exit; startup/resume catch up overdue work, and suspension can delay execution.
+
+Settings shows actual pending record and conflict counts, the latest successful time, the trigger reason, and uploaded/downloaded bytes and object counts for the operation. It also offers manual sync and confirmed legacy-change import. Counts do not require displaying secret bodies, and pending records are not queue-batch counts; before capture completes, the durable queue count does not represent all unsaved UI edits.
 
 Synchronization, explicit upload/download, configuration, and conflict handling use one serialized queue. Commands cannot bypass direction restrictions. Local edits continue to be tracked during network reads and file staging; synchronization captures them again and checks for changes before committing, so a stale target does not replace edits made while waiting for the network.
 
@@ -58,13 +82,15 @@ Synchronization, explicit upload/download, configuration, and conflict handling 
 
 Persistent local state is bound to the WebDAV endpoint and retains device identity, causal candidates, observed records, and the upload queue (outbox). Captured edits are saved before network publication. An application target (`pendingApply`), its applicable domains, and merge metadata are saved atomically before writing business databases and files. Startup recovers unfinished application first, preserving edits in actual local data before continuing capture and synchronization. Blocked domains retain each record's original causal observation; observing later edits from the same actor in another domain does not prematurely supersede unseen source candidates.
 
-State has a recoverable backup; corrupt metadata is not silently reset to a new empty state. Recovery from backup may require remote verification to prevent the device counter from regressing. Failed verification reports an error rather than continuing unsafely. This is not a single cross-process or cross-database/filesystem transaction; recovery relies on the persistent application journal.
+Merge metadata uses record-oriented SQLite storage. The outbox references immutable manifests and compressed objects rather than rewriting one giant state JSON on every save. Primary and recovery databases receive incremental updates in a shared SQLite attached-database transaction; ordinary commits do not copy the entire database. File-level repair is limited to initialization or recovery. Old local JSON state is imported read-only and retained.
+
+Corrupt metadata is not silently reset to empty state. Recovery validates revisions and actor identity and may require remote verification to prevent counter regression. Failed verification reports an error rather than continuing unsafely. This primary/replica transaction is **not** a global transaction across favorites, history, preferences, and source files; business application still relies on the persistent recovery journal.
 
 Authentication, network, and application failures report failure and retain unfinished publication/application work. If some remote publications or local business commits already succeeded, a later failure **does not pretend to roll those committed changes back**. Retries continue from persistent state rather than treating committed work as if it never happened.
 
 Local comic source normalization is similarly protected by the persistent journal: when old aliases coexist with new canonical files, recovery is idempotent and does not resurrect explicitly resolved candidates. Normalization respects direction boundaries and does not import unapplied remote business values under restricted modes such as upload-only. Actual business commit failures still report failure and retain pending recovery state.
 
-If startup recovery fails, initiating sync again after correcting the issue re-executes recovery rather than permanently rejecting requests due to a cached startup error; subsequent upload, download, or conflict handling will not proceed until recovery succeeds.
+After startup recovery or a local metadata transaction fails, correcting the issue and initiating sync again reloads durable state and retries recovery. Restarting or clearing state is not required to bypass a cached failure. Upload, download, and conflict handling wait for successful recovery.
 
 ## Source Issues and Partial Synchronization
 
@@ -80,20 +106,33 @@ If a recovery journal is corrupt or incomplete, export the original files and ba
 
 ## Cloud Format and Integrity
 
-All new sync files live under **`VeneraPlus/<device-name>/`** inside the user-configured WebDAV directory. The application creates these collections as needed. Checkpoints are named `counter-SHA256.json`, without repeating device information in the filename. Actor identity remains in the payload and is associated with the directory's `device.json` ownership metadata. Each immutable file is a **full causal checkpoint**, including known records, candidates, and deletions. It is neither a raw database replacement archive nor **a network batch containing only changed fields**. Record-level merging does not imply uploading only a few fields each time; transfer size still depends on the full checkpoint.
+The new protocol lives under **`VeneraPlus/sync-v4/<device-name>/`** inside the configured WebDAV directory, isolated from old single-file checkpoints:
+
+```text
+VeneraPlus/sync-v4/<device-name>/
+  device.json
+  commits/<counter>-<manifest-SHA256>.json
+  objects/<domain>/<object-SHA256>.json.gz
+```
+
+Each manifest describes a **full causal checkpoint**, preserving records, candidates, and deletions without packing all content into one JSON file. Content is gzip-compressed by domain. Large collections such as favorites and history use 64 stable identity-based buckets; scripts, sessions, and cookies are separate per identity. The global causal clock lives in the manifest so a counter-only change does not invalidate every shard.
+
+Required objects are uploaded and verified first, and the immutable manifest is published last. Content addressing reuses unchanged objects: editing one setting normally uploads its setting object and a new manifest, not history or scripts. Receivers use verified, endpoint-scoped memory and disk object caches that survive restarts. This is **shard-level incremental transfer**, not a per-field network patch stream. Initial sync or an empty cache still needs the required objects, and manifests and discovery have overhead.
 
 Path separators, URL delimiters, and control characters in device names are replaced with underscores, and unsafe trailing dots/spaces are removed. Empty or dot-only names are rejected. If another actor owns the same name, a stable short identifier is appended to the directory instead of overwriting that actor. Renaming preserves the internal actor identity and counters; old directories remain discoverable, with checkpoints subject to the same read and safe-cleanup rules. Synchronization reads every device directory, not just this device's directory. Existing local sync state publishes a full checkpoint when this actor has no checkpoint in the new namespace, even without new local edits.
 
 Reads verify the SHA-256 in the filename, content format, counter, and agreement between directory ownership and the payload actor. GET redirects or missing ETags can still be validated by the content hash. Corrupt or partial candidate files are not committed checkpoints and cannot hide an older valid checkpoint from that device; multiple files with the same counter cannot be resolved by arbitrarily choosing one. Authentication and network failures are actual errors, not evidence that the server has no data.
 
-Uploads use conditional creation and are read back and verified before acknowledgement. If a retry finds a bad file previously left by this device, repair requires verification and a strong ETag precondition, or publication of a replacement checkpoint preserving the intended changes. Unconditional overwrite is not allowed, and collisions or truncation are not success. Safe cleanup only considers **this device's** older files discovered before upload, proven causally covered by the new checkpoint, and protected by a strong ETag and `If-Match`. Other devices' files, concurrent new files, and legacy `.venera` archives are excluded. Servers without these conditional validators may retain more files.
+Uploads use conditional creation and read-back verification before acknowledgement. Manifests and objects are checked for SHA-256, format, domain, path, and resource limits; a manifest with incomplete referenced objects is not a usable commit. A bad file left by this device can only be repaired with verification and a strong ETag precondition, or superseded by a replacement preserving the intended changes. Unconditional overwrite, collisions, and truncation are not success.
+
+Cleanup only considers **this device's old commit manifests** discovered before upload and proven causally covered by the new checkpoint. It requires a strong ETag and `If-Match` and retains one valid predecessor for recovery. Other actors, concurrent new files, old-protocol checkpoints, and `.venera` archives are excluded. **Compressed objects and causal deletion information are not automatically collected**: ordinary WebDAV cannot prove that a concurrent manifest will not reference an object, and offline devices may still carry old values. Cloud usage is therefore not guaranteed to remain constant; missing conditional validators retain more manifests.
 
 ## Device-Local Fields and Secrets
 
 The following do not participate in ordinary data synchronization and cannot be overwritten by remote content:
 
 - Data-sync WebDAV URL, username, password, and connection preferences.
-- This device's direction, timing, interval, device name, excluded-field configuration, device identity, pending markers, and merge/recovery metadata.
+- This device's direction, timing, interval, device-name configuration, category scope, excluded fields, remembered settings-conflict preference, device identity, pending markers, and merge/recovery metadata. Remote ownership and causal identity do not overwrite local configuration.
 - Local comic storage path (`local_path`), device-specific settings, and filtered proxy/local security settings.
 - Bangumi pending progress submissions and retry queues.
 
@@ -101,7 +140,7 @@ Excluded settings and optional settings whose sync switches are off are **out of
 
 Bangumi Access Token, username, and bindings synchronize by default; corresponding settings can be disabled through the excluded-field configuration. **The Access Token is stored in remote checkpoints**, so only use a trusted WebDAV service. UI and CLI token candidates are masked; this does not encrypt cloud files.
 
-WebDAV comic library configuration and comic archive backup WebDAV configuration have separate sync switches, off by default. Endpoints and credentials can transfer and apply only if the exporting and importing devices each explicitly enable the corresponding switch. The switches themselves remain local. **These optional credentials, cookies, and comic source sessions may contain secrets and reside in cloud checkpoints when allowed to sync.** Use a trusted, access-controlled WebDAV service. Conflict UI and CLI provide safe summaries rather than raw cookie/session values, script bodies, or sensitive setting candidates. Masked display is not cloud encryption.
+WebDAV comic library and comic archive backup configurations have independent sync switches, off by default. Endpoints and credentials transfer and apply only when both exporting and importing devices explicitly enable the corresponding switch; the switches themselves stay local. **These optional credentials, cookies, and source sessions can contain secrets and reside in cloud objects when synchronized.** Use a trusted, access-controlled service. Conflict UI and CLI show safe summaries, not raw cookie/session values, script bodies, or sensitive setting candidates. **Gzip is compression, not encryption.** Masked display and disabling a category do not erase secrets already stored remotely.
 
 ## Saving Configuration and Upgrading the Legacy Protocol
 
@@ -109,10 +148,14 @@ Saving configuration validates the connection and prepares endpoint state **with
 
 Changing timing/interval reschedules work. Clear all connection fields and save to disconnect. Legacy auto-sync enabled maps to real-time, disabled to manual, and an existing scheduled mode is retained. Old keys are removed once. Direction defaults to bidirectional.
 
+On first use of the new layout, old **`VeneraPlus/<device-name>/<counter>-<SHA256>.json`** causal checkpoints are verified and merged once, their inventory is recorded, and the result is published into `sync-v4` when uploading is allowed. Old files remain read-only and are not rewritten. An incomplete highest checkpoint or a failed read prevents marking migration complete. Download-only can retain a pending migration bridge but cannot upload it.
+
+If old clients later create new checkpoints, ordinary sync pauses for review rather than silently combining two continuously written protocols. Upgrade or stop old clients first, then choose and confirm **Import Legacy Changes** in settings. This verifies and imports new legacy checkpoints and updates the migration inventory. With no new legacy checkpoint, it does not claim to have imported new data.
+
 On first use of an endpoint, legacy root `.venera` sync archives are **one-time migration seeds only**. They are verified in an isolated directory. All archives with the highest numeric version are read; different files with that version remain seeds/candidates rather than arbitrarily choosing one. Legacy archives are never deleted. Available business domains complete migration independently, while affected source domains remain pending recovery. Failed reads or integrity checks do not mark migration complete. Later root writes from old clients do not automatically enter the new protocol.
 
 Initial legacy migration enforces limits: 512 MiB downloaded per archive, 1 GiB total expanded content per archive, 256 MiB per database, 16 MiB per text file, 10,000 entries, and 8 MiB of central-directory metadata. Exceeding a limit explicitly fails the whole migration; it does not truncate data, import a partial seed, overwrite local data, or mark migration complete. Keep the original backup/archive; no user-facing option to raise these limits is provided.
 
 Legacy archives support native ZIP64 directory records and signed/unsigned 32-bit or 64-bit data descriptors while retaining CRC, local/central-header consistency, path, entry-boundary, and expansion-limit checks. ZIP64 compatibility does not admit damaged or truncated archives. Source repairs use a **persistent local override layer** bound to the original archive SHA-256 and entry path. Retries apply the override in isolation without rewriting the cloud `.venera` or its original verified backup, and only complete domains still awaiting migration.
 
-**Every device sharing merge synchronization must upgrade to the `VeneraPlus/<device-name>/` layout. Only one-time migration of root `.venera` archives remains compatible; old `sync-v2/` data is not read, migrated, or automatically deleted.** Clients using the old root whole-snapshot protocol or `sync-v2/` layout do not continuously interoperate with this layout. Export a `.venera` backup before upgrading. Data that exists only in old `sync-v2/` and has not reached a device must first be synced locally or exported with an old client. Manual `.venera` import/export remains a separate backup/restore feature, not a synonym for forced upload/download overwrite or an alternative command for choosing an entire sync-conflict version.
+**All participating devices should upgrade to `VeneraPlus/sync-v4/<device-name>/`.** Old `VeneraPlus/<device-name>/` causal checkpoints support the controlled migration above; root `.venera` archives remain one-time seeds. Old `sync-v2/` is not read, migrated, or automatically deleted, and old clients do not continuously interoperate with the new layout. Export a `.venera` backup before upgrading. Data present only in `sync-v2/` must first be synchronized locally or exported with an old client. Manual `.venera` import/export remains a separate backup/restore feature, not forced upload/download overwrite or a replacement for choosing an entire conflict version.

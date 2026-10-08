@@ -48,7 +48,13 @@ void main() {
   }
 
   MergeRemoteEntry parseEntry(String path, String actor, {String? eTag}) {
-    return MergeRemoteEntry.tryParse(path, actor: actor, eTag: eTag)!;
+    final snapshotEntry = MergeRemoteEntry.tryParseSnapshot(
+      path,
+      actor: actor,
+      eTag: eTag,
+    );
+    return snapshotEntry ??
+        MergeRemoteEntry.tryParse(path, actor: actor, eTag: eTag)!;
   }
 
   group('MergeRemote entry parsing and quoted strong ETag', () {
@@ -68,6 +74,26 @@ void main() {
       expect(entry.eTag, '"strong-etag"');
       expect(entry.hasStrongEtag, isTrue);
       expect(entry.filename, '$path$digest.json');
+    });
+    test('parses only v4 commit paths as snapshot entries', () {
+      final digest = 'b' * 64;
+      final path = 'VeneraPlus/sync-v4/Workstation 机/commits/7-$digest.json';
+      final entry = MergeRemoteEntry.tryParseSnapshot(
+        path,
+        actor: 'uuid-actor-123',
+        eTag: '"strong-etag"',
+      );
+      expect(entry, isNotNull);
+      expect(entry!.layout, MergeRemoteLayout.snapshotCommit);
+      expect(entry.counter, 7);
+      expect(MergeRemoteEntry.tryParse(path, actor: 'uuid-actor-123'), isNull);
+      expect(
+        MergeRemoteEntry.tryParseSnapshot(
+          'VeneraPlus/Workstation 机/7-$digest.json',
+          actor: 'uuid-actor-123',
+        ),
+        isNull,
+      );
     });
 
     test(
@@ -132,7 +158,7 @@ void main() {
   });
 
   test(
-    'real HTTP wire digest roundtrips exact business records without embedded id',
+    'v4 manifest hash roundtrips exact business records without embedding batch id in filename',
     () async {
       final records = <String, Map<String, Object?>>{
         syncRecordKey('search', ['cloud keyword']): {'order': 0},
@@ -145,9 +171,21 @@ void main() {
       );
       final path = await remote.upload(batch);
       final raw = server._files['/dav/$path']!;
-      expect(sha256.convert(raw).toString(), batch.id);
+      expect(
+        sha256.convert(raw).toString(),
+        MergeSnapshot.fromBatch(batch).digest,
+      );
       final payload = jsonDecode(utf8.decode(raw)) as Map;
-      expect(payload.keys.toSet(), {'actor', 'counter', 'document'});
+      expect(payload.keys.toSet(), {
+        'schema',
+        'actor',
+        'counter',
+        'batchId',
+        'documentSchema',
+        'vclock',
+        'objects',
+      });
+      expect(payload['batchId'], batch.id);
       final downloaded = await remote.download(parseEntry(path, batch.actor));
       expect(downloaded.document.materialize(), records);
       expect(downloaded.toJson(), batch.toJson());
@@ -156,7 +194,7 @@ void main() {
 
   for (final extraKey in ['id', 'unknown']) {
     test(
-      'hash-valid wire payload with $extraKey is rejected, not overwritten',
+      'legacy hash-valid wire payload with $extraKey remains read-only',
       () async {
         final batch = createTestBatch(actor: 'invalid_wire', counter: 1);
         final payload = jsonDecode(utf8.decode(batch.serializeBytes())) as Map;
@@ -171,7 +209,7 @@ void main() {
         );
         server.injectFile('/dav/$path', bytes);
         await expectLater(
-          remote.download(parseEntry(path, batch.actor)),
+          remote.downloadLegacyCheckpoint(parseEntry(path, batch.actor)),
           throwsA(isA<MergeRemoteCorruptException>()),
         );
       },
@@ -192,7 +230,7 @@ void main() {
         );
         expect(remote.warnings, isEmpty);
       }
-      server.getStatuses['/dav/VeneraPlus/${path.split('/')[1]}/device.json'] =
+      server.getStatuses['/dav/VeneraPlus/sync-v4/${path.split('/')[2]}/device.json'] =
           401;
       await expectLater(remote.list(), throwsA(isA<MergeRemoteException>()));
       expect(remote.warnings, isEmpty);
@@ -283,10 +321,14 @@ void main() {
             .toList();
         expect(gammaEntries.length, 2);
         expect(gammaEntries.map((e) => e.counter).toSet(), {2});
-        expect(gammaEntries.map((e) => e.digest).toSet(), {
-          batchA.id,
-          batchB.id,
-        });
+        final themes = <Object?>{};
+        for (final entry in gammaEntries) {
+          final downloaded = await remote.download(entry);
+          themes.add(
+            downloaded.document.materialize()['["setting","theme"]']!['value'],
+          );
+        }
+        expect(themes, {'dark', 'light'});
       },
     );
 
@@ -334,12 +376,12 @@ void main() {
           .toString()
           .substring(0, 8);
       server.injectOwnership(
-        '/dav/VeneraPlus/Device',
+        '/dav/VeneraPlus/sync-v4/Device',
         actor: 'base_owner',
         name: 'Device',
       );
       server.injectOwnership(
-        '/dav/VeneraPlus/Device-$suffix',
+        '/dav/VeneraPlus/sync-v4/Device-$suffix',
         actor: 'fallback_owner',
         name: 'Device-$suffix',
       );
@@ -349,9 +391,12 @@ void main() {
         throwsA(isA<MergeRemoteConflictException>()),
       );
       expect(server.checkpointPutCount, 0);
-      expect(server.hasFile('/dav/VeneraPlus/Device/device.json'), isTrue);
       expect(
-        server.hasFile('/dav/VeneraPlus/Device-$suffix/device.json'),
+        server.hasFile('/dav/VeneraPlus/sync-v4/Device/device.json'),
+        isTrue,
+      );
+      expect(
+        server.hasFile('/dav/VeneraPlus/sync-v4/Device-$suffix/device.json'),
         isTrue,
       );
     },
@@ -367,10 +412,16 @@ void main() {
       final oldPath = await oldDevice.upload(oldBatch);
       final newPath = await newDevice.upload(newBatch);
 
-      expect(oldPath, startsWith('VeneraPlus/Old Device/1-'));
-      expect(newPath, startsWith('VeneraPlus/New Device/2-'));
-      expect(server.hasFile('/dav/VeneraPlus/Old Device/device.json'), isTrue);
-      expect(server.hasFile('/dav/VeneraPlus/New Device/device.json'), isTrue);
+      expect(oldPath, startsWith('VeneraPlus/sync-v4/Old Device/commits/1-'));
+      expect(newPath, startsWith('VeneraPlus/sync-v4/New Device/commits/2-'));
+      expect(
+        server.hasFile('/dav/VeneraPlus/sync-v4/Old Device/device.json'),
+        isTrue,
+      );
+      expect(
+        server.hasFile('/dav/VeneraPlus/sync-v4/New Device/device.json'),
+        isTrue,
+      );
 
       final entries = await newDevice.list();
       expect(entries.map((entry) => entry.actor).toSet(), {'renamed_actor'});
@@ -380,7 +431,10 @@ void main() {
         newPath,
       });
       expect(server.markerPutCount, 2);
-      expect(server.checkpointPutCount, 2);
+      expect(
+        server._files.keys.where((path) => path.contains('/commits/')).length,
+        2,
+      );
     });
 
     test(
@@ -413,6 +467,42 @@ void main() {
       },
     );
   });
+  test(
+    'legacy checkpoints are exposed only through read-only migration APIs',
+    () async {
+      final legacyBatch = createTestBatch(actor: 'legacy_actor', counter: 1);
+      server.injectOwnership(
+        '/dav/VeneraPlus/Legacy Device',
+        actor: legacyBatch.actor,
+        name: 'Legacy Device',
+      );
+      final legacyPath =
+          'VeneraPlus/Legacy Device/${legacyBatch.counter}-${legacyBatch.id}.json';
+      server.injectFile(
+        '/dav/$legacyPath',
+        legacyBatch.serializeBytes(),
+        eTag: '"legacy-strong"',
+      );
+
+      expect(await remote.list(), isEmpty);
+      final legacyEntries = await remote.listLegacyCheckpoints();
+      expect(legacyEntries, hasLength(1));
+      expect(legacyEntries.single.layout, MergeRemoteLayout.legacyCheckpoint);
+      final downloaded = await remote.downloadLegacyCheckpoint(
+        legacyEntries.single,
+      );
+      expect(downloaded.toJson(), legacyBatch.toJson());
+      expect(
+        () => remote.downloadLegacyCheckpoint(
+          MergeRemoteEntry.tryParseSnapshot(
+            'VeneraPlus/sync-v4/Legacy Device/commits/1-${'a' * 64}.json',
+            actor: legacyBatch.actor,
+          )!,
+        ),
+        throwsArgumentError,
+      );
+    },
+  );
 
   group('Consumer fail-first, truncated file recovery, and valid SHA scenario', () {
     test(
@@ -468,7 +558,10 @@ void main() {
         // HTTP 412 is encountered. Upload inspects HEAD, obtains quoted strong ETag,
         // and safely replaces the truncated file using conditional If-Match: strongEtag.
         final recoveredPath = await remote.upload(batch2);
-        expect(recoveredPath, startsWith('VeneraPlus/Device/2-'));
+        expect(
+          recoveredPath,
+          startsWith('VeneraPlus/sync-v4/Device/commits/2-'),
+        );
 
         // 5. Consumer refreshes listing and calls downloadLatestValid:
         // Now candidate 2 succeeds cleanly with valid SHA!
@@ -506,13 +599,16 @@ void main() {
           final batch = createTestBatch(actor: 'MyDevice-Actor', counter: 1);
           final uploadedPath = await customRemote.upload(batch);
 
-          expect(uploadedPath, startsWith('VeneraPlus/My Device 机/1-'));
+          expect(
+            uploadedPath,
+            startsWith('VeneraPlus/sync-v4/My Device 机/commits/1-'),
+          );
 
           final entries = await customRemote.list();
           expect(entries.length, 1);
           expect(
             entries.first.filename,
-            startsWith('VeneraPlus/My Device 机/1-'),
+            startsWith('VeneraPlus/sync-v4/My Device 机/commits/1-'),
           );
 
           final downloaded = await customRemote.download(entries.single);
@@ -563,7 +659,7 @@ void main() {
         );
         expect(
           putHeaderMap['content-length']?.firstOrNull,
-          batch.serializeBytes().length.toString(),
+          MergeSnapshot.fromBatch(batch).serializeManifest().length.toString(),
         );
 
         // Ping (OPTIONS) must not contain conditional headers
@@ -588,6 +684,157 @@ void main() {
       },
     );
   });
+  test(
+    'reuses unchanged domain objects for a setting-only checkpoint',
+    () async {
+      final historyKey = syncRecordKey('history', ['comic-a', 'chapter-1']);
+      final settingKey = syncRecordKey('setting', ['themeMode']);
+      final first = createTestBatch(
+        actor: 'object_cache',
+        counter: 1,
+        records: {
+          historyKey: {'ep': 1, 'page': 2},
+          settingKey: {'value': 'dark'},
+        },
+      );
+      final firstSnapshot = MergeSnapshot.fromBatch(first);
+      final firstHistoryPath = (firstSnapshot.manifest['objects'] as List)
+          .cast<Map<String, Object?>>()
+          .singleWhere((reference) => reference['domain'] == 'history')['path'];
+      await remote.upload(first);
+      expect(remote.uploadedObjects, 2);
+      expect(remote.downloadedObjects, 2);
+
+      final nextDocument = first.document.clone();
+      final before = first.document.materialize();
+      final after = {
+        ...before,
+        settingKey: {'value': 'light'},
+      };
+      nextDocument.captureLocal('object_cache', before, after);
+      final second = MergeBatch.create(
+        actor: 'object_cache',
+        counter: 2,
+        document: nextDocument,
+      );
+      final secondSnapshot = MergeSnapshot.fromBatch(second);
+      final secondHistoryPath = (secondSnapshot.manifest['objects'] as List)
+          .cast<Map<String, Object?>>()
+          .singleWhere((reference) => reference['domain'] == 'history')['path'];
+      remote.resetTransferStats();
+      await remote.upload(second);
+
+      expect(secondHistoryPath, firstHistoryPath);
+      expect(remote.uploadedObjects, 1);
+      expect(remote.downloadedObjects, 1);
+      expect(server.objectPutCount, 3);
+      await remote.list();
+      expect(remote.deviceNames['object_cache'], 'Device');
+    },
+  );
+
+  test('reuploads a cached object missing from the remote store', () async {
+    final actor = 'cached_object_missing';
+    final historyKey = syncRecordKey('history', ['comic-a', 'chapter-1']);
+    final first = createTestBatch(
+      actor: actor,
+      counter: 1,
+      records: {
+        historyKey: {'ep': 1, 'page': 2},
+      },
+    );
+    await remote.upload(first);
+    final historyPath = server._files.keys.singleWhere(
+      (path) => path.contains('/objects/history/'),
+    );
+    server._files.remove(historyPath);
+    server._etags.remove(historyPath);
+
+    final nextDocument = first.document.clone();
+    final before = first.document.materialize();
+    nextDocument.captureLocal(actor, before, {
+      ...before,
+      syncRecordKey('setting', ['themeMode']): {'value': 'dark'},
+    });
+    final second = MergeBatch.create(
+      actor: actor,
+      counter: 2,
+      document: nextDocument,
+    );
+    remote.resetTransferStats();
+    await remote.upload(second);
+
+    expect(server._files.containsKey(historyPath), isTrue);
+    expect(remote.uploadedObjects, 2);
+    final latest = await remote.downloadLatestValid(actor, await remote.list());
+    expect(latest?.toJson(), second.toJson());
+  });
+
+  test(
+    'reuses verified objects from the endpoint cache after restart',
+    () async {
+      final cacheDirectory = await Directory.systemTemp.createTemp(
+        'sync-v4-object-cache-',
+      );
+      try {
+        final cachedRemote = MergeRemote(
+          remote.client,
+          deviceName: 'Cached Device',
+          cacheDirectory: cacheDirectory,
+        );
+        final batch = createTestBatch(
+          actor: 'disk_cache_actor',
+          counter: 1,
+          records: {
+            syncRecordKey('history', ['comic-a', 'chapter-1']): {
+              'ep': 1,
+              'page': 2,
+            },
+          },
+        );
+        final encoded = MergeSnapshot.fromBatch(batch);
+        final persistedSnapshot =
+            MergeSnapshot.fromEncoded(encoded.serializeManifest(), {
+              for (final object in encoded.objects.entries)
+                object.key: Uint8List.fromList(object.value),
+            });
+        final path = await cachedRemote.uploadSnapshot(persistedSnapshot);
+        final restartedRemote = MergeRemote(
+          remote.client,
+          deviceName: 'Cached Device',
+          cacheDirectory: cacheDirectory,
+        );
+        final entry = MergeRemoteEntry.tryParseSnapshot(
+          path,
+          actor: batch.actor,
+        )!;
+        final downloaded = await restartedRemote.download(entry);
+
+        expect(downloaded.toJson(), batch.toJson());
+        expect(restartedRemote.downloadedObjects, 0);
+        final cacheFiles = <File>[];
+        await for (final entity in cacheDirectory.list(recursive: true)) {
+          if (entity is File && entity.path.endsWith('.obj')) {
+            cacheFiles.add(entity);
+          }
+        }
+        expect(cacheFiles, hasLength(1));
+        final corruptCacheBytes = await cacheFiles.single.readAsBytes();
+        corruptCacheBytes[0] ^= 1;
+        await cacheFiles.single.writeAsBytes(corruptCacheBytes, flush: true);
+        final corruptCacheRemote = MergeRemote(
+          remote.client,
+          deviceName: 'Cached Device',
+          cacheDirectory: cacheDirectory,
+        );
+        final recovered = await corruptCacheRemote.download(entry);
+        expect(recovered.toJson(), batch.toJson());
+        expect(corruptCacheRemote.downloadedObjects, 1);
+      } finally {
+        await cacheDirectory.delete(recursive: true);
+      }
+    },
+  );
 
   group('GET redirect without ETag', () {
     test(
@@ -658,7 +905,7 @@ void main() {
 
         final fakeDigest = 'b' * 64;
         server.injectFile(
-          '/dav/VeneraPlus/Device/2-$fakeDigest.json',
+          '/dav/VeneraPlus/sync-v4/Device/commits/2-$fakeDigest.json',
           Uint8List(0),
           eTag: '"etag-2"',
         );
@@ -668,7 +915,7 @@ void main() {
           (e) => e.actor == 'device-fallback',
         );
         expect(deviceEntry.counter, 1);
-        expect(deviceEntry.digest, validBatch.id);
+        expect(deviceEntry.digest, MergeSnapshot.fromBatch(validBatch).digest);
       },
     );
 
@@ -721,7 +968,7 @@ void main() {
           eTag: '"etag-legit"',
         )!;
         expect(
-          () => remote.download(entry),
+          () => remote.downloadLegacyCheckpoint(entry),
           throwsA(isA<MergeRemoteCorruptException>()),
         );
       },
@@ -775,9 +1022,9 @@ void main() {
             eTag: '"strong-legacy"',
           );
 
-          // Set legitimate quoted strong ETag on batch1, weak ETag on batch2, strong ETag on batchOther
+          // Both predecessors have strong validators; compaction must still keep the newest valid one.
           server.setFileEtag('/dav/$path1', '"strong-etag-1"');
-          server.setFileEtag('/dav/$path2', 'W/"weak-etag-2"');
+          server.setFileEtag('/dav/$path2', '"strong-etag-2"');
           server.setFileEtag('/dav/$pathOther', '"strong-etag-other"');
 
           // Create an independent batch that did NOT merge Batch 1 (counter reserved to 5, but empty content)
@@ -793,23 +1040,23 @@ void main() {
           );
 
           final priorEntries = [
-            MergeRemoteEntry.tryParse(
+            MergeRemoteEntry.tryParseSnapshot(
               path1,
               actor: 'owner-actor',
               eTag: '"strong-etag-1"',
             )!,
-            MergeRemoteEntry.tryParse(
+            MergeRemoteEntry.tryParseSnapshot(
               path2,
               actor: 'owner-actor',
-              eTag: 'W/"weak-etag-2"',
+              eTag: '"strong-etag-2"',
             )!,
-            MergeRemoteEntry.tryParse(
+            MergeRemoteEntry.tryParseSnapshot(
               pathOther,
               actor: 'other-actor',
               eTag: '"strong-etag-other"',
             )!,
             // Forged listing identity cannot authorize deleting another owner's file.
-            MergeRemoteEntry.tryParse(
+            MergeRemoteEntry.tryParseSnapshot(
               pathOther,
               actor: 'owner-actor',
               eTag: '"strong-etag-other"',
@@ -849,7 +1096,7 @@ void main() {
           // batch1 had quoted strong ETag, own actor, counter 1 < 3, genuinely dominated => DELETED
           expect(server.hasFile('/dav/$path1'), isFalse);
 
-          // batch2 had weak ETag W/"weak-etag-2" => RETAINED
+          // The newest valid old commit remains as a recovery predecessor despite its strong ETag.
           expect(server.hasFile('/dav/$path2'), isTrue);
 
           // batchOther was another actor => RETAINED
@@ -886,6 +1133,8 @@ class _LoopbackWebDavServer {
   final Map<String, int> getStatuses = {};
   int markerPutCount = 0;
   int checkpointPutCount = 0;
+  int commitPutCount = 0;
+  int objectPutCount = 0;
 
   String? _redirectFrom;
   String? _redirectTo;
@@ -1122,6 +1371,20 @@ class _LoopbackWebDavServer {
       return;
     }
 
+    if (request.method == 'HEAD') {
+      final content = _files[path];
+      if (content == null) {
+        request.response.statusCode = HttpStatus.notFound;
+      } else {
+        request.response.statusCode = HttpStatus.ok;
+        request.response.headers.contentLength = content.length;
+        final etag = _etags[path];
+        if (etag != null) request.response.headers.set('etag', etag);
+      }
+      await request.response.close();
+      return;
+    }
+
     if (request.method == 'PUT') {
       final headersMap = <String, List<String>>{};
       request.headers.forEach((name, values) {
@@ -1129,12 +1392,18 @@ class _LoopbackWebDavServer {
       });
       lastPutHeaders = headersMap;
       final isMarker = path.endsWith('/device.json');
+      final isCommit = path.contains('/commits/');
       if (isMarker) {
         markerPutCount++;
         markerPutHeaders.add(headersMap);
       } else {
         checkpointPutCount++;
         lastCheckpointPutHeaders = headersMap;
+        if (isCommit) {
+          commitPutCount++;
+        } else if (path.contains('/objects/')) {
+          objectPutCount++;
+        }
       }
 
       final ifNoneMatch = request.headers.value('if-none-match');
@@ -1155,7 +1424,7 @@ class _LoopbackWebDavServer {
       }
 
       _addDirectoryTree(_parentPath(path));
-      if (truncateNextPut && !isMarker) {
+      if (truncateNextPut && isCommit) {
         truncateNextPut = false;
         _files[path] = body.sublist(0, math.min(10, body.length));
       } else {

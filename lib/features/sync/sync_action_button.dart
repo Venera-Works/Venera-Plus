@@ -6,6 +6,61 @@ import 'package:venera_plus/features/sync/sync_conflict_dialog.dart';
 import 'package:venera_plus/features/sync/sync_source_issues_dialog.dart';
 import 'package:venera_plus/foundation/translations.dart';
 
+enum _SyncConflictAction { resolve, sync }
+
+String _syncActionTimestamp(int timestamp) {
+  if (timestamp <= 0) return 'Not synced yet'.tl;
+  final value = DateTime.fromMillisecondsSinceEpoch(timestamp);
+  String twoDigits(int part) => part.toString().padLeft(2, '0');
+  return '${value.year}-${twoDigits(value.month)}-${twoDigits(value.day)} '
+      '${twoDigits(value.hour)}:${twoDigits(value.minute)}';
+}
+
+String _syncActionTriggerLabel(String? trigger) {
+  final label = switch (trigger) {
+    'Manual sync' => 'Manual sync',
+    'Local changes' => 'Local changes',
+    'Scheduled sync' => 'Scheduled sync',
+    'Startup check' => 'Startup check',
+    'Resume check' => 'Resume check',
+    'Remote check' => 'Remote check',
+    'Retry' => 'Retry',
+    _ => null,
+  };
+  if (label != null) return label.tl;
+  if (trigger == null || trigger.isEmpty) return 'Not synced yet'.tl;
+  return 'Other sync trigger: @trigger'.tlParams({'trigger': trigger});
+}
+
+String _syncActionStatusSummary(DataSyncStatusSnapshot status) {
+  final counts = status.changedRecordCounts.entries.toList()
+    ..sort((a, b) => a.key.compareTo(b.key));
+  final countSummary = counts.isEmpty
+      ? 'No captured record changes'.tl
+      : counts.map((entry) => '${entry.key}: ${entry.value}').join(', ');
+  return [
+    'Last trigger: @trigger'.tlParams({
+      'trigger': _syncActionTriggerLabel(status.lastTrigger),
+    }),
+    'Last successful sync: @time'.tlParams({
+      'time': _syncActionTimestamp(status.lastSuccessTime),
+    }),
+    'Pending publication records: @count'.tlParams({
+      'count': status.pendingChangeCount,
+    }),
+    'Sync Conflict (@count pending)'.tlParams({'count': status.conflictCount}),
+    'Changed records: @counts'.tlParams({'counts': countSummary}),
+    'Uploaded: @bytes bytes in @objects objects'.tlParams({
+      'bytes': status.uploadedBytes,
+      'objects': status.uploadedObjects,
+    }),
+    'Downloaded: @bytes bytes in @objects objects'.tlParams({
+      'bytes': status.downloadedBytes,
+      'objects': status.downloadedObjects,
+    }),
+  ].join('\n');
+}
+
 class SyncActionButton extends StatefulWidget {
   const SyncActionButton({super.key, required this.onConfigure});
 
@@ -56,6 +111,52 @@ class _SyncActionButtonState extends State<SyncActionButton>
     }
   }
 
+  Future<_SyncConflictAction?> _showConflictSyncActions(
+    DataSyncStatusSnapshot status,
+  ) => showDialog<_SyncConflictAction>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: Text(
+        'Sync Conflict (@count pending)'.tlParams({
+          'count': status.conflictCount,
+        }),
+      ),
+      content: SingleChildScrollView(
+        child: Text(_syncActionStatusSummary(status)),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () =>
+              Navigator.of(dialogContext).pop(_SyncConflictAction.resolve),
+          child: Text('Resolve conflicts'.tl),
+        ),
+        FilledButton(
+          onPressed: () =>
+              Navigator.of(dialogContext).pop(_SyncConflictAction.sync),
+          child: Text('Sync now'.tl),
+        ),
+      ],
+    ),
+  );
+
+  Future<void> _showStatusDetails(DataSyncStatusSnapshot status) =>
+      showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          key: const Key('data-sync-status-details'),
+          title: Text('Sync status'.tl),
+          content: SingleChildScrollView(
+            child: Text(_syncActionStatusSummary(status)),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: Text('Close'.tl),
+            ),
+          ],
+        ),
+      );
+
   Future<void> _handlePressed() async {
     if (_sync.isSyncing) {
       context.showMessage(message: 'Sync is currently in progress'.tl);
@@ -67,12 +168,15 @@ class _SyncActionButtonState extends State<SyncActionButton>
     }
     if (!_sync.beginInteraction()) return;
     try {
-      if (_sync.hasConflict) {
-        if (!mounted) return;
-        await showSyncConflictDialog(context);
-        return;
-      }
       final currentSnapshot = _sync.statusSnapshot;
+      if (currentSnapshot.hasConflict) {
+        final action = await _showConflictSyncActions(currentSnapshot);
+        if (!mounted || action == null) return;
+        if (action == _SyncConflictAction.resolve) {
+          await showSyncConflictDialog(context);
+          return;
+        }
+      }
       if (currentSnapshot.isPartial) {
         if (!mounted) return;
         await showSyncSourceIssuesDialog(
@@ -173,8 +277,9 @@ class _SyncActionButtonState extends State<SyncActionButton>
         return IconButton(
           key: const Key('data-sync-action'),
           icon: iconWidget,
-          tooltip: tooltip,
+          tooltip: '$tooltip\n${_syncActionStatusSummary(status)}',
           onPressed: _handlePressed,
+          onLongPress: () => _showStatusDetails(status),
         );
       },
     );

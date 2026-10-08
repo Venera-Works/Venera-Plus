@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:venera_plus/features/settings/settings.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
@@ -161,6 +162,26 @@ void main() {
       expect(label, contains('21'));
     });
 
+    test('history progress preview includes group and reading time', () {
+      final timestamp = DateTime.utc(2020, 1, 2, 3, 4).millisecondsSinceEpoch;
+      final expectedLocalTime = DateTime.fromMillisecondsSinceEpoch(
+        timestamp,
+      ).toLocal();
+      final twoDigits = (int value) => value.toString().padLeft(2, '0');
+      final timeHint =
+          '${expectedLocalTime.year}-${twoDigits(expectedLocalTime.month)}-'
+          '${twoDigits(expectedLocalTime.day)} '
+          '${twoDigits(expectedLocalTime.hour)}:${twoDigits(expectedLocalTime.minute)}';
+      final label = formatCandidateSafePreview(
+        domain: 'history',
+        field: 'progress',
+        value: {'ep': 5, 'page': 21, 'group': 37, 'time': timestamp},
+        isDeleted: false,
+      );
+      expect(label, contains('37'));
+      expect(label, contains(timeHint));
+    });
+
     test('clearly indicates deletion vs retention', () {
       final deleteLabel = formatCandidateSafePreview(
         domain: 'favorite',
@@ -168,7 +189,20 @@ void main() {
         value: null,
         isDeleted: true,
       );
-      expect(deleteLabel.toLowerCase(), contains('delete'));
+      expect(deleteLabel, isNotEmpty);
+      final deletedRecordLabel = formatCandidateSafePreview(
+        domain: 'favorite',
+        field: 'presence',
+        value: null,
+        isDeleted: true,
+      );
+      final deletedFieldLabel = formatCandidateSafePreview(
+        domain: 'favorite',
+        field: 'title',
+        value: null,
+        isDeleted: true,
+      );
+      expect(deletedRecordLabel, isNot(deletedFieldLabel));
 
       final retainLabel = formatCandidateSafePreview(
         domain: 'favorite',
@@ -303,10 +337,10 @@ void main() {
         expect(
           tester
               .widget<FilledButton>(
-                find.widgetWithText(FilledButton, 'Resolve Selected'.tl),
+                find.byKey(const ValueKey('sync-conflict-resolve-selected')),
               )
               .onPressed,
-          isNull,
+          isNotNull,
         );
         expect(calls, isEmpty);
         expect(left.conflicts, hasLength(2));
@@ -346,10 +380,10 @@ void main() {
         expect(
           tester
               .widget<FilledButton>(
-                find.widgetWithText(FilledButton, 'Resolve Selected'.tl),
+                find.byKey(const ValueKey('sync-conflict-resolve-selected')),
               )
               .onPressed,
-          isNull,
+          isNotNull,
         );
 
         final lateTitleChoice = find.byKey(
@@ -361,14 +395,16 @@ void main() {
         expect(
           tester
               .widget<FilledButton>(
-                find.widgetWithText(FilledButton, 'Resolve Selected'.tl),
+                find.byKey(const ValueKey('sync-conflict-resolve-selected')),
               )
               .onPressed,
           isNotNull,
         );
         expect(calls, isEmpty);
         expect(left.conflicts, hasLength(2));
-        await tester.tap(find.text('Resolve Selected'.tl));
+        await tester.tap(
+          find.byKey(const ValueKey('sync-conflict-resolve-selected')),
+        );
         await tester.pump();
 
         expect(calls, hasLength(1));
@@ -393,7 +429,7 @@ void main() {
         expect(
           tester
               .widget<OutlinedButton>(
-                find.widgetWithText(OutlinedButton, 'Close'.tl),
+                find.byKey(const ValueKey('sync-conflict-close')),
               )
               .onPressed,
           isNull,
@@ -483,12 +519,406 @@ void main() {
       expect(calls, isEmpty);
       expect(left.conflicts, hasLength(1));
 
-      await tester.tap(find.text('Close'.tl));
+      await tester.tap(find.byKey(const ValueKey('sync-conflict-close')));
       await tester.pumpAndSettle();
       expect(calls, isEmpty);
       expect(left.conflicts, hasLength(1));
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets(
+      'group, search, and unselected filters narrow active conflicts',
+      (tester) async {
+        final settingKey = syncRecordKey('setting', ['themeMode']);
+        final favoriteKey = syncRecordKey('favorite', ['filter-comic']);
+        final previous = {
+          settingKey: <String, Object?>{'value': 'system'},
+          favoriteKey: <String, Object?>{'title': 'Original'},
+        };
+        final base = MergeDocument()..captureLocal('seed', {}, previous);
+        final left = base.clone();
+        final right = base.clone();
+        left.captureLocal(actorA, previous, {
+          settingKey: {'value': 'dark'},
+          favoriteKey: {'title': 'Left'},
+        });
+        right.captureLocal(actorB, previous, {
+          settingKey: {'value': 'light'},
+          favoriteKey: {'title': 'Right'},
+        });
+        left.merge(right);
+        final conflicts = left.conflicts;
+        final settingConflict = conflicts.singleWhere(
+          (conflict) => conflict.recordKey == settingKey,
+        );
+        final favoriteConflict = conflicts.singleWhere(
+          (conflict) => conflict.recordKey == favoriteKey,
+        );
+        final settingChoice = find.byKey(
+          ValueKey((
+            settingKey,
+            settingConflict.field,
+            settingConflict.candidates.first.id,
+          )),
+        );
+        final favoriteChoice = find.byKey(
+          ValueKey((
+            favoriteKey,
+            favoriteConflict.field,
+            favoriteConflict.candidates.first.id,
+          )),
+        );
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: SyncConflictDialog(
+                conflicts: conflicts,
+                onResolve: (_) async => const Res(true),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        await tester.tap(
+          find.byKey(const ValueKey('sync-conflict-group-filter')),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Settings').hitTestable().last);
+        await tester.pumpAndSettle();
+        expect(favoriteChoice, findsNothing);
+        await tester.scrollUntilVisible(
+          settingChoice,
+          100,
+          scrollable: find.byType(Scrollable).first,
+        );
+        expect(settingChoice, findsOneWidget);
+
+        final search = find.byKey(const ValueKey('sync-conflict-search'));
+        await tester.ensureVisible(search);
+        await tester.enterText(search, 'no-conflict-matches-this');
+        await tester.pumpAndSettle();
+        expect(settingChoice, findsNothing);
+        await tester.enterText(search, 'themeMode');
+        await tester.pumpAndSettle();
+        await tester.scrollUntilVisible(
+          settingChoice,
+          100,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.pumpAndSettle();
+        await Scrollable.ensureVisible(
+          tester.element(settingChoice),
+          alignment: 0.5,
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(settingChoice);
+        await tester.pumpAndSettle();
+        final unselected = find.byKey(
+          const ValueKey('sync-conflict-only-unselected'),
+        );
+        await Scrollable.ensureVisible(
+          tester.element(unselected),
+          alignment: 0.5,
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(unselected);
+        await tester.pumpAndSettle();
+        expect(settingChoice, findsNothing);
+      },
+    );
+
+    testWidgets(
+      'local current-value batch selects only an existing matching candidate',
+      (tester) async {
+        final key = syncRecordKey('setting', ['local-selection']);
+        final previous = {
+          key: <String, Object?>{'value': 'base'},
+        };
+        final base = MergeDocument()..captureLocal('seed', {}, previous);
+        final left = base.clone();
+        final right = base.clone();
+        left.captureLocal(actorA, previous, {
+          key: {'value': 'left'},
+        });
+        right.captureLocal(actorB, previous, {
+          key: {'value': 'right'},
+        });
+        left.merge(right);
+        final conflict = left.conflicts.single;
+        final rightCandidate = conflict.candidates.singleWhere(
+          (candidate) => candidate.actor == actorB,
+        );
+        final submitted = <MergeConflictResolution>[];
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: SyncConflictDialog(
+                conflicts: [conflict],
+                localRecords: {
+                  key: {'value': 'right'},
+                },
+                onResolve: (resolutions) async {
+                  submitted.addAll(resolutions);
+                  return const Res(true);
+                },
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final localButton = find.byKey(
+          const ValueKey('sync-conflict-select-local'),
+        );
+        await tester.ensureVisible(localButton);
+        await tester.tap(localButton);
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const ValueKey('sync-conflict-resolve-selected')),
+        );
+        await tester.pumpAndSettle();
+
+        expect(submitted, hasLength(1));
+        expect(submitted.single.candidateId, rightCandidate.id);
+      },
+    );
+
+    testWidgets(
+      'device batch resolves 200 of 201 conflicts and leaves the unmatched item',
+      (tester) async {
+        const finalRecordIndex = 200;
+        const preferenceKey = 'syncPreferredSettingActor';
+        final hadPreference = appdata.implicitData.containsKey(preferenceKey);
+        final previousPreference = appdata.implicitData.remove(preferenceKey);
+        addTearDown(() async {
+          if (hadPreference) {
+            appdata.implicitData[preferenceKey] = previousPreference;
+          } else {
+            appdata.implicitData.remove(preferenceKey);
+          }
+          await appdata.writeImplicitData();
+        });
+
+        final previous = <String, Map<String, Object?>>{
+          for (var index = 0; index <= finalRecordIndex; index++)
+            syncRecordKey('setting', ['bulk', index]): {'value': 'base'},
+        };
+        Map<String, Map<String, Object?>> copyRecords(
+          Map<String, Map<String, Object?>> records,
+        ) => {
+          for (final entry in records.entries)
+            entry.key: Map<String, Object?>.of(entry.value),
+        };
+        final common = MergeDocument()..captureLocal('seed', {}, previous);
+        final deviceA = common.clone();
+        final deviceB = common.clone();
+        final deviceC = common.clone();
+        final currentA = copyRecords(previous);
+        for (var index = 0; index < finalRecordIndex; index++) {
+          currentA[syncRecordKey('setting', ['bulk', index])]!['value'] =
+              'from-a';
+        }
+        deviceA.captureLocal(actorA, previous, currentA);
+        final currentB = copyRecords(previous);
+        for (var index = 0; index <= finalRecordIndex; index++) {
+          currentB[syncRecordKey('setting', ['bulk', index])]!['value'] =
+              'from-b';
+        }
+        deviceB.captureLocal(actorB, previous, currentB);
+        final currentC = copyRecords(previous);
+        currentC[syncRecordKey('setting', [
+              'bulk',
+              finalRecordIndex,
+            ])]!['value'] =
+            'from-c';
+        deviceC.captureLocal('device_c', previous, currentC);
+        deviceA
+          ..merge(deviceB)
+          ..merge(deviceC);
+        final conflicts = deviceA.conflicts;
+        expect(conflicts, hasLength(201));
+        final actorAConflictKeys = conflicts
+            .where(
+              (conflict) => conflict.candidates.any(
+                (candidate) => candidate.actor == actorA,
+              ),
+            )
+            .map((conflict) => conflict.recordKey)
+            .toSet();
+        expect(actorAConflictKeys, hasLength(200));
+        final unmatchedConflict = conflicts.singleWhere(
+          (conflict) =>
+              conflict.recordKey ==
+              syncRecordKey('setting', ['bulk', finalRecordIndex]),
+        );
+        final remainingCandidate = unmatchedConflict.candidates.singleWhere(
+          (candidate) => candidate.actor == actorB,
+        );
+        final submitted = <MergeConflictResolution>[];
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: SyncConflictDialog(
+                conflicts: conflicts,
+                onResolve: (resolutions) async {
+                  submitted.addAll(resolutions);
+                  return const Res(true);
+                },
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        final deviceSelector = find.byKey(
+          const ValueKey('sync-conflict-device-selector'),
+        );
+        await tester.ensureVisible(deviceSelector);
+        await tester.tap(deviceSelector);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text(actorA).hitTestable().last);
+        await tester.pumpAndSettle();
+        final selectFromDevice = find.byKey(
+          const ValueKey('sync-conflict-select-device'),
+        );
+        await tester.ensureVisible(selectFromDevice);
+        await tester.tap(selectFromDevice);
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const ValueKey('sync-conflict-resolve-selected')),
+        );
+        await tester.pumpAndSettle();
+
+        expect(submitted, hasLength(200));
+        expect(
+          submitted.map((resolution) => resolution.recordKey).toSet(),
+          actorAConflictKeys,
+        );
+        expect(appdata.implicitData[preferenceKey], isNull);
+        final remainingChoice = find.byKey(
+          ValueKey((
+            unmatchedConflict.recordKey,
+            unmatchedConflict.field,
+            remainingCandidate.id,
+          )),
+        );
+        await tester.scrollUntilVisible(
+          remainingChoice,
+          100,
+          scrollable: find.byType(Scrollable).first,
+        );
+        expect(remainingChoice, findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'remembered setting device requires consent and successful resolution',
+      (tester) async {
+        const preferenceKey = 'syncPreferredSettingActor';
+        final hadPreference = appdata.implicitData.containsKey(preferenceKey);
+        final previousPreference = appdata.implicitData.remove(preferenceKey);
+        addTearDown(() async {
+          if (hadPreference) {
+            appdata.implicitData[preferenceKey] = previousPreference;
+          } else {
+            appdata.implicitData.remove(preferenceKey);
+          }
+          await appdata.writeImplicitData();
+        });
+        final key = syncRecordKey('setting', ['remembered-theme']);
+        final previous = {
+          key: <String, Object?>{'value': 'system'},
+        };
+        final base = MergeDocument()..captureLocal('seed', {}, previous);
+        final left = base.clone();
+        final right = base.clone();
+        left.captureLocal(actorA, previous, {
+          key: {'value': 'dark'},
+        });
+        right.captureLocal(actorB, previous, {
+          key: {'value': 'light'},
+        });
+        left.merge(right);
+        var allowResolution = false;
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: SyncConflictDialog(
+                conflicts: left.conflicts,
+                onResolve: (_) async => Res(allowResolution),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final deviceSelector = find.byKey(
+          const ValueKey('sync-conflict-device-selector'),
+        );
+        await tester.ensureVisible(deviceSelector);
+        await tester.tap(deviceSelector);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text(actorA).hitTestable().last);
+        await tester.pumpAndSettle();
+        final selectFromDevice = find.byKey(
+          const ValueKey('sync-conflict-select-device'),
+        );
+        await tester.ensureVisible(selectFromDevice);
+        await tester.tap(selectFromDevice);
+        await tester.pumpAndSettle();
+        final remember = find.byKey(
+          const ValueKey('sync-conflict-remember-device'),
+        );
+        await tester.ensureVisible(remember);
+        await tester.tap(remember);
+        await tester.pumpAndSettle();
+
+        await tester.tap(
+          find.byKey(const ValueKey('sync-conflict-resolve-selected')),
+        );
+        await tester.pumpAndSettle();
+        expect(appdata.implicitData[preferenceKey], isNull);
+
+        allowResolution = true;
+        await tester.runAsync(() async {
+          await tester.tap(
+            find.byKey(const ValueKey('sync-conflict-resolve-selected')),
+          );
+          await appdata.writeImplicitData();
+        });
+        await tester.pumpAndSettle();
+        expect(appdata.implicitData[preferenceKey], actorA);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: Builder(
+                builder: (context) => TextButton(
+                  onPressed: () => showDataSyncSettings(context),
+                  child: const Text('Configure sync'),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.tap(find.text('Configure sync'));
+        await tester.pumpAndSettle();
+        final review = find.byKey(const Key('data-sync-review-conflicts'));
+        expect(review, findsOneWidget);
+        await tester.ensureVisible(review);
+        await tester.pumpAndSettle();
+        await tester.tap(review);
+        await tester.pumpAndSettle();
+        final clearPreference = find.byKey(
+          const ValueKey('sync-conflict-clear-preference'),
+        );
+        await tester.ensureVisible(clearPreference);
+        await tester.runAsync(() async {
+          await tester.tap(clearPreference);
+          await appdata.writeImplicitData();
+        });
+        await tester.pumpAndSettle();
+        expect(appdata.implicitData.containsKey(preferenceKey), isFalse);
+      },
+    );
 
     for (final language in ['en-US', 'zh-CN', 'zh-TW']) {
       for (final width in [320.0, 800.0]) {
@@ -569,7 +999,9 @@ void main() {
             await tester.pumpAndSettle();
             expect(calls, isEmpty);
             expect(left.conflicts, hasLength(1));
-            await tester.tap(find.text('Resolve Selected'.tl));
+            await tester.tap(
+              find.byKey(const ValueKey('sync-conflict-resolve-selected')),
+            );
             await tester.pumpAndSettle();
             expect(calls, [deleted.id]);
             expect(left.materialize().containsKey(key), isFalse);

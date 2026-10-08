@@ -687,8 +687,10 @@ class __CustomImageProcessingState extends State<_CustomImageProcessing> {
 
   @override
   void dispose() {
-    appdata.settings['customImageProcessing'] = current;
-    appdata.saveData();
+    if (appdata.settings['customImageProcessing'] != current) {
+      appdata.settings['customImageProcessing'] = current;
+      appdata.saveData();
+    }
     super.dispose();
   }
 

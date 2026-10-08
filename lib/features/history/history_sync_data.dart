@@ -353,18 +353,25 @@ class HistorySyncData {
 
   /// Applies incoming [records] transactionally to [db].
   ///
-  /// Compares records against existing database state to skip unchanged projections
-  /// and returns a [HistorySyncApplyResult] indicating which domains were changed.
+  /// Each business domain can be disabled independently, in which case its
+  /// current records are preserved instead of interpreting omitted records as
+  /// deletions.
   static HistorySyncApplyResult applySyncRecords(
     Database db,
-    SyncRecords records,
-  ) {
+    SyncRecords records, {
+    bool applyHistory = true,
+    bool applyImageFavorites = true,
+  }) {
     ensureSchema(db);
 
     db.execute('BEGIN IMMEDIATE;');
     try {
-      final historyChanged = _applyHistoryRecords(db, records);
-      final imageFavoritesChanged = _applyImageFavoriteRecords(db, records);
+      final historyChanged = applyHistory
+          ? _applyHistoryRecords(db, records)
+          : false;
+      final imageFavoritesChanged = applyImageFavorites
+          ? _applyImageFavoriteRecords(db, records)
+          : false;
       db.execute('COMMIT;');
       return HistorySyncApplyResult(
         historyChanged: historyChanged,

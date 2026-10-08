@@ -1,8 +1,11 @@
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import '../../foundation/sync_records.dart';
 import 'merge_engine.dart';
+import 'merge_store_database.dart';
+import 'merge_snapshot.dart';
 
 export '../../foundation/sync_records.dart';
 export 'merge_engine.dart';
@@ -21,7 +24,12 @@ class MergeStore {
   MergeDocument _localObservation = MergeDocument();
   SyncRecords _observed = {};
   final Set<String> _received = {};
-  final List<MergeBatch> _outbox = [];
+  final List<String> _outboxIds = [];
+  final Map<String, MergeBatch> _outboxCache = {};
+  final Map<String, Set<String>> _outboxChangedRecords = {};
+  final Map<String, MergeSnapshot> _outboxSnapshotCache = {};
+  final Map<String, int> _pendingRecordKeyCounts = {};
+  late final MergeStoreDatabase _database;
   SyncRecords? _pendingApply;
   Set<String> _pendingUnavailableDomains = const {};
   bool _initialized = false;
@@ -30,14 +38,17 @@ class MergeStore {
   bool _recoveredFromBackup = false;
   bool _needsCounterReconciliation = false;
   bool _counterFloorDirty = false;
+  Map<String, String>? _legacyCheckpointInventory;
 
   MergeStore(this.directory, this.actor) {
     if (actor.isEmpty) {
       throw ArgumentError.value(actor, 'actor', 'Must not be empty');
     }
+    _database = MergeStoreDatabase(directory, actor);
   }
 
   MergeDocument get document => _document;
+  bool get needsRecovery => !_loaded;
 
   /// Causality of the last actually observed business state, not merely received
   /// or published checkpoints. Callers retain this branch across transfer retries.
@@ -46,7 +57,26 @@ class MergeStore {
   Set<String> get received => Set.unmodifiable(_received);
   SyncRecords? get pendingApply =>
       _pendingApply == null ? null : cloneSyncRecords(_pendingApply!);
-  List<MergeBatch> get outbox => List.unmodifiable(_outbox);
+  List<MergeBatch> get outbox => UnmodifiableListView(_OutboxView(this));
+  int get pendingRecordCount => _pendingRecordKeyCounts.length;
+  List<String> get pendingBatchIds => List.unmodifiable(_outboxIds);
+  MergeBatch pendingBatch(String id) {
+    _ensureLoaded();
+    if (!_outboxIds.contains(id)) {
+      throw StateError('No pending merge batch with id "$id"');
+    }
+    return _outboxCache[id] ??
+        _database.pendingBatch(id, currentDocument: _document);
+  }
+
+  MergeSnapshot pendingSnapshot(String id) {
+    _ensureLoaded();
+    if (!_outboxIds.contains(id)) {
+      throw StateError('No pending merge batch with id "$id"');
+    }
+    return _outboxSnapshotCache[id] ??= _database.pendingSnapshot(id);
+  }
+
   Set<String> get pendingUnavailableDomains =>
       Set.unmodifiable(_pendingUnavailableDomains);
   Set<String> get pendingScope => pendingUnavailableDomains;
@@ -54,6 +84,41 @@ class MergeStore {
   /// Recovery may have lost publication counters. The controller must reconcile
   /// OWN-actor remote checkpoints before replay/capture, even for an empty cloud.
   bool get recoveredFromBackup => _recoveredFromBackup;
+
+  /// Frozen inventory of the endpoint's pre-v4 checkpoint files.
+  /// Null means the one-time checkpoint migration has not completed.
+  Map<String, String>? get legacyCheckpointInventory =>
+      _legacyCheckpointInventory == null
+      ? null
+      : Map.unmodifiable(_legacyCheckpointInventory!);
+
+  Future<void> completeCheckpointMigration(
+    Map<String, String> inventory, {
+    bool acceptChanges = false,
+  }) async {
+    _ensureLoaded();
+    final next = Map<String, String>.of(inventory);
+    if (next.entries.any((entry) => entry.key.isEmpty || entry.value.isEmpty)) {
+      throw ArgumentError.value(
+        inventory,
+        'inventory',
+        'Paths and digests must not be empty',
+      );
+    }
+    final existing = _legacyCheckpointInventory;
+    if (existing != null && !acceptChanges) {
+      if (!syncValuesEqual(existing, next)) {
+        throw StateError('Checkpoint migration inventory is already frozen');
+      }
+      return;
+    }
+    final merged = existing == null
+        ? next
+        : (Map<String, String>.of(existing)..addAll(next));
+    if (existing != null && syncValuesEqual(existing, merged)) return;
+    _legacyCheckpointInventory = Map.unmodifiable(merged);
+    await save();
+  }
 
   File get _stateFile => File('${directory.path}/state.json');
   File get _backupFile => File('${_stateFile.path}.bak');
@@ -75,65 +140,109 @@ class MergeStore {
       }
     }
 
-    _StoreState? state;
-    Object? primaryError;
-    if (await _exists(_stateFile)) {
-      try {
-        state = await _readState(_stateFile);
-      } on _StoreActorMismatch {
-        rethrow; // A valid state belonging to another actor is not corruption.
-      } catch (error) {
-        primaryError = error;
+    final databaseState = await _database.load();
+    _StoreState? legacyState;
+    var recovered = databaseState?.recoveredFromBackup ?? false;
+    if (databaseState == null) {
+      Object? primaryError;
+      if (await _exists(_stateFile)) {
+        try {
+          legacyState = await _readState(_stateFile);
+        } on _StoreActorMismatch {
+          rethrow; // A valid state belonging to another actor is not corruption.
+        } catch (error) {
+          primaryError = error;
+        }
       }
-    }
-    var recovered = false;
-    if (state == null && await _exists(_backupFile)) {
-      try {
-        state = await _readState(_backupFile);
-        recovered = true;
-      } on _StoreActorMismatch {
-        rethrow;
-      } catch (error) {
-        throw FormatException(
-          'Invalid merge state and backup: $primaryError; $error',
-        );
-      }
-    }
-    if (state == null) {
-      final hasPrimary = await _exists(_stateFile);
-      final hasTemporary = await _exists(_temporaryFile);
-      final hasBackupTemporary = await _exists(File('${_backupFile.path}.tmp'));
-      if (hasPrimary || hasTemporary || hasBackupTemporary) {
-        // A temp file alone is an interrupted first commit, not a fresh endpoint.
-        // Recover its fully validated state, but force counter reconciliation.
-        if (!hasPrimary && hasTemporary && !hasBackupTemporary) {
-          state = await _readState(_temporaryFile);
+      if (legacyState == null && await _exists(_backupFile)) {
+        try {
+          legacyState = await _readState(_backupFile);
           recovered = true;
-        } else {
+        } on _StoreActorMismatch {
+          rethrow;
+        } catch (error) {
           throw FormatException(
-            'No valid committed merge state: $primaryError',
+            'Invalid merge state and backup: $primaryError; $error',
           );
+        }
+      }
+      if (legacyState == null) {
+        final hasPrimary = await _exists(_stateFile);
+        final hasTemporary = await _exists(_temporaryFile);
+        final hasBackupTemporary = await _exists(
+          File('${_backupFile.path}.tmp'),
+        );
+        if (hasPrimary || hasTemporary || hasBackupTemporary) {
+          // A temp file alone is an interrupted first commit, not a fresh endpoint.
+          // Recover its fully validated state, but force counter reconciliation.
+          if (!hasPrimary && hasTemporary && !hasBackupTemporary) {
+            legacyState = await _readState(_temporaryFile);
+            recovered = true;
+          } else {
+            throw FormatException(
+              'No valid committed merge state: $primaryError',
+            );
+          }
         }
       }
     }
 
-    _document = state?.document ?? MergeDocument();
-    _localObservation = state?.localObservation ?? MergeDocument();
-    _observed = state?.observed ?? {};
+    _document =
+        databaseState?.document ?? legacyState?.document ?? MergeDocument();
+    _localObservation =
+        databaseState?.localObservation ??
+        legacyState?.localObservation ??
+        MergeDocument();
+    _observed = cloneSyncRecords(
+      databaseState?.observed ?? legacyState?.observed ?? {},
+    );
     _received
       ..clear()
-      ..addAll(state?.received ?? {});
-    _outbox
+      ..addAll(databaseState?.received ?? legacyState?.received ?? {});
+    _outboxIds
       ..clear()
-      ..addAll(state?.outbox ?? []);
-    _pendingApply = state?.pendingApply;
-    _pendingUnavailableDomains = state?.pendingUnavailableDomains ?? const {};
-    _initialized = state?.initialized ?? false;
+      ..addAll(
+        databaseState?.outboxIds ??
+            legacyState?.outbox.map((batch) => batch.id) ??
+            const <String>[],
+      );
+    _outboxCache
+      ..clear()
+      ..addEntries(
+        (legacyState?.outbox ?? const <MergeBatch>[]).map(
+          (batch) => MapEntry(batch.id, batch),
+        ),
+      );
+    _outboxSnapshotCache.clear();
+    _outboxChangedRecords.clear();
+    _pendingRecordKeyCounts.clear();
+    final legacyChangedRecords = <String, Set<String>>{
+      for (final batch in legacyState?.outbox ?? const <MergeBatch>[])
+        batch.id: batch.document.recordKeys.toSet(),
+    };
+    final changedRecords =
+        databaseState?.outboxChangedRecords ?? legacyChangedRecords;
+    for (final entry in changedRecords.entries) {
+      _setOutboxChangedRecords(entry.key, entry.value);
+    }
+    _pendingApply = databaseState?.pendingApply == null
+        ? (legacyState?.pendingApply == null
+              ? null
+              : cloneSyncRecords(legacyState!.pendingApply!))
+        : cloneSyncRecords(databaseState!.pendingApply!);
+    _pendingUnavailableDomains = Set.unmodifiable(
+      databaseState?.pendingUnavailableDomains ??
+          legacyState?.pendingUnavailableDomains ??
+          const <String>{},
+    );
+    _initialized =
+        databaseState?.initialized ?? legacyState?.initialized ?? false;
+    _legacyCheckpointInventory = databaseState?.checkpointMigrationInventory;
     _recoveredFromBackup = recovered;
     _needsCounterReconciliation = recovered;
     _counterFloorDirty = false;
     _loaded = true;
-    if (state == null) await save();
+    if (databaseState == null) await save();
   }
 
   /// Captures local business differences. The first capture, including an empty
@@ -170,6 +279,11 @@ class MergeStore {
               (e) => !unavailableDomains.contains(syncRecordDomain(e.key)),
             ),
           );
+    final changedRecordKeys = _changedRecordKeys(
+      filteredBaseline,
+      filteredCurrent,
+    );
+    if (!_initialized) changedRecordKeys.addAll(filteredCurrent.keys);
 
     final branch = observation?.clone() ?? _localObservation.clone();
     // Allocation and own cumulative prefixes are not remote causal observation.
@@ -183,6 +297,7 @@ class MergeStore {
     );
 
     var newVariantsAdded = false;
+    final sourceVariantRecordKeys = <String>{};
     final effectiveVariants =
         (sourceVariants == null || unavailableDomains.isEmpty)
         ? sourceVariants
@@ -207,6 +322,7 @@ class MergeStore {
               observation.merge(seedDoc);
             }
             newVariantsAdded = true;
+            sourceVariantRecordKeys.add(recordKey);
           }
         }
       }
@@ -214,12 +330,9 @@ class MergeStore {
 
     if (counter > 0) {
       _document.merge(branch);
-      _outbox.add(
-        MergeBatch.create(
-          actor: actor,
-          counter: counter,
-          document: _document.clone(),
-        ),
+      _addOutbox(
+        MergeBatch.create(actor: actor, counter: counter, document: _document),
+        changedRecordKeys: {...changedRecordKeys, ...sourceVariantRecordKeys},
       );
       if (unavailableDomains.isEmpty) {
         _localObservation = branch.clone();
@@ -232,12 +345,13 @@ class MergeStore {
       }
     } else if (newVariantsAdded) {
       final checkpointCounter = _document.reserveCounter(actor);
-      _outbox.add(
+      _addOutbox(
         MergeBatch.create(
           actor: actor,
           counter: checkpointCounter,
-          document: _document.clone(),
+          document: _document,
         ),
+        changedRecordKeys: sourceVariantRecordKeys,
       );
     }
 
@@ -256,9 +370,30 @@ class MergeStore {
       }
     }
 
+    var localObservationChanged = false;
+    if (counter == 0 && observation != null) {
+      final completeObservation = _localObservation.clone()..merge(branch);
+      final nextLocalObservation = _mergeLocalObservations(
+        oldLocal: _localObservation,
+        appliedObservation: completeObservation,
+        unavailableDomains: unavailableDomains,
+      );
+      if (!_document.dominates(nextLocalObservation)) {
+        throw ArgumentError('Local observation is not covered by the document');
+      }
+      if (!syncValuesEqual(
+        _localObservation.toJson(),
+        nextLocalObservation.toJson(),
+      )) {
+        _localObservation = nextLocalObservation;
+        localObservationChanged = true;
+      }
+    }
+
     final shouldSave =
         counter > 0 ||
         newVariantsAdded ||
+        localObservationChanged ||
         !_initialized ||
         _counterFloorDirty ||
         !syncValuesEqual(_observed, nextObserved);
@@ -276,9 +411,9 @@ class MergeStore {
     final batch = MergeBatch.create(
       actor: actor,
       counter: counter,
-      document: _document.clone(),
+      document: _document,
     );
-    _outbox.add(batch);
+    _addOutbox(batch);
     await save();
     return batch;
   }
@@ -419,6 +554,10 @@ class MergeStore {
               (e) => !effectiveUnavailable.contains(syncRecordDomain(e.key)),
             ),
           );
+    final changedRecordKeys = _changedRecordKeys(
+      filteredTarget,
+      filteredActual,
+    );
 
     final branch = MergeDocument();
     branch.setCounterFloor(actor, _document.counterFor(actor));
@@ -431,6 +570,7 @@ class MergeStore {
     );
 
     var newVariantsAdded = false;
+    final sourceVariantRecordKeys = <String>{};
     final effectiveVariants =
         (sourceVariants == null || effectiveUnavailable.isEmpty)
         ? sourceVariants
@@ -452,6 +592,7 @@ class MergeStore {
             _localObservation.merge(seedDoc);
             branch.merge(seedDoc);
             newVariantsAdded = true;
+            sourceVariantRecordKeys.add(recordKey);
           }
         }
       }
@@ -468,21 +609,19 @@ class MergeStore {
           unavailableDomains: effectiveUnavailable,
         );
       }
-      _outbox.add(
-        MergeBatch.create(
-          actor: actor,
-          counter: counter,
-          document: _document.clone(),
-        ),
+      _addOutbox(
+        MergeBatch.create(actor: actor, counter: counter, document: _document),
+        changedRecordKeys: {...changedRecordKeys, ...sourceVariantRecordKeys},
       );
     } else if (newVariantsAdded) {
       final checkpointCounter = _document.reserveCounter(actor);
-      _outbox.add(
+      _addOutbox(
         MergeBatch.create(
           actor: actor,
           counter: checkpointCounter,
-          document: _document.clone(),
+          document: _document,
         ),
+        changedRecordKeys: sourceVariantRecordKeys,
       );
     }
 
@@ -517,7 +656,7 @@ class MergeStore {
   /// Acknowledging an old immutable checkpoint never clears newer publications.
   Future<void> acknowledge(String id) async {
     _ensureLoaded();
-    _outbox.removeWhere((batch) => batch.id == id);
+    _removeOutbox(id);
     await save();
   }
 
@@ -610,14 +749,19 @@ class MergeStore {
     final checkpoint = MergeBatch.create(
       actor: actor,
       counter: stagedDocument.counterFor(actor),
-      document: stagedDocument.clone(),
+      document: stagedDocument,
     );
     final pendingApply = stagedDocument.materialize(preferred: _observed);
     final pendingUnavailableDomains = Set<String>.unmodifiable(
       unavailableDomains,
     );
     _document = stagedDocument;
-    _outbox.add(checkpoint);
+    _addOutbox(
+      checkpoint,
+      changedRecordKeys: {
+        for (final resolution in resolutions) resolution.recordKey,
+      },
+    );
     _pendingApply = pendingApply;
     _pendingUnavailableDomains = pendingUnavailableDomains;
     try {
@@ -627,36 +771,29 @@ class MergeStore {
     }
   }
 
-  /// Successful return means both primary and backup contain this complete
-  /// commit. During replacement a flushed prior backup always remains available.
+  /// Successful return means primary and backup received the same incremental
+  /// commit through one SQLite attached-database transaction.
   /// IO failures are never hidden; this instance is fail-closed until reload.
   Future<void> save() async {
     _ensureLoaded();
     _saving = true;
     try {
-      final content = canonicalSyncJson({
-        'schemaVersion': 2,
-        'actor': actor,
-        'document': _document.toJson(),
-        'localObservation': _localObservation.toJson(),
-        'observed': _observed,
-        'received': _received.toList()..sort(),
-        'outbox': _outbox.map((batch) => batch.toJson()).toList(),
-        'pendingApply': _pendingApply,
-        'pendingUnavailableDomains': _pendingUnavailableDomains.toList()
-          ..sort(),
-        'initialized': _initialized,
-      });
-      await _temporaryFile.writeAsString(content, flush: true);
-      // Dart rename replaces a destination file on Windows too. Never replace
-      // via copy/delete: a locked target must fail rather than become torn JSON.
-      if (await _stateFile.exists() && !_recoveredFromBackup) {
-        await _stateFile.rename(_backupFile.path);
-      }
-      await _temporaryFile.rename(_stateFile.path);
-      final backupTemporary = File('${_backupFile.path}.tmp');
-      await backupTemporary.writeAsString(content, flush: true);
-      await backupTemporary.rename(_backupFile.path);
+      final newSnapshots = await _database.commit(
+        document: _document,
+        localObservation: _localObservation,
+        observed: _observed,
+        received: _received,
+        outboxIds: _outboxIds,
+        newOutboxBatches: _outboxCache,
+        outboxChangedRecords: _outboxChangedRecords,
+        pendingApply: _pendingApply,
+        pendingUnavailableDomains: _pendingUnavailableDomains,
+        initialized: _initialized,
+        checkpointMigrationInventory: _legacyCheckpointInventory,
+      );
+      _outboxSnapshotCache.addAll(newSnapshots);
+      _outboxCache.clear();
+
       _counterFloorDirty = false;
     } catch (_) {
       _loaded = false;
@@ -664,6 +801,67 @@ class MergeStore {
     } finally {
       _saving = false;
     }
+  }
+
+  void _addOutbox(
+    MergeBatch batch, {
+    Set<String> changedRecordKeys = const {},
+  }) {
+    final mergedChangedRecordKeys = Set<String>.of(changedRecordKeys);
+    if (_outboxIds.contains(batch.id)) {
+      mergedChangedRecordKeys.addAll(
+        _outboxChangedRecords[batch.id] ?? const <String>{},
+      );
+      _outboxCache[batch.id] = batch;
+      _setOutboxChangedRecords(batch.id, mergedChangedRecordKeys);
+      return;
+    }
+    for (final priorId in List<String>.of(_outboxIds)) {
+      final prior = pendingBatch(priorId);
+      if (batch.document.dominates(prior.document)) {
+        mergedChangedRecordKeys.addAll(
+          _outboxChangedRecords[priorId] ?? const <String>{},
+        );
+        _removeOutbox(priorId);
+      }
+    }
+    _outboxIds.add(batch.id);
+    _outboxCache[batch.id] = batch;
+    _setOutboxChangedRecords(batch.id, mergedChangedRecordKeys);
+  }
+
+  void _setOutboxChangedRecords(String id, Set<String> recordKeys) {
+    _removeOutboxChangedRecords(id);
+    if (recordKeys.isEmpty) return;
+    final copy = Set<String>.of(recordKeys);
+    _outboxChangedRecords[id] = copy;
+    for (final key in copy) {
+      _pendingRecordKeyCounts.update(
+        key,
+        (count) => count + 1,
+        ifAbsent: () => 1,
+      );
+    }
+  }
+
+  void _removeOutboxChangedRecords(String id) {
+    final recordKeys = _outboxChangedRecords.remove(id);
+    if (recordKeys == null) return;
+    for (final key in recordKeys) {
+      final count = _pendingRecordKeyCounts[key]!;
+      if (count == 1) {
+        _pendingRecordKeyCounts.remove(key);
+      } else {
+        _pendingRecordKeyCounts[key] = count - 1;
+      }
+    }
+  }
+
+  void _removeOutbox(String id) {
+    _outboxIds.remove(id);
+    _outboxCache.remove(id);
+    _outboxSnapshotCache.remove(id);
+    _removeOutboxChangedRecords(id);
   }
 
   void _ensureLoaded() {
@@ -866,6 +1064,21 @@ class MergeStore {
     return cloneSyncRecords(records);
   }
 
+  static Set<String> _changedRecordKeys(
+    SyncRecords baseline,
+    SyncRecords current,
+  ) {
+    final changed = <String>{};
+    for (final key in <String>{...baseline.keys, ...current.keys}) {
+      if (!baseline.containsKey(key) ||
+          !current.containsKey(key) ||
+          !syncValuesEqual(baseline[key], current[key])) {
+        changed.add(key);
+      }
+    }
+    return changed;
+  }
+
   static void _validateJson(Object? value) {
     if (value == null || value is bool || value is String) return;
     if (value is num && value.isFinite) return;
@@ -944,6 +1157,27 @@ class MergeStore {
       'eventDigests': eventDigests,
       'records': records,
     });
+  }
+}
+
+class _OutboxView extends ListBase<MergeBatch> {
+  final MergeStore _store;
+
+  _OutboxView(this._store);
+
+  @override
+  int get length => _store._outboxIds.length;
+
+  @override
+  set length(int value) => throw UnsupportedError('Outbox view is immutable');
+
+  @override
+  MergeBatch operator [](int index) =>
+      _store.pendingBatch(_store._outboxIds[index]);
+
+  @override
+  void operator []=(int index, MergeBatch value) {
+    throw UnsupportedError('Outbox view is immutable');
   }
 }
 

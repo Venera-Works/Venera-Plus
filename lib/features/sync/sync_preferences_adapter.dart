@@ -9,6 +9,7 @@ import 'package:venera_plus/features/sync/app_data_transfer.dart';
 import 'package:venera_plus/features/sync/source_recovery.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/appdata_sync_policy.dart';
 import 'package:venera_plus/foundation/file_system.dart';
 import 'package:venera_plus/foundation/navigation_settings.dart';
 import 'package:venera_plus/foundation/sync_records.dart';
@@ -146,9 +147,15 @@ class SyncPreferencesAdapter {
   final Set<String> _reloadSessionsPending = {};
   List<SyncSourceIssue> _recoveryIssues = const [];
 
-  /// Settings outside this device's policy are invisible, not deletions.
+  bool isDomainEnabled(String domain) =>
+      isAppDataSyncDomainEnabled(_appdata.implicitData, domain);
+
+  /// Records outside this device's domain or field policy are invisible,
+  /// rather than deletions.
   bool shouldObserveRecord(String recordKey) {
-    if (syncRecordDomain(recordKey) != 'setting') return true;
+    final domain = syncRecordDomain(recordKey);
+    if (!isDomainEnabled(domain)) return false;
+    if (domain != 'setting') return true;
     final identity = syncRecordIdentity(recordKey);
     return identity.isNotEmpty &&
         identity.first is String &&
@@ -1105,65 +1112,110 @@ class SyncPreferencesAdapter {
 
   /// Exports current local preferences and file-backed assets into [SyncLocalSnapshot].
   ///
-  /// Safe against partial source failures: gathers issues and unavailable domains
-  /// instead of failing unaffected domains.
+  /// [domains] limits both the returned records and the business domains read.
+  /// Source and session files may share an identity scan, but only requested
+  /// domains are returned. Local exclusions remain invisible, not deletions.
   Future<SyncLocalSnapshot> exportSyncSnapshot({
     SyncRecords recoveryRecords = const {},
+    Set<String>? domains,
   }) async {
+    final requestedDomains = domains ?? appdataSyncDomains;
+    final unknownDomains = requestedDomains.difference(appdataSyncDomains);
+    if (unknownDomains.isNotEmpty) {
+      throw ArgumentError.value(
+        unknownDomains,
+        'domains',
+        'Contains unknown sync domains',
+      );
+    }
+    final selectedDomains = {
+      for (final domain in requestedDomains)
+        if (isDomainEnabled(domain)) domain,
+    };
     final records = <String, Map<String, Object?>>{};
 
     // 1. Settings domain (flattened to per-leaf records)
-    final settingsMap = _appdata.exportSyncSettings();
-    for (final entry in settingsMap.entries) {
-      final key = entry.key;
-      final value = entry.value;
-      if (value is Map) {
-        _flattenMapLeaves([key], value, records);
-      } else {
-        records[syncRecordKey('setting', [key])] = {
-          'value': canonicalizeSyncValue(value),
-        };
+    if (selectedDomains.contains('setting')) {
+      final settingsMap = _appdata.exportSyncSettings();
+      for (final entry in settingsMap.entries) {
+        final key = entry.key;
+        final value = entry.value;
+        if (value is Map) {
+          _flattenMapLeaves([key], value, records);
+        } else {
+          records[syncRecordKey('setting', [key])] = {
+            'value': canonicalizeSyncValue(value),
+          };
+        }
       }
     }
 
     // 2. Search domain (each keyword is an independent record with order)
-    records.addAll(_appdata.exportSearchHistoryRecords());
+    if (selectedDomains.contains('search')) {
+      records.addAll(_appdata.exportSearchHistoryRecords());
+    }
 
     // 3. Cookies domain (per normalized domain, atomic sorted list)
     // Any error here MUST propagate so capture fails rather than creating tombstones.
-    final jar = _resolveCookieJar();
-    try {
-      final grouped = jar.exportAllCookiesGroupedByDomain();
-      for (final entry in grouped.entries) {
-        records[syncRecordKey('cookies', [entry.key])] = {
-          'cookies': entry.value,
-        };
+    if (selectedDomains.contains('cookies')) {
+      final jar = _resolveCookieJar();
+      try {
+        final grouped = jar.exportAllCookiesGroupedByDomain();
+        for (final entry in grouped.entries) {
+          records[syncRecordKey('cookies', [entry.key])] = {
+            'cookies': entry.value,
+          };
+        }
+      } finally {
+        _closeOwnedCookieJar(jar);
       }
-    } finally {
-      _closeOwnedCookieJar(jar);
     }
 
-    // 4. Source & SourceSession domains (from comic_source directory)
-    for (final source in ComicSource.all()) {
-      await source.waitForDataWrites();
-    }
-    final comicSourceDir = Directory(p.join(_dataPath, 'comic_source'));
+    // Scripts and sessions share a safe identity scan, but only requested
+    // domains are returned to the caller.
+    final wantsSources = selectedDomains.contains('source');
+    final wantsSessions = selectedDomains.contains('sourceSession');
     var sourceVariants = const <String, List<Map<String, Object?>>>{};
     var needsSourceNormalization = false;
     final sourceIssues = <SyncSourceIssue>[];
     final unavailableDomains = <String>{};
-
-    if (await comicSourceDir.exists()) {
-      final scanResult = await _scanSourceDirectory(
-        comicSourceDir,
-        isLiveDirectory: _customDataPath == null,
-        recoveryRecords: recoveryRecords,
-      );
-      records.addAll(scanResult.records);
-      sourceVariants = scanResult.sourceVariants;
-      needsSourceNormalization = scanResult.needsSourceNormalization;
-      sourceIssues.addAll(scanResult.sourceIssues);
-      unavailableDomains.addAll(scanResult.unavailableDomains);
+    if (wantsSources || wantsSessions) {
+      for (final source in ComicSource.all()) {
+        await source.waitForDataWrites();
+      }
+      final comicSourceDir = Directory(p.join(_dataPath, 'comic_source'));
+      if (await comicSourceDir.exists()) {
+        final scanResult = await _scanSourceDirectory(
+          comicSourceDir,
+          isLiveDirectory: _customDataPath == null,
+          recoveryRecords: recoveryRecords,
+        );
+        records.addAll({
+          for (final entry in scanResult.records.entries)
+            if (selectedDomains.contains(syncRecordDomain(entry.key)))
+              entry.key: entry.value,
+        });
+        if (wantsSources) {
+          sourceVariants = scanResult.sourceVariants;
+          needsSourceNormalization = scanResult.needsSourceNormalization;
+        }
+        for (final domain in ['source', 'sourceSession']) {
+          if (selectedDomains.contains(domain) &&
+              scanResult.unavailableDomains.contains(domain)) {
+            unavailableDomains.add(domain);
+          }
+        }
+        sourceIssues.addAll(
+          scanResult.sourceIssues.where((issue) {
+            final issueDomain =
+                issue.filename.endsWith('.data') ||
+                    issue.reason == 'invalidSession'
+                ? 'sourceSession'
+                : 'source';
+            return selectedDomains.contains(issueDomain);
+          }),
+        );
+      }
     }
 
     return SyncLocalSnapshot(
@@ -1217,12 +1269,17 @@ class SyncPreferencesAdapter {
   }) async {
     final stagedArtifacts = <File>[];
 
-    final updatedSessionKeys = <String>{};
-    final applySettings = !unavailableDomains.contains('setting');
-    final applySearch = !unavailableDomains.contains('search');
-    final applyCookies = !unavailableDomains.contains('cookies');
-    var applySources = !unavailableDomains.contains('source');
-    var applySessions = !unavailableDomains.contains('sourceSession');
+    final applySettings =
+        isDomainEnabled('setting') && !unavailableDomains.contains('setting');
+    final applySearch =
+        isDomainEnabled('search') && !unavailableDomains.contains('search');
+    final applyCookies =
+        isDomainEnabled('cookies') && !unavailableDomains.contains('cookies');
+    var applySources =
+        isDomainEnabled('source') && !unavailableDomains.contains('source');
+    var applySessions =
+        isDomainEnabled('sourceSession') &&
+        !unavailableDomains.contains('sourceSession');
     final checkPreserved = shouldStageScript ?? hasPreservedSourceVariant;
 
     try {
@@ -1239,6 +1296,7 @@ class SyncPreferencesAdapter {
 
       for (final entry in records.entries) {
         final domain = syncRecordDomain(entry.key);
+        if (!isDomainEnabled(domain)) continue;
         final identity = syncRecordIdentity(entry.key);
         if (const {
               'search',
@@ -1366,8 +1424,10 @@ class SyncPreferencesAdapter {
           _appdata.validateSyncSetting(entry.key, entry.value);
         }
       }
-      for (final source in ComicSource.all()) {
-        await source.waitForDataWrites();
+      if (applySources || applySessions) {
+        for (final source in ComicSource.all()) {
+          await source.waitForDataWrites();
+        }
       }
 
       // Reconstruct sorted search history
@@ -1378,21 +1438,31 @@ class SyncPreferencesAdapter {
         });
       final newSearchHistory = sortedKeywords.map((e) => e.key).toList();
 
-      // Read current local sources afresh using shared directory scanner
       final targetSourceDir = Directory(p.join(_dataPath, 'comic_source'));
-      await targetSourceDir.create(recursive: true);
-
-      final localScan = await _scanSourceDirectory(
-        targetSourceDir,
-        isLiveDirectory: true,
-      );
+      final _SourceScanResult localScan;
+      if (applySources || applySessions) {
+        await targetSourceDir.create(recursive: true);
+        localScan = await _scanSourceDirectory(
+          targetSourceDir,
+          isLiveDirectory: true,
+        );
+        if (localScan.unavailableDomains.contains('source')) {
+          applySources = false;
+        }
+        if (localScan.unavailableDomains.contains('sourceSession')) {
+          applySessions = false;
+        }
+      } else {
+        localScan = _SourceScanResult(
+          records: const {},
+          sourceVariants: const {},
+          needsSourceNormalization: false,
+          filesByKey: const {},
+          sessionsByKey: const {},
+          sourceNames: const {},
+        );
+      }
       final sourceNames = localScan.sourceNames;
-      if (localScan.unavailableDomains.contains('source')) {
-        applySources = false;
-      }
-      if (localScan.unavailableDomains.contains('sourceSession')) {
-        applySessions = false;
-      }
 
       final stagedSourceMoves = <_StagedFileMove>[];
       final metadataFileProofs = <File, String>{};
@@ -1597,6 +1667,7 @@ class SyncPreferencesAdapter {
       }
 
       final stagedSessionMoves = <_StagedFileMove>[];
+      final updatedSessionKeys = <String>{};
       if (applySessions) {
         for (final entry in incomingSessions.entries) {
           final key = entry.key;

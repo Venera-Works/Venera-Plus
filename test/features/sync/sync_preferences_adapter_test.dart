@@ -11,6 +11,7 @@ import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/appdata_sync_policy.dart';
 import 'package:venera_plus/foundation/sync_records.dart';
 import 'package:venera_plus/network/cookie_jar.dart';
 import 'package:venera_plus/foundation/js_engine.dart';
@@ -346,6 +347,94 @@ void main() {
           canonicalSyncJson(appdata.settings['deviceSpecificSettings']),
           isNot(contains('remote-device')),
         );
+      },
+    );
+
+    test('scope exclusions normalize to complete UI groups', () {
+      appdata.implicitData.remove(appdataSyncExcludedDomainsKey);
+      final adapter = SyncPreferencesAdapter();
+      final favoriteKey = syncRecordKey('favorite', ['comic']);
+      final favoriteRecord = {'title': 'local'};
+      final document = MergeDocument()
+        ..captureLocal('scope-device', {}, {favoriteKey: favoriteRecord});
+      appdata.implicitData[appdataSyncExcludedDomainsKey] = ['favorite'];
+
+      expect(getAppDataSyncExcludedDomains(appdata.implicitData), {
+        'folder',
+        'favorite',
+        'favoriteRole',
+      });
+      expect(adapter.isDomainEnabled('folder'), isFalse);
+      expect(adapter.shouldObserveRecord(favoriteKey), isFalse);
+      expect(
+        document.captureLocal(
+          'scope-device',
+          adapter.projectRecordsForLocalPolicy({favoriteKey: favoriteRecord}),
+          adapter.projectRecordsForLocalPolicy({}),
+        ),
+        0,
+      );
+      expect(document.materialize()[favoriteKey], favoriteRecord);
+      expect(normalizeAppDataSyncExcludedDomains({'historyChapter'}), {
+        'history',
+        'historyChapter',
+      });
+    });
+
+    test(
+      'narrow snapshot exports requested domains without scanning sources',
+      () async {
+        final sourceDir = Directory('${tempDir.path}/comic_source')
+          ..createSync();
+        File('${sourceDir.path}/.recovery_journal.json').writeAsStringSync('{');
+        appdata.settings['theme_mode'] = 'light';
+
+        final snapshot = await SyncPreferencesAdapter().exportSyncSnapshot(
+          domains: {'setting'},
+        );
+
+        expect(
+          snapshot.records.keys.every(
+            (key) => syncRecordDomain(key) == 'setting',
+          ),
+          isTrue,
+        );
+        expect(snapshot.sourceIssues, isEmpty);
+        expect(snapshot.unavailableDomains, isEmpty);
+      },
+    );
+
+    test(
+      'disabled domains are neither exported nor cleared locally on apply',
+      () async {
+        appdata.implicitData[appdataSyncExcludedDomainsKey] = [
+          'search',
+          'setting',
+          'cookies',
+          'source',
+          'sourceSession',
+        ];
+        appdata.setFullSearchHistory(['keep-local']);
+        final sourceDir = Directory('${tempDir.path}/comic_source')
+          ..createSync();
+        final sourceScript = File('${sourceDir.path}/local.js')
+          ..writeAsStringSync('local source data');
+        final sourceSession = File('${sourceDir.path}/local.data')
+          ..writeAsStringSync('{"session":"local"}');
+        final adapter = SyncPreferencesAdapter();
+
+        expect(
+          (await adapter.exportSyncSnapshot(domains: {'search'})).records,
+          isEmpty,
+        );
+        await adapter.applySyncRecords({
+          syncRecordKey('search', ['remote-search']): {'order': 0},
+        });
+        await adapter.applySyncRecords(const {});
+
+        expect(appdata.fullSearchHistory, ['keep-local']);
+        expect(await sourceScript.exists(), isTrue);
+        expect(await sourceSession.exists(), isTrue);
       },
     );
 

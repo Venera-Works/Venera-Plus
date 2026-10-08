@@ -645,31 +645,55 @@ void main() {
     },
   );
 
-  test(
-    'save requests notify synchronously before queued disk persistence',
-    () async {
-      final previousSearch = appdata.fullSearchHistory;
-      var changes = 0;
-      appdata.registerSyncDataRequestHandler(() {
-        changes++;
-      });
-      addTearDown(() {
-        appdata.registerSyncDataRequestHandler(null);
-        appdata.setFullSearchHistory(previousSearch);
-      });
-      final pending = appdata.saveData();
-      expect(changes, 1);
-      appdata.addSearchHistory('immediate-notification');
-      expect(changes, 2);
-      appdata.removeSearchHistory('immediate-notification');
-      expect(changes, 3);
-      appdata.clearSearchHistory();
-      expect(changes, 4);
-      await pending;
+  test('save requests notify only when sync-visible data changes', () async {
+    final previousSearch = appdata.fullSearchHistory;
+    final previousCategories = List<dynamic>.from(
+      appdata.settings['categories'],
+    );
+    final previousDeviceSettings = Map<String, dynamic>.from(
+      appdata.settings['deviceSpecificSettings'],
+    );
+    final changes = <Set<String>>[];
+    await appdata.saveData(false);
+    appdata.registerSyncDataRequestHandler(({domains}) {
+      changes.add(Set<String>.of(domains ?? const {}));
+    });
+    addTearDown(() async {
+      appdata.registerSyncDataRequestHandler(null);
+      appdata.setFullSearchHistory(previousSearch);
+      appdata.settings['categories'] = previousCategories;
+      appdata.settings['deviceSpecificSettings'] = previousDeviceSettings;
       await appdata.saveData(false);
-      expect(changes, 4);
-    },
-  );
+    });
+
+    final unchanged = appdata.saveData();
+    expect(changes, isEmpty);
+
+    appdata.settings['deviceSpecificSettings'] = {'device-only': true};
+    appdata.saveData();
+    expect(changes, isEmpty);
+
+    (appdata.settings['categories'] as List).add('nested-sync-change');
+    appdata.saveData();
+    expect(changes, [
+      <String>{'setting'},
+    ]);
+
+    appdata.addSearchHistory('immediate-notification');
+    expect(changes, [
+      <String>{'setting'},
+      <String>{'search'},
+    ]);
+    appdata.removeSearchHistory('immediate-notification');
+    expect(changes, [
+      <String>{'setting'},
+      <String>{'search'},
+      <String>{'search'},
+    ]);
+    await unchanged;
+    await appdata.saveData(false);
+    expect(changes, hasLength(3));
+  });
 
   test('invalid known setting types recover a valid backup', () async {
     final directory = Directory.systemTemp.createTempSync(

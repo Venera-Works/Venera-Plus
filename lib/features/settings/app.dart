@@ -20,12 +20,145 @@ import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/appdata_sync_policy.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/file_interaction.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
+
+String _formatDataSyncTimestamp(int timestamp) {
+  if (timestamp <= 0) return 'Not synced yet'.tl;
+  final value = DateTime.fromMillisecondsSinceEpoch(timestamp);
+  String twoDigits(int part) => part.toString().padLeft(2, '0');
+  return '${value.year}-${twoDigits(value.month)}-${twoDigits(value.day)} '
+      '${twoDigits(value.hour)}:${twoDigits(value.minute)}';
+}
+
+String _dataSyncTriggerLabel(String? trigger) {
+  final label = switch (trigger) {
+    'Manual sync' => 'Manual sync',
+    'Local changes' => 'Local changes',
+    'Scheduled sync' => 'Scheduled sync',
+    'Startup check' => 'Startup check',
+    'Resume check' => 'Resume check',
+    'Remote check' => 'Remote check',
+    'Retry' => 'Retry',
+    _ => null,
+  };
+  if (label != null) return label.tl;
+  if (trigger == null || trigger.isEmpty) return 'Not synced yet'.tl;
+  return 'Other sync trigger: @trigger'.tlParams({'trigger': trigger});
+}
+
+String _changedSyncRecordSummary(Map<String, int> counts) {
+  if (counts.isEmpty) return 'No captured record changes'.tl;
+  final entries = counts.entries.toList()
+    ..sort((a, b) => a.key.compareTo(b.key));
+  return entries.map((entry) => '${entry.key}: ${entry.value}').join(', ');
+}
+
+class _DataSyncStatusPanel extends StatelessWidget {
+  const _DataSyncStatusPanel({
+    required this.status,
+    required this.isBusy,
+    required this.onSyncNow,
+    required this.onImportLegacyChanges,
+  });
+
+  final DataSyncStatusSnapshot status;
+  final bool isBusy;
+  final VoidCallback onSyncNow;
+  final VoidCallback onImportLegacyChanges;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: const Key('data-sync-status-summary'),
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Sync status'.tl, style: Theme.of(context).textTheme.titleSmall),
+          const SizedBox(height: 8),
+          Text(
+            'Last trigger: @trigger'.tlParams({
+              'trigger': _dataSyncTriggerLabel(status.lastTrigger),
+            }),
+          ),
+          Text(
+            'Last successful sync: @time'.tlParams({
+              'time': _formatDataSyncTimestamp(status.lastSuccessTime),
+            }),
+          ),
+          Text(
+            'Pending publication records: @count'.tlParams({
+              'count': status.pendingChangeCount,
+            }),
+          ),
+          Text(
+            'Sync Conflict (@count pending)'.tlParams({
+              'count': status.conflictCount,
+            }),
+          ),
+          Text(
+            'Changed records: @counts'.tlParams({
+              'counts': _changedSyncRecordSummary(status.changedRecordCounts),
+            }),
+          ),
+          Text(
+            'Uploaded: @bytes bytes in @objects objects'.tlParams({
+              'bytes': status.uploadedBytes,
+              'objects': status.uploadedObjects,
+            }),
+          ),
+          Text(
+            'Downloaded: @bytes bytes in @objects objects'.tlParams({
+              'bytes': status.downloadedBytes,
+              'objects': status.downloadedObjects,
+            }),
+          ),
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              key: const Key('data-sync-now'),
+              onPressed: isBusy ? null : onSyncNow,
+              child: Text('Sync now'.tl),
+            ),
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              key: const Key('data-sync-review-conflicts'),
+              onPressed: isBusy ? null : () => showSyncConflictDialog(context),
+              child: Text('Resolve conflicts'.tl),
+            ),
+          ),
+          if (status.legacyChangesDetected)
+            Text(
+              'Older protocol changes were detected. Import only after all devices are upgraded and old clients have stopped writing; legacy files will be retained.'
+                  .tl,
+            ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              key: const Key('data-sync-import-legacy'),
+              onPressed: isBusy ? null : onImportLegacyChanges,
+              child: Text('Import legacy changes'.tl),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 class SourcesAndServicesSettings extends StatefulWidget {
   const SourcesAndServicesSettings({super.key});
@@ -344,6 +477,7 @@ class _WebdavSettingState extends State<_WebdavSetting> {
   String user = "";
   String pass = "";
   String disableSync = "";
+  Set<String> excludedDomains = {};
 
   bool _deviceNameEdited = false;
 
@@ -368,6 +502,7 @@ class _WebdavSettingState extends State<_WebdavSetting> {
     if (appdata.settings['disableSyncFields'].trim().isNotEmpty) {
       disableSync = appdata.settings['disableSyncFields'];
     }
+    excludedDomains = getAppDataSyncExcludedDomains(appdata.implicitData);
     final savedDeviceName = appdata.implicitData['webdavSyncDeviceName'];
     if (savedDeviceName is String && savedDeviceName.trim().isNotEmpty) {
       try {
@@ -455,6 +590,11 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                 },
               ),
               const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Advanced field exclusions'.tl),
+              ),
+              const SizedBox(height: 6),
               TextField(
                 decoration: InputDecoration(
                   labelText: "Skip Setting Fields (Optional)".tl,
@@ -513,6 +653,9 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                 direction: syncDirection,
                 timing: syncTiming,
                 minutes: syncInterval,
+                excludedDomains: excludedDomains,
+                onExcludedDomainsChanged: (value) =>
+                    setState(() => excludedDomains = value),
                 onDirectionChanged: (value) =>
                     setState(() => syncDirection = value),
                 onTimingChanged: (value) => setState(() => syncTiming = value),
@@ -521,6 +664,7 @@ class _WebdavSettingState extends State<_WebdavSetting> {
               ),
               const SizedBox(height: 12),
               Container(
+                key: const Key('data-sync-protocol-notice'),
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
                   color: Theme.of(
@@ -575,6 +719,42 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                       ),
                     ],
                   ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.tertiaryContainer.withValues(alpha: 0.45),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Sync data is compressed but not encrypted.'.tl,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'The new sync protocol requires all devices to be upgraded. Stop writes from older clients before syncing.'
+                          .tl,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              ListenableBuilder(
+                listenable: DataSync(),
+                builder: (context, _) => _DataSyncStatusPanel(
+                  status: DataSync().statusSnapshot,
+                  isBusy: isTesting,
+                  onSyncNow: _syncNowFromSettings,
+                  onImportLegacyChanges: _importLegacyChanges,
                 ),
               ),
               if (DataSync().statusSnapshot.isPartial) ...[
@@ -677,6 +857,7 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                       deviceName: resolvedDeviceName,
                       excludedFields: disableSync,
                       direction: syncDirection,
+                      excludedDomains: excludedDomains,
                       timing: syncTiming,
                       minutes: syncInterval,
                     );
@@ -698,6 +879,63 @@ class _WebdavSettingState extends State<_WebdavSetting> {
         ),
       ),
     );
+  }
+
+  Future<void> _syncNowFromSettings() async {
+    if (isTesting) return;
+    setState(() => isTesting = true);
+    try {
+      final result = await DataSync().syncNow();
+      if (!mounted) return;
+      context.showMessage(
+        message: result.error
+            ? result.errorMessage?.tl ?? 'Sync failed'.tl
+            : 'Sync completed'.tl,
+      );
+    } finally {
+      if (mounted) setState(() => isTesting = false);
+    }
+  }
+
+  Future<void> _importLegacyChanges() async {
+    if (isTesting) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Import legacy sync changes?'.tl),
+        content: Text(
+          'Confirm that all devices are upgraded and old clients have stopped writing. Legacy files will be retained.'
+              .tl,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text('Cancel'.tl),
+          ),
+          FilledButton(
+            key: const Key('data-sync-legacy-import-confirm'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text('Import legacy changes'.tl),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => isTesting = true);
+    try {
+      final result = await DataSync().importLegacyChanges();
+      if (!mounted) return;
+      context.showMessage(
+        message: result.error
+            ? result.errorMessage?.tl ?? 'Legacy import failed'.tl
+            : (result.data
+                      ? 'Legacy changes imported'
+                      : 'No legacy changes found')
+                  .tl,
+      );
+    } finally {
+      if (mounted) setState(() => isTesting = false);
+    }
   }
 
   Future<void> _autofillDeviceName() async {

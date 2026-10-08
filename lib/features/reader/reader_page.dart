@@ -343,7 +343,9 @@ class ReaderState extends State<Reader>
     unawaited(_remoteProgressTracker?.dispose());
     unawaited(
       _readingSession.dispose().whenComplete(() {
-        DataSync().onDataChanged();
+        final sync = DataSync();
+        sync.onDataChanged(domains: {'history', 'historyChapter'});
+        return sync.flushPendingChanges();
       }),
     );
     focusNode.dispose();
@@ -391,7 +393,12 @@ class ReaderState extends State<Reader>
       case AppLifecycleState.paused:
       case AppLifecycleState.detached:
         flushRemoteProgress();
-        unawaited(_readingSession.pause());
+        _flushPendingHistoryUpdate();
+        unawaited(
+          _readingSession.pause().whenComplete(
+            () => DataSync().flushPendingChanges(),
+          ),
+        );
     }
   }
 

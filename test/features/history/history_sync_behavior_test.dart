@@ -953,6 +953,41 @@ void main() {
         expect(reloaded.page, 5);
         expect(reloaded.readDurationMs, 15000);
         expect(reloaded.readEpisode, containsAll(['1', '2']));
+        final imageKey = syncRecordKey('imageFavorite', [
+          'image-local',
+          'picacg',
+          'ep1',
+          1,
+        ]);
+        final imageRecord = <String, Object?>{
+          'comicId': 'image-local',
+          'sourceKey': 'picacg',
+          'page': 1,
+          'imageKey': 'image-local-1',
+          'eid': 'ep1',
+          'ep': 1,
+          'epName': 'Episode 1',
+          'epMaxPage': 1,
+          'title': 'Image fixture',
+          'subTitle': '',
+          'author': '',
+          'tags': <String>[],
+          'time': 20000,
+          'maxPage': 1,
+          'other': <String, Object?>{},
+        };
+        manager.applySyncRecords({imageKey: imageRecord}, applyHistory: false);
+
+        manager.applySyncRecords(
+          {},
+          applyHistory: false,
+          applyImageFavorites: false,
+        );
+        expect((await manager.exportSyncRecords()), contains(imageKey));
+
+        manager.applySyncRecords({imageKey: imageRecord}, applyHistory: false);
+        manager.applySyncRecords({}, applyHistory: false);
+        expect(manager.find('async-1', ComicType.local), isNotNull);
       },
       skip: _sqliteAvailable()
           ? false

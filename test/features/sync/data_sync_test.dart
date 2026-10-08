@@ -7,6 +7,7 @@ import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
@@ -121,9 +122,12 @@ void main() {
       'uploadData coalesces concurrent uploads into one pending task',
       () async {
         final uploads = <Completer<Res<bool>>>[];
+        final firstStarted = Completer<void>();
+        final secondStarted = Completer<void>();
         DataSync.debugUploadOverride = () {
           final completer = Completer<Res<bool>>();
           uploads.add(completer);
+          (uploads.length == 1 ? firstStarted : secondStarted).complete();
           return completer.future;
         };
 
@@ -137,13 +141,14 @@ void main() {
           waitCompleted = true;
         });
 
-        await Future<void>.delayed(Duration.zero);
+        await firstStarted.future;
         expect(sync.isUploading, isTrue);
         expect(uploads, hasLength(1));
         expect(waitCompleted, isFalse);
 
         uploads.first.complete(const Res(true));
         await first;
+        await secondStarted.future;
 
         expect(sync.isUploading, isTrue);
         expect(uploads, hasLength(2));
@@ -193,9 +198,11 @@ void main() {
       final upload = Completer<Res<bool>>();
       final download = Completer<Res<bool>>();
       var downloadStarted = false;
+      final started = Completer<void>();
       DataSync.debugUploadOverride = () => upload.future;
       DataSync.debugDownloadOverride = () {
         downloadStarted = true;
+        started.complete();
         return download.future;
       };
 
@@ -215,6 +222,7 @@ void main() {
 
       upload.complete(const Res(true));
       await uploadFuture;
+      await started.future;
 
       expect(downloadStarted, isTrue);
       expect(sync.isDownloading, isTrue);
@@ -392,6 +400,163 @@ void main() {
     );
 
     test(
+      'sync retries a failed local transaction without restarting',
+      () async {
+        final sync = DataSync();
+        final initial = await sync.syncNow();
+        expect(initial.success, isTrue, reason: initial.errorMessage);
+        final key = syncRecordKey('setting', ['theme']);
+        localRecords[key] = {'value': 'light'};
+        sync.onDataChanged(domains: {'setting'});
+        final lock = sqlite3.open(
+          '${sync.coordinator!.stateDirectory.path}/merge_store.sqlite3',
+        );
+        lock.execute('BEGIN EXCLUSIVE;');
+        try {
+          expect((await sync.syncNow()).error, isTrue);
+        } finally {
+          lock.execute('ROLLBACK;');
+          lock.close();
+        }
+        final retried = await sync.syncNow();
+        expect(retried.success, isTrue, reason: retried.errorMessage);
+        final entries = await sync.coordinator!.remote.list();
+        final published = await sync.coordinator!.remote.downloadLatestValid(
+          sync.coordinator!.actor,
+          entries,
+        );
+        expect(published!.document.materialize()[key], {'value': 'light'});
+      },
+    );
+
+    test(
+      'legacy checkpoint migration freezes later writes until explicit import',
+      () async {
+        final key = syncRecordKey('setting', ['legacyPreference']);
+        final legacy = MergeDocument();
+        var legacyValues = <String, Map<String, Object?>>{
+          key: {'value': 'first'},
+        };
+        legacy.captureLocal('older_device', {}, legacyValues);
+        final first = MergeBatch.create(
+          actor: 'older_device',
+          counter: legacy.counterFor('older_device'),
+          document: legacy,
+        );
+        final marker = 'VeneraPlus/Older Device/device.json';
+        transport.remoteFiles[marker] = Uint8List.fromList(
+          utf8.encode(
+            canonicalSyncJson({
+              'actor': 'older_device',
+              'name': 'Older Device',
+            }),
+          ),
+        );
+        final firstPath =
+            'VeneraPlus/Older Device/${first.counter}-${first.id}.json';
+        transport.remoteFiles[firstPath] = first.serializeBytes();
+        final sync = DataSync();
+        final initial = await sync.syncNow();
+        expect(initial.success, isTrue, reason: initial.errorMessage);
+        expect(localRecords[key], {'value': 'first'});
+        expect(
+          sync.coordinator!.store.legacyCheckpointInventory,
+          contains(firstPath),
+        );
+        expect(transport.remoteFiles[firstPath], first.serializeBytes());
+
+        final nextValues = <String, Map<String, Object?>>{
+          key: {'value': 'written by an outdated device'},
+        };
+        legacy.captureLocal('older_device', legacyValues, nextValues);
+        legacyValues = nextValues;
+        final second = MergeBatch.create(
+          actor: 'older_device',
+          counter: legacy.counterFor('older_device'),
+          document: legacy,
+        );
+        final secondPath =
+            'VeneraPlus/Older Device/${second.counter}-${second.id}.json';
+        transport.remoteFiles[secondPath] = second.serializeBytes();
+        final paused = await sync.syncNow();
+        expect(paused.error, isTrue);
+        expect(sync.statusSnapshot.legacyChangesDetected, isTrue);
+        expect(localRecords[key], {'value': 'first'});
+
+        final imported = await sync.importLegacyChanges();
+        expect(imported.success, isTrue, reason: imported.errorMessage);
+        expect(sync.statusSnapshot.legacyChangesDetected, isFalse);
+        expect(localRecords[key], legacyValues[key]);
+        expect(transport.remoteFiles, contains(firstPath));
+        expect(transport.remoteFiles, contains(secondPath));
+        final reopened = MergeStore(
+          sync.coordinator!.stateDirectory,
+          sync.coordinator!.actor,
+        );
+        await reopened.load();
+        expect(reopened.legacyCheckpointInventory, contains(secondPath));
+      },
+    );
+
+    test(
+      'a settings edit reuses previously published history objects',
+      () async {
+        final theme = syncRecordKey('setting', ['theme']);
+        for (var index = 0; index < 120; index++) {
+          localRecords[syncRecordKey('history', ['comic-$index', 1])] = {
+            'title': 'Comic $index',
+            'readDurationMs': 0,
+            'progress': {
+              'ep': 2,
+              'page': index + 1,
+              'group': null,
+              'time': 1000,
+            },
+          };
+        }
+        final sync = DataSync();
+        final initial = await sync.syncNow();
+        expect(initial.success, isTrue, reason: initial.errorMessage);
+        final historyObjects = {
+          for (final entry in transport.remoteFiles.entries)
+            if (entry.key.contains('/objects/history/')) entry.key: entry.value,
+        };
+        expect(historyObjects, isNotEmpty);
+        transport.requests.clear();
+        localRecords[theme] = {'value': 'light'};
+        sync.onDataChanged(domains: {'setting'});
+        final updated = await sync.syncNow();
+        expect(updated.success, isTrue, reason: updated.errorMessage);
+        final dataPuts = transport.requests.where(
+          (request) =>
+              request.method == 'PUT' && request.uri.path.endsWith('.json.gz'),
+        );
+        expect(
+          dataPuts.any(
+            (request) => request.uri.path.contains('/objects/setting/'),
+          ),
+          isTrue,
+        );
+        expect(
+          dataPuts.any(
+            (request) => request.uri.path.contains('/objects/history/'),
+          ),
+          isFalse,
+        );
+        for (final entry in historyObjects.entries) {
+          expect(transport.remoteFiles[entry.key], entry.value);
+        }
+        final published = MergeDocument();
+        for (final entry in await sync.coordinator!.remote.list()) {
+          published.merge(
+            (await sync.coordinator!.remote.download(entry)).document,
+          );
+        }
+        expect(published.materialize(), localRecords);
+      },
+    );
+
+    test(
       'namespace cutover publishes unchanged durable data without reading sync-v2',
       () async {
         final hash = MergeSyncCoordinator.computeEndpointHash(
@@ -419,13 +584,16 @@ void main() {
         final initial = (await remote.list()).singleWhere(
           (entry) => entry.actor == 'test_device_1',
         );
-        final markerPath = 'VeneraPlus/Test 東京 Device/device.json';
+        final markerPath = 'VeneraPlus/sync-v4/Test 東京 Device/device.json';
         expect(transport.remoteFiles[markerPath], isNotNull);
         expect(jsonDecode(utf8.decode(transport.remoteFiles[markerPath]!)), {
           'actor': 'test_device_1',
           'name': 'Test 東京 Device',
         });
-        expect(initial.filename, startsWith('VeneraPlus/Test 東京 Device/'));
+        expect(
+          initial.filename,
+          startsWith('VeneraPlus/sync-v4/Test 東京 Device/commits/'),
+        );
         expect(
           (await remote.download(initial)).document.materialize(),
           localRecords,
@@ -742,7 +910,7 @@ void main() {
         await coordinator.remote.upload(goodBatch);
 
         // A corrupt checkpoint belongs to a separately identified device.
-        transport.remoteFiles['VeneraPlus/Bad Device/device.json'] =
+        transport.remoteFiles['VeneraPlus/sync-v4/Bad Device/device.json'] =
             Uint8List.fromList(
               utf8.encode(
                 canonicalSyncJson({
@@ -752,7 +920,7 @@ void main() {
               ),
             );
         final badFilename =
-            'VeneraPlus/Bad Device/1-deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef.json';
+            'VeneraPlus/sync-v4/Bad Device/commits/1-deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef.json';
         transport.remoteFiles[badFilename] = Uint8List.fromList(
           utf8.encode('{"corrupted": true'),
         );
@@ -807,7 +975,7 @@ void main() {
         expect(coordinator.store.outbox, isNotEmpty);
         final initialBatch = coordinator.store.outbox.first;
         final targetRemotePath =
-            'VeneraPlus/Device/${initialBatch.counter}-${initialBatch.id}.json';
+            'VeneraPlus/sync-v4/Device/commits/${initialBatch.counter}-${MergeSnapshot.fromBatch(initialBatch).digest}.json';
 
         // Inject divergent content to simulate a 412 precondition conflict
         transport.simulateConflictPaths.add(targetRemotePath);

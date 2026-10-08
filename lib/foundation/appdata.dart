@@ -145,24 +145,67 @@ class Appdata with Init {
 
   Future<void> _writeQueue = Future.value();
 
-  FutureOr<void> Function()? _syncDataRequestHandler;
+  FutureOr<void> Function({Set<String>? domains})? _syncDataRequestHandler;
+  Map<String, dynamic>? _lastSyncDataSnapshot;
 
-  void registerSyncDataRequestHandler(FutureOr<void> Function()? handler) {
+  void registerSyncDataRequestHandler(
+    FutureOr<void> Function({Set<String>? domains})? handler,
+  ) {
     _syncDataRequestHandler = handler;
+    _lastSyncDataSnapshot ??= _captureSyncDataSnapshot();
+  }
+
+  Map<String, dynamic> _captureSyncDataSnapshot() {
+    final snapshot = jsonDecode(jsonEncode(toJson())) as Map<String, dynamic>;
+    final syncSettings = snapshot['settings'] as Map<String, dynamic>;
+    for (final field in getDisabledSyncFields(forExport: true)) {
+      syncSettings.remove(field);
+    }
+    return snapshot;
+  }
+
+  Set<String> _changedSyncDomains(
+    Map<String, dynamic>? previous,
+    Map<String, dynamic> current,
+  ) {
+    if (previous == null) return const {};
+    final changed = <String>{};
+    if (!syncValuesEqual(previous['settings'], current['settings'])) {
+      changed.add('setting');
+    }
+    for (final entry in previous.entries) {
+      if (entry.key == 'settings') continue;
+      if (!current.containsKey(entry.key) ||
+          !syncValuesEqual(entry.value, current[entry.key])) {
+        changed.add('search');
+        break;
+      }
+    }
+    if (!changed.contains('search')) {
+      for (final entry in current.entries) {
+        if (entry.key == 'settings') continue;
+        if (!previous.containsKey(entry.key)) {
+          changed.add('search');
+          break;
+        }
+      }
+    }
+    return changed;
   }
 
   Future<void> saveData([bool sync = true]) {
     final handler = _syncDataRequestHandler;
-    if (sync && handler != null) {
-      // Invalidate an in-flight sync before its commit guard can run. This
-      // notification remains in the caller's zone, including imported writes.
-      unawaited(Future.sync(handler));
-    }
     final data = jsonEncode(toJson());
     final syncJson = jsonDecode(data) as Map<String, dynamic>;
     final syncSettings = syncJson['settings'] as Map<String, dynamic>;
     for (final field in getDisabledSyncFields(forExport: true)) {
       syncSettings.remove(field);
+    }
+    final changedDomains = _changedSyncDomains(_lastSyncDataSnapshot, syncJson);
+    _lastSyncDataSnapshot = syncJson;
+    if (sync && handler != null && changedDomains.isNotEmpty) {
+      // Keep the notification in the caller's zone, including imported writes.
+      unawaited(Future.sync(() => handler(domains: changedDomains)));
     }
     final syncData = jsonEncode(syncJson);
     return _enqueueWrite(() => _writeAppData(data, syncData));
@@ -471,8 +514,10 @@ class Appdata with Init {
       if (primaryInvalid) {
         await _preserveCorruptFile(primary);
       }
+      _lastSyncDataSnapshot = _captureSyncDataSnapshot();
       return;
     }
+    _lastSyncDataSnapshot = _captureSyncDataSnapshot();
     if (loadedFrom.path == primary.path) {
       return;
     }

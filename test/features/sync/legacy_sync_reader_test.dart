@@ -3164,9 +3164,11 @@ void main() {
             equals(archiveBytes),
           );
         },
-        skip: Platform.isWindows
+        skip: !Platform.isWindows
+            ? 'Windows file sharing semantics are required'
+            : (_ciRequireQuickJs || quickJsAvailable)
             ? false
-            : 'Windows file sharing semantics are required',
+            : quickJsFailure,
       );
       test(
         'missing pointer in an existing override directory fails closed',

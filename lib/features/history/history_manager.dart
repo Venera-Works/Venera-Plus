@@ -504,13 +504,23 @@ class HistoryManager with ChangeNotifier {
     return HistorySyncData.readSyncRecords(_db);
   }
 
-  /// Transactionally applies incoming sync records for history, historyChapter,
-  /// and imageFavorite domains.
+  /// Transactionally applies incoming history and image-favorite sync records.
   ///
-  /// Preserves metadata for child records when parent history is deleted,
-  /// updates caches, and notifies listeners.
-  void applySyncRecords(SyncRecords records) {
-    final result = HistorySyncData.applySyncRecords(_db, records);
+  /// [applyHistory] controls history and read-chapter records, while
+  /// [applyImageFavorites] controls image-favorite records. Disabled domains
+  /// retain local records rather than interpreting omissions as deletions.
+  void applySyncRecords(
+    SyncRecords records, {
+    bool applyHistory = true,
+    bool applyImageFavorites = true,
+  }) {
+    if (!applyHistory && !applyImageFavorites) return;
+    final result = HistorySyncData.applySyncRecords(
+      _db,
+      records,
+      applyHistory: applyHistory,
+      applyImageFavorites: applyImageFavorites,
+    );
     if (!result.hasChanges) {
       return;
     }

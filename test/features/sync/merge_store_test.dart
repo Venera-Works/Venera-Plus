@@ -1,9 +1,46 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sqlite3/sqlite3.dart';
 
 import 'package:venera_plus/foundation/sync_records.dart';
 import 'package:venera_plus/features/sync/merge_store.dart';
+
+Map<String, Object?> _legacySchema2State() {
+  const actor = 'device-alpha';
+  final key = syncRecordKey('folder', ['fixture']);
+  final records = <String, Map<String, Object?>>{
+    key: {'name': 'Critical'},
+  };
+  final document = MergeDocument()..captureLocal(actor, {}, records);
+  final batch = MergeBatch.create(
+    actor: actor,
+    counter: document.counterFor(actor),
+    document: document,
+  );
+  return {
+    'schemaVersion': 2,
+    'actor': actor,
+    'document': document.toJson(),
+    'localObservation': document.toJson(),
+    'observed': records,
+    'received': <String>[],
+    'outbox': [batch.toJson()],
+    'pendingApply': null,
+    'pendingUnavailableDomains': <String>[],
+    'initialized': true,
+  };
+}
+
+Map<String, Object?> _legacyStateWithIncomparableOutbox() {
+  final state = _legacySchema2State();
+  final document = MergeDocument()..setCounterFloor('device-alpha', 2);
+  state['document'] = document.toJson();
+  state['localObservation'] = MergeDocument().toJson();
+  state['observed'] = <String, Object?>{};
+  state['initialized'] = false;
+  return state;
+}
 
 void main() {
   group('MergeStore', () {
@@ -72,12 +109,29 @@ void main() {
 
         final batch2 = await store.enqueueCheckpoint();
         expect(batch2.counter, 2);
-        expect(store.outbox.length, 2);
+        expect(store.outbox.length, 1);
 
         expect(batch2.dominates(batch1), isTrue);
         expect(batch2.coversActor('device-alpha', 1), isTrue);
       },
     );
+    test('retains a queued snapshot unless the new one dominates it', () async {
+      final legacyState = jsonEncode(_legacyStateWithIncomparableOutbox());
+      await File('${tempDir.path}/state.json').writeAsString(legacyState);
+      final store = MergeStore(tempDir, 'device-alpha');
+      await store.load();
+      final oldId = store.pendingBatchIds.single;
+
+      final checkpoint = await store.enqueueCheckpoint();
+      expect(checkpoint.counter, 3);
+      expect(store.pendingBatchIds, [oldId, checkpoint.id]);
+
+      final reopened = MergeStore(tempDir, 'device-alpha');
+      await reopened.load();
+      expect(reopened.pendingBatchIds, [oldId, checkpoint.id]);
+      expect(reopened.pendingBatch(oldId).counter, 1);
+      expect(reopened.pendingBatch(checkpoint.id).counter, 3);
+    });
 
     test(
       'acknowledge removes published batches from outbox and persists',
@@ -146,7 +200,7 @@ void main() {
     );
 
     test(
-      'recovers from state.json.bak if primary state.json is corrupted',
+      'recovers from SQLite backup if primary database is corrupted',
       () async {
         final store = MergeStore(tempDir, 'device-alpha');
         await store.load();
@@ -156,13 +210,11 @@ void main() {
           key: {'name': 'Important Data'},
         });
 
-        // State is saved with backup. Let's corrupt state.json with truncated garbage
-        final stateFile = File('${tempDir.path}/state.json');
-        await stateFile.writeAsString(
-          '{"actor": "device-alpha", "document": {BROKEN_JSON',
-        );
+        // A committed SQLite backup remains available if the primary is damaged.
+        final stateFile = File('${tempDir.path}/merge_store.sqlite3');
+        await stateFile.writeAsString('BROKEN_SQLITE_PRIMARY');
 
-        // Reload store: must recover from state.json.bak!
+        // Reload store: must recover from the committed SQLite backup.
         final storeReloaded = MergeStore(tempDir, 'device-alpha');
         await storeReloaded.load();
 
@@ -179,6 +231,36 @@ void main() {
         expect(storeReloaded.document.counterFor('device-alpha'), 11);
       },
     );
+    test('repairs a stale mirror by commit revision before recovery', () async {
+      final store = MergeStore(tempDir, 'device-alpha');
+      await store.load();
+      final key = syncRecordKey('folder', ['replica-revision']);
+      await store.capture({
+        key: {'name': 'First'},
+      });
+      final stateFile = File('${tempDir.path}/merge_store.sqlite3');
+      final backupFile = File('${stateFile.path}.bak');
+      final staleBackup = File('${tempDir.path}/stale-merge-store.bak');
+      await backupFile.copy(staleBackup.path);
+
+      await store.capture({
+        key: {'name': 'Latest'},
+      });
+      await backupFile.delete();
+      await staleBackup.copy(backupFile.path);
+
+      final synchronized = MergeStore(tempDir, 'device-alpha');
+      await synchronized.load();
+      expect(synchronized.recoveredFromBackup, isFalse);
+      expect(synchronized.observed[key]?['name'], 'Latest');
+
+      await stateFile.delete();
+      await staleBackup.copy(stateFile.path);
+      final recovered = MergeStore(tempDir, 'device-alpha');
+      await recovered.load();
+      expect(recovered.recoveredFromBackup, isTrue);
+      expect(recovered.observed[key]?['name'], 'Latest');
+    });
 
     test(
       'fails loudly and never silently resets to empty if state and backup are corrupt',
@@ -191,9 +273,9 @@ void main() {
           key: {'name': 'Critical Data'},
         });
 
-        // Corrupt both primary and backup
-        final stateFile = File('${tempDir.path}/state.json');
-        final bakFile = File('${tempDir.path}/state.json.bak');
+        // Corrupt both primary and backup.
+        final stateFile = File('${tempDir.path}/merge_store.sqlite3');
+        final bakFile = File('${tempDir.path}/merge_store.sqlite3.bak');
         await stateFile.writeAsString('GARBAGE_PRIMARY');
         await bakFile.writeAsString('GARBAGE_BACKUP');
 
@@ -265,16 +347,14 @@ void main() {
         expect(store.document.conflicts, isEmpty);
         expect(store.observed[key]?['name'], 'Local');
         expect(store.pendingApply![key]?['name'], 'Remote');
-        expect(
-          store.outbox.length,
-          2,
-        ); // 1 from initial capture + 1 from resolve
+        expect(store.outbox.length, 1);
+        expect(store.pendingRecordCount, 1);
 
         final storeReloaded = MergeStore(tempDir, 'device-alpha');
         await storeReloaded.load();
         expect(storeReloaded.document.conflicts, isEmpty);
         expect(storeReloaded.observed[key]?['name'], 'Local');
-        expect(storeReloaded.outbox.length, 2);
+        expect(storeReloaded.outbox.length, 1);
         expect(storeReloaded.pendingApply![key]?['name'], 'Remote');
         expect(
           () => storeReloaded.capture({
@@ -341,7 +421,7 @@ void main() {
 
         expect(store.document.conflicts, isEmpty);
         expect(store.pendingApply![key], {'name': 'Local', 'order': 2});
-        expect(store.outbox, hasLength(2));
+        expect(store.outbox, hasLength(1));
         expect(
           store.outbox.last.counter,
           store.document.counterFor('device-alpha'),
@@ -566,6 +646,64 @@ void main() {
         expect(reopened.observed[key]?['name'], 'Second');
       },
     );
+    test(
+      'pending record count persists and follows folded snapshots',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+        final firstKey = syncRecordKey('folder', ['count-first']);
+        final secondKey = syncRecordKey('folder', ['count-second']);
+        await store.capture({
+          firstKey: {'name': 'First'},
+        });
+        expect(store.pendingRecordCount, 1);
+        final firstId = store.pendingBatchIds.single;
+
+        await store.capture({
+          firstKey: {'name': 'Updated'},
+          secondKey: {'name': 'Second'},
+        });
+        expect(store.pendingRecordCount, 2);
+        final currentId = store.pendingBatchIds.single;
+
+        final reopened = MergeStore(tempDir, 'device-alpha');
+        await reopened.load();
+        expect(reopened.pendingRecordCount, 2);
+        await reopened.acknowledge(firstId);
+        expect(reopened.pendingRecordCount, 2);
+        await reopened.acknowledge(currentId);
+        expect(reopened.pendingRecordCount, 0);
+      },
+    );
+
+    test(
+      'acknowledging an old snapshot retains a later same-record change',
+      () async {
+        await File(
+          '${tempDir.path}/state.json',
+        ).writeAsString(jsonEncode(_legacyStateWithIncomparableOutbox()));
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+        final key = syncRecordKey('folder', ['fixture']);
+        expect(store.pendingRecordCount, 1);
+        final oldId = store.pendingBatchIds.single;
+
+        await store.capture({
+          key: {'name': 'Updated after import'},
+        });
+        expect(store.pendingBatchIds, hasLength(2));
+        expect(store.pendingRecordCount, 1);
+        final laterId = store.pendingBatchIds.last;
+        await store.acknowledge(oldId);
+        expect(store.pendingRecordCount, 1);
+
+        final reopened = MergeStore(tempDir, 'device-alpha');
+        await reopened.load();
+        expect(reopened.pendingRecordCount, 1);
+        await reopened.acknowledge(laterId);
+        expect(reopened.pendingRecordCount, 0);
+      },
+    );
 
     test(
       'completed apply cannot replay after later edits or backup recovery',
@@ -585,7 +723,7 @@ void main() {
         await store.capture({
           key: {'name': 'Later user edit'},
         });
-        await File('${tempDir.path}/state.json').writeAsString('{}');
+        await File('${tempDir.path}/merge_store.sqlite3').writeAsString('{}');
         final recovered = MergeStore(tempDir, 'device-alpha');
         await recovered.load();
         expect(recovered.recoveredFromBackup, isTrue);
@@ -624,7 +762,7 @@ void main() {
           key: {'name': 'Same'},
         };
         await store.capture(records);
-        await File('${tempDir.path}/state.json').delete();
+        await File('${tempDir.path}/merge_store.sqlite3').delete();
         final recovered = MergeStore(tempDir, 'device-alpha');
         await recovered.load();
         await expectLater(recovered.capture(records), throwsStateError);
@@ -647,7 +785,7 @@ void main() {
       () async {
         final store = MergeStore(tempDir, 'device-alpha');
         await store.load();
-        await File('${tempDir.path}/state.json').delete();
+        await File('${tempDir.path}/merge_store.sqlite3').delete();
         final recovered = MergeStore(tempDir, 'device-alpha');
         await recovered.load();
         expect(
@@ -762,16 +900,20 @@ void main() {
         await store.capture({
           key: {'name': 'Original'},
         });
-        final blocker = Directory('${tempDir.path}/state.json.tmp');
-        await blocker.create();
-        await expectLater(
-          store.stageApply({
-            key: {'name': 'Not committed'},
-          }),
-          throwsA(isA<FileSystemException>()),
-        );
-        await expectLater(store.capture({}), throwsStateError);
-        await blocker.delete();
+        final blocker = sqlite3.open('${tempDir.path}/merge_store.sqlite3');
+        blocker.execute('BEGIN EXCLUSIVE;');
+        try {
+          await expectLater(
+            store.stageApply({
+              key: {'name': 'Not committed'},
+            }),
+            throwsA(isA<Exception>()),
+          );
+          await expectLater(store.capture({}), throwsStateError);
+        } finally {
+          blocker.execute('ROLLBACK;');
+          blocker.close();
+        }
         final reopened = MergeStore(tempDir, 'device-alpha');
         await reopened.load();
         expect(reopened.pendingApply, isNull);
@@ -791,9 +933,11 @@ void main() {
         await store.stageApply({
           key: {'name': 'Target'},
         });
-        final state = File('${tempDir.path}/state.json');
-        await state.copy('${state.path}.tmp');
-        await state.rename('${state.path}.bak');
+        final state = File('${tempDir.path}/merge_store.sqlite3');
+        await state.copy('${state.path}.bak.tmp');
+        await File('${state.path}.bak').delete();
+        await File('${state.path}.bak.tmp').rename('${state.path}.bak');
+        await state.writeAsString('INTERRUPTED_PRIMARY');
         final recovered = MergeStore(tempDir, 'device-alpha');
         await recovered.load();
         expect(recovered.recoveredFromBackup, isTrue);
@@ -804,15 +948,22 @@ void main() {
 
     for (final invalid in ['{}', '[]', '{\"actor\":\"device-alpha\"}']) {
       test(
-        'legal but invalid primary $invalid recovers only a valid backup',
+        'corrupt SQLite primary $invalid recovers only a valid backup',
         () async {
           final store = MergeStore(tempDir, 'device-alpha');
           await store.load();
-          await File('${tempDir.path}/state.json').writeAsString(invalid);
+          await File(
+            '${tempDir.path}/merge_store.sqlite3',
+          ).writeAsString(invalid);
           final recovered = MergeStore(tempDir, 'device-alpha');
           await recovered.load();
           expect(recovered.recoveredFromBackup, isTrue);
-          await File('${tempDir.path}/state.json.bak').writeAsString('[]');
+          await File(
+            '${tempDir.path}/merge_store.sqlite3.bak',
+          ).writeAsString('[]');
+          await File(
+            '${tempDir.path}/merge_store.sqlite3',
+          ).writeAsString(invalid);
           await expectLater(
             MergeStore(tempDir, 'device-alpha').load(),
             throwsFormatException,
@@ -879,16 +1030,15 @@ void main() {
         await store.capture({
           key: {'name': 'Latest'},
         });
+        final persisted = MergeStore(tempDir, 'device-alpha');
+        await persisted.load();
+        expect(persisted.pendingApply, isNull);
+        expect(persisted.observed[key]?['name'], 'Latest');
         await Directory('${tempDir.path}/apply_journal.json').create();
         await expectLater(
           MergeStore(tempDir, 'device-alpha').load(),
           throwsFormatException,
         );
-        final persisted =
-            jsonDecode(await File('${tempDir.path}/state.json').readAsString())
-                as Map<String, dynamic>;
-        expect(persisted['pendingApply'], isNull);
-        expect(persisted['observed'][key]['name'], 'Latest');
       },
     );
 
@@ -1212,6 +1362,7 @@ void main() {
         // Re-capture identical state is strictly idempotent
         await store.capture(records, sourceVariants: sourceVariants);
         expect(store.outbox.length, outboxCount);
+        expect(store.pendingRecordCount, 1);
         expect(store.outbox.first.id, outboxBatchId);
 
         // Re-open store from disk and verify durability
@@ -1448,14 +1599,10 @@ void main() {
     };
     for (final entry in invalidStates.entries) {
       test('rejects ${entry.key} in both persisted replicas', () async {
-        final store = MergeStore(tempDir, 'device-alpha');
-        await store.load();
-        await store.capture({
-          syncRecordKey('folder', ['f1']): {'name': 'Critical'},
-        });
         final primary = File('${tempDir.path}/state.json');
         final state =
-            jsonDecode(await primary.readAsString()) as Map<String, dynamic>;
+            jsonDecode(jsonEncode(_legacySchema2State()))
+                as Map<String, dynamic>;
         entry.value(state);
         final corrupt = jsonEncode(state);
         await primary.writeAsString(corrupt);
@@ -1532,17 +1679,98 @@ void main() {
 
         expect(store.observed.containsKey(folderKey), isTrue);
         expect(store.pendingUnavailableDomains, isEmpty);
-        expect(store.outbox.length, 1);
+        expect(store.pendingBatchIds, [batch.id]);
+        expect(store.pendingBatch(batch.id).id, batch.id);
+        expect(store.legacyCheckpointInventory, isNull);
 
-        // Subsequent save migrates cleanly to schemaVersion 2
+        // Migration is one-shot: legacy backups remain untouched, and all
+        // durable records plus the snapshot reference survive process restart.
         await store.save();
-        final migrated =
-            jsonDecode(await File('${tempDir.path}/state.json').readAsString())
-                as Map<String, dynamic>;
-        expect(migrated['schemaVersion'], 2);
-        expect(migrated['pendingUnavailableDomains'], isEmpty);
+        expect(
+          await File('${tempDir.path}/state.json').readAsString(),
+          jsonStr,
+        );
+        expect(
+          await File('${tempDir.path}/state.json.bak').readAsString(),
+          jsonStr,
+        );
+        expect(
+          await File('${tempDir.path}/merge_store.sqlite3').exists(),
+          isTrue,
+        );
+        final reopened = MergeStore(tempDir, 'device-alpha');
+        await reopened.load();
+        expect(reopened.observed[folderKey]?['name'], 'Legacy Folder');
+        expect(reopened.pendingBatchIds, [batch.id]);
+        expect(reopened.pendingBatch(batch.id).id, batch.id);
       },
     );
+    test(
+      'schema 2 migration preserves received and interrupted apply state',
+      () async {
+        final state = _legacySchema2State();
+        final key = syncRecordKey('folder', ['fixture']);
+        state['pendingApply'] = {
+          key: {'name': 'Critical'},
+        };
+        state['pendingUnavailableDomains'] = ['source'];
+        state['received'] = ['legacy-checkpoint.json'];
+        final encoded = jsonEncode(state);
+        await File('${tempDir.path}/state.json').writeAsString(encoded);
+        await File('${tempDir.path}/state.json.bak').writeAsString(encoded);
+
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+        expect(store.pendingApply, {
+          key: {'name': 'Critical'},
+        });
+        expect(store.pendingUnavailableDomains, {'source'});
+        expect(store.received, {'legacy-checkpoint.json'});
+
+        final reopened = MergeStore(tempDir, 'device-alpha');
+        await reopened.load();
+        expect(reopened.pendingApply, {
+          key: {'name': 'Critical'},
+        });
+        expect(reopened.pendingUnavailableDomains, {'source'});
+        expect(reopened.received, {'legacy-checkpoint.json'});
+      },
+    );
+
+    test('checkpoint migration inventory is durable and frozen', () async {
+      final store = MergeStore(tempDir, 'device-alpha');
+      await store.load();
+      expect(store.legacyCheckpointInventory, isNull);
+
+      final inventory = {'legacy/checkpoint.json': List.filled(64, 'a').join()};
+      await store.completeCheckpointMigration(inventory);
+      expect(store.legacyCheckpointInventory, inventory);
+      await expectLater(
+        store.completeCheckpointMigration({'different.json': 'different'}),
+        throwsStateError,
+      );
+      final importedInventory = {
+        ...inventory,
+        'newly-imported.json': 'new-digest',
+      };
+      await store.completeCheckpointMigration(
+        importedInventory,
+        acceptChanges: true,
+      );
+      expect(store.legacyCheckpointInventory, importedInventory);
+
+      final reopened = MergeStore(tempDir, 'device-alpha');
+      await reopened.load();
+      expect(reopened.legacyCheckpointInventory, importedInventory);
+
+      final emptyDirectory = Directory('${tempDir.path}/empty-inventory');
+      final emptyStore = MergeStore(emptyDirectory, 'device-beta');
+      await emptyStore.load();
+      await emptyStore.completeCheckpointMigration({});
+      final emptyReopened = MergeStore(emptyDirectory, 'device-beta');
+      await emptyReopened.load();
+      expect(emptyReopened.legacyCheckpointInventory, isEmpty);
+    });
 
     test(
       'scoped capture with unavailableDomains prevents false tombstones and preserves baseline',

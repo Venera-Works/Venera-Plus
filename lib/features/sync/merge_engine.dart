@@ -554,6 +554,7 @@ class MergeDocument {
   }
 
   Map<String, int> get vclock => Map.unmodifiable(_vclock);
+  Iterable<String> get recordKeys => _records.keys;
 
   bool dominates(MergeDocument other) =>
       other._vclock.entries.every(
@@ -817,6 +818,74 @@ class MergeDocument {
     return values.first;
   }
 
+  int _compareProgressCandidates(String leftId, String rightId) {
+    final left = MergeDot.parse(leftId);
+    final right = MergeDot.parse(rightId);
+    final counter = left.counter.compareTo(right.counter);
+    return counter != 0 ? counter : left.actor.compareTo(right.actor);
+  }
+
+  bool _isProgressInteger(Object? value) =>
+      value is num && value.isFinite && value == value.toInt();
+
+  bool _sameProgressPosition(
+    Map<String, Object?> left,
+    Map<String, Object?> right,
+  ) {
+    if (left.length != right.length) return false;
+    for (final entry in left.entries) {
+      if (entry.key == 'time') continue;
+      if (!right.containsKey(entry.key) ||
+          !syncValuesEqual(entry.value, right[entry.key])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  MapEntry<String, Object?>? _compatibleProgressWinner(_Cell cell) {
+    if (cell.values.length < 2) return null;
+    Map<String, Object?>? position;
+    MapEntry<String, Object?>? winner;
+    var winnerTime = -1;
+    for (final entry in cell.values.entries) {
+      final payload = _map(entry.value);
+      if (payload['deleted'] != false) return null;
+      final rawProgress = payload['value'];
+      if (rawProgress is! Map) return null;
+      final progress = _map(rawProgress);
+      if (!progress.containsKey('ep') ||
+          !progress.containsKey('page') ||
+          !progress.containsKey('group') ||
+          !progress.containsKey('time')) {
+        return null;
+      }
+      if (!_isProgressInteger(progress['ep']) ||
+          !_isProgressInteger(progress['page']) ||
+          (progress['group'] != null &&
+              !_isProgressInteger(progress['group'])) ||
+          !_isProgressInteger(progress['time'])) {
+        return null;
+      }
+      final rawTime = progress['time'] as num;
+      if (rawTime < 0 || rawTime > 8640000000000000) return null;
+      if (position == null) {
+        position = progress;
+      } else if (!_sameProgressPosition(position, progress)) {
+        return null;
+      }
+      final time = rawTime.toInt();
+      if (winner == null ||
+          time > winnerTime ||
+          (time == winnerTime &&
+              _compareProgressCandidates(entry.key, winner.key) > 0)) {
+        winner = entry;
+        winnerTime = time;
+      }
+    }
+    return winner;
+  }
+
   SyncRecords materialize({SyncRecords? preferred}) {
     final result = <String, Map<String, Object?>>{};
     for (final entry in _records.entries) {
@@ -825,8 +894,14 @@ class MergeDocument {
       final fields = <String, Object?>{};
       for (final field in record.fields.entries) {
         if (field.value.values.isEmpty) continue;
+        final automaticProgress =
+            _domain(entry.key) == 'history' && field.key == 'progress'
+            ? _compatibleProgressWinner(field.value)
+            : null;
         final payload = _map(
-          _choose(field.value, preferred?[entry.key], field.key).value,
+          (automaticProgress ??
+                  _choose(field.value, preferred?[entry.key], field.key))
+              .value,
         );
         if (payload['deleted'] == false)
           fields[field.key] = canonicalizeSyncValue(payload['value']);
@@ -879,6 +954,11 @@ class MergeDocument {
         final cell = record.fields[field]!;
         if (cell.values.values.map(canonicalSyncJson).toSet().length <= 1)
           continue;
+        if (field == 'progress' &&
+            _domain(key) == 'history' &&
+            _compatibleProgressWinner(cell) != null) {
+          continue;
+        }
         final ids = cell.values.keys.toList()..sort();
         result.add(
           MergeConflict(
@@ -945,6 +1025,46 @@ class MergeDocument {
       }
     }
     return result;
+  }
+
+  List<MergeConflictResolution> preferredSettingResolutions(String? actor) {
+    if (actor == null || actor.isEmpty) return const [];
+    final resolutions = <MergeConflictResolution>[];
+    for (final conflict in conflicts) {
+      if (conflict.field == 'presence' ||
+          conflict.candidates.any((candidate) => candidate.isDeleted)) {
+        continue;
+      }
+      try {
+        if (syncRecordDomain(conflict.recordKey) != 'setting') continue;
+      } catch (_) {
+        continue;
+      }
+      final actorCandidates = conflict.candidates
+          .where((candidate) => candidate.actor == actor)
+          .toList(growable: false);
+      if (actorCandidates.length != 1) continue;
+      final candidate = actorCandidates.single;
+      if (syncCandidatePreviewIsProtected(
+        domain: 'setting',
+        field: conflict.field,
+        recordKey: conflict.recordKey,
+      )) {
+        continue;
+      }
+      resolutions.add(
+        MergeConflictResolution(
+          recordKey: conflict.recordKey,
+          field: conflict.field,
+          candidateId: candidate.id,
+          expectedCandidateIds: Set.unmodifiable(
+            conflict.candidates.map((item) => item.id),
+          ),
+          expectedCandidateFingerprint: conflict.candidateFingerprint,
+        ),
+      );
+    }
+    return List.unmodifiable(resolutions);
   }
 
   void resolve(

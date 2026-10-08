@@ -239,8 +239,9 @@ Future<void> init() async {
   }
   await _checkOldConfigs();
   final dataSync = DataSync();
-  configureComicSourceDataSavedHandler(() async => dataSync.onDataChanged());
-  CookieJarSql.registerCookiesChangedHandler(dataSync.onDataChanged);
+  configureComicSourceDataSavedHandler(
+    () async => dataSync.onDataChanged(domains: {'source', 'sourceSession'}),
+  );
   startBangumiAfterDataSync(
     waitForStartup: dataSync.waitForStartupMerge,
     waitForDownload: dataSync.waitForDownload,

@@ -261,6 +261,264 @@ void main() {
     });
 
     test(
+      'same-position history progress coalesces by the greatest whole-candidate time',
+      () {
+        final key = syncRecordKey('history', ['comic-progress', 0]);
+        final common = MergeDocument()
+          ..captureLocal('seed', {}, {
+            key: {
+              'title': 'Progress',
+              'readDurationMs': 0,
+              'progress': {
+                'ep': 3,
+                'page': 12,
+                'group': 2,
+                'time': 10,
+                'marker': 'unchanged',
+              },
+            },
+          });
+        final deviceA = common.clone();
+        final deviceB = common.clone();
+        final previousA = deviceA.materialize();
+        final currentA = cloneSyncRecords(previousA);
+        currentA[key]!['progress'] = {
+          'ep': 3,
+          'page': 12,
+          'group': 2,
+          'time': 100,
+          'marker': 'unchanged',
+        };
+        deviceA.captureLocal('device-a', previousA, currentA);
+        final previousB = deviceB.materialize();
+        final currentB = cloneSyncRecords(previousB);
+        currentB[key]!['progress'] = {
+          'ep': 3,
+          'page': 12,
+          'group': 2,
+          'time': 200,
+          'marker': 'unchanged',
+        };
+        deviceB.captureLocal('device-b', previousB, currentB);
+        deviceA.merge(deviceB);
+
+        final reread = MergeDocument.fromJson(deviceA.toJson());
+        expect(
+          reread.conflicts.where((conflict) => conflict.field == 'progress'),
+          isEmpty,
+        );
+        expect(reread.materialize()[key]?['progress'], {
+          'ep': 3,
+          'page': 12,
+          'group': 2,
+          'time': 200,
+          'marker': 'unchanged',
+        });
+        expect(reread.materialize()[key]?['readDurationMs'], 0);
+      },
+    );
+
+    test(
+      'different progress group, invalid time, and field deletion remain explicit conflicts',
+      () {
+        final key = syncRecordKey('history', ['comic-progress-conflict', 0]);
+        final common = MergeDocument()
+          ..captureLocal('seed', {}, {
+            key: {
+              'title': 'Progress',
+              'readDurationMs': 0,
+              'progress': {'ep': 3, 'page': 12, 'group': 2, 'time': 10},
+            },
+          });
+        final groupA = common.clone();
+        final groupB = common.clone();
+        final previousA = groupA.materialize();
+        final currentA = cloneSyncRecords(previousA);
+        currentA[key]!['progress'] = {
+          'ep': 3,
+          'page': 12,
+          'group': 2,
+          'time': 100,
+        };
+        groupA.captureLocal('group-a', previousA, currentA);
+        final previousB = groupB.materialize();
+        final currentB = cloneSyncRecords(previousB);
+        currentB[key]!['progress'] = {
+          'ep': 3,
+          'page': 12,
+          'group': 4,
+          'time': 200,
+        };
+        groupB.captureLocal('group-b', previousB, currentB);
+        groupA.merge(groupB);
+        final groupConflict = groupA.conflicts.singleWhere(
+          (conflict) => conflict.field == 'progress',
+        );
+        expect(groupConflict.candidates, hasLength(2));
+        expect(
+          MergeDocument.fromJson(
+            groupA.toJson(),
+          ).conflicts.any((conflict) => conflict.field == 'progress'),
+          isTrue,
+        );
+        expect(
+          groupA.materialize()[key]?['progress'],
+          anyOf(
+            {'ep': 3, 'page': 12, 'group': 2, 'time': 100},
+            {'ep': 3, 'page': 12, 'group': 4, 'time': 200},
+          ),
+        );
+
+        final invalidA = common.clone();
+        final invalidB = common.clone();
+        final invalidPreviousA = invalidA.materialize();
+        final invalidCurrentA = cloneSyncRecords(invalidPreviousA);
+        invalidCurrentA[key]!['progress'] = {
+          'ep': 3,
+          'page': 12,
+          'group': 2,
+          'time': 100.5,
+        };
+        invalidA.captureLocal('invalid-a', invalidPreviousA, invalidCurrentA);
+        final invalidPreviousB = invalidB.materialize();
+        final invalidCurrentB = cloneSyncRecords(invalidPreviousB);
+        invalidCurrentB[key]!['progress'] = {
+          'ep': 3,
+          'page': 12,
+          'group': 2,
+          'time': 200.5,
+        };
+        invalidB.captureLocal('invalid-b', invalidPreviousB, invalidCurrentB);
+        invalidA.merge(invalidB);
+        expect(
+          invalidA.conflicts.any((conflict) => conflict.field == 'progress'),
+          isTrue,
+        );
+
+        final invalidPositionA = common.clone();
+        final invalidPositionB = common.clone();
+        final previousPositionA = invalidPositionA.materialize();
+        final currentPositionA = cloneSyncRecords(previousPositionA);
+        currentPositionA[key]!['progress'] = {
+          'ep': 3,
+          'page': '12',
+          'group': 2,
+          'time': 100,
+        };
+        invalidPositionA.captureLocal(
+          'invalid-position-a',
+          previousPositionA,
+          currentPositionA,
+        );
+        final previousPositionB = invalidPositionB.materialize();
+        final currentPositionB = cloneSyncRecords(previousPositionB);
+        currentPositionB[key]!['progress'] = {
+          'ep': 3,
+          'page': '12',
+          'group': 2,
+          'time': 200,
+        };
+        invalidPositionB.captureLocal(
+          'invalid-position-b',
+          previousPositionB,
+          currentPositionB,
+        );
+        invalidPositionA.merge(invalidPositionB);
+        expect(
+          invalidPositionA.conflicts.any(
+            (conflict) => conflict.field == 'progress',
+          ),
+          isTrue,
+        );
+
+        final edit = common.clone();
+        final delete = common.clone();
+        final previousEdit = edit.materialize();
+        final currentEdit = cloneSyncRecords(previousEdit);
+        currentEdit[key]!['progress'] = {
+          'ep': 3,
+          'page': 12,
+          'group': 2,
+          'time': 300,
+        };
+        edit.captureLocal('progress-edit', previousEdit, currentEdit);
+        final previousDelete = delete.materialize();
+        final currentDelete = cloneSyncRecords(previousDelete);
+        currentDelete[key]!.remove('progress');
+        delete.captureLocal('progress-delete', previousDelete, currentDelete);
+        edit.merge(delete);
+        final deleteConflict = edit.conflicts.singleWhere(
+          (conflict) => conflict.field == 'progress',
+        );
+        expect(
+          deleteConflict.candidates.any((candidate) => candidate.isDeleted),
+          isTrue,
+        );
+        expect(edit.materialize()[key]?['progress'], isNotNull);
+      },
+    );
+
+    test(
+      'preferred setting resolutions choose only one live unprotected candidate per actor',
+      () {
+        final ordinaryKey = syncRecordKey('setting', ['themeMode']);
+        final protectedKey = syncRecordKey('setting', ['account', 'token']);
+        final deletedFieldKey = syncRecordKey('setting', ['deletedField']);
+        final deletedRecordKey = syncRecordKey('setting', ['deletedRecord']);
+        final initial = <String, Map<String, Object?>>{
+          ordinaryKey: {'value': 'system'},
+          protectedKey: {'value': 'initial-secret'},
+          deletedFieldKey: {'value': 'initial'},
+          deletedRecordKey: {'value': 'initial'},
+        };
+        final common = MergeDocument()..captureLocal('seed', {}, initial);
+        final deviceA = common.clone();
+        final deviceB = common.clone();
+        final previousA = deviceA.materialize();
+        final currentA = cloneSyncRecords(previousA);
+        currentA[ordinaryKey]!['value'] = 'dark';
+        currentA[protectedKey]!['value'] = 'secret-a';
+        currentA[deletedFieldKey]!.remove('value');
+        currentA.remove(deletedRecordKey);
+        deviceA.captureLocal('device-a', previousA, currentA);
+        final previousB = deviceB.materialize();
+        final currentB = cloneSyncRecords(previousB);
+        currentB[ordinaryKey]!['value'] = 'light';
+        currentB[protectedKey]!['value'] = 'secret-b';
+        currentB[deletedFieldKey]!['value'] = 'restored';
+        currentB[deletedRecordKey]!['value'] = 'edited';
+        deviceB.captureLocal('device-b', previousB, currentB);
+        deviceA.merge(deviceB);
+
+        final choices = deviceA.preferredSettingResolutions('device-a');
+        expect(choices, hasLength(1));
+        expect(choices.single.recordKey, ordinaryKey);
+        expect(choices.single.field, 'value');
+        expect(choices.single.candidateId, contains('device-a:'));
+        expect(
+          deviceA
+              .preferredSettingResolutions('device-b')
+              .map((choice) => choice.recordKey),
+          [ordinaryKey],
+          reason:
+              'Remembering a device must not automatically reject deletion.',
+        );
+        final ordinaryConflict = deviceA.conflicts.singleWhere(
+          (conflict) => conflict.recordKey == ordinaryKey,
+        );
+        expect(choices.single.expectedCandidateIds, {
+          for (final candidate in ordinaryConflict.candidates) candidate.id,
+        });
+        expect(
+          choices.single.expectedCandidateFingerprint,
+          ordinaryConflict.candidateFingerprint,
+        );
+        expect(deviceA.preferredSettingResolutions(null), isEmpty);
+        expect(deviceA.preferredSettingResolutions('missing-device'), isEmpty);
+      },
+    );
+
+    test(
       'reading duration: legacy base deduplication and multi-device positive increments',
       () {
         final key = syncRecordKey('history', ['comic-555', 0]);

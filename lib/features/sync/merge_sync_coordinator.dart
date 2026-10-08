@@ -7,15 +7,16 @@ import 'package:uuid/uuid.dart';
 
 import '../../foundation/app.dart';
 import '../../foundation/appdata.dart';
+import '../../foundation/appdata_sync_policy.dart';
 import '../../foundation/log.dart';
 import '../../foundation/res.dart';
-import '../../foundation/sync_records.dart';
 import '../../network/webdav.dart';
 import '../favorites/favorites.dart';
 import '../history/history.dart';
 import 'data_sync.dart';
 import 'legacy_sync_reader.dart';
 import 'merge_remote.dart';
+import 'merge_snapshot.dart';
 import 'merge_store.dart';
 import 'sync_preferences_adapter.dart';
 
@@ -74,6 +75,81 @@ class MergeSyncCoordinator {
   int Function()? getGenerationOverride;
 
   int _getGeneration() => getGenerationOverride?.call() ?? 0;
+
+  static const _favoriteDomains = {'folder', 'favorite', 'favoriteRole'};
+  static const _historyDomains = {'history', 'historyChapter', 'imageFavorite'};
+  static const _preferenceDomains = {
+    'setting',
+    'search',
+    'cookies',
+    'source',
+    'sourceSession',
+  };
+  final Set<String> _dirtyDomains = {...appdataSyncDomains};
+  final Set<String> _changedRecordKeys = {};
+  SyncLocalSnapshot? _cachedSnapshot;
+  int? _capturedGeneration;
+  bool _legacyChangesDetected = false;
+  bool get legacyChangesDetected => _legacyChangesDetected;
+  int get pendingChangeCount => store.pendingRecordCount;
+  bool _counterReconciliationComplete = false;
+
+  /// Hints only narrow reads; startup, explicit checks and failed guards still
+  /// reconcile the entire profile so external file edits cannot be missed.
+  void markDirty([Set<String>? domains]) {
+    _dirtyDomains.addAll(domains ?? appdataSyncDomains);
+    if (_dirtyDomains.any(_favoriteDomains.contains)) {
+      _dirtyDomains.addAll(_favoriteDomains);
+    }
+    if (_dirtyDomains.any(_historyDomains.contains)) {
+      _dirtyDomains.addAll(_historyDomains);
+    }
+    if (_dirtyDomains.contains('source') ||
+        _dirtyDomains.contains('sourceSession')) {
+      _dirtyDomains.addAll({'source', 'sourceSession'});
+    }
+  }
+
+  Map<String, int> get changedRecordCounts {
+    final result = <String, int>{};
+    for (final key in _changedRecordKeys) {
+      result.update(
+        syncRecordDomain(key),
+        (count) => count + 1,
+        ifAbsent: () => 1,
+      );
+    }
+    return Map.unmodifiable(result);
+  }
+
+  Set<String> _recordChanges(SyncRecords before, SyncRecords after) {
+    final domains = <String>{};
+    for (final key in {...before.keys, ...after.keys}) {
+      if (!preferencesAdapter.shouldObserveRecord(key) ||
+          unavailableDomains.contains(syncRecordDomain(key))) {
+        continue;
+      }
+      if (!syncValuesEqual(before[key], after[key])) {
+        _changedRecordKeys.add(key);
+        domains.add(syncRecordDomain(key));
+      }
+    }
+    return domains;
+  }
+
+  /// Durable local preflight. A redundant UI notification never requires a
+  /// directory listing or data upload merely to discover that nothing changed.
+  Future<bool> captureLocalChanges() async {
+    _changedRecordKeys.clear();
+    if (store.needsRecovery || store.pendingApply != null) {
+      await startupRecovery();
+    }
+    final captured = await _captureStable();
+    if (captured.snapshot.needsSourceNormalization) {
+      await _normalizeSourcesLocally(captured);
+    }
+    return store.pendingBatchIds.isNotEmpty;
+  }
 
   List<SyncSourceIssue> _localSourceIssues = const [];
   Set<String> _localUnavailableDomains = const {};
@@ -188,42 +264,68 @@ class MergeSyncCoordinator {
     return id;
   }
 
-  /// Exports current local snapshot across all business domains.
-  /// Throws immediately if any domain export fails, preventing partial DTOs and accidental tombstones.
-  Future<SyncLocalSnapshot> exportAllSnapshot() async {
-    final records = <String, Map<String, Object?>>{};
+  /// Exports a complete snapshot, reusing domains not invalidated by a business
+  /// change. Public callers get a fresh reconciliation unless explicitly cached.
+  Future<SyncLocalSnapshot> exportAllSnapshot({bool force = true}) async {
+    if (force || _cachedSnapshot == null) markDirty();
+    if (_dirtyDomains.isEmpty) return _cachedSnapshot!;
+    final requested = Set<String>.of(_dirtyDomains);
+    final previous = _cachedSnapshot;
+    final records = <String, Map<String, Object?>>{
+      if (previous != null) ...previous.records,
+    }..removeWhere((key, _) => requested.contains(syncRecordDomain(key)));
 
-    // 1. Favorites
-    final favRecords = exportFavoritesOverride != null
-        ? exportFavoritesOverride!()
-        : LocalFavoritesManager().exportSyncRecords();
-    records.addAll(favRecords);
-
-    // 2. History & Image Favorites
-    final histRecords = exportHistoryOverride != null
-        ? await exportHistoryOverride!()
-        : await HistoryManager().exportSyncRecords();
-    records.addAll(histRecords);
-
-    // 3. Preferences, cookies, sources
-    final SyncLocalSnapshot prefSnapshot;
-    if (exportPreferencesOverride != null) {
-      final prefRecords = await exportPreferencesOverride!();
-      prefSnapshot = SyncLocalSnapshot(records: prefRecords);
-    } else {
-      prefSnapshot = await preferencesAdapter.exportSyncSnapshot(
-        recoveryRecords: _approvedRecoveryRecords(),
+    if (requested.any(_favoriteDomains.contains) &&
+        preferencesAdapter.isDomainEnabled('folder')) {
+      records.addAll(
+        exportFavoritesOverride != null
+            ? exportFavoritesOverride!()
+            : LocalFavoritesManager().exportSyncRecords(),
       );
     }
-    records.addAll(prefSnapshot.records);
+    if (requested.any(_historyDomains.contains) &&
+        (preferencesAdapter.isDomainEnabled('history') ||
+            preferencesAdapter.isDomainEnabled('imageFavorite'))) {
+      records.addAll(
+        exportHistoryOverride != null
+            ? await exportHistoryOverride!()
+            : await HistoryManager().exportSyncRecords(),
+      );
+    }
 
-    return SyncLocalSnapshot(
+    var sourceVariants =
+        previous?.sourceVariants ??
+        const <String, List<Map<String, Object?>>>{};
+    var needsNormalization = previous?.needsSourceNormalization ?? false;
+    var issues = previous?.sourceIssues ?? const <SyncSourceIssue>[];
+    var unavailable = previous?.unavailableDomains ?? const <String>{};
+    final preferenceDomains = requested.intersection(_preferenceDomains);
+    if (preferenceDomains.isNotEmpty) {
+      final snapshot = exportPreferencesOverride != null
+          ? SyncLocalSnapshot(records: await exportPreferencesOverride!())
+          : await preferencesAdapter.exportSyncSnapshot(
+              recoveryRecords: _approvedRecoveryRecords(),
+              domains: preferenceDomains,
+            );
+      records.addAll(snapshot.records);
+      if (preferenceDomains.contains('source') ||
+          preferenceDomains.contains('sourceSession')) {
+        sourceVariants = snapshot.sourceVariants;
+        needsNormalization = snapshot.needsSourceNormalization;
+        issues = snapshot.sourceIssues;
+        unavailable = snapshot.unavailableDomains;
+      }
+    }
+    final snapshot = SyncLocalSnapshot(
       records: records,
-      sourceVariants: prefSnapshot.sourceVariants,
-      needsSourceNormalization: prefSnapshot.needsSourceNormalization,
-      sourceIssues: prefSnapshot.sourceIssues,
-      unavailableDomains: prefSnapshot.unavailableDomains,
+      sourceVariants: sourceVariants,
+      needsSourceNormalization: needsNormalization,
+      sourceIssues: issues,
+      unavailableDomains: unavailable,
     );
+    _cachedSnapshot = snapshot;
+    _dirtyDomains.removeAll(requested);
+    return snapshot;
   }
 
   /// Applies incoming records atomically across all domains.
@@ -238,15 +340,29 @@ class MergeSyncCoordinator {
   }) async {
     void runSynchronousCommits() {
       beforeCommit?.call();
-      if (applyFavoritesOverride != null) {
-        applyFavoritesOverride!(records);
-      } else {
-        LocalFavoritesManager().applySyncRecords(records);
+      if (preferencesAdapter.isDomainEnabled('folder')) {
+        if (applyFavoritesOverride != null) {
+          applyFavoritesOverride!(records);
+        } else {
+          LocalFavoritesManager().applySyncRecords(records);
+        }
       }
-      if (applyHistoryOverride != null) {
-        applyHistoryOverride!(records);
-      } else {
-        HistoryManager().applySyncRecords(records);
+      final applyHistory = preferencesAdapter.isDomainEnabled('history');
+      final applyImages = preferencesAdapter.isDomainEnabled('imageFavorite');
+      if (applyHistory || applyImages) {
+        if (applyHistoryOverride != null) {
+          applyHistoryOverride!({
+            for (final entry in records.entries)
+              if (preferencesAdapter.shouldObserveRecord(entry.key))
+                entry.key: entry.value,
+          });
+        } else {
+          HistoryManager().applySyncRecords(
+            records,
+            applyHistory: applyHistory,
+            applyImageFavorites: applyImages,
+          );
+        }
       }
     }
 
@@ -273,8 +389,13 @@ class MergeSyncCoordinator {
   /// generation stayed unchanged throughout, never adopt the ending generation.
   Future<({SyncLocalSnapshot snapshot, int generation})> _stableExport() async {
     for (var attempt = 0; attempt < 16; attempt++) {
+      if (_capturedGeneration != null &&
+          _capturedGeneration != _getGeneration() &&
+          _dirtyDomains.isEmpty) {
+        markDirty();
+      }
       final generation = _getGeneration();
-      final raw = await exportAllSnapshot();
+      final raw = await exportAllSnapshot(force: false);
       if (_getGeneration() == generation) {
         final projected = SyncLocalSnapshot(
           records: _project(raw.records),
@@ -283,8 +404,10 @@ class MergeSyncCoordinator {
           sourceIssues: raw.sourceIssues,
           unavailableDomains: raw.unavailableDomains,
         );
+        _capturedGeneration = generation;
         return (snapshot: projected, generation: generation);
       }
+      markDirty();
     }
     throw ConcurrentEditException('Local data did not stabilize for export');
   }
@@ -292,7 +415,12 @@ class MergeSyncCoordinator {
   Future<({SyncLocalSnapshot snapshot, int generation})> _captureStable({
     MergeDocument? observation,
   }) async {
-    if (exportPreferencesOverride == null) {
+    if (exportPreferencesOverride == null &&
+        (preferencesAdapter.isDomainEnabled('source') ||
+            preferencesAdapter.isDomainEnabled('sourceSession')) &&
+        (_cachedSnapshot == null ||
+            _dirtyDomains.contains('source') ||
+            _dirtyDomains.contains('sourceSession'))) {
       for (var attempt = 0; attempt < 16; attempt++) {
         final gen = _getGeneration();
         try {
@@ -315,9 +443,11 @@ class MergeSyncCoordinator {
     _localUnavailableDomains = Set<String>.from(
       stable.snapshot.unavailableDomains,
     );
+    final previous = _project(store.observed);
+    _recordChanges(previous, stable.snapshot.records);
     await store.capture(
       stable.snapshot.records,
-      previous: _project(store.observed),
+      previous: previous,
       observation: observation,
       sourceVariants: stable.snapshot.sourceVariants,
       unavailableDomains: unavailableDomains,
@@ -351,10 +481,27 @@ class MergeSyncCoordinator {
       final desired = alreadyStaged
           ? store.pendingApply!
           : store.document.materialize(preferred: store.observed);
-      final needsBusinessApply = !syncValuesEqual(
-        _project(desired),
+      final desiredRecords = _project(desired);
+      final appliedDomains = _recordChanges(
         _project(store.observed),
+        desiredRecords,
       );
+      final needsBusinessApply = appliedDomains.isNotEmpty;
+      if (!alreadyStaged &&
+          !needsBusinessApply &&
+          unavailable.isEmpty &&
+          syncValuesEqual(
+            store.localObservation.toJson(),
+            store.document
+                .filterRecords(preferencesAdapter.shouldObserveRecord)
+                .toJson(),
+          )) {
+        if (_getGeneration() != generation) {
+          markDirty();
+          continue;
+        }
+        return;
+      }
       if (!alreadyStaged) {
         await store.stageApply(desired, unavailableDomains: unavailable);
       }
@@ -370,11 +517,13 @@ class MergeSyncCoordinator {
             unavailableDomains: unavailable,
           );
           await _finishApply();
+          markDirty(appliedDomains);
         } else {
           guard();
         }
       } on ConcurrentEditException {
         await store.cancelApply();
+        markDirty();
         continue;
       }
       await store.completeApply(
@@ -418,6 +567,7 @@ class MergeSyncCoordinator {
           unavailableDomains: current.snapshot.unavailableDomains,
         );
         await _finishApply();
+        markDirty({'source', 'sourceSession'});
       } on ConcurrentEditException {
         await store.cancelApply();
         continue;
@@ -438,7 +588,9 @@ class MergeSyncCoordinator {
   /// A pending target may have been partly applied before a crash. Preserve the
   /// real profile as a concurrent branch before choosing any replacement target.
   Future<void> startupRecovery() async {
+    markDirty();
     await _loadLegacyIssuesIfNeeded();
+    _counterReconciliationComplete = false;
     await store.load();
     await reconcileBackupRecoveryIfNeeded();
     if (store.pendingApply != null) {
@@ -471,6 +623,7 @@ class MergeSyncCoordinator {
           unavailableDomains: effectiveUnavailable,
         );
         await _finishApply();
+        markDirty();
       } on ConcurrentEditException {
         await store.cancelApply();
         await _applyMerged(store.localObservation);
@@ -502,8 +655,8 @@ class MergeSyncCoordinator {
 
     await _loadLegacyIssuesIfNeeded();
 
-    // Validate namespace evidence, but never let a newly published local v2 file
-    // substitute for reading legacy roots during this endpoint's first cutover.
+    // A newly published checkpoint cannot substitute for reading legacy roots
+    // during this endpoint's first archive cutover.
     final remoteDocs = <MergeDocument>[];
     for (final entry in await remote.list(latestOnly: false)) {
       try {
@@ -515,7 +668,10 @@ class MergeSyncCoordinator {
           }
         }
       } on MergeRemoteCorruptException catch (error) {
-        Log.error('MergeSyncCoordinator', 'Uncommitted v2 artifact: $error');
+        Log.error(
+          'MergeSyncCoordinator',
+          'Uncommitted snapshot artifact: $error',
+        );
       }
     }
 
@@ -661,17 +817,23 @@ class MergeSyncCoordinator {
   /// If state was restored from backup, reconciles highest known actor counter from
   /// remote checkpoints before capturing new local edits.
   Future<void> reconcileBackupRecoveryIfNeeded() async {
-    if (!store.recoveredFromBackup) return;
+    if (!store.recoveredFromBackup || _counterReconciliationComplete) return;
 
     try {
       final entries = await remote.list(latestOnly: false);
+      final legacyEntries = await remote.listLegacyCheckpoints();
       var highest = 0;
       // Reserve even an uncommitted OWN filename's allocation conservatively.
       // Only verified contents may enter causal observation or business state.
-      for (final entry in entries.where((entry) => entry.actor == actor)) {
+      for (final (entry, legacy) in [
+        for (final item in entries) (item, false),
+        for (final item in legacyEntries) (item, true),
+      ].where((item) => item.$1.actor == actor)) {
         if (entry.counter > highest) highest = entry.counter;
         try {
-          final batch = await remote.download(entry);
+          final batch = legacy
+              ? await remote.downloadLegacyCheckpoint(entry)
+              : await remote.download(entry);
           store.document.merge(batch.document);
           await store.markReceived(entry.filename);
         } on MergeRemoteCorruptException catch (error) {
@@ -683,6 +845,7 @@ class MergeSyncCoordinator {
       }
       store.reconcileActorCounter(actor, highest);
       await store.save();
+      _counterReconciliationComplete = true;
     } catch (e) {
       throw StateError(
         'Cannot verify remote state after restoring from local backup: $e. '
@@ -691,74 +854,174 @@ class MergeSyncCoordinator {
     }
   }
 
-  /// Executes synchronization according to [direction].
-  Future<Res<bool>> performSync({required SyncDirection direction}) async {
+  /// Reads the highest complete checkpoint for each actor, retaining same-counter
+  /// collisions and falling back past incomplete uploads without swallowing I/O.
+  Future<bool> _mergeRemoteEntries(
+    List<MergeRemoteEntry> entries, {
+    bool legacy = false,
+    bool requireCompleteHeads = false,
+  }) async {
+    final byActor = <String, List<MergeRemoteEntry>>{};
+    for (final entry in entries) {
+      byActor.putIfAbsent(entry.actor, () => []).add(entry);
+    }
+    final received = store.received;
+    var changed = false;
+    for (final candidates in byActor.values) {
+      candidates.sort((a, b) => b.counter.compareTo(a.counter));
+      int? highestSucceeded;
+      int? highestIncomplete;
+      for (final entry in candidates) {
+        if (highestSucceeded != null && entry.counter < highestSucceeded) {
+          continue;
+        }
+        if (received.contains(entry.filename)) {
+          highestSucceeded = entry.counter;
+          continue;
+        }
+        try {
+          final batch = legacy
+              ? await remote.downloadLegacyCheckpoint(entry)
+              : await remote.download(entry);
+          store.document.merge(batch.document);
+          await store.markReceived(entry.filename);
+          highestSucceeded = entry.counter;
+          changed = true;
+        } on MergeRemoteCorruptException catch (error) {
+          highestIncomplete ??= entry.counter;
+          Log.error(
+            'MergeSyncCoordinator',
+            'Incomplete checkpoint ${entry.filename}: $error',
+          );
+        }
+      }
+      if (requireCompleteHeads &&
+          highestIncomplete != null &&
+          (highestSucceeded == null || highestIncomplete >= highestSucceeded)) {
+        throw StateError(
+          'The latest legacy checkpoint is incomplete. Finish or recover the '
+          'older device synchronization before migrating; legacy files have '
+          'not been deleted or marked as migrated.',
+        );
+      }
+    }
+    return changed;
+  }
+
+  /// The old namespace is a migration source, not a second ongoing authority.
+  /// Explicit consent is required to import writes made by a non-upgraded peer.
+  Future<bool> _migrateCheckpointLayout({bool acceptChanges = false}) async {
+    final entries = await remote.listLegacyCheckpoints();
+    final inventory = {
+      for (final entry in entries) entry.filename: entry.digest,
+    };
+    final previous = store.legacyCheckpointInventory;
+    final unexpected =
+        previous != null &&
+        inventory.entries.any((entry) => previous[entry.key] != entry.value);
+    _legacyChangesDetected = unexpected;
+    if (unexpected && !acceptChanges) {
+      throw StateError(
+        'An older device has written to the previous sync format. Upgrade or '
+        'stop all older devices, then explicitly import legacy sync changes '
+        'from synchronization settings. No legacy data has been deleted.',
+      );
+    }
+    if (previous != null && !acceptChanges) return false;
+    await _mergeRemoteEntries(
+      entries,
+      legacy: true,
+      requireCompleteHeads: true,
+    );
+    final imported = entries.isNotEmpty && (previous == null || unexpected);
+    if (imported) {
+      // Preserve the bridge as a publication, including in download-only mode
+      // where it must remain pending until the user permits uploads.
+      // Even a retry whose files were already received must stage this bridge:
+      // an earlier interruption may have happened before enqueue or completion.
+      await store.enqueueCheckpoint();
+    }
+    await store.completeCheckpointMigration({
+      if (previous != null) ...previous,
+      ...inventory,
+    }, acceptChanges: acceptChanges);
+    _legacyChangesDetected = false;
+    return imported;
+  }
+
+  /// Executes synchronization according to direction and independent pull timing.
+  Future<Res<bool>> performSync({
+    required SyncDirection direction,
+    bool checkRemote = true,
+    bool forceCapture = true,
+    bool acceptLegacyChanges = false,
+  }) async {
+    remote.resetTransferStats();
+    if (forceCapture) {
+      _changedRecordKeys.clear();
+      markDirty();
+    }
     try {
-      await reconcileBackupRecoveryIfNeeded();
-      if (store.pendingApply != null) {
-        throw StateError('Startup recovery is required before synchronization');
+      if (store.needsRecovery || store.pendingApply != null) {
+        await startupRecovery();
+      } else {
+        await reconcileBackupRecoveryIfNeeded();
       }
       final captured = await _captureStable();
       if (captured.snapshot.needsSourceNormalization) {
         await _normalizeSourcesLocally(captured);
       }
-      await migrateLegacyIfNeeded(
-        applyToLocal: direction != SyncDirection.uploadOnly,
-      );
-
-      if (direction != SyncDirection.uploadOnly) {
-        final preMergeObservation = store.localObservation;
-        // List all candidates to avoid a newer bad/partial file masking valid older checkpoints
-        final remoteEntries = await remote.list(latestOnly: false);
-        final byActor = <String, List<MergeRemoteEntry>>{};
-        for (final entry in remoteEntries) {
-          byActor.putIfAbsent(entry.actor, () => []).add(entry);
-        }
-
-        for (final entryList in byActor.values) {
-          entryList.sort((a, b) => b.counter.compareTo(a.counter));
-          int? highestSucceededCounter;
-
-          for (final entry in entryList) {
-            if (highestSucceededCounter != null &&
-                entry.counter < highestSucceededCounter) {
-              // Older than an already-processed valid checkpoint for this actor
-              continue;
-            }
-
-            if (store.received.contains(entry.filename)) {
-              highestSucceededCounter = entry.counter;
-              continue;
-            }
-
-            try {
-              final batch = await remote.download(entry);
-              store.document.merge(batch.document);
-              await store.markReceived(entry.filename);
-              highestSucceededCounter = entry.counter;
-            } on MergeRemoteCorruptException catch (e) {
-              Log.error(
-                'MergeSyncCoordinator',
-                'Candidate ${entry.filename} is corrupt/partial: $e. '
-                    'Skipping uncommitted bad artifact to continue reading valid checkpoints.',
-              );
-              // Do not mark received; continue to next candidate to find valid older ones
-              // Only corrupt artifacts with bad SHA or truncated body are skipped.
-            }
-          }
-        }
-
-        // Apply also after a previous transfer failed: downloaded checkpoints
-        // may already be durable/received but not yet in the business stores.
-        await _applyMerged(preMergeObservation);
+      final observation = store.localObservation;
+      final needsRemoteCheck =
+          checkRemote ||
+          acceptLegacyChanges ||
+          store.legacyCheckpointInventory == null;
+      var importedLegacy = false;
+      if (needsRemoteCheck) {
+        importedLegacy = await _migrateCheckpointLayout(
+          acceptChanges: acceptLegacyChanges,
+        );
+        await migrateLegacyIfNeeded(
+          applyToLocal: direction != SyncDirection.uploadOnly,
+        );
       }
 
-      // Step 3: Publish outbox checkpoints (bidirectional or uploadOnly)
+      List<MergeRemoteEntry>? discovered;
+      if (direction != SyncDirection.uploadOnly && needsRemoteCheck) {
+        discovered = await remote.list(latestOnly: false);
+        await _mergeRemoteEntries(discovered);
+        // Rules are opt-in and limited to non-secret ordinary setting values.
+        // Capture edits that arrived while waiting for the remote before making
+        // any durable selection; the normal apply guard remains authoritative.
+        final stable = await _captureStable(observation: observation);
+        final preference = appdata.implicitData['syncPreferredSettingActor'];
+        final resolutions = store.document
+            .preferredSettingResolutions(
+              preference is String ? preference : null,
+            )
+            .where(
+              (choice) =>
+                  preferencesAdapter.shouldObserveRecord(choice.recordKey),
+            )
+            .toList();
+        if (resolutions.isNotEmpty) {
+          await store.resolveAll(
+            resolutions,
+            unavailableDomains: unavailableDomains,
+          );
+          await _applyMerged(observation, stagedGeneration: stable.generation);
+        } else {
+          await _applyMerged(observation);
+        }
+      }
+
       if (direction != SyncDirection.downloadOnly) {
-        await _uploadOutboxWithRecovery();
+        await _uploadOutboxWithRecovery(
+          discovered: discovered,
+          ensurePublished: needsRemoteCheck,
+        );
       }
-
-      return const Res(true);
+      return Res(!acceptLegacyChanges || importedLegacy);
     } catch (e, s) {
       Log.error('MergeSyncCoordinator', 'performSync error: $e\n$s');
       return Res.error(e.toString());
@@ -783,9 +1046,14 @@ class MergeSyncCoordinator {
           expectedCandidateFingerprint: resolution.expectedCandidateFingerprint,
         ),
     ]);
+    remote.resetTransferStats();
     var batchCommitted = false;
     var applyCompleted = false;
     try {
+      if (store.needsRecovery || store.pendingApply != null) {
+        await startupRecovery();
+      }
+      await _migrateCheckpointLayout();
       final captured = await _captureStable();
       final observation = store.localObservation;
       await store.resolveAll(
@@ -826,39 +1094,57 @@ class MergeSyncCoordinator {
 
   /// Publishes outbox checkpoints, recovers from upload conflicts by reserving
   /// a dominating replacement checkpoint, acknowledges batches, and compacts.
-  Future<void> _uploadOutboxWithRecovery() async {
-    final priorEntries = await remote.list(latestOnly: false);
+  Future<void> _uploadOutboxWithRecovery({
+    List<MergeRemoteEntry>? discovered,
+    bool ensurePublished = true,
+  }) async {
+    if (!ensurePublished && store.pendingBatchIds.isEmpty) return;
+    final priorEntries =
+        discovered ??
+        (ensurePublished
+            ? await remote.list(latestOnly: false)
+            : const <MergeRemoteEntry>[]);
     // An already-acknowledged local store may have no outbox in the new remote
     // namespace. Seed it once unless this actor already has a published checkpoint.
-    if (store.outbox.isEmpty &&
+    if (store.pendingBatchIds.isEmpty &&
         !priorEntries.any((entry) => entry.actor == actor)) {
       await store.enqueueCheckpoint();
     }
-    MergeBatch? lastUploaded;
+    MergeSnapshot? lastUploaded;
 
-    final outboxBatches = List<MergeBatch>.from(store.outbox);
-    for (final batch in outboxBatches) {
+    final pendingIds = store.pendingBatchIds;
+    for (final id in pendingIds) {
+      // A replacement publication may subsume older queued references.
+      if (!store.pendingBatchIds.contains(id)) continue;
+      final snapshot = store.pendingSnapshot(id);
       try {
-        final uploadedPath = await remote.upload(batch);
-        await store.acknowledge(batch.id);
+        final uploadedPath = await remote.uploadSnapshot(snapshot);
+        await store.acknowledge(id);
         await store.markReceived(uploadedPath);
-        lastUploaded = batch;
+        lastUploaded = snapshot;
       } on MergeRemoteConflictException catch (e) {
         Log.error(
           'MergeSyncCoordinator',
-          'Upload conflict on ${batch.id}: $e. Reserving replacement checkpoint dominating intended batch.',
+          'Upload conflict on $id: $e. Reserving replacement checkpoint dominating intended batch.',
         );
         final replacement = await store.enqueueCheckpoint();
-        final uploadedPath = await remote.upload(replacement);
-        await store.acknowledge(batch.id);
+        final replacementSnapshot = store.pendingSnapshot(replacement.id);
+        final uploadedPath = await remote.uploadSnapshot(replacementSnapshot);
+        await store.acknowledge(id);
         await store.acknowledge(replacement.id);
         await store.markReceived(uploadedPath);
-        lastUploaded = replacement;
+        lastUploaded = replacementSnapshot;
       }
     }
 
-    if (lastUploaded != null) {
-      await remote.compact(lastUploaded, priorEntries);
+    if (lastUploaded != null && ensurePublished) {
+      await remote.compact(
+        MergeSnapshot.decode(
+          lastUploaded.serializeManifest(),
+          lastUploaded.objects,
+        ),
+        priorEntries,
+      );
     }
   }
 }

@@ -22,6 +22,7 @@ void main() {
         var direction = SyncDirection.bidirectional;
         var timing = SyncTiming.manual;
         var minutes = 30;
+        var excludedDomains = {'folder', 'favorite', 'favoriteRole'};
         await tester.pumpWidget(
           MaterialApp(
             theme: ThemeData(brightness: brightness),
@@ -38,6 +39,9 @@ void main() {
                       direction: direction,
                       timing: timing,
                       minutes: minutes,
+                      excludedDomains: excludedDomains,
+                      onExcludedDomainsChanged: (value) =>
+                          setState(() => excludedDomains = value),
                       onDirectionChanged: (value) =>
                           setState(() => direction = value),
                       onTimingChanged: (value) =>
@@ -54,10 +58,25 @@ void main() {
         expect(find.byType(DropdownButton<int>), findsNothing);
         expect(find.byType(DropdownButton<SyncDirection>), findsOneWidget);
         expect(find.byType(DropdownButton<SyncTiming>), findsOneWidget);
+        final favoriteScope = find.byKey(
+          const ValueKey('sync-scope-favorites'),
+        );
+        await tester.ensureVisible(favoriteScope);
+        expect(tester.widget<SwitchListTile>(favoriteScope).value, isFalse);
+        expect(excludedDomains, {'folder', 'favorite', 'favoriteRole'});
+        await tester.tap(favoriteScope);
+        await tester.pumpAndSettle();
+        expect(excludedDomains, isEmpty);
+        expect(tester.widget<SwitchListTile>(favoriteScope).value, isTrue);
+        await tester.tap(favoriteScope);
+        await tester.pumpAndSettle();
+        expect(excludedDomains, {'folder', 'favorite', 'favoriteRole'});
 
+        expect(tester.widget<SwitchListTile>(favoriteScope).value, isFalse);
+        await tester.ensureVisible(find.byType(DropdownButton<SyncTiming>));
         await tester.tap(find.byType(DropdownButton<SyncTiming>));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('定时').last);
+        await tester.tap(find.text('Scheduled'.tl).hitTestable().last);
         await tester.pumpAndSettle();
         expect(timing, SyncTiming.scheduled);
         expect(find.byType(DropdownButton<int>), findsOneWidget);
@@ -65,7 +84,10 @@ void main() {
         await tester.tap(find.byType(DropdownButton<int>));
         await tester.pumpAndSettle();
         await tester.tap(
-          find.text('@minutes min'.tlParams({'minutes': 60})).last,
+          find
+              .text('@minutes min'.tlParams({'minutes': '60'}))
+              .hitTestable()
+              .last,
         );
         await tester.pumpAndSettle();
         expect(minutes, 60);
