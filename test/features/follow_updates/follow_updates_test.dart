@@ -525,6 +525,8 @@ Future<void> _withLiveFavorites(
     LocalFavoritesManager.cache = null;
     manager = LocalFavoritesManager();
     await manager.init();
+    manager.createFolder('在读');
+    await manager.setReadingFolder('在读');
     await run(manager);
   } finally {
     await appdata.saveData(false);

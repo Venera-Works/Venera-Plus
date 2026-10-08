@@ -304,6 +304,7 @@ class _ExplorePageState extends State<ExplorePage>
   final Set<({String sourceKey, DiscoverySection section})> _visitedViews = {};
   bool showFB = true;
   double location = 0;
+  double _contentHorizontalDragDistance = 0;
   NaviPaneState? naviPane;
 
   ComicSource? get currentSource {
@@ -463,6 +464,34 @@ class _ExplorePageState extends State<ExplorePage>
     });
   }
 
+  void _onContentHorizontalDragStart(DragStartDetails _) {
+    _contentHorizontalDragDistance = 0;
+  }
+
+  void _onContentHorizontalDragUpdate(DragUpdateDetails details) {
+    _contentHorizontalDragDistance += details.delta.dx;
+  }
+
+  void _onContentHorizontalDragEnd(DragEndDetails details) {
+    final velocity = details.primaryVelocity;
+    final direction = velocity == null || velocity == 0
+        ? _contentHorizontalDragDistance
+        : velocity;
+    _contentHorizontalDragDistance = 0;
+
+    final source = currentSource;
+    if (source == null ||
+        !_sourceHasBrowse(source) ||
+        !_sourceHasCategories(source) ||
+        direction == 0) {
+      return;
+    }
+
+    setSection(
+      direction < 0 ? DiscoverySection.categories : DiscoverySection.browse,
+    );
+  }
+
   void onNaviItemTapped(int index) {
     if (index == 2 && naviPane?.currentPage == 2) {
       toTop();
@@ -537,8 +566,14 @@ class _ExplorePageState extends State<ExplorePage>
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
                 child: Row(
                   children: [
-                    Text("Comic Source".tl, style: ts.s18.bold),
-                    const Spacer(),
+                    Expanded(
+                      child: Text(
+                        "Comic Source".tl,
+                        style: ts.s18.bold,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
                     IconButton(
                       icon: const Icon(Icons.close),
                       onPressed: () => Navigator.pop(sheetContext),
@@ -682,9 +717,10 @@ class _ExplorePageState extends State<ExplorePage>
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final isNarrow = constraints.maxWidth < 380;
+        final isCompactLayout = constraints.maxWidth < 600 || !App.isDesktop;
 
         final sourceSelector = Material(
+          key: const ValueKey('discovery_source_selector'),
           borderRadius: BorderRadius.circular(8),
           color: context.colorScheme.surfaceContainerHighest.toOpacity(0.6),
           child: InkWell(
@@ -699,7 +735,7 @@ class _ExplorePageState extends State<ExplorePage>
                     child: Text(
                       source.name,
                       style: ts.s16.bold,
-                      maxLines: 1,
+                      maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
@@ -788,37 +824,52 @@ class _ExplorePageState extends State<ExplorePage>
           ],
         );
 
-        if (isNarrow && sectionSelector != null) {
+        final padding = EdgeInsets.fromLTRB(12, context.padding.top + 4, 12, 4);
+        if (isCompactLayout) {
           return Container(
-            padding: EdgeInsets.fromLTRB(12, context.padding.top + 4, 12, 4),
+            padding: padding,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Row(
-                  children: [
-                    Expanded(child: sourceSelector),
-                    const SizedBox(width: 8),
-                    manageMenu,
-                  ],
+                  children: App.isDesktop
+                      ? [
+                          manageMenu,
+                          const SizedBox(width: 8),
+                          Expanded(child: sourceSelector),
+                        ]
+                      : [
+                          Expanded(child: sourceSelector),
+                          const SizedBox(width: 8),
+                          manageMenu,
+                        ],
                 ),
-                const SizedBox(height: 6),
-                SizedBox(width: double.infinity, child: sectionSelector),
+                if (sectionSelector != null) ...[
+                  const SizedBox(height: 6),
+                  Center(
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: sectionSelector,
+                    ),
+                  ),
+                ],
               ],
             ),
           );
         }
 
         return Container(
-          padding: EdgeInsets.fromLTRB(12, context.padding.top + 4, 12, 4),
+          padding: padding,
           child: Row(
             children: [
+              manageMenu,
+              const SizedBox(width: 8),
               Flexible(child: sourceSelector),
               if (sectionSelector != null) ...[
                 const SizedBox(width: 8),
                 sectionSelector,
               ],
               const Spacer(),
-              manageMenu,
             ],
           ),
         );
@@ -860,6 +911,8 @@ class _ExplorePageState extends State<ExplorePage>
           key: ValueKey('browse_view_${item.sourceKey}'),
           source: itemSource,
           enabledExplorePages: _enabledExplorePages,
+          sectionSwipeEnabled:
+              _sourceHasBrowse(itemSource) && _sourceHasCategories(itemSource),
         );
       } else {
         final catData = itemSource.categoryData;
@@ -921,39 +974,46 @@ class _ExplorePageState extends State<ExplorePage>
               children: [
                 buildTopBar(context),
                 Expanded(
-                  child: NotificationListener<ScrollNotification>(
-                    onNotification: (notifications) {
-                      if (notifications.metrics.axis == Axis.horizontal) {
-                        if (!showFB) {
+                  // Let nested horizontal scrollables win the gesture arena.
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onHorizontalDragStart: _onContentHorizontalDragStart,
+                    onHorizontalDragUpdate: _onContentHorizontalDragUpdate,
+                    onHorizontalDragEnd: _onContentHorizontalDragEnd,
+                    child: NotificationListener<ScrollNotification>(
+                      onNotification: (notifications) {
+                        if (notifications.metrics.axis == Axis.horizontal) {
+                          if (!showFB) {
+                            setState(() {
+                              showFB = true;
+                            });
+                          }
+                          return true;
+                        }
+
+                        var current = notifications.metrics.pixels;
+                        var overflow = notifications.metrics.outOfRange;
+                        if (current > location && current != 0 && showFB) {
+                          setState(() {
+                            showFB = false;
+                          });
+                        } else if ((current < location - 50 || current == 0) &&
+                            !showFB) {
                           setState(() {
                             showFB = true;
                           });
                         }
-                        return true;
-                      }
-
-                      var current = notifications.metrics.pixels;
-                      var overflow = notifications.metrics.outOfRange;
-                      if (current > location && current != 0 && showFB) {
-                        setState(() {
-                          showFB = false;
-                        });
-                      } else if ((current < location - 50 || current == 0) &&
-                          !showFB) {
-                        setState(() {
-                          showFB = true;
-                        });
-                      }
-                      if ((current > location || current < location - 50) &&
-                          !overflow) {
-                        location = current;
-                      }
-                      return false;
-                    },
-                    child: MediaQuery.removePadding(
-                      context: context,
-                      removeTop: true,
-                      child: buildContentBody(context),
+                        if ((current > location || current < location - 50) &&
+                            !overflow) {
+                          location = current;
+                        }
+                        return false;
+                      },
+                      child: MediaQuery.removePadding(
+                        context: context,
+                        removeTop: true,
+                        child: buildContentBody(context),
+                      ),
                     ),
                   ),
                 ),
@@ -993,11 +1053,13 @@ class _SourceBrowseView extends StatefulWidget {
   const _SourceBrowseView({
     required this.source,
     required this.enabledExplorePages,
+    required this.sectionSwipeEnabled,
     super.key,
   });
 
   final ComicSource source;
   final List<String> enabledExplorePages;
+  final bool sectionSwipeEnabled;
 
   @override
   State<_SourceBrowseView> createState() => _SourceBrowseViewState();
@@ -1177,6 +1239,9 @@ class _SourceBrowseViewState extends AutomaticGlobalState<_SourceBrowseView>
         Expanded(
           child: TabBarView(
             controller: _tabController,
+            physics: widget.sectionSwipeEnabled
+                ? const NeverScrollableScrollPhysics()
+                : null,
             children: _pages
                 .map(
                   (p) => _SingleExplorePage(

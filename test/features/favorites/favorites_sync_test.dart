@@ -210,6 +210,8 @@ void main() {
       'two devices adding favorites concurrently co-exist without data loss',
       () async {
         await _withManager((manager) async {
+          manager.createFolder('在读');
+          await manager.setReadingFolder('在读');
           final folderId = manager.getFolderId('在读')!;
 
           // Device A added c1 locally
@@ -451,6 +453,8 @@ void main() {
       'absence of favoriteRole in full materialized view clears reading role without resurrection',
       () async {
         await _withManager((manager) async {
+          manager.createFolder('在读');
+          await manager.setReadingFolder('在读');
           expect(manager.readingFolder, equals('在读'));
           final rId = manager.readingFolderId!;
 
@@ -642,6 +646,8 @@ void main() {
       'applySyncRecords updates counts, caches, and does not fire spurious listeners on identical state',
       () async {
         await _withManager((manager) async {
+          manager.createFolder('在读');
+          await manager.setReadingFolder('在读');
           final folderId = manager.getFolderId('在读')!;
           final records = <String, Map<String, Object?>>{
             syncRecordKey('folder', [folderId]): {'name': '在读', 'order': 0},

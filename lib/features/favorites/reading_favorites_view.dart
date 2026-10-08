@@ -1,12 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/menu.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/comic_details/comic_details.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
+import 'package:venera_plus/features/favorites/favorite_actions.dart';
 import 'package:venera_plus/features/favorites/favorites_manager.dart';
 import 'package:venera_plus/features/follow_updates/follow_updates.dart';
 import 'package:venera_plus/features/reader/reader.dart';
@@ -18,7 +20,7 @@ import 'package:venera_plus/foundation/translations.dart';
 
 const _asyncDataFetchLimit = 500;
 
-/// Home page view displaying "在读" (Currently reading) favorites.
+/// Home page view displaying the bound local favorite folder.
 class ReadingFavoritesView extends StatefulWidget {
   const ReadingFavoritesView({super.key, this.onOpenHistory});
 
@@ -123,9 +125,6 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
       final folder = manager.readingFolder;
       refreshedFolder = folder;
       if (folder == null || !manager.existsFolder(folder)) {
-        if (mounted) {
-          context.showMessage(message: "Reading folder not found".tl);
-        }
         return;
       }
 
@@ -169,6 +168,78 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
         await loadComics();
       }
     }
+  }
+
+  Future<void> _createReadingFolder() async {
+    final folder = await newFolder();
+    if (!mounted || folder == null) return;
+    await manager.setReadingFolder(folder);
+  }
+
+  void _showFolderSelector() {
+    final folders = manager.folderNames;
+    showDialog<void>(
+      context: App.rootContext,
+      builder: (dialogContext) => SimpleDialog(
+        title: Text("Select a folder".tl),
+        children: [
+          if (folders.isEmpty)
+            Padding(padding: const EdgeInsets.all(24), child: Text("Empty".tl)),
+          for (final folder in folders)
+            SimpleDialogOption(
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+                unawaited(manager.setReadingFolder(folder));
+              },
+              child: ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(
+                  manager.readingFolder == folder
+                      ? Icons.check_circle_outline
+                      : Icons.folder_outlined,
+                ),
+                title: Text(
+                  folder,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ),
+          SimpleDialogOption(
+            onPressed: () {
+              Navigator.of(dialogContext).pop();
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                unawaited(_createReadingFolder());
+              });
+            },
+            child: Row(
+              children: [
+                const Icon(Icons.add),
+                const SizedBox(width: 12),
+                Text("New Folder".tl),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<MenuEntry> _buildFolderMenu() {
+    final readingFolder = manager.readingFolder;
+    return [
+      MenuEntry(
+        icon: Icons.folder_open,
+        text: "Folders".tl,
+        onClick: _showFolderSelector,
+      ),
+      if (readingFolder != null)
+        MenuEntry(
+          icon: Icons.link_off,
+          text: "Remove from Home Page".tl,
+          onClick: () => unawaited(manager.setReadingFolder(null)),
+        ),
+    ];
   }
 
   void _onComicTap(Comic c, int heroID) {
@@ -276,9 +347,7 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
         ),
       );
     } else if (comics.isEmpty) {
-      final isFolderMissing =
-          manager.readingFolder == null ||
-          !manager.existsFolder(manager.readingFolder!);
+      final isFolderUnbound = manager.readingFolder == null;
       sliverContent = SliverFillRemaining(
         hasScrollBody: false,
         child: Center(
@@ -292,27 +361,17 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
               ),
               const SizedBox(height: 16),
               Text(
-                (isFolderMissing
-                        ? "Reading folder not found"
-                        : "No reading comics")
-                    .tl,
+                (isFolderUnbound ? "No favorite folder bound" : "Empty").tl,
                 style: TextStyle(
                   fontSize: 16,
                   color: Theme.of(context).colorScheme.outline,
                 ),
               ),
-              if (onOpenHistory != null) ...[
+              if (isFolderUnbound) ...[
                 const SizedBox(height: 16),
                 Button.outlined(
-                  onPressed: onOpenHistory,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.history, size: 18),
-                      const SizedBox(width: 8),
-                      Text("Reading Records".tl),
-                    ],
-                  ),
+                  onPressed: _showFolderSelector,
+                  child: Text("Select a folder".tl),
                 ),
               ],
             ],
@@ -328,37 +387,36 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
       );
     }
 
-    return RefreshIndicator(
-      onRefresh: _onRefresh,
-      child: SmoothCustomScrollView(
-        controller: _scrollController,
-        physics: const AlwaysScrollableScrollPhysics(),
-        slivers: [
-          if (onOpenHistory != null)
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-                child: Row(
-                  children: [
-                    const Spacer(),
-                    TextButton.icon(
-                      onPressed: onOpenHistory,
-                      icon: const Icon(Icons.history, size: 18),
-                      label: Text("Reading Records".tl),
-                      style: TextButton.styleFrom(
-                        visualDensity: VisualDensity.compact,
-                      ),
-                    ),
-                  ],
-                ),
+    return Scaffold(
+      body: AppRefreshIndicator(
+        onRefresh: _onRefresh,
+        child: SmoothCustomScrollView(
+          controller: _scrollController,
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            SliverAppbar(
+              title: Text(
+                manager.readingFolder ?? "No favorite folder bound".tl,
+              ),
+              actions: [MenuButton(entries: _buildFolderMenu())],
+            ),
+            sliverContent,
+            SliverPadding(
+              padding: EdgeInsets.only(
+                bottom:
+                    context.padding.bottom + (onOpenHistory == null ? 16 : 96),
               ),
             ),
-          sliverContent,
-          SliverPadding(
-            padding: EdgeInsets.only(bottom: context.padding.bottom + 16),
-          ),
-        ],
+          ],
+        ),
       ),
+      floatingActionButton: onOpenHistory == null
+          ? null
+          : FloatingActionButton.small(
+              tooltip: "Reading Records".tl,
+              onPressed: onOpenHistory,
+              child: const Icon(Icons.history),
+            ),
     );
   }
 }

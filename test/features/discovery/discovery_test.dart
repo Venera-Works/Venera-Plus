@@ -1,14 +1,24 @@
+import 'dart:io';
+
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:venera_plus/components/navigation_bar.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/discovery/discovery.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/navigation_settings.dart';
 import 'package:venera_plus/foundation/res.dart';
+
+import '../../widget_test_io.dart';
 
 ComicSource _createTestSource({
   required String key,
   required String name,
   List<String> explorePageTitles = const [],
   String? categoryKey,
+  bool emptyBrowsePages = false,
+  bool showCategoryTitle = false,
 }) {
   return ComicSource(
     name,
@@ -18,7 +28,7 @@ ComicSource _createTestSource({
         ? CategoryData(
             title: '$name Categories',
             categories: const [],
-            enableRankingPage: false,
+            enableRankingPage: showCategoryTitle,
             key: categoryKey,
           )
         : null,
@@ -29,7 +39,9 @@ ComicSource _createTestSource({
           (title) => ExplorePageData(
             title,
             ExplorePageType.multiPageComicList,
-            (page) async => const Res<List<Comic>>(<Comic>[]),
+            emptyBrowsePages
+                ? null
+                : (_) async => const Res<List<Comic>>(<Comic>[]),
             null,
             null,
             null,
@@ -66,6 +78,183 @@ ComicSource _createTestSource({
 }
 
 void main() {
+  group('Discovery section swipe navigation', () {
+    testWidgets(
+      'swipes switch the active view and remembered section without stealing '
+      'vertical or single-capability gestures',
+      (tester) async {
+        final directory = Directory.systemTemp.createTempSync(
+          'venera-discovery-swipe-',
+        );
+        final previousSettings = Map<String, dynamic>.from(
+          appdata.toJson()['settings'] as Map,
+        );
+        final previousImplicit = Map<String, dynamic>.from(
+          appdata.implicitData,
+        );
+        String? previousDataPath;
+        try {
+          previousDataPath = App.dataPath;
+        } on Error {
+          /* Unset late path. */
+        }
+
+        final manager = ComicSourceManager();
+        const dualKey = 'discovery_swipe_dual';
+        const singleKey = 'discovery_swipe_single';
+        manager.remove(dualKey);
+        manager.remove(singleKey);
+        manager.add(
+          _createTestSource(
+            key: dualKey,
+            name: 'A Long Comic Source Name That Needs Room',
+            explorePageTitles: const ['Dual Browse', 'Dual Browse 2'],
+            categoryKey: 'discovery_swipe_category',
+            emptyBrowsePages: true,
+            showCategoryTitle: true,
+          ),
+        );
+        manager.add(
+          _createTestSource(
+            key: singleKey,
+            name: 'Single Source',
+            explorePageTitles: const ['Single Browse', 'Single Browse 2'],
+            emptyBrowsePages: true,
+          ),
+        );
+
+        App.dataPath = directory.path;
+        appdata.settings['language'] = 'en-US';
+        appdata.settings['explore_pages'] = const [
+          'Dual Browse',
+          'Dual Browse 2',
+          'Single Browse',
+          'Single Browse 2',
+        ];
+        appdata.settings['categories'] = const ['discovery_swipe_category'];
+        appdata.implicitData['discovery_source'] = dualKey;
+        appdata.implicitData.remove('discovery_section_$dualKey');
+        appdata.implicitData.remove('discovery_section_$singleKey');
+        appdata.implicitData.remove('discovery_page_$dualKey');
+        appdata.implicitData.remove('discovery_page_$singleKey');
+
+        tester.view.physicalSize = const Size(390, 844);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        addTearDown(() async {
+          await tester.pumpWidget(const SizedBox.shrink());
+          await runWidgetIo(tester, () => appdata.writeImplicitData());
+          manager.remove(dualKey);
+          manager.remove(singleKey);
+          (appdata.toJson()['settings'] as Map)
+            ..clear()
+            ..addAll(previousSettings);
+          appdata.implicitData = previousImplicit;
+          App.dataPath = previousDataPath ?? Directory.systemTemp.path;
+          directory.deleteSync(recursive: true);
+        });
+
+        await tester.pumpWidget(
+          MaterialApp(
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(
+                context,
+              ).copyWith(textScaler: const TextScaler.linear(1.5)),
+              child: child!,
+            ),
+            home: NaviPane(
+              paneItems: [
+                PaneItemEntry(
+                  label: 'Explore',
+                  icon: Icons.explore_outlined,
+                  activeIcon: Icons.explore,
+                ),
+              ],
+              paneActions: const [],
+              pageBuilder: (_) => const ExplorePage(),
+              observer: NaviObserver(),
+              navigatorKey: GlobalKey<NavigatorState>(),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('Empty Page'), findsWidgets);
+        expect(appdata.implicitData['discovery_section_$dualKey'], 'browse');
+        expect(find.text('Dual Browse'), findsOneWidget);
+        expect(find.text('Dual Browse 2'), findsOneWidget);
+        expect(appdata.implicitData['discovery_page_$dualKey'], 'Dual Browse');
+        await tester.ensureVisible(find.text('Dual Browse 2'));
+        await tester.tap(find.text('Dual Browse 2'));
+        await tester.pumpAndSettle();
+        expect(
+          appdata.implicitData['discovery_page_$dualKey'],
+          'Dual Browse 2',
+        );
+
+        final sourceSelector = find.byKey(
+          const ValueKey('discovery_source_selector'),
+        );
+        expect(tester.getRect(sourceSelector).width, greaterThan(160));
+        final sectionRect = tester.getRect(
+          find.byType(SegmentedButton<DiscoverySection>),
+        );
+        expect(sectionRect.center.dx, closeTo(195, 1));
+        if (App.isDesktop) {
+          expect(
+            tester.getRect(find.byTooltip('Manage')).center.dx,
+            lessThan(tester.getRect(sourceSelector).center.dx),
+          );
+        }
+
+        await tester.drag(find.text('Empty Page').first, const Offset(-200, 0));
+        await tester.pumpAndSettle();
+        expect(
+          find.text('A Long Comic Source Name That Needs Room Categories'),
+          findsOneWidget,
+        );
+        expect(find.text('Empty Page'), findsNothing);
+        expect(
+          appdata.implicitData['discovery_section_$dualKey'],
+          'categories',
+        );
+
+        await tester.drag(
+          find.text('A Long Comic Source Name That Needs Room Categories'),
+          const Offset(200, 0),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Empty Page'), findsWidgets);
+        expect(appdata.implicitData['discovery_section_$dualKey'], 'browse');
+        expect(
+          appdata.implicitData['discovery_page_$dualKey'],
+          'Dual Browse 2',
+        );
+
+        await tester.drag(find.text('Empty Page').first, const Offset(0, -200));
+        await tester.pumpAndSettle();
+        expect(find.text('Empty Page'), findsWidgets);
+        expect(appdata.implicitData['discovery_section_$dualKey'], 'browse');
+
+        await tester.tap(sourceSelector);
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(ListTile, 'Single Source'));
+        await tester.pumpAndSettle();
+        expect(find.text('Single Browse'), findsOneWidget);
+        expect(find.text('Single Browse 2'), findsOneWidget);
+        await tester.drag(find.text('Empty Page').first, const Offset(-320, 0));
+        await tester.pumpAndSettle();
+        expect(
+          appdata.implicitData['discovery_page_$singleKey'],
+          'Single Browse 2',
+        );
+        expect(appdata.implicitData['discovery_section_$singleKey'], 'browse');
+        expect(tester.takeException(), isNull);
+      },
+    );
+  });
+
   group('Discovery Source Derivation & Order', () {
     test(
       'derives source order by first occurrence among enabled explore pages',

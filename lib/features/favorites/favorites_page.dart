@@ -1,13 +1,11 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
-import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/favorites/favorites_manager.dart';
-import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 import 'package:venera_plus/features/favorites/favorites_constants.dart';
 import 'package:venera_plus/features/favorites/local_favorites_page.dart';
@@ -33,12 +31,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
 
   FolderList? folderList;
 
-  void setFolder(bool isNetwork, String? folder) {
-    setState(() {
-      this.isNetwork = isNetwork;
-      this.folder = folder;
-    });
-    folderList?.update();
+  void _saveFolderSelection() {
     appdata.implicitData['favoriteFolder'] = {
       'name': folder,
       'isNetwork': isNetwork,
@@ -46,19 +39,93 @@ class _FavoritesPageState extends State<FavoritesPage> {
     appdata.writeImplicitData();
   }
 
+  void setFolder(bool isNetwork, String? folder) {
+    var selectedNetwork =
+        isNetwork &&
+        folder != null &&
+        folder.isNotEmpty &&
+        folder != localAllFolderLabel;
+    var selectedFolder = folder == null || folder.isEmpty
+        ? localAllFolderLabel
+        : folder;
+    if (selectedNetwork && getFavoriteDataOrNull(selectedFolder) == null) {
+      selectedNetwork = false;
+      selectedFolder = localAllFolderLabel;
+    } else if (!selectedNetwork &&
+        selectedFolder != localAllFolderLabel &&
+        !LocalFavoritesManager().existsFolder(selectedFolder)) {
+      selectedFolder = localAllFolderLabel;
+    }
+    setState(() {
+      this.isNetwork = selectedNetwork;
+      this.folder = selectedFolder;
+    });
+    folderList?.update();
+    _saveFolderSelection();
+  }
+
+  void _restoreFolderSelection() {
+    final data = appdata.implicitData['favoriteFolder'];
+    if (data is Map) {
+      final storedFolder = data['name'];
+      final storedIsNetwork = data['isNetwork'] == true;
+      if (storedFolder is String && storedFolder.isNotEmpty) {
+        if (storedFolder == localAllFolderLabel) {
+          folder = localAllFolderLabel;
+          isNetwork = false;
+          return;
+        }
+        if (storedIsNetwork) {
+          if (getFavoriteDataOrNull(storedFolder) != null) {
+            folder = storedFolder;
+            isNetwork = true;
+            return;
+          }
+        } else if (LocalFavoritesManager().existsFolder(storedFolder)) {
+          folder = storedFolder;
+          isNetwork = false;
+          return;
+        }
+      }
+    }
+    folder = localAllFolderLabel;
+    isNetwork = false;
+    _saveFolderSelection();
+  }
+
+  void _fallbackToAllAfterBuild() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final currentFolder = folder;
+      final isInvalid =
+          currentFolder == null ||
+          (isNetwork
+              ? getFavoriteDataOrNull(currentFolder) == null
+              : currentFolder != localAllFolderLabel &&
+                    !LocalFavoritesManager().existsFolder(currentFolder));
+      if (isInvalid) {
+        setFolder(false, localAllFolderLabel);
+      }
+    });
+  }
+
+  Widget _buildLocalPage(String folder) {
+    return LocalFavoritesPage(
+      folder: folder,
+      key: PageStorageKey("local_$folder"),
+      showFolders: showFolderSelector,
+      onFolderSelected: setFolder,
+      updateFolderList: () {
+        folderList?.updateFolders();
+      },
+      isActive: widget.isActive,
+    );
+  }
+
   @override
   void initState() {
-    var data = appdata.implicitData['favoriteFolder'];
-    if (data != null) {
-      folder = data['name'];
-      isNetwork = data['isNetwork'] ?? false;
-    }
-    if (folder != null &&
-        !isNetwork &&
-        !LocalFavoritesManager().existsFolder(folder!)) {
-      folder = null;
-    }
     super.initState();
+    _restoreFolderSelection();
   }
 
   @override
@@ -143,53 +210,28 @@ class _FavoritesPageState extends State<FavoritesPage> {
   }
 
   Widget buildBody() {
-    if (folder == null) {
-      return CustomScrollView(
-        slivers: [
-          SliverAppbar(
-            leading: Tooltip(
-              message: "Folders".tl,
-              child: context.width <= favoritesTwoPanelChangeWidth
-                  ? IconButton(
-                      icon: const Icon(Icons.menu),
-                      color: context.colorScheme.primary,
-                      onPressed: showFolderSelector,
-                    )
-                  : null,
-            ),
-            title: GestureDetector(
-              onTap: context.width < favoritesTwoPanelChangeWidth
-                  ? showFolderSelector
-                  : null,
-              child: Text("Unselected".tl),
-            ),
-          ),
-        ],
-      );
+    final selectedFolder = folder;
+    if (selectedFolder == null) {
+      _fallbackToAllAfterBuild();
+      return _buildLocalPage(localAllFolderLabel);
     }
     if (!isNetwork) {
-      return LocalFavoritesPage(
-        folder: folder!,
-        key: PageStorageKey("local_$folder"),
-        showFolders: showFolderSelector,
-        onFolderSelected: setFolder,
-        updateFolderList: () {
-          folderList?.updateFolders();
-        },
-        isActive: widget.isActive,
-      );
-    } else {
-      var favoriteData = getFavoriteDataOrNull(folder!);
-      if (favoriteData == null) {
-        folder = null;
-        return buildBody();
-      } else {
-        return NetworkFavoritePage(
-          favoriteData,
-          key: PageStorageKey("network_$folder"),
-          showFolders: showFolderSelector,
-        );
+      if (selectedFolder != localAllFolderLabel &&
+          !LocalFavoritesManager().existsFolder(selectedFolder)) {
+        _fallbackToAllAfterBuild();
+        return _buildLocalPage(localAllFolderLabel);
       }
+      return _buildLocalPage(selectedFolder);
     }
+    final favoriteData = getFavoriteDataOrNull(selectedFolder);
+    if (favoriteData == null) {
+      _fallbackToAllAfterBuild();
+      return _buildLocalPage(localAllFolderLabel);
+    }
+    return NetworkFavoritePage(
+      favoriteData,
+      key: PageStorageKey("network_$selectedFolder"),
+      showFolders: showFolderSelector,
+    );
   }
 }

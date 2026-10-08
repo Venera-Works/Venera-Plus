@@ -17,8 +17,8 @@ import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 
 /// Open a dialog to create a new favorite folder.
-Future<void> newFolder() async {
-  return showDialog(
+Future<String?> newFolder() {
+  return showDialog<String>(
     context: App.rootContext,
     builder: (context) {
       var controller = TextEditingController();
@@ -70,8 +70,10 @@ Future<void> newFolder() async {
                       error = e;
                     });
                   } else {
-                    LocalFavoritesManager().createFolder(controller.text);
-                    context.pop();
+                    final createdName = LocalFavoritesManager().createFolder(
+                      controller.text,
+                    );
+                    Navigator.of(context).pop(createdName);
                   }
                 },
                 child: Text("Create".tl),

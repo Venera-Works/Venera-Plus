@@ -596,6 +596,25 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                       },
                     ),
                     MenuEntry(
+                      icon: manager.readingFolder == widget.folder
+                          ? Icons.home
+                          : Icons.home_outlined,
+                      text:
+                          (manager.readingFolder == widget.folder
+                                  ? "Remove from Home Page"
+                                  : "Show on Home Page")
+                              .tl,
+                      onClick: () {
+                        unawaited(
+                          manager.setReadingFolder(
+                            manager.readingFolder == widget.folder
+                                ? null
+                                : widget.folder,
+                          ),
+                        );
+                      },
+                    ),
+                    MenuEntry(
                       icon: Icons.reorder,
                       text: "Reorder".tl,
                       onClick: () {
@@ -979,7 +998,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
           ),
       ],
     );
-    body = RefreshIndicator(
+    body = AppRefreshIndicator(
       onRefresh: _onRefresh,
       child: AppScrollBar(
         topPadding: 48,
@@ -1044,7 +1063,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                               child: Center(
                                 child: TextButton(
                                   onPressed: () {
-                                    newFolder().then((v) {
+                                    newFolder().then((_) {
                                       setState(() {
                                         targetFolders = LocalFavoritesManager()
                                             .folderNames

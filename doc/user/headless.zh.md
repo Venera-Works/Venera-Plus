@@ -122,15 +122,15 @@ venera-plus --headless updatescript all
 
 ### `updatesubscribe`
 
-使用与主页和自动追踪一致的持久化**在读**收藏角色。命令先等待待处理下载，再解析角色绑定；在读被删除或未绑定时返回错误，不会改扫其他收藏夹。
+使用与主页展示和自动追更一致的持久化收藏角色（`reading`）。用户在主页或书库中选择绑定收藏夹，默认未绑定，不会自动创建“在读”。命令先等待待处理下载，再解析角色绑定；绑定收藏夹被删除或未绑定时返回错误，不会改扫其他收藏夹。
 
-- **`updatesubscribe`**：检查绑定在读收藏夹内的漫画。
+- **`updatesubscribe`**：检查主页绑定收藏夹内的漫画。
 - **`updatesubscribe --update-comic-by-id-type <id> <type>`**：按 `id` 和 `type` 更新该收藏夹中的单个漫画。
 
 **示例：**
 
 ```bash
-# 更新全部在读漫画
+# 更新绑定收藏夹中的全部漫画
 venera-plus --headless updatesubscribe
 
 # 更新单个漫画

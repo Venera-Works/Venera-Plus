@@ -412,7 +412,7 @@ class _NormalFavoritePageState extends State<_NormalFavoritePage> {
 
   @override
   Widget build(BuildContext context) {
-    return RefreshIndicator(
+    return AppRefreshIndicator(
       onRefresh: _refreshScope,
       child: ComicList(
         key: comicListKey,
@@ -661,7 +661,7 @@ class _MultiFolderFavoritesPageState extends State<_MultiFolderFavoritesPage> {
         ],
       );
     } else if (_errorMessage != null && folders == null) {
-      return RefreshIndicator(
+      return AppRefreshIndicator(
         onRefresh: () => _loadFolders(invalidateCache: true),
         child: SmoothCustomScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
@@ -683,7 +683,7 @@ class _MultiFolderFavoritesPageState extends State<_MultiFolderFavoritesPage> {
       if (widget.data.allFavoritesId != null) length++;
       final keys = folders!.keys.toList();
 
-      return RefreshIndicator(
+      return AppRefreshIndicator(
         onRefresh: () => _loadFolders(invalidateCache: true),
         child: SmoothCustomScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
@@ -1046,7 +1046,7 @@ class _FavoriteFolderState extends State<_FavoriteFolder> {
 
   @override
   Widget build(BuildContext context) {
-    return RefreshIndicator(
+    return AppRefreshIndicator(
       onRefresh: _refreshScope,
       child: ComicList(
         key: comicListKey,

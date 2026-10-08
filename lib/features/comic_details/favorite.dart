@@ -579,7 +579,7 @@ class _LocalSectionState extends State<_LocalSection> {
             ],
           ),
           onTap: () {
-            newFolder().then((v) {
+            newFolder().then((_) {
               setState(() {
                 localFolders = LocalFavoritesManager().folderNames;
               });

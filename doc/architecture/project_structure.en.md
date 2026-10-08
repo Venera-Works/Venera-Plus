@@ -23,9 +23,9 @@ This document is the English companion for the repository structure rules. The C
 - `comic_storage/`: archive metadata, image file rules, and local filesystem layout detection shared by local directories, CBZ, and WebDAV.
 - `comic_widgets/`: cross-domain comic display widgets such as cards, lists, and rating controls.
 - `comic_details/`: comic detail page and its chapters, comments, favorites, cover, and thumbnail modules.
-- `discovery/`: explore and discovery pages (unifying comic source browse and categories views), category comic lists, and ranking pages; standalone `CategoriesPage` is retired in favor of source-bound category exploration.
-- `favorites/`: reading view (`ReadingFavoritesView`), local favorites, network favorites, favorite folders, and favorite actions; manages the unified reading folder (`readingFolder`) binding shared with automatic update checks.
-- `follow_updates/`: background update check service and update state management; updates are integrated into reading folder automatic checks rather than a standalone page or home summary.
+- `discovery/`: unified source browsing and categories, category comic lists, and rankings. Dual-capability sources support horizontal swipes between Browse and Categories while preserving browse-tab selection and view state; standalone `CategoriesPage` is retired.
+- `favorites/`: the Home favorites view (`ReadingFavoritesView`), local/network favorites, folders, and favorite actions. It manages the optional folder binding (`readingFolder`) shared with automatic update checks; the default is unbound, without creating or renaming folders.
+- `follow_updates/`: background update checks for the user-bound favorites folder, without a standalone page or Home summary.
 - `history/`: reading history, history page, image favorite models, image favorite manager, and image favorite provider (reading record entry point lives in Library).
 - `image_favorites/`: image favorite page, gallery, and photo view UI (display entry point lives in Library).
 - `local_comics/`: local library, downloads, and import/export tools under `import_export/` (browsing and management entry points live in Library).
@@ -68,7 +68,8 @@ External modules should prefer stable feature entry files instead of importing i
 `app_shell/` owns app-level page composition:
 
 - `main_page.dart`: main navigation shell, displaying the top-right action buttons (Sync, Search, Settings) across all screen sizes.
-- `home_page.dart`: home page, mounting `favorites.ReadingFavoritesView` directly with pull-to-refresh for currently reading comics.
+- `home_page.dart`: mounts `favorites.ReadingFavoritesView` for the user-bound folder, with folder selection/creation, cross-platform pull-to-refresh, and a bottom-right reading-history floating action button.
+- `library_page.dart`: groups personal content and remembers its selected section. Comic favorites initially show All, then restore the last valid folder selection.
 - `auth_page.dart`: local authentication page.
 
 Feature domains must not depend on `app_shell/`.

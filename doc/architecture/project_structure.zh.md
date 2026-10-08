@@ -28,9 +28,9 @@
 - `comic_storage/`：跨本地目录、CBZ 与 WebDAV 复用的漫画归档元数据、图片文件规则和本地文件系统布局识别。
 - `comic_widgets/`：漫画卡片、列表、评分和跨功能域复用的漫画展示组件；内部按列表、卡片、评分等职责拆分，并通过 `comic_widgets.dart` 统一导出。
 - `comic_details/`：漫画详情页及章节、评论、收藏按钮、封面和缩略图等详情页子模块。
-- `discovery/`：发现页（统一漫画源浏览与分类视图）、分类漫画列表和排行榜等浏览发现页面；独立 `CategoriesPage` 已退场，分类内容内聚于统一漫画源探索中。
-- `favorites/`：在读视图（`ReadingFavoritesView`）、本地收藏、网络收藏、收藏夹页面和收藏操作；管理与自动追更共享的唯一“在读”绑定（`readingFolder`）。
-- `follow_updates/`：追更后台检测服务与更新状态管理；追更作为绑定在读的自动服务，不再保留独立页面或首页摘要。
+- `discovery/`：发现页（统一漫画源浏览与分类视图）、分类漫画列表和排行榜等浏览发现页面；双能力书源支持左右滑动切换浏览/分类，保留浏览子页标签选择与视图状态；独立 `CategoriesPage` 已退场。
+- `favorites/`：主页收藏视图（`ReadingFavoritesView`）、本地收藏、网络收藏、收藏夹页面和收藏操作；管理与自动追更共享的可选收藏夹绑定（`readingFolder`），默认未绑定，不自动创建或改名收藏夹。
+- `follow_updates/`：追更后台检测服务与更新状态管理；自动检查用户绑定收藏夹中的漫画，不再保留独立页面或首页摘要。
 - `history/`：阅读历史、历史记录页、图片收藏模型、图片收藏管理和图片收藏 provider（历史记录阅读入口归入书库）。
 - `image_favorites/`：图片收藏页面、图库浏览和图片查看 UI（展示入口归入书库）。
 - `local_comics/`：本地漫画库管理、下载任务，以及 `import_export/` 下的 CBZ、EPUB、PDF 导入导出工具（浏览与管理入口归入书库）。
@@ -58,7 +58,7 @@ test/features/<domain>/
 - 漫画源功能通过 `features/comic_source/comic_source.dart` 暴露漫画源模型、服务、标签翻译和管理页面。
 - 漫画详情页通过 `features/comic_details/comic_details.dart` 暴露 `ComicPage`。
 - 浏览发现功能通过 `features/discovery/discovery.dart` 暴露统一探索页 `ExplorePage`、分类漫画列表和排行榜。
-- 收藏功能通过 `features/favorites/favorites.dart` 暴露在读视图（`ReadingFavoritesView`）、收藏管理器和收藏页面。
+- 收藏功能通过 `features/favorites/favorites.dart` 暴露主页收藏视图（`ReadingFavoritesView`）、收藏管理器和收藏页面。
 - 追更功能通过 `features/follow_updates/follow_updates.dart` 暴露追更后台检测服务。
 - 历史功能通过 `features/history/history.dart` 暴露历史管理器、图片收藏 provider 和历史页面。
 - 图片收藏功能通过 `features/image_favorites/image_favorites.dart` 暴露图片收藏页面和排序类型。
@@ -77,7 +77,8 @@ test/features/<domain>/
 `app_shell/` 保留应用级入口和页面编排：
 
 - `main_page.dart`：主导航壳，负责挂载首页、收藏、探索和分类等一级入口，统一在顶栏右上角展示同步按钮（`SyncActionButton`）、搜索按钮和设置按钮。
-- `home_page.dart`：首页，直接挂载 `favorites.ReadingFavoritesView` 展示在读漫画并支持下拉刷新，不再平铺杂乱摘要。
+- `home_page.dart`：首页，挂载 `favorites.ReadingFavoritesView` 展示用户绑定的收藏夹，提供选择或新建绑定、跨平台下拉刷新和右下角阅读记录悬浮入口。
+- `library_page.dart`：书库容器，聚合个人内容并记忆分栏；漫画收藏首次默认“全部”，之后恢复最后查看的有效收藏夹。
 - `auth_page.dart`：应用启动和前后台切换时使用的本地鉴权页面。
 应用壳层可以依赖功能域入口；功能域不应反向依赖应用壳层。
 `app_shell.dart` 是壳层对外入口，`main.dart` 等应用组装代码应通过它引用应用级页面；`features/`、`routing/`、`foundation/`、`network/`、`utils/` 和 `components/` 不应依赖 `app_shell/`。

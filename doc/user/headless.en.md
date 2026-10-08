@@ -122,9 +122,9 @@ A summary is provided at the end, detailing the total number of scripts, how man
 
 ### `updatesubscribe`
 
-Checks the same persisted **Reading** favorites role used by Home and automatic tracking. The command waits for pending downloads before resolving the role; a deleted/unbound Reading folder is an error, not a reason to scan another folder.
+Checks the persisted favorites role (`reading`) shared by Home and automatic update checks. Users select the bound folder from Home or Library; the default is unbound, without creating a Reading folder. The command waits for pending downloads before resolving the role. A deleted or unbound folder is an error, not a reason to scan another folder.
 
-- **`updatesubscribe`**: Checks comics in the bound Reading folder.
+- **`updatesubscribe`**: Checks comics in the folder bound to Home.
 - **`updatesubscribe --update-comic-by-id-type <id> <type>`**: Updates one comic in that folder by `id` and `type`.
 
 **Example:**

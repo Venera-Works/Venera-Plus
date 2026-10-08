@@ -127,44 +127,47 @@ void main() {
     'reading role and favorites persistence',
     () {
       test(
-        'new database binds canonical reading and initializes update baseline',
+        'unconfigured database preserves existing folders without binding one',
         () async {
-          await _withManager((manager) async {
-            expect(manager.readingFolder, '在读');
-            expect(
-              appdata.settings.containsKey('followUpdatesFolder'),
-              isFalse,
-            );
-            expect(appdata.settings['quickFavorite'], '在读');
-            final comic = _favorite('new');
-            manager.addComic('在读', comic, null, '2026-07-01');
-            expect(
-              manager
-                  .getComicWithUpdatesInfo('在读', comic.id, comic.type)
-                  .updateTime,
-              '2026-07-01',
-            );
-            expect(manager.hasNewUpdate(comic.id, comic.type), isFalse);
-          }, settings: () => appdata.settings['quickFavorite'] = 'missing');
+          await _withManager(
+            (manager) async {
+              expect(manager.readingFolder, isNull);
+              expect(appdata.settings.containsKey('readingFolder'), isFalse);
+              expect(manager.folderNames, ['custom']);
+              expect(manager.getFolderComics('custom'), hasLength(2));
+              expect(manager.existsFolder('在读'), isFalse);
+              expect(appdata.settings['quickFavorite'], 'custom');
+              expect(
+                appdata.settings.containsKey('followUpdatesFolder'),
+                isFalse,
+              );
+            },
+            seed: (db) => _seedFolder(db, 'custom'),
+            settings: () => appdata.settings['quickFavorite'] = 'custom',
+          );
         },
       );
 
       test(
-        'legacy migration preserves comic order, folder order and source mapping',
+        'legacy follow-up folder and sync mapping are preserved while unbound',
         () async {
           await _withManager(
             (manager) async {
-              expect(manager.readingFolder, '在读');
-              expect(manager.folderNames, ['other', '在读']);
-              expect(manager.getFolderComics('在读').map((c) => c.id), [
+              expect(manager.readingFolder, isNull);
+              expect(manager.folderNames, ['other', '追更']);
+              expect(manager.getFolderComics('追更').map((c) => c.id), [
                 '追更-1',
                 '追更-0',
               ]);
-              expect(manager.findLinked('在读'), ('source', 'remote-folder'));
-              expect(appdata.settings['quickFavorite'], '在读');
-              // Both a pre-migrated table and a later legacy table get update columns.
+              expect(manager.findLinked('追更'), ('source', 'remote-folder'));
+              expect(appdata.settings['quickFavorite'], '追更');
+              expect(
+                appdata.settings.containsKey('followUpdatesFolder'),
+                isFalse,
+              );
+              expect(manager.existsFolder('在读'), isFalse);
               expect(manager.getComicsWithUpdatesInfo('other'), hasLength(2));
-              expect(manager.getComicsWithUpdatesInfo('在读'), hasLength(2));
+              expect(manager.getComicsWithUpdatesInfo('追更'), hasLength(2));
             },
             seed: (db) {
               _seedFolder(db, 'other', translated: true);
@@ -185,7 +188,7 @@ void main() {
       );
 
       test(
-        'coexisting canonical and legacy folders never merge or repoint quick favorite',
+        'coexisting folders preserve the explicitly configured reading role',
         () async {
           await _withManager(
             (manager) async {
@@ -224,19 +227,20 @@ void main() {
             settings: () {
               appdata.settings['followUpdatesFolder'] = '追更';
               appdata.settings['quickFavorite'] = '追更';
+              appdata.settings['readingFolder'] = '在读';
             },
           );
         },
       );
 
       test(
-        'custom old tracker is preserved but is not the reading role',
+        'custom old tracker is preserved without being adopted as a reading role',
         () async {
           await _withManager(
             (manager) async {
-              expect(manager.readingFolder, '在读');
+              expect(manager.readingFolder, isNull);
               expect(manager.count('custom'), 2);
-              expect(manager.count('在读'), 0);
+              expect(manager.folderNames, ['custom']);
               expect(appdata.settings['quickFavorite'], 'custom');
             },
             seed: (db) => _seedFolder(db, 'custom'),
@@ -247,41 +251,58 @@ void main() {
           );
         },
       );
-
       test(
-        'rename follows role, deletion stays unbound, explicit recreation rebinds',
+        'explicit reading binding switches, cancels, follows rename, and stays cleared after recreation',
         () async {
           await _withManager((manager) async {
-            manager.rename('在读', 'My reading');
             manager.createFolder('在读');
+            var bindingNotifications = 0;
+            void onBindingChanged() => bindingNotifications++;
+            manager.addListener(onBindingChanged);
+            await manager.setReadingFolder('在读');
+            manager.removeListener(onBindingChanged);
+            expect(bindingNotifications, 1);
+            expect(manager.readingFolder, '在读');
+            manager.createFolder('other');
+            await manager.setReadingFolder('other');
+            expect(manager.readingFolder, 'other');
+            await manager.setReadingFolder(null);
+            expect(manager.readingFolder, isNull);
+            await expectLater(
+              manager.setReadingFolder('missing'),
+              throwsA(isA<ArgumentError>()),
+            );
+            await manager.setReadingFolder('在读');
+            manager.rename('在读', 'My reading');
             expect(manager.readingFolder, 'My reading');
+            appdata.settings['readingFolder'] = manager.getFolderId(
+              'My reading',
+            );
+            await manager.reconcileReadingFolderBinding();
+            expect(manager.readingFolder, 'My reading');
+            expect(appdata.settings['readingFolder'], 'My reading');
             await manager.waitForPendingReads();
             manager.close();
             await manager.init();
             expect(manager.readingFolder, 'My reading');
             manager.deleteFolder('My reading');
-            await manager.reconcileReadingFolderBinding();
             expect(manager.readingFolder, isNull);
-            await appdata.saveData(false);
-            appdata.settings['readingFolder'] = 'incorrect-memory-value';
-            await appdata.loadDataForTesting(App.dataPath);
-            expect(appdata.settings.containsKey('readingFolder'), isTrue);
-            expect(appdata.settings['readingFolder'], isNull);
+            manager.createFolder('My reading');
+            expect(manager.readingFolder, isNull);
             await manager.waitForPendingReads();
             manager.close();
             await manager.init();
             expect(manager.readingFolder, isNull);
-            manager.deleteFolder('在读');
-            manager.createFolder('在读');
-            expect(manager.readingFolder, '在读');
           });
         },
       );
 
       test(
-        'database reload does not mutate settings before imported settings reconcile',
+        'database reload preserves missing binding and does not rename folders',
         () async {
           await _withManager((manager) async {
+            manager.createFolder('在读');
+            await manager.setReadingFolder('在读');
             manager.rename('在读', '追更');
             await manager.waitForPendingReads();
             manager.close();
@@ -295,9 +316,9 @@ void main() {
             });
             expect(appdata.settings.containsKey('readingFolder'), isFalse);
             await manager.reconcileReadingFolderBinding();
-            expect(manager.readingFolder, '在读');
-            expect(manager.folderNames, ['在读']);
-            expect(manager.folderComics('在读'), 0);
+            expect(manager.readingFolder, isNull);
+            expect(manager.folderNames, ['追更']);
+            expect(manager.existsFolder('在读'), isFalse);
             expect(
               appdata.settings.containsKey('followUpdatesFolder'),
               isFalse,
@@ -307,36 +328,11 @@ void main() {
       );
 
       test(
-        'failed legacy rename rolls back tables, order and network mapping',
-        () async {
-          await _withManager((manager) async {
-            manager.rename('在读', '追更');
-            manager.linkFolderToNetwork('追更', 'source', 'remote');
-            manager.addComic('追更', _favorite('kept'), 7, 'old');
-            // A dangling order row deliberately makes the metadata rename fail.
-            manager.updateOrder(['在读', '追更']);
-            appdata.settings.remove('readingFolder');
-            appdata.settings['followUpdatesFolder'] = '追更';
-            appdata.settings['quickFavorite'] = '追更';
-            await expectLater(
-              manager.reconcileReadingFolderBinding(),
-              throwsA(isA<SqliteException>()),
-            );
-            expect(manager.folderNames, ['追更']);
-            expect(manager.getFolderComics('追更').single.id, 'kept');
-            expect(manager.findLinked('追更'), ('source', 'remote'));
-            expect(appdata.settings['quickFavorite'], '追更');
-            expect(appdata.settings.containsKey('readingFolder'), isFalse);
-          });
-        },
-      );
-
-      test(
         'all-folder identity and unread cache are collision safe even without reading role',
         () async {
           await _withManager((manager) async {
             manager.createFolder('other');
-            manager.deleteFolder('在读');
+            // This test intentionally exercises the unbound state.
             final first = _favorite('a', const ComicType(17));
             final second = _favorite(
               'b',
@@ -393,6 +389,8 @@ void main() {
         'delete operations clear only removed identities from unread cache',
         () async {
           await _withManager((manager) async {
+            manager.createFolder('在读');
+            await manager.setReadingFolder('在读');
             for (final id in ['one', 'batch', 'all']) {
               final comic = _favorite(id);
               manager.addComic('在读', comic, null, 'old');
@@ -414,6 +412,8 @@ void main() {
         'moving, copying and adding memberships preserve unread metadata',
         () async {
           await _withManager((manager) async {
+            manager.createFolder('在读');
+            await manager.setReadingFolder('在读');
             manager.createFolder('moved');
             manager.createFolder('copied');
             final comic = _favorite('unread');

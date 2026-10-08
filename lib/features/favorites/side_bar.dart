@@ -158,7 +158,7 @@ class _FavoritesFolderSidebarState extends State<FavoritesFolderSidebar>
                 icon: Icons.add,
                 text: 'Create Folder'.tl,
                 onClick: () {
-                  newFolder().then((value) {
+                  newFolder().then((_) {
                     setState(() {
                       folders = LocalFavoritesManager().folderNames;
                     });

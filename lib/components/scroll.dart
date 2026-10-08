@@ -45,6 +45,325 @@ class SmoothCustomScrollView extends StatelessWidget {
   }
 }
 
+class AppRefreshIndicator extends StatefulWidget {
+  const AppRefreshIndicator({
+    super.key,
+    required this.onRefresh,
+    required this.child,
+  });
+
+  final Future<void> Function() onRefresh;
+
+  final Widget child;
+
+  @override
+  State<AppRefreshIndicator> createState() => _AppRefreshIndicatorState();
+}
+
+class _AppRefreshIndicatorState extends State<AppRefreshIndicator> {
+  static const _wheelPullDistance = 56.0;
+  static const _mouseDragDistance = 72.0;
+  static const _wheelIdleTimeout = Duration(milliseconds: 400);
+
+  final _refreshIndicatorKey = GlobalKey<RefreshIndicatorState>();
+
+  ScrollMetrics? _metrics;
+  Future<void>? _activeRefresh;
+  Timer? _wheelIdleTimer;
+  double _pendingPullDistance = 0;
+  bool _pullLatched = false;
+  _MouseRefreshDrag? _mouseDrag;
+  int _scrollNotificationRevision = 0;
+  int _lastScrollNotificationDepth = 0;
+
+  bool get _isAtTop {
+    final metrics = _metrics;
+    if (metrics == null ||
+        axisDirectionToAxis(metrics.axisDirection) != Axis.vertical) {
+      return false;
+    }
+    return switch (metrics.axisDirection) {
+      AxisDirection.down => metrics.pixels <= metrics.minScrollExtent + 0.5,
+      AxisDirection.up => metrics.pixels >= metrics.maxScrollExtent - 0.5,
+      _ => false,
+    };
+  }
+
+  Future<void> _handleRefresh() {
+    final activeRefresh = _activeRefresh;
+    if (activeRefresh != null) return activeRefresh;
+
+    final operation = Future<void>.sync(widget.onRefresh);
+    _activeRefresh = operation;
+    unawaited(
+      operation.then<void>(
+        (_) => _clearActiveRefresh(operation),
+        onError: (Object _, StackTrace _) => _clearActiveRefresh(operation),
+      ),
+    );
+    return operation;
+  }
+
+  void _clearActiveRefresh(Future<void> operation) {
+    if (identical(_activeRefresh, operation)) {
+      _activeRefresh = null;
+    }
+  }
+
+  bool _handleScrollNotification(ScrollNotification notification) {
+    _scrollNotificationRevision++;
+    _lastScrollNotificationDepth = notification.depth;
+    if (notification.depth == 0) {
+      _metrics = notification.metrics;
+      _resetPullWhenAwayFromTop();
+    }
+    return false;
+  }
+
+  bool _handleMetricsNotification(ScrollMetricsNotification notification) {
+    if (notification.depth == 0) {
+      _metrics = notification.metrics;
+      _resetPullWhenAwayFromTop();
+    }
+    return false;
+  }
+
+  void _resetPullWhenAwayFromTop() {
+    if (!_isAtTop && !_pullLatched) {
+      _pendingPullDistance = 0;
+    }
+  }
+
+  void _handlePointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) return;
+    final delta = event.scrollDelta;
+    if (HardwareKeyboard.instance.isShiftPressed ||
+        delta.dy == 0 ||
+        delta.dx.abs() >= delta.dy.abs()) {
+      return;
+    }
+
+    if (!_isAtTop) {
+      _pendingPullDistance = 0;
+      _pullLatched = false;
+      return;
+    }
+
+    final notificationRevision = _scrollNotificationRevision;
+    var resolvedHere = false;
+    GestureBinding.instance.pointerSignalResolver.register(event, (_) {
+      resolvedHere = true;
+      _handleWheelDelta(delta.dy);
+    });
+
+    // Scrollables below this listener normally register first with the
+    // resolver. Their scroll notifications distinguish nested scrolling from
+    // an unconsumed pull at the outer list's leading edge.
+    scheduleMicrotask(() {
+      if (!mounted ||
+          resolvedHere ||
+          (_scrollNotificationRevision > notificationRevision &&
+              _lastScrollNotificationDepth > 0)) {
+        return;
+      }
+      _handleWheelDelta(delta.dy);
+    });
+  }
+
+  void _handleWheelDelta(double deltaY) {
+    if (!_isAtTop) {
+      _pendingPullDistance = 0;
+      _pullLatched = false;
+    } else if (deltaY > 0) {
+      _pendingPullDistance = 0;
+      _pullLatched = false;
+    } else if (_activeRefresh != null) {
+      // Don't retrigger after this continuous wheel burst completes.
+      _pullLatched = true;
+    } else {
+      _accumulatePull(-deltaY);
+    }
+    _scheduleWheelIdleReset();
+  }
+
+  void _scheduleWheelIdleReset() {
+    _wheelIdleTimer?.cancel();
+    _wheelIdleTimer = Timer(_wheelIdleTimeout, () {
+      _wheelIdleTimer = null;
+      _pendingPullDistance = 0;
+      _pullLatched = false;
+    });
+  }
+
+  void _cancelWheelIdleReset() {
+    _wheelIdleTimer?.cancel();
+    _wheelIdleTimer = null;
+  }
+
+  void _handlePointerPanZoomUpdate(PointerPanZoomUpdateEvent event) {
+    final delta = event.panDelta;
+    if (delta.dy == 0 || delta.dx.abs() >= delta.dy.abs()) return;
+
+    final notificationRevision = _scrollNotificationRevision;
+    scheduleMicrotask(() {
+      if (!mounted ||
+          (_scrollNotificationRevision > notificationRevision &&
+              _lastScrollNotificationDepth > 0)) {
+        return;
+      }
+      if (!_isAtTop) {
+        _pendingPullDistance = 0;
+        _pullLatched = false;
+      } else if (delta.dy > 0) {
+        if (_activeRefresh != null) {
+          _pullLatched = true;
+        } else {
+          _accumulatePull(delta.dy);
+        }
+      } else {
+        _pendingPullDistance = 0;
+        _pullLatched = false;
+      }
+    });
+  }
+
+  void _handlePointerDown(PointerDownEvent event) {
+    _cancelWheelIdleReset();
+    _pendingPullDistance = 0;
+    _pullLatched = false;
+    if (event.kind == PointerDeviceKind.mouse &&
+        (event.buttons & kPrimaryMouseButton) != 0 &&
+        _isAtTop) {
+      _mouseDrag = _MouseRefreshDrag(
+        pointer: event.pointer,
+        position: event.position,
+        notificationRevision: _scrollNotificationRevision,
+      );
+    } else {
+      _mouseDrag = null;
+    }
+  }
+
+  void _handlePointerMove(PointerMoveEvent event) {
+    final drag = _mouseDrag;
+    if (drag == null || drag.pointer != event.pointer || _pullLatched) return;
+    if (_scrollNotificationRevision > drag.notificationRevision &&
+        _lastScrollNotificationDepth > 0) {
+      _mouseDrag = null;
+      return;
+    }
+
+    final movement = event.position - drag.position;
+    if (movement.dy < _mouseDragDistance ||
+        movement.dx.abs() >= movement.dy.abs() ||
+        !_isAtTop) {
+      return;
+    }
+
+    _pullLatched = true;
+    if (_activeRefresh != null) return;
+    _showRefresh();
+  }
+
+  void _accumulatePull(double distance) {
+    if (_pullLatched) return;
+    _pendingPullDistance += distance;
+    if (_pendingPullDistance < _wheelPullDistance) return;
+
+    _pendingPullDistance = 0;
+    _pullLatched = true;
+    _showRefresh();
+  }
+
+  void _handlePointerEnd(PointerEvent event) {
+    if (_mouseDrag?.pointer == event.pointer) {
+      _mouseDrag = null;
+      _pendingPullDistance = 0;
+      _pullLatched = false;
+      _cancelWheelIdleReset();
+    }
+  }
+
+  void _handlePanZoomStart(PointerPanZoomStartEvent event) {
+    _cancelWheelIdleReset();
+    _pendingPullDistance = 0;
+    _pullLatched = false;
+    _mouseDrag = null;
+  }
+
+  void _handlePanZoomEnd(PointerPanZoomEndEvent event) {
+    _pendingPullDistance = 0;
+    _pullLatched = false;
+    _cancelWheelIdleReset();
+  }
+
+  void _showRefresh() {
+    final future = _refreshIndicatorKey.currentState?.show(atTop: true);
+    if (future != null) {
+      unawaited(
+        future.then<void>(
+          (_) {},
+          onError: (Object error, StackTrace stackTrace) {
+            FlutterError.reportError(
+              FlutterErrorDetails(
+                exception: error,
+                stack: stackTrace,
+                library: 'AppRefreshIndicator',
+                context: ErrorDescription(
+                  'while refreshing from desktop scroll input',
+                ),
+              ),
+            );
+          },
+        ),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _cancelWheelIdleReset();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      onPointerSignal: _handlePointerSignal,
+      onPointerDown: _handlePointerDown,
+      onPointerMove: _handlePointerMove,
+      onPointerUp: _handlePointerEnd,
+      onPointerCancel: _handlePointerEnd,
+      onPointerPanZoomStart: _handlePanZoomStart,
+      onPointerPanZoomUpdate: _handlePointerPanZoomUpdate,
+      onPointerPanZoomEnd: _handlePanZoomEnd,
+      child: NotificationListener<ScrollMetricsNotification>(
+        onNotification: _handleMetricsNotification,
+        child: NotificationListener<ScrollNotification>(
+          onNotification: _handleScrollNotification,
+          child: RefreshIndicator(
+            key: _refreshIndicatorKey,
+            onRefresh: _handleRefresh,
+            child: widget.child,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MouseRefreshDrag {
+  const _MouseRefreshDrag({
+    required this.pointer,
+    required this.position,
+    required this.notificationRevision,
+  });
+
+  final int pointer;
+  final Offset position;
+  final int notificationRevision;
+}
+
 class SmoothScrollProvider extends StatefulWidget {
   const SmoothScrollProvider({
     super.key,

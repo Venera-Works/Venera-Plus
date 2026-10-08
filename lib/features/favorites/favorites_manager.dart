@@ -317,9 +317,6 @@ class LocalFavoritesManager with ChangeNotifier {
     _refreshHashedIds(folderNames);
   }
 
-  static const String readingFolderName = "在读";
-  static const String legacyTrackingFolderName = "追更";
-
   String? get readingFolder {
     final configured = appdata.settings['readingFolder'];
     if (_isClosed || configured == null) return null;
@@ -331,32 +328,25 @@ class LocalFavoritesManager with ChangeNotifier {
     return null;
   }
 
-  /// Missing key denotes a legacy snapshot; null denotes an intentionally
-  /// deleted role. Never reinterpret an arbitrary old tracking folder as reading.
+  Future<void> setReadingFolder(String? folder) async {
+    if (folder != null && !existsFolder(folder)) {
+      throw ArgumentError.value(folder, 'folder', 'Folder does not exist');
+    }
+    appdata.settings['readingFolder'] = folder;
+    await appdata.saveData(false);
+    notifyListeners();
+  }
+
+  /// Resolves an existing reading-folder ID binding and clears invalid bindings.
+  /// A missing binding remains unbound; existing folders are never adopted.
   Future<void> reconcileReadingFolderBinding() async {
     FavoriteSyncData.ensureFolderMetadataTable(_db);
-    final folders = _getFolderNamesWithDB();
     var changed = false;
-    if (!appdata.settings.containsKey('readingFolder')) {
-      if (!folders.contains(readingFolderName)) {
-        if (folders.contains(legacyTrackingFolderName)) {
-          _renameTables(legacyTrackingFolderName, readingFolderName);
-          if (appdata.settings['quickFavorite'] == legacyTrackingFolderName) {
-            appdata.settings['quickFavorite'] = readingFolderName;
-          }
-        } else {
-          createFolder(readingFolderName);
-        }
-      }
-      appdata.settings['readingFolder'] = readingFolderName;
-      changed = true;
-    } else {
+    if (appdata.settings.containsKey('readingFolder')) {
       final binding = appdata.settings['readingFolder'];
       if (binding != null) {
         if (binding is String) {
-          if (existsFolder(binding)) {
-            // Valid existing folder name
-          } else {
+          if (!existsFolder(binding)) {
             final resolved = getFolderNameById(binding);
             if (resolved != null && existsFolder(resolved)) {
               appdata.settings['readingFolder'] = resolved;
@@ -810,12 +800,6 @@ class LocalFavoritesManager with ChangeNotifier {
 
     counts[name] = 0;
     _generation++;
-    if (name == readingFolderName &&
-        appdata.settings.containsKey('readingFolder') &&
-        appdata.settings['readingFolder'] == null) {
-      appdata.settings['readingFolder'] = name;
-      appdata.saveData();
-    }
     notifyListeners();
     return name;
   }
