@@ -167,7 +167,14 @@ void main() {
       calls.edit(sync);
       await clock.elapse(const Duration(seconds: 5));
     }
+    // 持续编辑期间，至少发生一次额外同步
     await sync.waitForSync();
+    expect(calls.uploads, greaterThanOrEqualTo(2));
+    // 停止编辑后，等待 10 秒防抖期结束
+    await clock.elapse(const Duration(seconds: 10));
+    await sync.waitForSync();
+
+    // 包含最初的上传，总计应至少上传 3 次
     expect(calls.uploads, greaterThanOrEqualTo(3));
   });
   scheduleTest(
