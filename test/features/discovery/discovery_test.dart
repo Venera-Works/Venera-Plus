@@ -196,33 +196,64 @@ void main() {
         final sourceSelector = find.byKey(
           const ValueKey('discovery_source_selector'),
         );
-        expect(tester.getRect(sourceSelector).width, greaterThan(160));
-        final sectionRect = tester.getRect(
-          find.byType(SegmentedButton<DiscoverySection>),
-        );
-        expect(sectionRect.center.dx, closeTo(195, 1));
+        final sourceRect = tester.getRect(sourceSelector);
+        final sectionSelector = find.byType(SegmentedButton<DiscoverySection>);
+        final sectionRect = tester.getRect(sectionSelector);
+        final manageRect = tester.getRect(find.byTooltip('Manage'));
+        expect(sourceRect.center.dy, closeTo(sectionRect.center.dy, 1));
+        expect(sectionRect.center.dy, closeTo(manageRect.center.dy, 1));
+        expect(manageRect.left, greaterThanOrEqualTo(sectionRect.right));
+        expect(manageRect.left, greaterThan(sourceRect.right));
         if (App.isDesktop) {
-          expect(
-            tester.getRect(find.byTooltip('Manage')).center.dx,
-            lessThan(tester.getRect(sourceSelector).center.dx),
-          );
+          for (final width in [390.0, 1280.0]) {
+            tester.view.physicalSize = Size(width, 844);
+            await tester.pumpAndSettle();
+            final menuRect = tester.getRect(
+              find.byType(PopupMenuButton<String>),
+            );
+            final contentRect = tester.getRect(find.byType(ExplorePage));
+            expect(
+              contentRect.right - menuRect.right,
+              lessThan(menuRect.width),
+            );
+          }
+          tester.view.physicalSize = const Size(390, 844);
+          await tester.pumpAndSettle();
         }
 
-        await tester.drag(find.text('Empty Page').first, const Offset(-200, 0));
-        await tester.pumpAndSettle();
-        expect(
-          find.text('A Long Comic Source Name That Needs Room Categories'),
-          findsOneWidget,
+        final browseContentBefore = tester.getRect(
+          find.text('Empty Page').first,
         );
+        await tester.drag(find.text('Empty Page').first, const Offset(-200, 0));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        final categoryTitle = find.text(
+          'A Long Comic Source Name That Needs Room Categories',
+        );
+        final categoryTitleDuringTransition = tester.getRect(categoryTitle);
+        expect(
+          tester.getRect(find.text('Empty Page').first).center.dx,
+          lessThan(browseContentBefore.center.dx),
+        );
+        await tester.pumpAndSettle();
+        final categoryTitleAfterTransition = tester.getRect(categoryTitle);
+        expect(
+          categoryTitleDuringTransition.left,
+          greaterThan(categoryTitleAfterTransition.left),
+        );
+        expect(categoryTitle, findsOneWidget);
         expect(find.text('Empty Page'), findsNothing);
         expect(
           appdata.implicitData['discovery_section_$dualKey'],
           'categories',
         );
-
-        await tester.drag(
-          find.text('A Long Comic Source Name That Needs Room Categories'),
-          const Offset(200, 0),
+        final categoryTitleBeforeReturn = tester.getRect(categoryTitle);
+        await tester.drag(categoryTitle, const Offset(200, 0));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(
+          tester.getRect(categoryTitle).center.dx,
+          greaterThan(categoryTitleBeforeReturn.center.dx),
         );
         await tester.pumpAndSettle();
         expect(find.text('Empty Page'), findsWidgets);
@@ -231,6 +262,7 @@ void main() {
           appdata.implicitData['discovery_page_$dualKey'],
           'Dual Browse 2',
         );
+        expect(categoryTitle, findsNothing);
 
         await tester.drag(find.text('Empty Page').first, const Offset(0, -200));
         await tester.pumpAndSettle();

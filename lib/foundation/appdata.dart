@@ -636,7 +636,7 @@ class Settings with ChangeNotifier {
     'favoritesGalleryColumns': 0, // 0 means automatic, 2-6 are fixed
     'color': 'system', // red, pink, purple, green, orange, blue
     'theme_mode': 'system', // light, dark, system
-    'newFavoriteAddTo': 'end', // start, end
+    'newFavoriteAddTo': 'start', // start, end
     'moveFavoriteAfterRead': 'none', // none, end, start
     'proxy': 'system', // direct, system, proxy string
     'explore_pages': [],

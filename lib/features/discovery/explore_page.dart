@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/loading.dart';
@@ -287,7 +288,9 @@ class ExplorePage extends StatefulWidget {
 }
 
 class _ExplorePageState extends State<ExplorePage>
-    with AutomaticKeepAliveClientMixin<ExplorePage> {
+    with
+        AutomaticKeepAliveClientMixin<ExplorePage>,
+        SingleTickerProviderStateMixin {
   List<ComicSource> orderedSources = [];
   String? currentSourceKey;
   DiscoverySection currentSection = DiscoverySection.browse;
@@ -302,6 +305,7 @@ class _ExplorePageState extends State<ExplorePage>
   /// from current orderedSources and settings, allowing didUpdateWidget to fire
   /// on updates while preserving element states under stable ValueKeys.
   final Set<({String sourceKey, DiscoverySection section})> _visitedViews = {};
+  late final AnimationController _sectionController;
   bool showFB = true;
   double location = 0;
   double _contentHorizontalDragDistance = 0;
@@ -340,19 +344,39 @@ class _ExplorePageState extends State<ExplorePage>
   }
 
   void _syncSourcesAndState({bool isInitial = false}) {
+    final previousSources = orderedSources;
+    final previousSourceKey = currentSourceKey;
+    final previousSection = currentSection;
+    final previousExplorePages = _enabledExplorePages;
+    final previousCategories = _enabledCategories;
+
     _loadSettingsData();
+    final capabilitiesChanged =
+        !listEquals(previousExplorePages, _enabledExplorePages) ||
+        !listEquals(previousCategories, _enabledCategories);
 
     final newOrdered = ExplorePage.deriveOrderedSources(
       allSources: ComicSource.all(),
       enabledExplorePages: _enabledExplorePages,
       enabledCategories: _enabledCategories,
     );
+    var sourcesChanged = previousSources.length != newOrdered.length;
+    if (!sourcesChanged) {
+      for (var i = 0; i < newOrdered.length; i++) {
+        if (previousSources[i].key != newOrdered[i].key ||
+            !identical(previousSources[i], newOrdered[i])) {
+          sourcesChanged = true;
+          break;
+        }
+      }
+    }
 
     orderedSources = newOrdered;
 
     if (newOrdered.isEmpty) {
       currentSourceKey = null;
       _visitedViews.clear();
+      _resetSectionTransition();
       return;
     }
 
@@ -404,10 +428,24 @@ class _ExplorePageState extends State<ExplorePage>
       enabledExplorePages: _enabledExplorePages,
       enabledCategories: _enabledCategories,
     );
-    _visitedViews.clear();
-    _visitedViews.addAll(purged);
+    _visitedViews
+      ..clear()
+      ..addAll(purged);
 
     _recordActiveViewVisited();
+    if (isInitial ||
+        sourcesChanged ||
+        capabilitiesChanged ||
+        previousSourceKey != currentSourceKey ||
+        previousSection != currentSection) {
+      _resetSectionTransition();
+    }
+  }
+
+  void _resetSectionTransition() {
+    _sectionController
+      ..stop()
+      ..value = currentSection.index.toDouble();
   }
 
   void _recordActiveViewVisited() {
@@ -446,6 +484,7 @@ class _ExplorePageState extends State<ExplorePage>
           currentSection.name;
       appdata.writeImplicitData();
 
+      _resetSectionTransition();
       _recordActiveViewVisited();
     });
   }
@@ -462,6 +501,10 @@ class _ExplorePageState extends State<ExplorePage>
 
       _recordActiveViewVisited();
     });
+    _sectionController.animateTo(
+      section.index.toDouble(),
+      curve: Curves.easeInOut,
+    );
   }
 
   void _onContentHorizontalDragStart(DragStartDetails _) {
@@ -531,6 +574,11 @@ class _ExplorePageState extends State<ExplorePage>
   @override
   void initState() {
     super.initState();
+    _sectionController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 250),
+      value: widget.initialSection.index.toDouble(),
+    );
     _syncSourcesAndState(isInitial: true);
     appdata.settings.addListener(_onSettingsOrSourcesChanged);
     ComicSourceManager().addListener(_onSettingsOrSourcesChanged);
@@ -548,6 +596,7 @@ class _ExplorePageState extends State<ExplorePage>
     appdata.settings.removeListener(_onSettingsOrSourcesChanged);
     ComicSourceManager().removeListener(_onSettingsOrSourcesChanged);
     naviPane?.removeNaviItemTapListener(onNaviItemTapped);
+    _sectionController.dispose();
     super.dispose();
   }
 
@@ -717,8 +766,6 @@ class _ExplorePageState extends State<ExplorePage>
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final isCompactLayout = constraints.maxWidth < 600 || !App.isDesktop;
-
         final sourceSelector = Material(
           key: const ValueKey('discovery_source_selector'),
           borderRadius: BorderRadius.circular(8),
@@ -735,7 +782,7 @@ class _ExplorePageState extends State<ExplorePage>
                     child: Text(
                       source.name,
                       style: ts.s16.bold,
-                      maxLines: 2,
+                      maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
@@ -825,51 +872,45 @@ class _ExplorePageState extends State<ExplorePage>
         );
 
         final padding = EdgeInsets.fromLTRB(12, context.padding.top + 4, 12, 4);
-        if (isCompactLayout) {
-          return Container(
-            padding: padding,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  children: App.isDesktop
-                      ? [
-                          manageMenu,
-                          const SizedBox(width: 8),
-                          Expanded(child: sourceSelector),
-                        ]
-                      : [
-                          Expanded(child: sourceSelector),
-                          const SizedBox(width: 8),
-                          manageMenu,
-                        ],
-                ),
-                if (sectionSelector != null) ...[
-                  const SizedBox(height: 6),
-                  Center(
-                    child: FittedBox(
-                      fit: BoxFit.scaleDown,
-                      child: sectionSelector,
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          );
-        }
+        final rowWidth = constraints.maxWidth - padding.horizontal;
+        final preferredMobileSourceWidth =
+            MediaQuery.textScalerOf(context).scale(16) * 5 + 10 + 10 + 4 + 20;
+        final reservedSectionWidth = sectionSelector == null ? 0.0 : 100.0;
+        final mobileSourceWidth =
+            (rowWidth -
+                    48 -
+                    (sectionSelector == null ? 8 : 16) -
+                    reservedSectionWidth)
+                .clamp(44.0, preferredMobileSourceWidth)
+                .toDouble();
 
         return Container(
           padding: padding,
           child: Row(
             children: [
-              manageMenu,
+              Expanded(
+                child: Row(
+                  children: [
+                    if (App.isDesktop)
+                      Flexible(fit: FlexFit.loose, child: sourceSelector)
+                    else
+                      SizedBox(width: mobileSourceWidth, child: sourceSelector),
+                    if (sectionSelector != null) ...[
+                      const SizedBox(width: 8),
+                      Flexible(
+                        fit: FlexFit.loose,
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerLeft,
+                          child: sectionSelector,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
               const SizedBox(width: 8),
-              Flexible(child: sourceSelector),
-              if (sectionSelector != null) ...[
-                const SizedBox(width: 8),
-                sectionSelector,
-              ],
-              const Spacer(),
+              manageMenu,
             ],
           ),
         );
@@ -895,15 +936,13 @@ class _ExplorePageState extends State<ExplorePage>
     _recordActiveViewVisited();
 
     final activeKey = (sourceKey: source.key, section: currentSection);
-
-    final children = <Widget>[];
+    final views =
+        <({String sourceKey, DiscoverySection section, Widget child})>[];
     for (final item in _visitedViews) {
       final itemSource = orderedSources.firstWhereOrNull(
         (s) => s.key == item.sourceKey,
       );
       if (itemSource == null) continue;
-
-      final bool isActive = item == activeKey;
 
       Widget contentWidget;
       if (item.section == DiscoverySection.browse) {
@@ -924,31 +963,66 @@ class _ExplorePageState extends State<ExplorePage>
         );
       }
 
-      children.add(
-        _buildOffstageView(
-          key: ValueKey('offstage_${item.section.name}_${item.sourceKey}'),
-          child: contentWidget,
-          isActive: isActive,
-        ),
-      );
+      views.add((
+        sourceKey: item.sourceKey,
+        section: item.section,
+        child: contentWidget,
+      ));
     }
 
-    return Stack(fit: StackFit.expand, children: children);
+    return AnimatedBuilder(
+      animation: _sectionController,
+      builder: (context, _) {
+        final progress = _sectionController.value;
+        final isAnimating = _sectionController.isAnimating;
+        final children = <Widget>[];
+        for (final view in views) {
+          final isActive =
+              view.sourceKey == activeKey.sourceKey &&
+              view.section == activeKey.section;
+          final offset = view.section.index.toDouble() - progress;
+          final isVisible =
+              isActive ||
+              (view.sourceKey == source.key && isAnimating && offset.abs() < 1);
+
+          children.add(
+            FractionalTranslation(
+              key: ValueKey('offstage_${view.section.name}_${view.sourceKey}'),
+              translation: Offset(offset, 0),
+              child: _buildOffstageView(
+                child: view.child,
+                isActive: isActive,
+                isVisible: isVisible,
+              ),
+            ),
+          );
+        }
+
+        return ClipRect(
+          child: Stack(fit: StackFit.expand, children: children),
+        );
+      },
+    );
   }
 
   Widget _buildOffstageView({
-    required Key key,
     required Widget child,
     required bool isActive,
+    required bool isVisible,
   }) {
     return Offstage(
-      key: key,
-      offstage: !isActive,
+      offstage: !isVisible,
       child: TickerMode(
         enabled: isActive,
-        child: ExcludeFocus(
-          excluding: !isActive,
-          child: HeroMode(enabled: isActive, child: child),
+        child: IgnorePointer(
+          ignoring: !isActive,
+          child: ExcludeFocus(
+            excluding: !isActive,
+            child: ExcludeSemantics(
+              excluding: !isActive,
+              child: HeroMode(enabled: isActive, child: child),
+            ),
+          ),
         ),
       ),
     );

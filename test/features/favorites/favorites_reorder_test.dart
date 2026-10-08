@@ -16,19 +16,17 @@ import 'package:venera_plus/foundation/comic_type.dart';
 
 import '../../widget_test_io.dart';
 
-List<String> _comicOrder(WidgetTester tester) {
+List<String> _comicOrder(WidgetTester tester, {Finder? within}) {
+  final scope = within ?? find.byType(ReorderableBuilder<FavoriteItem>);
   final tiles = tester.widgetList<ComicTile>(
-    find.descendant(
-      of: find.byType(ReorderableBuilder<FavoriteItem>),
-      matching: find.byType(ComicTile),
-    ),
+    find.descendant(of: scope, matching: find.byType(ComicTile)),
   );
   final seen = <String>{};
   final items = <({String id, Offset center})>[];
   for (final tile in tiles) {
     if (!seen.add(tile.comic.id)) continue;
     final finder = find.descendant(
-      of: find.byType(ReorderableBuilder<FavoriteItem>),
+      of: scope,
       matching: find.byWidgetPredicate(
         (widget) => widget is ComicTile && widget.comic.id == tile.comic.id,
       ),
@@ -78,6 +76,211 @@ bool _sqliteAvailable() {
 }
 
 void main() {
+  testWidgets(
+    'home folder reorder updates and persists without affecting other folders',
+    (tester) async {
+      final directory = Directory.systemTemp.createTempSync(
+        'venera-home-favorite-order-',
+      );
+      final previousSettings = Map<String, dynamic>.from(
+        appdata.toJson()['settings'],
+      );
+      final previousFavorites = LocalFavoritesManager.cache;
+      final previousHistory = HistoryManager.cache;
+      String? previousDataPath;
+      String? previousCachePath;
+      try {
+        previousDataPath = App.dataPath;
+      } on Error {
+        /* Unset late path. */
+      }
+      try {
+        previousCachePath = App.cachePath;
+      } on Error {
+        /* Unset late path. */
+      }
+      final previousImplicit = Map<String, dynamic>.from(appdata.implicitData);
+      App.dataPath = directory.path;
+      App.cachePath = directory.path;
+      appdata.settings.remove('readingFolder');
+      HistoryManager.cache = null;
+      LocalFavoritesManager.cache = null;
+      var manager = LocalFavoritesManager();
+      var history = HistoryManager();
+      appdata.settings['language'] = 'en-US';
+      appdata.settings['comicDisplayMode'] = 'brief';
+      appdata.settings[favoriteDisplayModeKey] = favoriteDisplayList;
+      appdata.settings[favoriteGalleryColumnsKey] = 0;
+      configureComicWidgets(
+        favoriteDisplayStateResolver: () => ComicFavoriteDisplayState(
+          isGallery: isFavoriteGalleryMode(),
+          galleryColumns: favoriteGalleryColumns(),
+        ),
+      );
+      addTearDown(configureComicWidgets);
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump(const Duration(milliseconds: 300));
+        await runWidgetIo(tester, () async {
+          await manager.waitForPendingReads();
+          await appdata.saveData(false);
+          manager.close();
+          history.close();
+        });
+        LocalFavoritesManager.cache = previousFavorites;
+        HistoryManager.cache = previousHistory;
+        (appdata.toJson()['settings'] as Map)
+          ..clear()
+          ..addAll(previousSettings);
+        App.dataPath = previousDataPath ?? Directory.systemTemp.path;
+        App.cachePath = previousCachePath ?? Directory.systemTemp.path;
+        appdata.implicitData = previousImplicit;
+        directory.deleteSync(recursive: true);
+      });
+      tester.view.physicalSize = const Size(900, 1600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pump();
+      await runWidgetIo(tester, () async {
+        await manager.init();
+        await history.init();
+        for (final folder in ['Home reorder', 'Other folder']) {
+          manager.createFolder(folder);
+          final prefix = folder == 'Home reorder' ? 'home' : 'other';
+          for (var i = 0; i < 6; i++) {
+            manager.addComic(
+              folder,
+              FavoriteItem(
+                id: '$prefix-$i',
+                name: '$prefix Comic $i',
+                coverPath: '',
+                author: '',
+                type: ComicType.local,
+                tags: const [],
+              ),
+              i,
+            );
+          }
+        }
+        await manager.waitForPendingReads();
+      });
+
+      Widget homePage() => MaterialApp(
+        navigatorKey: App.rootNavigatorKey,
+        home: const Scaffold(body: ReadingFavoritesView()),
+      );
+
+      await tester.pumpWidget(homePage());
+      await tester.pumpAndSettle();
+      final unboundMenu = tester
+          .widgetList<MenuButton>(find.byType(MenuButton))
+          .single;
+      expect(
+        unboundMenu.entries.any((entry) => entry.text == 'Reorder'),
+        isFalse,
+      );
+
+      await runWidgetIo(tester, () => manager.setReadingFolder('Home reorder'));
+      await tester.pumpAndSettle();
+      final initialOrder = [for (var i = 0; i < 6; i++) 'home-$i'];
+      final otherOrder = [for (var i = 0; i < 6; i++) 'other-$i'];
+      expect(
+        _comicOrder(tester, within: find.byType(SliverGridComics)),
+        initialOrder,
+      );
+      await _openReorder(tester);
+      expect(_comicOrder(tester), initialOrder);
+
+      Finder tile(String id) => find.byWidgetPredicate(
+        (widget) => widget is ComicTile && widget.comic.id == id,
+      );
+      final builder = tester.widget<ReorderableBuilder<FavoriteItem>>(
+        find.byType(ReorderableBuilder<FavoriteItem>),
+      );
+      final gesture = await tester.startGesture(
+        tester.getCenter(tile('home-0')),
+      );
+      await tester.pump(
+        builder.longPressDelay + const Duration(milliseconds: 50),
+      );
+      await gesture.moveTo(tester.getCenter(tile('home-2')));
+      await tester.pump(const Duration(milliseconds: 300));
+      await gesture.up();
+      await tester.pumpAndSettle();
+      const expectedOrder = [
+        'home-1',
+        'home-2',
+        'home-0',
+        'home-3',
+        'home-4',
+        'home-5',
+      ];
+      expect(_comicOrder(tester), expectedOrder);
+      App.rootNavigatorKey.currentState!.pop();
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(
+        _comicOrder(tester, within: find.byType(SliverGridComics)),
+        expectedOrder,
+      );
+      expect(
+        manager.getFolderComics('Home reorder').map((comic) => comic.id),
+        expectedOrder,
+      );
+      expect(
+        manager.getFolderComics('Other folder').map((comic) => comic.id),
+        otherOrder,
+      );
+
+      await _openReorder(tester);
+      expect(_comicOrder(tester), expectedOrder);
+      await tester.tap(find.byIcon(Icons.swap_vert));
+      await tester.pumpAndSettle();
+      final reversedOrder = expectedOrder.reversed.toList();
+      expect(_comicOrder(tester), reversedOrder);
+      App.rootNavigatorKey.currentState!.pop();
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(
+        _comicOrder(tester, within: find.byType(SliverGridComics)),
+        reversedOrder,
+      );
+      expect(
+        manager.getFolderComics('Home reorder').map((comic) => comic.id),
+        reversedOrder,
+      );
+      expect(
+        manager.getFolderComics('Other folder').map((comic) => comic.id),
+        otherOrder,
+      );
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(milliseconds: 300));
+      await runWidgetIo(tester, () async {
+        await manager.waitForPendingReads();
+        manager.close();
+        LocalFavoritesManager.cache = null;
+        manager = LocalFavoritesManager();
+        await manager.init();
+        await manager.waitForPendingReads();
+      });
+      await tester.pumpWidget(homePage());
+      await tester.pumpAndSettle();
+      expect(
+        _comicOrder(tester, within: find.byType(SliverGridComics)),
+        reversedOrder,
+      );
+      expect(
+        manager.getFolderComics('Other folder').map((comic) => comic.id),
+        otherOrder,
+      );
+      expect(tester.takeException(), isNull);
+    },
+    skip: !_sqliteAvailable(),
+  );
+
   for (final columns in <int?>[null, 4, 0]) {
     for (final kind in [PointerDeviceKind.mouse, PointerDeviceKind.touch]) {
       testWidgets(

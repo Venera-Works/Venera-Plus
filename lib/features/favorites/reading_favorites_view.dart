@@ -10,6 +10,7 @@ import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/features/favorites/favorite_actions.dart';
 import 'package:venera_plus/features/favorites/favorites_manager.dart';
+import 'package:venera_plus/features/favorites/reorder_comics_page.dart';
 import 'package:venera_plus/features/follow_updates/follow_updates.dart';
 import 'package:venera_plus/features/reader/reader.dart';
 import 'package:venera_plus/foundation/app.dart';
@@ -233,6 +234,18 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
         text: "Folders".tl,
         onClick: _showFolderSelector,
       ),
+      if (readingFolder != null)
+        MenuEntry(
+          icon: Icons.reorder,
+          text: "Reorder".tl,
+          onClick: () {
+            context.to(() => ReorderComicsPage(readingFolder)).then((_) {
+              if (mounted && manager.readingFolder == readingFolder) {
+                updateComics();
+              }
+            });
+          },
+        ),
       if (readingFolder != null)
         MenuEntry(
           icon: Icons.link_off,
