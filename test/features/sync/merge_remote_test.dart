@@ -486,29 +486,65 @@ void main() {
   });
 
   group('Directory and path casing preservation', () {
-    test('preserves mixed-case directory and filename over HTTP', () async {
-      final customRemote = MergeRemote(
-        remote.client,
-        deviceName: 'My Device 机',
-      );
+    test(
+      'preserves mixed-case paths over HTTP with a literal-percent base',
+      () async {
+        // `%25` encodes the fixture's logical `/dav%` base in its URL.
+        server.addDirectory('/dav%');
+        final customClient = WebDavEndpoint(
+          url: '${server.baseUrl}/dav%25',
+          user: 'testuser',
+          password: 'testpass',
+        ).createClient();
+        customClient.c.httpClientAdapter = IOHttpClientAdapter();
+        final customRemote = MergeRemote(
+          customClient,
+          deviceName: 'My Device 机',
+        );
 
-      final batch = createTestBatch(actor: 'MyDevice-Actor', counter: 1);
-      final uploadedPath = await customRemote.upload(batch);
+        try {
+          final batch = createTestBatch(actor: 'MyDevice-Actor', counter: 1);
+          final uploadedPath = await customRemote.upload(batch);
 
-      expect(uploadedPath, startsWith('VeneraPlus/My Device 机/1-'));
+          expect(uploadedPath, startsWith('VeneraPlus/My Device 机/1-'));
 
-      final entries = await customRemote.list();
-      expect(entries.length, 1);
-      expect(entries.first.filename, startsWith('VeneraPlus/My Device 机/1-'));
+          final entries = await customRemote.list();
+          expect(entries.length, 1);
+          expect(
+            entries.first.filename,
+            startsWith('VeneraPlus/My Device 机/1-'),
+          );
 
-      final putRequests = server.receivedRequests
-          .where((r) => r.startsWith('PUT '))
-          .toList();
-      expect(
-        putRequests.any((r) => r.contains('/VeneraPlus/My Device 机/1-')),
-        isTrue,
-      );
-    });
+          final downloaded = await customRemote.download(entries.single);
+          expect(downloaded.id, batch.id);
+          expect(downloaded.actor, batch.actor);
+          expect(downloaded.counter, batch.counter);
+          expect(
+            downloaded.document.materialize(),
+            batch.document.materialize(),
+          );
+
+          expect(server.receivedRequests, contains('PUT /dav%/$uploadedPath'));
+          expect(server.receivedRequests, contains('GET /dav%/$uploadedPath'));
+          expect(
+            server.receivedRawRequests.any(
+              (request) => request.startsWith('PUT /dav%25/'),
+            ),
+            isTrue,
+          );
+          expect(
+            server.receivedRawRequests.any(
+              (request) => request.startsWith('GET /dav%25/'),
+            ),
+            isTrue,
+          );
+          expect(server.hasFile('/dav%/$uploadedPath'), isTrue);
+          expect(server.hasFile('/dav%25/$uploadedPath'), isFalse);
+        } finally {
+          customClient.c.close(force: true);
+        }
+      },
+    );
   });
 
   group('Streamed PUT upload and post-upload verification', () {
@@ -841,6 +877,7 @@ class _LoopbackWebDavServer {
   final Map<String, String> _etags = {};
   final Set<String> _directories = {'/dav'};
   final List<String> receivedRequests = [];
+  final List<String> receivedRawRequests = [];
   final List<Map<String, List<String>>> optionsHeaders = [];
   Map<String, List<String>>? lastPutHeaders;
   Map<String, List<String>>? lastCheckpointPutHeaders;
@@ -868,12 +905,16 @@ class _LoopbackWebDavServer {
     await _server.close(force: true);
   }
 
+  void addDirectory(String path) {
+    _directories.add(_canonicalPath(path));
+  }
+
   String _canonicalPath(String path) {
-    final decoded = Uri.decodeFull(path);
-    if (decoded.length > 1 && decoded.endsWith('/')) {
-      return decoded.substring(0, decoded.length - 1);
+    // Fixture paths are logical text. Only HTTP ingress decodes URI escapes.
+    if (path.length > 1 && path.endsWith('/')) {
+      return path.substring(0, path.length - 1);
     }
-    return decoded;
+    return path;
   }
 
   String _parentPath(String path) {
@@ -983,7 +1024,8 @@ class _LoopbackWebDavServer {
   }
 
   Future<void> _handle(HttpRequest request) async {
-    final path = _canonicalPath(request.uri.path);
+    receivedRawRequests.add('${request.method} ${request.uri.path}');
+    final path = _canonicalPath(Uri.decodeComponent(request.uri.path));
     receivedRequests.add('${request.method} $path');
     final body = await request.fold<List<int>>(
       [],

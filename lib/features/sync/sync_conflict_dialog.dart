@@ -416,82 +416,99 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Row(
-                  children: [
-                    Icon(
-                      conflicts.isEmpty
-                          ? Icons.check_circle_outline
-                          : Icons.sync_problem,
-                      color: conflicts.isEmpty
-                          ? theme.colorScheme.primary
-                          : theme.colorScheme.error,
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        'Resolve Sync Conflicts'.tl,
-                        style: theme.textTheme.titleLarge,
+                Expanded(
+                  child: CustomScrollView(
+                    slivers: [
+                      SliverToBoxAdapter(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(
+                                  conflicts.isEmpty
+                                      ? Icons.check_circle_outline
+                                      : Icons.sync_problem,
+                                  color: conflicts.isEmpty
+                                      ? theme.colorScheme.primary
+                                      : theme.colorScheme.error,
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(
+                                    'Resolve Sync Conflicts'.tl,
+                                    style: theme.textTheme.titleLarge,
+                                  ),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.close),
+                                  onPressed: _isSubmitting
+                                      ? null
+                                      : () => Navigator.of(context).pop(),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              conflicts.isEmpty
+                                  ? 'All conflicts resolved.'.tl
+                                  : 'Found @count conflict(s). Choose a candidate for each item to resolve.'
+                                        .tlParams({'count': conflicts.length}),
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                color: theme.textTheme.bodySmall?.color,
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                          ],
+                        ),
                       ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.close),
-                      onPressed: _isSubmitting
-                          ? null
-                          : () => Navigator.of(context).pop(),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  conflicts.isEmpty
-                      ? 'All conflicts resolved.'.tl
-                      : 'Found @count conflict(s). Choose a candidate for each item to resolve.'
-                            .tlParams({'count': conflicts.length}),
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: theme.textTheme.bodySmall?.color,
+                      if (conflicts.isEmpty)
+                        SliverFillRemaining(
+                          hasScrollBody: false,
+                          child: Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.check_circle,
+                                  size: 56,
+                                  color: theme.colorScheme.primary,
+                                ),
+                                const SizedBox(height: 12),
+                                Text(
+                                  'All conflicts resolved'.tl,
+                                  style: theme.textTheme.titleMedium,
+                                ),
+                              ],
+                            ),
+                          ),
+                        )
+                      else
+                        SliverList.separated(
+                          itemCount: conflicts.length,
+                          separatorBuilder: (_, _) =>
+                              const SizedBox(height: 12),
+                          itemBuilder: (context, index) {
+                            final conflict = conflicts[index];
+                            return _buildConflictCard(conflict, theme);
+                          },
+                        ),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 16),
-                if (conflicts.isEmpty) ...[
-                  const Spacer(),
-                  Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.check_circle,
-                          size: 56,
-                          color: theme.colorScheme.primary,
-                        ),
-                        const SizedBox(height: 12),
-                        Text(
-                          'All conflicts resolved'.tl,
-                          style: theme.textTheme.titleMedium,
-                        ),
-                      ],
-                    ),
-                  ),
-                  const Spacer(),
+                const SizedBox(height: 12),
+                if (conflicts.isEmpty)
                   FilledButton(
                     onPressed: _isSubmitting
                         ? null
                         : () => Navigator.of(context).pop(),
                     child: Text('Done'.tl),
-                  ),
-                ] else ...[
-                  Expanded(
-                    child: ListView.separated(
-                      itemCount: conflicts.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 12),
-                      itemBuilder: (context, index) {
-                        final conflict = conflicts[index];
-                        return _buildConflictCard(conflict, theme);
-                      },
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
+                  )
+                else
+                  Wrap(
+                    alignment: WrapAlignment.end,
+                    spacing: 8,
+                    runSpacing: 8,
                     children: [
                       OutlinedButton(
                         onPressed: _isSubmitting
@@ -499,7 +516,6 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
                             : () => Navigator.of(context).pop(),
                         child: Text('Close'.tl),
                       ),
-                      const SizedBox(width: 8),
                       FilledButton(
                         onPressed: _isSubmitting || !canSubmit
                             ? null
@@ -516,7 +532,6 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
                       ),
                     ],
                   ),
-                ],
               ],
             ),
           ),

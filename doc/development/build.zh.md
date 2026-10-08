@@ -73,6 +73,8 @@ git diff --check
 
 CI 会使用 `flutter test --coverage` 生成 `coverage/lcov.info`，在工作流摘要中显示行覆盖率，并上传报告产物。当前覆盖率用于建立可见基线，尚未设置统一硬阈值；涉及关键业务路径的改动仍必须增加针对性测试。
 
+WebDAV 测试夹具的目录和文件键统一使用解码后的逻辑路径；仅在 HTTP 请求入口解码一次，生成 `PROPFIND` 响应的 `href` 时逐段编码。路径回归应覆盖空格、Unicode、字面百分号和大小写，避免上传与目录发现使用不同路径，或重复解码百分号。
+
 PR 还会运行 `依赖安全审查` 和 `PR 平台冒烟构建`。依赖审查会阻止引入高危或严重漏洞依赖；当改动涉及业务代码、原生平台目录、依赖、构建脚本、工作流，或 `test/integration/`、`test/driver/`、`test/features/sync/legacy_sync_reader_test.dart`、`test/features/sync/source_identity_recovery_test.dart` 及 `test/features/comic_source/` 下的 `source_parser_test.dart`、`source_lifecycle_test.dart`、`source_files_test.dart` 时，平台工作流会执行 Android Debug（arm64 编译门禁与 x86_64 模拟器环境原生集成测试）和 Windows Debug（应用构建、QuickJS/ZIP64 迁移与源恢复原生测试、真实启动脚本与原生集成测试）。CI 精确匹配这些原生测试目录和文件，不扩大触发范围到所有 `test/`；文档等不影响构建的改动会跳过平台任务。
 
 旧同步档迁移与源恢复测试将 SQLite 收藏、历史模式迁移与 QuickJS 脚本执行、原生 ZIP64 写包分开。普通测试环境缺少某个原生库时，仅跳过依赖该库的原生场景，数据库迁移仍独立执行。Windows PR 任务在**已有 Debug 构建后**检查 `flutter_qjs_plugin.dll`、`flutter_windows.dll` 与 `zip_flutter.dll`，将产物目录加入 `PATH`，并使用两个严格开关：

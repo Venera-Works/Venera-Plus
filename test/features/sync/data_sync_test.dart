@@ -412,12 +412,20 @@ void main() {
         transport.remoteDirs.add('sync-v2');
         transport.remoteFiles[oldPath] = oldBytes;
 
+        appdata.implicitData['webdavSyncDeviceName'] = 'Test 東京 Device';
         final sync = DataSync();
         expect((await sync.syncNow()).success, isTrue);
         final remote = sync.coordinator!.remote;
         final initial = (await remote.list()).singleWhere(
           (entry) => entry.actor == 'test_device_1',
         );
+        final markerPath = 'VeneraPlus/Test 東京 Device/device.json';
+        expect(transport.remoteFiles[markerPath], isNotNull);
+        expect(jsonDecode(utf8.decode(transport.remoteFiles[markerPath]!)), {
+          'actor': 'test_device_1',
+          'name': 'Test 東京 Device',
+        });
+        expect(initial.filename, startsWith('VeneraPlus/Test 東京 Device/'));
         expect(
           (await remote.download(initial)).document.materialize(),
           localRecords,
@@ -768,6 +776,8 @@ void main() {
     test(
       'upload conflict triggers replacement checkpoint dominating intended batch',
       () async {
+        final volumeKey = syncRecordKey('setting', ['volume']);
+        localRecords[volumeKey] = {'value': 80};
         final coordinator = MergeSyncCoordinator(
           endpointHash: 'hash_conflict_rec',
           stateDirectory: Directory('${tempDir.path}/state_conflict_rec'),
@@ -792,7 +802,7 @@ void main() {
 
         // Stage an outbox batch
         await coordinator.store.capture({
-          syncRecordKey('setting', ['volume']): {'value': 80},
+          volumeKey: {'value': 80},
         });
         expect(coordinator.store.outbox, isNotEmpty);
         final initialBatch = coordinator.store.outbox.first;
@@ -811,17 +821,17 @@ void main() {
         expect(syncResult.success, isTrue);
         // All outbox batches (original + replacement) should be acknowledged
         expect(coordinator.store.outbox, isEmpty);
-        final replacement = (await coordinator.remote.list()).singleWhere(
-          (entry) =>
-              entry.actor == coordinator.actor &&
-              entry.counter > initialBatch.counter,
+        final latestCandidates = await coordinator.remote.listLatest();
+        final replacement = await coordinator.remote.downloadLatestValid(
+          coordinator.actor,
+          latestCandidates,
         );
-        expect(
-          (await coordinator.remote.download(
-            replacement,
-          )).document.dominates(initialBatch.document),
-          isTrue,
-        );
+        expect(replacement, isNotNull);
+        final recovered = replacement!;
+        expect(recovered.counter, greaterThan(initialBatch.counter));
+        expect(recovered.document.dominates(initialBatch.document), isTrue);
+        final recoveredRecords = recovered.document.materialize();
+        expect(recoveredRecords[volumeKey], {'value': 80});
       },
     );
 
@@ -1237,10 +1247,10 @@ void main() {
         for (final entry in published) {
           cloud.merge((await MergeRemote(client).download(entry)).document);
         }
-        expect(
-          cloud.materialize(),
-          contains(syncRecordKey('search', ['legacy-only'])),
-        );
+        final cloudRecords = cloud.materialize();
+        expect(cloudRecords[syncRecordKey('search', ['legacy-only'])], {
+          'order': 0,
+        });
         expect(transport.remoteFiles, contains('100-1.venera'));
       },
     );
@@ -1577,7 +1587,9 @@ class _VirtualWebDavTransport implements HttpClientAdapter {
     Future<void>? cancelFuture,
   ) async {
     requests.add(options);
-    final path = options.uri.path.replaceFirst(RegExp(r'^/dav/?'), '');
+    final path = Uri.decodeComponent(
+      options.uri.path,
+    ).replaceFirst(RegExp(r'^/dav/?'), '');
 
     if (options.method == 'OPTIONS' || options.method == 'HEAD') {
       return ResponseBody.fromString('', 200);

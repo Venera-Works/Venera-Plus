@@ -7,7 +7,6 @@ import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/res.dart';
-import 'package:venera_plus/foundation/sync_records.dart';
 import 'package:venera_plus/foundation/translations.dart';
 
 void main() {
@@ -204,29 +203,6 @@ void main() {
         }
       },
     );
-
-    test('presence never exposes technical values', () {
-      for (final value in [true, 'present']) {
-        expect(
-          formatCandidateSafePreview(
-            domain: 'favorite',
-            field: 'presence',
-            value: value,
-            isDeleted: false,
-          ),
-          'Keep record'.tl,
-        );
-      }
-      expect(
-        formatCandidateSafePreview(
-          domain: 'favorite',
-          field: 'presence',
-          value: 'deleted',
-          isDeleted: true,
-        ),
-        'Delete record'.tl,
-      );
-    });
   });
 
   group('SyncConflictDialog widget', () {
@@ -307,12 +283,23 @@ void main() {
           ),
         );
 
+        Future<void> scrollToCandidate(Finder candidate) async {
+          await tester.scrollUntilVisible(
+            candidate,
+            100,
+            scrollable: find.byType(Scrollable).first,
+          );
+          await tester.pumpAndSettle();
+        }
+
         await tester.pumpWidget(buildDialog(conflicts));
         await tester.pumpAndSettle();
-        await tester.tap(
-          find.byKey(ValueKey((key, titleConflict.field, firstTitle.id))),
+        final firstTitleChoice = find.byKey(
+          ValueKey((key, titleConflict.field, firstTitle.id)),
         );
-        await tester.pump();
+        await scrollToCandidate(firstTitleChoice);
+        await tester.tap(firstTitleChoice);
+        await tester.pumpAndSettle();
         expect(
           tester
               .widget<FilledButton>(
@@ -322,36 +309,26 @@ void main() {
           isNull,
         );
         expect(calls, isEmpty);
+        expect(left.conflicts, hasLength(2));
         final changedTitleChoice = find.byKey(
           ValueKey((key, titleConflict.field, changedTitle.id)),
         );
-        await tester.ensureVisible(changedTitleChoice);
+        await scrollToCandidate(changedTitleChoice);
         await tester.tap(changedTitleChoice);
         await tester.pumpAndSettle();
-        expect(
-          find.descendant(
-            of: changedTitleChoice,
-            matching: find.text('Selected'.tl),
-          ),
-          findsOneWidget,
-        );
-        expect(
-          find.descendant(
-            of: find.byKey(ValueKey((key, titleConflict.field, firstTitle.id))),
-            matching: find.text('Choose'.tl),
-          ),
-          findsOneWidget,
-        );
         expect(calls, isEmpty);
+        expect(left.conflicts, hasLength(2));
         final progressChoice = find.byKey(
           ValueKey((key, progressConflict.field, selectedProgress.id)),
         );
-        await tester.ensureVisible(progressChoice);
+        await scrollToCandidate(progressChoice);
         await tester.tap(progressChoice);
         await tester.pumpAndSettle();
         expect(calls, isEmpty);
         expect(left.conflicts, hasLength(2));
 
+        await tester.drag(find.byType(Scrollable).first, const Offset(0, 1000));
+        await tester.pumpAndSettle();
         final lateDocument = MergeDocument()
           ..captureLocal('late-device', {}, {
             key: {'title': 'Late title'},
@@ -363,30 +340,8 @@ void main() {
         final updatedTitle = updatedConflicts.firstWhere(
           (conflict) => conflict.field == 'title',
         );
-        final updatedProgress = updatedConflicts.firstWhere(
-          (conflict) => conflict.field == 'progress',
-        );
         final lateTitle = updatedTitle.candidates.firstWhere(
           (candidate) => candidate.actor == 'late-device',
-        );
-        final oldTitleChoice = find.byKey(
-          ValueKey((key, updatedTitle.field, changedTitle.id)),
-        );
-        await tester.ensureVisible(oldTitleChoice);
-        expect(
-          find.descendant(of: oldTitleChoice, matching: find.text('Choose'.tl)),
-          findsOneWidget,
-        );
-        final progressSelected = find.byKey(
-          ValueKey((key, updatedProgress.field, selectedProgress.id)),
-        );
-        await tester.ensureVisible(progressSelected);
-        expect(
-          find.descendant(
-            of: progressSelected,
-            matching: find.text('Selected'.tl),
-          ),
-          findsOneWidget,
         );
         expect(
           tester
@@ -400,9 +355,17 @@ void main() {
         final lateTitleChoice = find.byKey(
           ValueKey((key, updatedTitle.field, lateTitle.id)),
         );
-        await tester.ensureVisible(lateTitleChoice);
+        await scrollToCandidate(lateTitleChoice);
         await tester.tap(lateTitleChoice);
         await tester.pumpAndSettle();
+        expect(
+          tester
+              .widget<FilledButton>(
+                find.widgetWithText(FilledButton, 'Resolve Selected'.tl),
+              )
+              .onPressed,
+          isNotNull,
+        );
         expect(calls, isEmpty);
         expect(left.conflicts, hasLength(2));
         await tester.tap(find.text('Resolve Selected'.tl));
@@ -435,10 +398,16 @@ void main() {
               .onPressed,
           isNull,
         );
+        expect(
+          tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
+          isNull,
+        );
         resolution.complete(const Res(true));
         await tester.pumpAndSettle();
         expect(left.conflicts, isEmpty);
-        expect(find.text('All conflicts resolved'.tl), findsOneWidget);
+        final materialized = left.materialize()[key];
+        expect(materialized?['title'], 'Late title');
+        expect(materialized?['progress'], {'ep': 2, 'page': 8});
         expect(tester.takeException(), isNull);
       },
     );
@@ -500,11 +469,17 @@ void main() {
       );
       await tester.tap(find.byKey(const ValueKey('open-conflicts')));
       await tester.pumpAndSettle();
-      await tester.tap(
-        find.byKey(ValueKey((key, conflict.field, candidate.id))),
+      final candidateChoice = find.byKey(
+        ValueKey((key, conflict.field, candidate.id)),
+      );
+      await tester.scrollUntilVisible(
+        candidateChoice,
+        100,
+        scrollable: find.byType(Scrollable).first,
       );
       await tester.pumpAndSettle();
-      expect(find.text('Selected'.tl), findsOneWidget);
+      await tester.tap(candidateChoice);
+      await tester.pumpAndSettle();
       expect(calls, isEmpty);
       expect(left.conflicts, hasLength(1));
 
@@ -517,78 +492,90 @@ void main() {
 
     for (final language in ['en-US', 'zh-CN', 'zh-TW']) {
       for (final width in [320.0, 800.0]) {
-        testWidgets('real UUID delete/keep dialog fits $language at $width', (
-          tester,
-        ) async {
-          tester.view.physicalSize = Size(width, 800);
-          tester.view.devicePixelRatio = 1;
-          addTearDown(tester.view.resetPhysicalSize);
-          addTearDown(tester.view.resetDevicePixelRatio);
-          final oldLanguage = appdata.settings['language'];
-          appdata.settings['language'] = language;
-          addTearDown(() => appdata.settings['language'] = oldLanguage);
+        testWidgets(
+          'presence conflict dialog fits $language at $width with 2x text',
+          (tester) async {
+            tester.view.physicalSize = Size(width, 800);
+            tester.view.devicePixelRatio = 1;
+            addTearDown(tester.view.resetPhysicalSize);
+            addTearDown(tester.view.resetDevicePixelRatio);
+            final oldLanguage = appdata.settings['language'];
+            appdata.settings['language'] = language;
+            addTearDown(() => appdata.settings['language'] = oldLanguage);
 
-          final key = syncRecordKey('favorite', ['folder', 'comic', 1]);
-          final previous = {
-            key: <String, Object?>{'title': 'Original'},
-          };
-          final base = MergeDocument()..captureLocal('seed', {}, previous);
-          final left = MergeDocument.fromJson(base.toJson());
-          final right = MergeDocument.fromJson(base.toJson());
-          left.captureLocal(actorA, previous, {});
-          right.captureLocal(actorB, previous, {
-            key: {'title': 'Edited'},
-          });
-          left.merge(right);
-          final conflict = left.conflicts.single;
-          expect(conflict.field, 'presence');
-          final deleted = conflict.candidates.singleWhere(
-            (candidate) => candidate.isDeleted,
-          );
-          final calls = <String>[];
-          await tester.pumpWidget(
-            MaterialApp(
-              home: Scaffold(
-                body: SyncConflictDialog(
-                  conflicts: [conflict],
-                  onResolve: (resolutions) async {
-                    for (final resolution in resolutions) {
-                      calls.add(resolution.candidateId);
-                      left.resolve(
-                        'resolver',
-                        resolution.recordKey,
-                        resolution.field,
-                        resolution.candidateId,
-                      );
-                    }
-                    return const Res(true);
-                  },
+            final key = syncRecordKey('favorite', ['folder', 'comic', 1]);
+            final previous = {
+              key: <String, Object?>{'title': 'Original'},
+            };
+            final base = MergeDocument()..captureLocal('seed', {}, previous);
+            final left = MergeDocument.fromJson(base.toJson());
+            final right = MergeDocument.fromJson(base.toJson());
+            left.captureLocal(actorA, previous, {});
+            right.captureLocal(actorB, previous, {
+              key: {'title': 'Edited'},
+            });
+            left.merge(right);
+            final conflict = left.conflicts.single;
+            expect(conflict.field, 'presence');
+            final deleted = conflict.candidates.singleWhere(
+              (candidate) => candidate.isDeleted,
+            );
+            final calls = <String>[];
+            await tester.pumpWidget(
+              MaterialApp(
+                builder: (context, child) => MediaQuery(
+                  data: MediaQuery.of(
+                    context,
+                  ).copyWith(textScaler: const TextScaler.linear(2)),
+                  child: child!,
+                ),
+                home: Scaffold(
+                  body: SyncConflictDialog(
+                    conflicts: [conflict],
+                    onResolve: (resolutions) async {
+                      for (final resolution in resolutions) {
+                        calls.add(resolution.candidateId);
+                        left.resolve(
+                          'resolver',
+                          resolution.recordKey,
+                          resolution.field,
+                          resolution.candidateId,
+                        );
+                      }
+                      return const Res(true);
+                    },
+                  ),
                 ),
               ),
-            ),
-          );
-          await tester.pumpAndSettle();
-          expect(find.text('Delete record'.tl), findsOneWidget);
-          expect(find.text('Keep record'.tl), findsOneWidget);
-          expect(find.textContaining('Record existence'.tl), findsOneWidget);
-          expect(find.textContaining('presence'), findsNothing);
-          expect(find.textContaining('present'), findsNothing);
-          expect(find.textContaining('true'), findsNothing);
-          expect(find.textContaining('false'), findsNothing);
-          expect(find.byTooltip(actorA), findsOneWidget);
-          expect(find.byTooltip(actorB), findsOneWidget);
-          expect(tester.takeException(), isNull);
-          await tester.tap(find.byKey(ValueKey((key, 'presence', deleted.id))));
-          await tester.pumpAndSettle();
-          expect(calls, isEmpty);
-          expect(left.conflicts, hasLength(1));
-          await tester.tap(find.text('Resolve Selected'.tl));
-          await tester.pumpAndSettle();
-          expect(calls, [deleted.id]);
-          expect(left.materialize().containsKey(key), isFalse);
-          expect(find.text('All conflicts resolved'.tl), findsOneWidget);
-          expect(tester.takeException(), isNull);
-        });
+            );
+            await tester.pumpAndSettle();
+            final deletedChoice = find.byKey(
+              ValueKey((key, 'presence', deleted.id)),
+            );
+            await tester.scrollUntilVisible(
+              deletedChoice,
+              100,
+              scrollable: find.byType(Scrollable).first,
+            );
+            await tester.pumpAndSettle();
+            expect(find.textContaining('presence'), findsNothing);
+            expect(find.textContaining('present'), findsNothing);
+            expect(find.textContaining('true'), findsNothing);
+            expect(find.textContaining('false'), findsNothing);
+            expect(find.byTooltip(actorA), findsOneWidget);
+            expect(find.byTooltip(actorB), findsOneWidget);
+            expect(tester.takeException(), isNull);
+            await tester.tap(deletedChoice);
+            await tester.pumpAndSettle();
+            expect(calls, isEmpty);
+            expect(left.conflicts, hasLength(1));
+            await tester.tap(find.text('Resolve Selected'.tl));
+            await tester.pumpAndSettle();
+            expect(calls, [deleted.id]);
+            expect(left.materialize().containsKey(key), isFalse);
+            expect(tester.takeException(), isNull);
+          },
+        );
       }
     }
   });

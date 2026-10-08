@@ -30,6 +30,8 @@ Even explicitly choosing to delete a parent history record preserves read chapte
 
 Compatible field values merge automatically. Incompatible concurrent values remain durable candidates; an existing local active candidate is preferred until you explicitly handle the conflict. The dialog displays all record/field conflicts together. Select each candidate independently, including deletion, then click **Resolve Selected** to submit all choices once. Selecting does not apply or upload anything, and closing discards unsubmitted choices. A changed candidate requires a new selection rather than silently acknowledging a newly arrived edit. The whole batch is validated before one durable commit; later apply or publication failures report recovery status rather than claiming rollback. Unresolved conflicts do not prevent unrelated, conflict-free records from merging. **Successful transfer does not mean all conflicts are resolved.** Arbitrary concurrent edits to settings, ordering, scripts, or sessions are not guaranteed to merge automatically without conflict.
 
+The conflict title, instructions, and candidate list scroll together. On narrow screens or with enlarged text, footer actions wrap while Close and Resolve remain accessible.
+
 A choice creates a new causal edit. Bidirectional and upload-only directions can publish it. Download-only retains the choice locally for later publication; switch to a direction that allows uploading to share it. See [Headless Mode](headless.en.md) for command-line handling.
 
 ## Direction and Timing
