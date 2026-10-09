@@ -30,6 +30,7 @@ void main() {
       );
       final previousImplicit = Map<String, dynamic>.from(appdata.implicitData);
       final oldMuted = Log.isMuted;
+      _ScheduleDavClient.readDirCalls = 0;
       DataSync.resetForTesting();
       DataSync.debugDisableWindowCloseHandler = true;
       DataSync.debugNow = clock.now;
@@ -131,6 +132,7 @@ void main() {
       DataSync.debugUploadOverride = null;
       final sync = DataSync();
       await sync.waitForStartupMerge();
+      final remoteDiscoveryCount = _ScheduleDavClient.readDirCalls;
       final lastAttempt = sync.statusSnapshot.lastSyncTime;
       final lastSuccess = sync.statusSnapshot.lastSuccessTime;
 
@@ -141,6 +143,7 @@ void main() {
       expect(sync.hasPendingChanges, isFalse);
       expect(sync.statusSnapshot.lastSyncTime, lastAttempt);
       expect(sync.statusSnapshot.lastSuccessTime, lastSuccess);
+      expect(_ScheduleDavClient.readDirCalls, remoteDiscoveryCount);
     },
   );
 
@@ -453,12 +456,23 @@ class _Calls {
 }
 
 class _ScheduleDavClient extends dav.Client {
+  static int readDirCalls = 0;
+
   _ScheduleDavClient()
     : super(
         uri: 'https://example.com/dav/',
         c: dav.WdDio(),
         auth: dav.Auth(user: 'user', pwd: 'password'),
       );
+
+  @override
+  Future<List<dav.File>> readDir(
+    String path, [
+    CancelToken? cancelToken,
+  ]) async {
+    readDirCalls++;
+    return const [];
+  }
 
   @override
   Future<void> ping([CancelToken? cancelToken]) async {}

@@ -183,6 +183,7 @@ class _TestDavClient extends dav.Client {
       );
 
   final _TestDavTransport transport;
+  final List<String> readDirPaths = [];
   List<dav.File> remoteFiles = [];
   Future<List<dav.File>> Function(String path)? onReadDir;
 
@@ -191,6 +192,7 @@ class _TestDavClient extends dav.Client {
     String path, [
     CancelToken? cancelToken,
   ]) async {
+    readDirPaths.add(path);
     if (onReadDir != null) {
       return onReadDir!(path);
     }
@@ -559,6 +561,152 @@ void main() {
 
   group('LegacySyncReader Snapshot Discovery and Version Filtering', () {
     test(
+      'lists only legal direct-root backups in stable numeric order',
+      () async {
+        client.remoteFiles = [
+          dav.File(path: '/8-10.venera', name: '8-10.venera', isDir: false),
+          dav.File(path: '/2-10.venera', name: '2-10.venera', isDir: false),
+          dav.File(path: '/08-10.venera', name: '08-10.venera', isDir: false),
+          dav.File(path: '/10-2.venera', name: '10-2.venera', isDir: false),
+          dav.File(name: '31-9.venera', isDir: false),
+          dav.File(
+            path: '/nested/20-10.venera',
+            name: '20-10.venera',
+            isDir: false,
+          ),
+          dav.File(path: '/99-20.venera', name: '99-20.venera', isDir: true),
+          dav.File(path: '/bad-30.venera', name: 'bad-30.venera', isDir: false),
+          dav.File(
+            path: '/40-30.venera.bak',
+            name: '40-30.venera.bak',
+            isDir: false,
+          ),
+          dav.File(path: '/100-20.venera', name: '100-20.venera'),
+        ];
+
+        final backups = await LegacySyncReader(
+          client,
+          scratchDir,
+          preferences: preferences,
+        ).listBackups();
+
+        expect(backups.map((backup) => backup.name), [
+          '08-10.venera',
+          '8-10.venera',
+          '2-10.venera',
+          '31-9.venera',
+          '10-2.venera',
+        ]);
+        expect(backups.first.day, 8);
+        expect(backups.first.version, 10);
+        expect(client.readDirPaths, ['/']);
+        expect(transport.requests, isEmpty);
+      },
+    );
+
+    test(
+      'keeps same-day spellings; explicit selection reads an older backup',
+      () async {
+        final archiveA = _createVeneraArchive(
+          appdataJson: '{"settings":{"choice":"leading-zero"}}',
+        );
+        final archiveB = _createVeneraArchive(
+          appdataJson: '{"settings":{"choice":"plain"}}',
+        );
+        final olderArchive = _createVeneraArchive(
+          appdataJson: '{"settings":{"choice":"older-version"}}',
+        );
+        transport.files['042-7.venera'] = archiveA;
+        transport.files['42-7.venera'] = archiveB;
+        transport.files['500-6.venera'] = olderArchive;
+        client.remoteFiles = [
+          dav.File(name: '042-7.venera', isDir: false),
+          dav.File(name: '42-7.venera', isDir: false),
+          dav.File(name: '500-6.venera', isDir: false),
+        ];
+
+        final reader = LegacySyncReader(
+          client,
+          scratchDir,
+          preferences: preferences,
+        );
+        final automaticSeeds = await reader.readSeeds();
+
+        expect(automaticSeeds, hasLength(2));
+        expect(
+          automaticSeeds.map((seed) => seed.id),
+          containsAll([
+            sha256.convert(archiveA).toString(),
+            sha256.convert(archiveB).toString(),
+          ]),
+        );
+
+        final selectedSeeds = await reader.readSeeds(
+          backupName: '500-6.venera',
+        );
+        expect(selectedSeeds, hasLength(1));
+        expect(
+          selectedSeeds.single.id,
+          sha256.convert(olderArchive).toString(),
+        );
+
+        final previouslyListed = await reader.listBackups();
+        expect(
+          previouslyListed.map((backup) => backup.name),
+          contains('500-6.venera'),
+        );
+        client.remoteFiles = [
+          dav.File(name: '042-7.venera', isDir: false),
+          dav.File(name: '42-7.venera', isDir: false),
+        ];
+        final getCountBeforeStaleSelection = transport.requests
+            .where((request) => request.method == 'GET')
+            .length;
+        await expectLater(
+          reader.readSeeds(backupName: '500-6.venera'),
+          throwsA(isA<FormatException>()),
+        );
+        expect(
+          transport.requests.where((request) => request.method == 'GET'),
+          hasLength(getCountBeforeStaleSelection),
+        );
+        await expectLater(
+          reader.readSeeds(backupName: '../42-7.venera'),
+          throwsA(isA<FormatException>()),
+        );
+      },
+    );
+
+    test(
+      'explicitly selected remote backup reports HTTP 404 instead of falling back',
+      () async {
+        transport.getStatusCodes['50-2.venera'] = 404;
+        transport.files['51-3.venera'] = _createVeneraArchive(
+          appdataJson: '{"settings":{"fallback":"must-not-be-read"}}',
+        );
+        client.remoteFiles = [
+          dav.File(name: '50-2.venera', isDir: false),
+          dav.File(name: '51-3.venera', isDir: false),
+        ];
+
+        final reader = LegacySyncReader(
+          client,
+          scratchDir,
+          preferences: preferences,
+        );
+        await expectLater(
+          reader.readSeeds(backupName: '50-2.venera'),
+          throwsA(isA<StateError>()),
+        );
+        final getRequests = transport.requests.where(
+          (request) => request.method == 'GET',
+        );
+        expect(getRequests, hasLength(1));
+        expect(getRequests.single.uri.pathSegments.last, '50-2.venera');
+      },
+    );
+
+    test(
       'ignores outdated legacy files when higher version exists, processes only newest version',
       () async {
         final archiveV4 = _createVeneraArchive(
@@ -706,6 +854,23 @@ void main() {
   });
 
   group('LegacySyncReader ETag and Directory Metadata Consistency', () {
+    test('valid root ZIP without any ETag remains readable', () async {
+      final archiveBytes = _createVeneraArchive(
+        appdataJson: '{"settings":{"etag":"absent"}}',
+      );
+      transport.files['100-1.venera'] = archiveBytes;
+      client.remoteFiles = [dav.File(name: '100-1.venera', isDir: false)];
+
+      final seeds = await LegacySyncReader(
+        client,
+        scratchDir,
+        preferences: preferences,
+      ).readSeeds();
+
+      expect(seeds.single.id, sha256.convert(archiveBytes).toString());
+      expect(transport.requests.single.headers['If-Match'], isNull);
+    });
+
     test(
       'strong PROPFIND ETag with missing GET ETag is NOT rejected (success)',
       () async {
@@ -859,17 +1024,29 @@ void main() {
         auth: dav.Auth(user: 'test', pwd: 'test'),
       );
       try {
-        final seeds = await LegacySyncReader(
+        final reader = LegacySyncReader(
           networkClient,
           scratchDir,
           preferences: preferences,
-        ).readSeeds();
-        expect(seeds.single.id, sha256.convert(archive).toString());
-        expect(seeds.single.records[syncRecordKey('setting', ['testKey'])], {
-          'value': 'loopback',
-        });
-        expect(requests.where((r) => r.startsWith('PROPFIND')), hasLength(2));
-        expect(requests, contains('GET /payload'));
+        );
+        final automaticSeeds = await reader.readSeeds();
+        expect(automaticSeeds.single.id, sha256.convert(archive).toString());
+        expect(
+          automaticSeeds.single.records[syncRecordKey('setting', ['testKey'])],
+          {'value': 'loopback'},
+        );
+        final backups = await reader.listBackups();
+        expect(backups.map((backup) => backup.name), ['100-1.venera']);
+        final selectedSeeds = await reader.readSeeds(
+          backupName: backups.single.name,
+        );
+        expect(selectedSeeds.single.id, sha256.convert(archive).toString());
+        expect(
+          selectedSeeds.single.records[syncRecordKey('setting', ['testKey'])],
+          {'value': 'loopback'},
+        );
+        expect(requests.where((r) => r.startsWith('PROPFIND')), hasLength(5));
+        expect(requests.where((r) => r == 'GET /payload'), hasLength(2));
         expect(requests.any((r) => r.startsWith('DELETE')), isFalse);
       } finally {
         networkClient.c.close(force: true);
@@ -2285,6 +2462,7 @@ void main() {
           );
           final seeds1 = await reader1.readSeeds();
           expect(seeds1.single.sourceIssues, isNotEmpty);
+          expect(seeds1.single.appliedOverrideFilenames, isEmpty);
           expect(seeds1.single.unavailableDomains, contains('source'));
           final backupFile = File(
             p.join(backupDir.path, '$archiveHash.venera'),
@@ -2323,6 +2501,7 @@ void main() {
           final seeds2 = await reader2.readSeeds();
           expect(seeds2.single.sourceIssues, isEmpty);
           expect(seeds2.single.unavailableDomains, isEmpty);
+          expect(seeds2.single.appliedOverrideFilenames, {'broken.js'});
           expect(
             seeds2.single.records.containsKey(
               syncRecordKey('source', ['repaired_src']),

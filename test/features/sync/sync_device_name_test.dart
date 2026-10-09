@@ -29,5 +29,11 @@ void main() {
     test('prefixes filesystem-reserved device names', () {
       expect(normalizeSyncDeviceName('CON'), '_CON');
     });
+
+    test('reserves retired protocol directory names', () {
+      expect(normalizeSyncDeviceName('sync-v4'), '_sync-v4');
+      expect(normalizeSyncDeviceName('sync-v5'), '_sync-v5');
+      expect(normalizeSyncDeviceName('SYNC-V4'), '_SYNC-V4');
+    });
   });
 }

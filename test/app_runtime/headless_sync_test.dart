@@ -79,8 +79,16 @@ void main() {
     },
   );
 
-  test('actual command grammar maps all WebDAV commands and root aliases', () {
-    for (final action in ['up', 'down', 'sync', 'conflicts', 'resolve']) {
+  test('WebDAV command grammar includes explicit root backup actions', () {
+    for (final action in [
+      'up',
+      'down',
+      'sync',
+      'conflicts',
+      'resolve',
+      'backups',
+      'import-backup',
+    ]) {
       expect(parseHeadlessSyncCommand(['--headless', 'webdav', action], 1), (
         action: action,
         argumentIndex: 3,
@@ -92,15 +100,64 @@ void main() {
         argumentIndex: 2,
       ));
     }
-    expect(
-      () => parseHeadlessSyncCommand(['--headless', 'webdav'], 1),
-      throwsFormatException,
-    );
-    expect(
-      () => parseHeadlessSyncCommand(['--headless', 'up'], 1),
-      throwsFormatException,
-    );
+    for (final invalid in [
+      ['--headless', 'webdav'],
+      ['--headless', 'up'],
+      ['--headless', 'webdav', 'import-legacy'],
+    ]) {
+      expect(() => parseHeadlessSyncCommand(invalid, 1), throwsFormatException);
+    }
   });
+
+  test(
+    'WebDAV root backup command validates the complete confirmation form',
+    () {
+      const backupName = '42-7.venera';
+      final args = [
+        '--headless',
+        'webdav',
+        'import-backup',
+        backupName,
+        '--confirm',
+      ];
+      final parsed = parseHeadlessSyncCommand(args, 1);
+      expect(parsed, (action: 'import-backup', argumentIndex: 3));
+      expect(
+        parseHeadlessWebdavImportBackupArguments(args, parsed.argumentIndex),
+        backupName,
+      );
+      expect(() => parseHeadlessWebdavBackupsArguments([], 0), returnsNormally);
+
+      expect(
+        () => parseHeadlessWebdavBackupsArguments(['extra'], 0),
+        throwsA(
+          isA<FormatException>().having(
+            (error) => error.message,
+            'message',
+            contains('no arguments'),
+          ),
+        ),
+      );
+      for (final (invalid, messageFragment) in <(List<String>, String)>[
+        (<String>[], 'backup name'),
+        ([backupName], '--confirm'),
+        ([backupName, '--no-confirm'], '--confirm'),
+        ([backupName, '--confirm', 'extra'], 'Unexpected argument'),
+        (['--confirm'], 'backup name'),
+      ]) {
+        expect(
+          () => parseHeadlessWebdavImportBackupArguments(invalid, 0),
+          throwsA(
+            isA<FormatException>().having(
+              (error) => error.message,
+              'message',
+              contains(messageFragment),
+            ),
+          ),
+        );
+      }
+    },
+  );
 
   test('production resolve parser forwards opaque engine IDs unchanged', () {
     final key = syncRecordKey('history', ['comic', 1]);

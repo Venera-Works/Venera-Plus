@@ -30,7 +30,15 @@ import 'sync_device.dart';
 const bool _syncDiagnosticsEnabled =
     kDebugMode || bool.fromEnvironment('VENERA_SYNC_DIAGNOSTICS');
 
-enum _DataSyncTask { sync, upload, download, configure, resolve, repair }
+enum _DataSyncTask {
+  sync,
+  upload,
+  download,
+  configure,
+  resolve,
+  repair,
+  listBackups,
+}
 
 class _SyncRequest {
   _SyncRequest(
@@ -79,7 +87,6 @@ class DataSyncStatusSnapshot {
     this.downloadedBytes = 0,
     this.uploadedObjects = 0,
     this.downloadedObjects = 0,
-    this.legacyChangesDetected = false,
   });
 
   final bool isEnabled;
@@ -105,7 +112,6 @@ class DataSyncStatusSnapshot {
   final int downloadedBytes;
   final int uploadedObjects;
   final int downloadedObjects;
-  final bool legacyChangesDetected;
   bool get shouldShow => isConfigured || isEnabled || isSyncing;
 
   String get title => isSyncing ? 'Syncing Data' : 'Sync Data';
@@ -475,8 +481,6 @@ class DataSync with ChangeNotifier {
   }
 
   bool get isEnabled => timing != SyncTiming.manual && hasConfiguration;
-  bool get legacyChangesDetected =>
-      _coordinator?.legacyChangesDetected ?? false;
   Map<String, String> get deviceNames =>
       _coordinator?.remote.deviceNames ?? const {};
   SyncRecords get localObservedRecords =>
@@ -946,7 +950,6 @@ class DataSync with ChangeNotifier {
     downloadedBytes: downloadedBytes,
     uploadedObjects: uploadedObjects,
     downloadedObjects: downloadedObjects,
-    legacyChangesDetected: legacyChangesDetected,
   );
 
   WebDavEndpoint? _validateConfig() {
@@ -1091,23 +1094,44 @@ class DataSync with ChangeNotifier {
     await waitForSync();
   }
 
-  Future<Res<bool>> importLegacyChanges() => _enqueue(
-    _DataSyncTask.sync,
-    () async {
-      await _ensureCoordinatorLoaded();
+  Future<List<LegacyRemoteBackup>> listLegacyBackups() async {
+    List<LegacyRemoteBackup>? backups;
+    final result = await _enqueue(_DataSyncTask.listBackups, () async {
       final coordinator = _coordinator;
       if (coordinator == null) {
         return const Res.error('WebDAV is not configured');
       }
-      return _performCoordinatorSync(
-        direction: direction,
-        checkRemote: true,
-        forceCapture: true,
-        acceptLegacyChanges: true,
+      await _recordSyncAttempt(
+        trigger: 'List root backups',
+        checkRemote: false,
+        requestUpload: false,
       );
+      backups = await coordinator.listLegacyBackups();
+      return const Res(true);
+    }, trigger: 'List root backups');
+    if (result.error) {
+      throw StateError(result.errorMessage ?? 'Could not list root backups');
+    }
+    return backups!;
+  }
+
+  Future<Res<bool>> importLegacyBackup(String backupName) => _enqueue(
+    _DataSyncTask.sync,
+    () async {
+      final coordinator = _coordinator;
+      if (coordinator == null) {
+        return const Res.error('WebDAV is not configured');
+      }
+      _activeRequestDidRemote = true;
+      await _recordSyncAttempt(
+        trigger: 'Import root backup',
+        checkRemote: true,
+        requestUpload: direction != SyncDirection.downloadOnly,
+      );
+      return coordinator.importLegacyBackup(backupName, direction: direction);
     },
-    key: (_DataSyncTask.sync, 'legacy-import'),
-    trigger: 'Manual sync',
+    key: (_DataSyncTask.sync, 'root-backup-import', backupName),
+    trigger: 'Import root backup',
     checkRemote: true,
     forceCapture: true,
   );
@@ -1467,7 +1491,6 @@ class DataSync with ChangeNotifier {
     required SyncDirection direction,
     required bool checkRemote,
     required bool forceCapture,
-    bool acceptLegacyChanges = false,
   }) async {
     final coordinator = _coordinator;
     if (coordinator == null) {
@@ -1483,7 +1506,6 @@ class DataSync with ChangeNotifier {
       direction: direction,
       checkRemote: checkRemote,
       forceCapture: forceCapture,
-      acceptLegacyChanges: acceptLegacyChanges,
     );
   }
 
@@ -1634,6 +1656,8 @@ class DataSync with ChangeNotifier {
       _isUploading = true;
     } else if (!automaticLocal && request.type == _DataSyncTask.download) {
       _isDownloading = true;
+    } else if (!automaticLocal && request.type == _DataSyncTask.listBackups) {
+      _isDownloading = true;
     } else if (!automaticLocal && request.type == _DataSyncTask.sync) {
       if (direction == SyncDirection.uploadOnly) {
         _isUploading = true;
@@ -1699,7 +1723,8 @@ class DataSync with ChangeNotifier {
               ..remove('webdavSyncAuthenticationBlocked');
             _automaticAuthenticationBlocked = false;
           }
-          if (_changeGeneration == runGeneration &&
+          if (request.type != _DataSyncTask.listBackups &&
+              _changeGeneration == runGeneration &&
               (_coordinator?.store.outbox.isEmpty ?? true)) {
             appdata.implicitData['webdavSyncPending'] = false;
             _localDirty = false;

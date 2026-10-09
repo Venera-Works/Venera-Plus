@@ -16,7 +16,21 @@ import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:webdav_client/webdav_client.dart' as dav;
 import 'package:venera_plus/foundation/app.dart';
-import 'package:venera_plus/foundation/sync_records.dart';
+
+/// A legacy WebDAV backup available for explicit import.
+///
+/// This public value contains only the root filename and its numeric metadata.
+class LegacyRemoteBackup {
+  const LegacyRemoteBackup({
+    required this.name,
+    required this.day,
+    required this.version,
+  });
+
+  final String name;
+  final int day;
+  final int version;
+}
 
 /// Seed data produced by reading a legacy `.venera` remote snapshot archive.
 class LegacyMergeSeed {
@@ -25,6 +39,7 @@ class LegacyMergeSeed {
   final Map<String, List<Map<String, Object?>>> sourceVariants;
   final List<SyncSourceIssue> sourceIssues;
   final Set<String> unavailableDomains;
+  final Set<String> appliedOverrideFilenames;
 
   const LegacyMergeSeed(
     this.id,
@@ -32,6 +47,7 @@ class LegacyMergeSeed {
     this.sourceVariants = const {},
     this.sourceIssues = const [],
     this.unavailableDomains = const {},
+    this.appliedOverrideFilenames = const {},
   });
 
   @override
@@ -55,21 +71,27 @@ class _LegacyRemoteSnapshot {
     required this.eTag,
   });
 
+  static final RegExp _validName = RegExp(r'^([0-9]+)-([0-9]+)\.venera$');
+
   static _LegacyRemoteSnapshot? tryParse(dav.File file) {
-    if (file.isDir == true) return null;
-    final rawName = file.name ?? file.path;
-    if (rawName == null || rawName.isEmpty) return null;
-    final name =
-        rawName.split('/').where((s) => s.isNotEmpty).lastOrNull ?? rawName;
-    if (!name.endsWith('.venera')) return null;
+    if (file.isDir != false) return null;
 
-    final base = name.substring(0, name.length - '.venera'.length);
-    final parts = base.split('-');
-    if (parts.length != 2) return null;
+    final name = file.name;
+    if (name == null ||
+        name.isEmpty ||
+        name.contains('/') ||
+        name.contains(r'\')) {
+      return null;
+    }
+    // readDir('/') represents direct children with a single leading slash.
+    // Reject metadata for nested or otherwise path-spoofed entries.
+    if (file.path != null && file.path != '/$name') return null;
 
-    final day = int.tryParse(parts[0]);
-    final version = int.tryParse(parts[1]);
-    if (day == null || version == null || day < 0 || version < 0) return null;
+    final match = _validName.firstMatch(name);
+    if (match == null || match.group(0) != name) return null;
+    final day = int.tryParse(match.group(1)!);
+    final version = int.tryParse(match.group(2)!);
+    if (day == null || version == null) return null;
 
     return _LegacyRemoteSnapshot(
       file: file,
@@ -81,13 +103,13 @@ class _LegacyRemoteSnapshot {
   }
 }
 
-/// One-time legacy WebDAV `.venera` snapshot lossless seed reader.
+/// One-time legacy WebDAV `.venera` snapshot seed reader.
 ///
-/// Discovers newest remote numeric day-version `.venera` snapshots without
-/// modifying live local databases. Supports same-version collision files by
-/// reading both as distinct seeds. Enforces strict content hashing, ZIP
-/// integrity verification, path traversal rejection, symlink rejection, and
-/// isolated whitelist extraction.
+/// Discovers root-level numeric day-version `.venera` snapshots. Automatic
+/// reads include every file with the greatest data version; explicitly selected
+/// backups are re-discovered by exact root filename. Enforces strict content
+/// hashing, ZIP integrity verification, path traversal rejection, symlink
+/// rejection, and isolated whitelist extraction.
 ///
 /// Network, download, verification, or schema failures throw explicitly to
 /// abort migration and avoid marking legacy data as completed with partial data.
@@ -657,18 +679,18 @@ class LegacySyncReader {
     return true;
   }
 
-  Future<void> _applyLegacyOverrides(
+  Future<Set<String>> _applyLegacyOverrides(
     String archiveSha256,
     Directory extractDir,
   ) async {
     final overrideDir = legacyOverrideDirectory;
-    if (overrideDir == null) return;
+    if (overrideDir == null) return const {};
 
     final overrideDirType = await FileSystemEntity.type(
       overrideDir.path,
       followLinks: false,
     );
-    if (overrideDirType == FileSystemEntityType.notFound) return;
+    if (overrideDirType == FileSystemEntityType.notFound) return const {};
     if (overrideDirType != FileSystemEntityType.directory) {
       throw const FormatException('Invalid legacy override directory');
     }
@@ -681,7 +703,7 @@ class LegacySyncReader {
     final archiveDir = Directory(p.join(overrideDir.path, cleanSha));
     if (await FileSystemEntity.type(archiveDir.path, followLinks: false) ==
         FileSystemEntityType.notFound) {
-      return;
+      return const {};
     }
     final manifestMap = await _readValidatedOverrideManifest(
       archiveDir: archiveDir,
@@ -690,7 +712,7 @@ class LegacySyncReader {
     final entries = manifestMap['entries'] as Map;
     // A genesis pointer records an initialized, empty override set only. The
     // original archive still flows through normal source validation/import.
-    if (entries.isEmpty) return;
+    if (entries.isEmpty) return const {};
     final originalTargetDir = Directory(
       p.join(extractDir.path, 'comic_source'),
     );
@@ -718,6 +740,7 @@ class LegacySyncReader {
       }
     }
 
+    final appliedFilenames = <String>{};
     for (final entryValue in entries.values) {
       final entry = entryValue as Map<String, dynamic>;
       final filename = entry['filename'] as String;
@@ -758,6 +781,7 @@ class LegacySyncReader {
           throw StateError('Staged legacy override verification failed');
         }
         stageFile.renameSync(originalFile.path);
+        appliedFilenames.add(filename);
       } finally {
         try {
           if (stageFile.existsSync()) {
@@ -766,6 +790,7 @@ class LegacySyncReader {
         } catch (_) {}
       }
     }
+    return Set.unmodifiable(appliedFilenames);
   }
 
   // Fail the entire migration, never truncate a business snapshot. ZIPs contain
@@ -777,11 +802,26 @@ class LegacySyncReader {
   static const _maxOverrideManifestBytes = 16 * 1024 * 1024;
   static const _maxMembers = 10000;
 
-  /// Reads and parses newest legacy snapshots into merge seeds.
+  /// Lists legal root-level legacy snapshots without downloading them.
+  Future<List<LegacyRemoteBackup>> listBackups() async {
+    final snapshots = await _listSnapshots();
+    return snapshots
+        .map(
+          (snapshot) => LegacyRemoteBackup(
+            name: snapshot.name,
+            day: snapshot.day,
+            version: snapshot.version,
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  /// Reads newest legacy snapshots, or only [backupName] when explicitly given.
   ///
-  /// Throws on connection, download, verification, or schema reading errors so
-  /// callers abort migration rather than falsely marking it finished.
-  Future<List<LegacyMergeSeed>> readSeeds() async {
+  /// Explicit names are re-enumerated from the WebDAV root and must identify
+  /// one legal listed file; they never fall back to automatic selection.
+  /// Throws on connection, download, verification, or schema reading errors.
+  Future<List<LegacyMergeSeed>> readSeeds({String? backupName}) async {
     final scratchExisted = scratch.existsSync();
     if (!scratchExisted) {
       scratch.createSync(recursive: true);
@@ -794,7 +834,7 @@ class LegacySyncReader {
     )..createSync(recursive: true);
 
     try {
-      return await _executeReadSeeds(executionDir);
+      return await _executeReadSeeds(executionDir, backupName: backupName);
     } finally {
       try {
         if (executionDir.existsSync()) {
@@ -816,42 +856,50 @@ class LegacySyncReader {
     }
   }
 
-  Future<List<LegacyMergeSeed>> _executeReadSeeds(Directory runDir) async {
-    // Listing root directory throws on network failure, 401, or timeout
-    // rather than returning an empty list to avoid prematurely concluding migration.
+  Future<List<_LegacyRemoteSnapshot>> _listSnapshots() async {
+    // Listing root directory throws on network failure, 401, or timeout.
     final rawFiles = await client.readDir('/');
-
-    final snapshots = <_LegacyRemoteSnapshot>[];
-    for (final file in rawFiles) {
-      final parsed = _LegacyRemoteSnapshot.tryParse(file);
-      if (parsed != null) {
-        snapshots.add(parsed);
-      }
+    final indexedSnapshots = <(int, _LegacyRemoteSnapshot)>[];
+    for (var i = 0; i < rawFiles.length; i++) {
+      final parsed = _LegacyRemoteSnapshot.tryParse(rawFiles[i]);
+      if (parsed != null) indexedSnapshots.add((i, parsed));
     }
 
-    if (snapshots.isEmpty) {
-      return <LegacyMergeSeed>[];
-    }
-
-    // Identify the highest version available
-    int maxVersion = snapshots.first.version;
-    for (final s in snapshots) {
-      if (s.version > maxVersion) {
-        maxVersion = s.version;
-      }
-    }
-
-    // Process all snapshots matching maxVersion (including same-version collisions)
-    final targetSnapshots = snapshots
-        .where((s) => s.version == maxVersion)
-        .toList();
-
-    // Deterministic ordering: higher day first, then alphabetical by filename
-    targetSnapshots.sort((a, b) {
-      final dayCmp = b.day.compareTo(a.day);
+    indexedSnapshots.sort((a, b) {
+      final versionCmp = b.$2.version.compareTo(a.$2.version);
+      if (versionCmp != 0) return versionCmp;
+      final dayCmp = b.$2.day.compareTo(a.$2.day);
       if (dayCmp != 0) return dayCmp;
-      return a.name.compareTo(b.name);
+      final nameCmp = a.$2.name.compareTo(b.$2.name);
+      if (nameCmp != 0) return nameCmp;
+      return a.$1.compareTo(b.$1);
     });
+    return indexedSnapshots.map((entry) => entry.$2).toList(growable: false);
+  }
+
+  Future<List<LegacyMergeSeed>> _executeReadSeeds(
+    Directory runDir, {
+    required String? backupName,
+  }) async {
+    final snapshots = await _listSnapshots();
+    late final List<_LegacyRemoteSnapshot> targetSnapshots;
+
+    if (backupName != null) {
+      final selected = snapshots.where((s) => s.name == backupName).firstOrNull;
+      if (selected == null) {
+        throw FormatException(
+          'Legacy backup not found or invalid: $backupName',
+        );
+      }
+      targetSnapshots = [selected];
+    } else {
+      if (snapshots.isEmpty) return <LegacyMergeSeed>[];
+
+      final maxVersion = snapshots.first.version;
+      targetSnapshots = snapshots
+          .where((snapshot) => snapshot.version == maxVersion)
+          .toList(growable: false);
+    }
 
     final seeds = <LegacyMergeSeed>[];
     for (final snapshot in targetSnapshots) {
@@ -944,11 +992,7 @@ class LegacySyncReader {
 
       // 2. Post-download directory metadata verification:
       // If file disappeared or directory metadata changed, do not commit.
-      final freshList = await client.readDir('/');
-
-      final freshTarget = freshList
-          .map(_LegacyRemoteSnapshot.tryParse)
-          .whereType<_LegacyRemoteSnapshot>()
+      final freshTarget = (await _listSnapshots())
           .where((s) => s.name == snapshot.name)
           .firstOrNull;
 
@@ -980,7 +1024,10 @@ class LegacySyncReader {
         p.join(runDir.path, 'extract_$archiveSha256'),
       )..createSync(recursive: true);
       _extractVerifiedArchive(partFile, extractDir);
-      await _applyLegacyOverrides(archiveSha256, extractDir);
+      final appliedOverrideFilenames = await _applyLegacyOverrides(
+        archiveSha256,
+        extractDir,
+      );
 
       // 6. Convert isolated databases and files to SyncRecords
       SyncRecords favoriteRecords = {};
@@ -1140,6 +1187,7 @@ class LegacySyncReader {
         sourceVariants: preferenceSnapshot.sourceVariants,
         sourceIssues: annotatedIssues,
         unavailableDomains: preferenceSnapshot.unavailableDomains,
+        appliedOverrideFilenames: appliedOverrideFilenames,
       );
     } finally {
       try {

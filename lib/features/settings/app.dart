@@ -64,13 +64,11 @@ class _DataSyncStatusPanel extends StatelessWidget {
     required this.status,
     required this.isBusy,
     required this.onSyncNow,
-    required this.onImportLegacyChanges,
   });
 
   final DataSyncStatusSnapshot status;
   final bool isBusy;
   final VoidCallback onSyncNow;
-  final VoidCallback onImportLegacyChanges;
 
   @override
   Widget build(BuildContext context) {
@@ -144,19 +142,6 @@ class _DataSyncStatusPanel extends StatelessWidget {
               key: const Key('data-sync-review-conflicts'),
               onPressed: isBusy ? null : () => showSyncConflictDialog(context),
               child: Text('Resolve conflicts'.tl),
-            ),
-          ),
-          if (status.legacyChangesDetected)
-            Text(
-              'Older protocol changes were detected. Import only after all devices are upgraded and old clients have stopped writing; legacy files will be retained.'
-                  .tl,
-            ),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton(
-              key: const Key('data-sync-import-legacy'),
-              onPressed: isBusy ? null : onImportLegacyChanges,
-              child: Text('Import legacy changes'.tl),
             ),
           ),
         ],
@@ -356,6 +341,14 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
           icon: Icons.import_export,
         ),
         CallbackSetting(
+          title: "Import WebDAV Root Backup".tl,
+          subtitle:
+              "Choose a root day-version.venera ZIP and merge it as causal seeds. The remote archive is not modified, and local app data is not overwritten."
+                  .tl,
+          callback: _importWebdavRootBackup,
+          actionTitle: _isImportingRootBackup ? "Loading".tl : "Import".tl,
+        ).toSliver(),
+        CallbackSetting(
           title: "Export App Data".tl,
           callback: () async {
             var controller = showLoadingDialog(context);
@@ -367,6 +360,9 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
         ).toSliver(),
         CallbackSetting(
           title: "Import App Data".tl,
+          subtitle:
+              "This overwrites local app data. If import fails, already-applied changes are not rolled back."
+                  .tl,
           callback: () async {
             var controller = showLoadingDialog(context);
             var file = await selectFile(ext: ['venera', 'picadata']);
@@ -395,6 +391,102 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
         ).toSliver(),
       ],
     );
+  }
+
+  bool _isImportingRootBackup = false;
+
+  Future<void> _importWebdavRootBackup() async {
+    if (_isImportingRootBackup) return;
+    setState(() => _isImportingRootBackup = true);
+    try {
+      final backups = await DataSync().listLegacyBackups();
+      if (!mounted) return;
+      if (backups.isEmpty) {
+        context.showMessage(message: "No root backups found".tl);
+        return;
+      }
+      final selected = await showDialog<LegacyRemoteBackup>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text("Select a root backup".tl),
+          content: SizedBox(
+            width: double.maxFinite,
+            height: 320,
+            child: ListView.separated(
+              itemCount: backups.length,
+              separatorBuilder: (_, _) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                final backup = backups[index];
+                return ListTile(
+                  title: Text(backup.name),
+                  subtitle: Text(
+                    "Day @day · version @version".tlParams({
+                      "day": backup.day,
+                      "version": backup.version,
+                    }),
+                  ),
+                  onTap: () => Navigator.of(dialogContext).pop(backup),
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: Text("Cancel".tl),
+            ),
+          ],
+        ),
+      );
+      if (!mounted || selected == null) return;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text("Merge WebDAV root backup?".tl),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(selected.name),
+              const SizedBox(height: 8),
+              Text(
+                "This merges the selected root ZIP as causal seeds. The remote ZIP is not modified, and this does not overwrite local app data."
+                    .tl,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: Text("Cancel".tl),
+            ),
+            FilledButton(
+              key: const Key('data-sync-root-backup-import-confirm'),
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: Text("Merge backup".tl),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+      final result = await DataSync().importLegacyBackup(selected.name);
+      if (!mounted) return;
+      final message = result.error
+          ? result.errorMessage?.tl ?? "Root backup import failed".tl
+          : !result.data
+          ? "No new root backup data to import".tl
+          : DataSync().statusSnapshot.isPartial
+          ? "Root backup processed with partial sources. Review source issues in Data Sync."
+                .tl
+          : "Root backup imported".tl;
+      context.showMessage(message: message);
+    } catch (error, stack) {
+      Log.error("Import WebDAV root backup", error.toString(), stack);
+      if (!mounted) return;
+      context.showMessage(message: "Root backup import failed".tl);
+    } finally {
+      if (mounted) setState(() => _isImportingRootBackup = false);
+    }
   }
 }
 
@@ -669,7 +761,7 @@ class _WebdavSettingState extends State<_WebdavSetting> {
               ),
               const SizedBox(height: 12),
               Container(
-                key: const Key('data-sync-protocol-notice'),
+                key: const Key('data-sync-mode-notice'),
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
                   color: Theme.of(
@@ -728,6 +820,7 @@ class _WebdavSettingState extends State<_WebdavSetting> {
               ),
               const SizedBox(height: 12),
               Container(
+                key: const Key('data-sync-encryption-notice'),
                 width: double.infinity,
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
@@ -736,20 +829,9 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                   ).colorScheme.tertiaryContainer.withValues(alpha: 0.45),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Sync data is compressed but not encrypted.'.tl,
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      'The new sync protocol requires all devices to be upgraded. Stop writes from older clients before syncing.'
-                          .tl,
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  ],
+                child: Text(
+                  'Sync data is compressed but not encrypted.'.tl,
+                  style: Theme.of(context).textTheme.bodySmall,
                 ),
               ),
               const SizedBox(height: 12),
@@ -759,7 +841,6 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                   status: DataSync().statusSnapshot,
                   isBusy: isTesting,
                   onSyncNow: _syncNowFromSettings,
-                  onImportLegacyChanges: _importLegacyChanges,
                 ),
               ),
               if (DataSync().statusSnapshot.isPartial) ...[
@@ -896,47 +977,6 @@ class _WebdavSettingState extends State<_WebdavSetting> {
         message: result.error
             ? result.errorMessage?.tl ?? 'Sync failed'.tl
             : 'Sync completed'.tl,
-      );
-    } finally {
-      if (mounted) setState(() => isTesting = false);
-    }
-  }
-
-  Future<void> _importLegacyChanges() async {
-    if (isTesting) return;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text('Import legacy sync changes?'.tl),
-        content: Text(
-          'Confirm that all devices are upgraded and old clients have stopped writing. Legacy files will be retained.'
-              .tl,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: Text('Cancel'.tl),
-          ),
-          FilledButton(
-            key: const Key('data-sync-legacy-import-confirm'),
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: Text('Import legacy changes'.tl),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
-    setState(() => isTesting = true);
-    try {
-      final result = await DataSync().importLegacyChanges();
-      if (!mounted) return;
-      context.showMessage(
-        message: result.error
-            ? result.errorMessage?.tl ?? 'Legacy import failed'.tl
-            : (result.data
-                      ? 'Legacy changes imported'
-                      : 'No legacy changes found')
-                  .tl,
       );
     } finally {
       if (mounted) setState(() => isTesting = false);

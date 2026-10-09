@@ -27,15 +27,26 @@ venera-plus --headless <command> [subcommand] [options]
 - **`webdav down`**：合并远端有效检查点，保留本地修改候选，不发布；仅上传方向下拒绝执行。不是强制下载覆写。
 - **`webdav conflicts`**：读取当前本机已知的记录/字段冲突，不主动拉取新的远端内容；顶层 **`conflicts`** 命令相同。要查看远端最新冲突，请先执行允许读取远端的同步。
 - **`webdav resolve`**：对一个记录的一个字段选择已有候选；顶层 **`resolve`** 命令相同。参数见下文。
+- **`webdav backups`**：列出 WebDAV 根目录数字命名的原版备份；结果为 `data.count` 和 `data.backups`，每项只有 `name`、`day`、`version`。列表本身不读取备份正文。
+- **`webdav import-backup <name> --confirm`**：因果合并明确选择的根目录原版备份，遵守当前方向；不是本地 ZIP 覆盖恢复。必须使用列表中的完整文件名并显式确认，缺少确认会在应用初始化前拒绝，不触发首次自动种子读取。
 
 命令等待启动恢复及已有同步/配置操作结束。实际操作失败以 `status: error` 和非零退出码报告，不能绕过方向限制。认证、网络和应用错误不算成功，未完成工作留待重试；已经提交的远端或本地内容不会因后续失败被假回滚。协议、一次性旧档迁移及崩溃恢复边界见[应用数据同步](data_sync.zh.md)。
 
 `webdav sync` / `sync` 完整传输成功时输出 `status: success`，`data.conflictCount` 和 `data.hasConflict` 表示仍需处理的冲突。**存在候选冲突仍可成功退出（退出码 0）**；成功不等于已经自动选定所有候选。源相关领域暂不可用但其他领域传输完成时，`sync`、`up`、`down` 输出 `status: partial`（退出码 0），并给出 `data.unavailableDomains` 与 `data.sourceIssues`；`sync` 仍附冲突计数。源摘要只包含文件名、安全原因及翻译、是否有备份和操作提示，不输出脚本、会话、源身份或私有备份路径。`repairAction` 区分应用内替换、重试恢复及“须先恢复完整日志”的前置条件，不将坏备份当作可直接恢复的数据。`up` / `down` 不附冲突列表，需另查 `conflicts`。
 
+备份导入成功输出 `data.imported`：`true` 表示有新的种子领域导入，重复操作为 `false`，不是“传输成功”的别名。部分源异常时输出 `status: partial`（退出码 0）及安全的源摘要和不可用领域，仍保留 `data.imported`；实际错误以非零退出码报告。合法命令仍有普通应用启动恢复/首次自动种子的行为边界，不能把备份列表命令当成禁用启动同步的开关。
+
 **示例：**
 
 ```bash
 venera-plus --headless webdav up
+```
+
+**选择并确认原版根目录备份：**
+
+```bash
+venera-plus --headless webdav backups
+venera-plus --headless webdav import-backup 20261008-1.venera --confirm
 ```
 
 **逐项解决冲突：**

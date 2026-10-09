@@ -81,6 +81,25 @@ void main() {
     },
   );
 
+  test('new root-layout publication key does not reuse old mappings', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'sync-pack-layout-cache-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final snapshot = _snapshotFor('layout');
+    const oldKey = 'endpoint-hash/sync_cache_actor/Device';
+    const newKey = 'VeneraPlus/endpoint-hash/sync_cache_actor/Device';
+    final cache = SyncPackCache(root);
+    await cache.writeManifest(oldKey, snapshot.manifest);
+
+    final restarted = SyncPackCache(root);
+    expect(await restarted.readManifest(newKey), isNull);
+    expect(
+      (await restarted.readManifest(oldKey))!.serializeManifest(),
+      orderedEquals(snapshot.serializeManifest()),
+    );
+  });
+
   test(
     'disk LRU eviction stays bounded and rebuilds its inventory after restart',
     () async {

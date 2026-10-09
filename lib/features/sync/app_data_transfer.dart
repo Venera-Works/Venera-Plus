@@ -1,10 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:isolate';
 
-import 'package:path/path.dart' as p;
-import 'package:flutter/foundation.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
@@ -20,16 +17,6 @@ import 'package:zip_flutter/zip_flutter.dart';
 
 FutureOr<void> Function()? _appDataSettingsChangedHandler;
 
-FutureOr<void> Function(File archive, Directory destination)?
-_appDataArchiveExtractorForTesting;
-
-@visibleForTesting
-void configureAppDataArchiveExtractorForTesting(
-  FutureOr<void> Function(File archive, Directory destination)? extractor,
-) {
-  _appDataArchiveExtractorForTesting = extractor;
-}
-
 void registerAppDataSettingsChangedHandler(FutureOr<void> Function()? handler) {
   _appDataSettingsChangedHandler = handler;
 }
@@ -40,8 +27,6 @@ Future<void> notifyAppDataSettingsChanged() async {
     await Future.sync(handler);
   }
 }
-
-Future<void> _notifyAppDataSettingsChanged() => notifyAppDataSettingsChanged();
 
 Future<File> exportAppData([bool sync = true]) async {
   await HistoryManager().waitForAsyncWrites();
@@ -77,440 +62,145 @@ Future<File> exportAppData([bool sync = true]) async {
   return cacheFile;
 }
 
-Future<void> importAppData(
-  File file, {
-  bool checkVersion = false,
-  void Function()? beforeCommit,
-}) async {
-  var cacheDirPath = FilePath.join(App.cachePath, 'temp_data');
-  var cacheDir = Directory(cacheDirPath);
-  var backupDir = Directory(
-    FilePath.join(
-      App.dataPath,
-      '.import_backup_${DateTime.now().microsecondsSinceEpoch}',
-    ),
-  );
-  final stageDir = Directory('${backupDir.path}_stage');
-  Map<String, dynamic>? previousSettings;
-  List<String>? previousSearchHistory;
-  var replacements = <_ImportReplacement>[];
-  var reloadHistory = false;
-  var reloadLocalFavorites = false;
-  var reloadCookies = false;
-  var reloadComicSources = false;
-  var databasesReopened = false;
-  var success = false;
-  var importedSettingsChanged = false;
-  var rolledBack = false;
+Future<void> importAppData(File file, {bool checkVersion = false}) async {
+  final cacheDirPath = FilePath.join(App.cachePath, 'temp_data');
+  final cacheDir = Directory(cacheDirPath);
   if (cacheDir.existsSync()) {
     cacheDir.deleteSync(recursive: true);
   }
   cacheDir.createSync();
+  var dataApplied = false;
   try {
-    final archiveExtractor = _appDataArchiveExtractorForTesting;
-    if (archiveExtractor == null) {
+    try {
       await Isolate.run(() {
         ZipFile.openAndExtract(file.path, cacheDirPath);
       });
-    } else {
-      await Future.sync(() => archiveExtractor(file, cacheDir));
-    }
-    var historyFile = cacheDir.joinFile("history.db");
-    var localFavoriteFile = cacheDir.joinFile("local_favorite.db");
-    var appdataFile = cacheDir.joinFile("appdata.json");
-    var cookieFile = cacheDir.joinFile("cookie.db");
+      final historyFile = cacheDir.joinFile('history.db');
+      final localFavoriteFile = cacheDir.joinFile('local_favorite.db');
+      final appdataFile = cacheDir.joinFile('appdata.json');
+      final cookieFile = cacheDir.joinFile('cookie.db');
 
-    Map<String, dynamic>? importedAppdata;
-    if (appdataFile.existsSync()) {
-      importedAppdata = _decodeImportAppdata(await appdataFile.readAsString());
-    }
-    if (checkVersion && importedAppdata != null) {
-      var importedSettings = importedAppdata["settings"];
-      var version = importedSettings is Map
-          ? importedSettings["dataVersion"]
-          : null;
-      if (version is int && version <= appdata.settings["dataVersion"]) {
-        return;
-      }
-    }
-
-    backupDir.createSync();
-    stageDir.createSync();
-    // Stage on the destination volume before closing any database. No async
-    // copy or extraction remains between the final guard and file replacement.
-    for (final name in ['history.db', 'local_favorite.db', 'cookie.db']) {
-      final source = cacheDir.joinFile(name);
-      if (source.existsSync()) {
-        await source.copy(FilePath.join(stageDir.path, name));
-      }
-    }
-    final extractedSources = Directory(
-      FilePath.join(cacheDirPath, 'comic_source'),
-    );
-    if (extractedSources.existsSync()) {
-      final stagedSources = Directory(
-        FilePath.join(stageDir.path, 'comic_source'),
-      );
-      await copyDirectory(extractedSources, stagedSources);
-      await _validateIncomingSources(stagedSources);
-    }
-    historyFile = stageDir.joinFile('history.db');
-    localFavoriteFile = stageDir.joinFile('local_favorite.db');
-    cookieFile = stageDir.joinFile('cookie.db');
-    await HistoryManager.cache?.waitForAsyncWrites();
-    beforeCommit?.call();
-    previousSettings = Map<String, dynamic>.from(
-      jsonDecode(jsonEncode(appdata.toJson()['settings'])) as Map,
-    );
-    previousSearchHistory = List<String>.of(appdata.searchHistory);
-
-    if (historyFile.existsSync()) {
-      _closeHistoryManagerForImport();
-      reloadHistory = true;
-      _replaceFileForImport(
-        source: historyFile,
-        targetPath: FilePath.join(App.dataPath, "history.db"),
-        backupDir: backupDir,
-        backupName: "history.db",
-        replacements: replacements,
-      );
-    }
-    if (localFavoriteFile.existsSync()) {
-      await _closeLocalFavoritesManagerForImport();
-      reloadLocalFavorites = true;
-      _replaceFileForImport(
-        source: localFavoriteFile,
-        targetPath: FilePath.join(App.dataPath, "local_favorite.db"),
-        backupDir: backupDir,
-        backupName: "local_favorite.db",
-        replacements: replacements,
-      );
-    }
-    if (cookieFile.existsSync()) {
-      _closeCookieJarForImport();
-      reloadCookies = true;
-      _replaceFileForImport(
-        source: cookieFile,
-        targetPath: FilePath.join(App.dataPath, "cookie.db"),
-        backupDir: backupDir,
-        backupName: "cookie.db",
-        replacements: replacements,
-      );
-    }
-    var comicSourceDir = FilePath.join(stageDir.path, "comic_source");
-    if (Directory(comicSourceDir).existsSync()) {
-      reloadComicSources = true;
-      _replaceDirectoryForImport(
-        source: Directory(comicSourceDir),
-        targetPath: FilePath.join(App.dataPath, "comic_source"),
-        backupDir: backupDir,
-        backupName: "comic_source",
-        replacements: replacements,
-      );
-    }
-
-    // Start both manager reloads before yielding to the event loop. The
-    // favorites manager waits for pending read jobs before reopening its DB.
-    final databaseReloads = <Future<void>>[
-      if (reloadHistory) HistoryManager().init(),
-      if (reloadLocalFavorites)
-        LocalFavoritesManager().init(reconcileReadingBinding: false),
-    ];
-    if (reloadCookies) _openCookieJarForImport();
-    databasesReopened = true;
-    await Future.wait(databaseReloads);
-    if (reloadComicSources) {
-      await ComicSourceManager().reload();
-    }
-
-    if (importedAppdata != null) {
-      importedSettingsChanged = importedAppdata["settings"] is Map;
-      await appdata.syncData(importedAppdata);
-    }
-    await LocalFavoritesManager().reconcileReadingFolderBinding();
-    success = true;
-  } catch (error, stackTrace) {
-    try {
-      try {
-        await _rollbackImport(
-          replacements: replacements,
-          reloadHistory: reloadHistory,
-          reloadLocalFavorites: reloadLocalFavorites,
-          reloadCookies: reloadCookies,
-          reloadComicSources: reloadComicSources,
-          waitForHistoryWrites: databasesReopened,
-        );
-      } finally {
-        if (previousSettings != null) {
-          appdata.settings.replaceAll(previousSettings);
-          appdata.searchHistory = previousSearchHistory!;
-          await appdata.saveData(false);
+      if (checkVersion && appdataFile.existsSync()) {
+        final data = jsonDecode(await appdataFile.readAsString());
+        final version = data['settings']['dataVersion'];
+        if (version is int && version <= appdata.settings['dataVersion']) {
+          return;
         }
       }
-      rolledBack = true;
-    } catch (rollbackError, rollbackStackTrace) {
-      Log.error(
-        "Import Data",
-        "Failed to rollback app data import: $rollbackError",
-        rollbackStackTrace,
+
+      if (await historyFile.exists()) {
+        final historyManager = HistoryManager.cache;
+        if (historyManager != null) {
+          await historyManager.waitForAsyncWrites();
+          if (historyManager.isInitialized) {
+            historyManager.close();
+          }
+        }
+        final target = File(FilePath.join(App.dataPath, 'history.db'));
+        if (await target.exists()) {
+          await target.delete();
+          dataApplied = true;
+        }
+        await historyFile.rename(target.path);
+        dataApplied = true;
+        await HistoryManager().init();
+      }
+
+      if (await localFavoriteFile.exists()) {
+        final favoritesManager = LocalFavoritesManager.cache;
+        if (favoritesManager != null) {
+          await favoritesManager.waitForPendingReads();
+          favoritesManager.close();
+        }
+        final target = File(FilePath.join(App.dataPath, 'local_favorite.db'));
+        if (await target.exists()) {
+          await target.delete();
+          dataApplied = true;
+        }
+        await localFavoriteFile.rename(target.path);
+        dataApplied = true;
+        await LocalFavoritesManager().init();
+      }
+
+      if (await appdataFile.exists()) {
+        final data = jsonDecode(await appdataFile.readAsString());
+        final importedSettings = data['settings'];
+        if (importedSettings is Map) {
+          const localSettings = {
+            'proxy',
+            'authorizationRequired',
+            'customImageProcessing',
+            'webdav',
+            'disableSyncFields',
+            'deviceId',
+          };
+          final customDisabledSettings = appdata.splitField(
+            appdata.settings['disableSyncFields'] as String,
+          );
+          for (final key in importedSettings.keys) {
+            if (!localSettings.contains(key) &&
+                !customDisabledSettings.contains(key)) {
+              dataApplied = true;
+              appdata.settings[key] = importedSettings[key];
+            }
+          }
+        }
+        appdata.searchHistory = List.from(data['searchHistory'] ?? []);
+        dataApplied = true;
+        await appdata.saveData(false);
+      }
+
+      if (await cookieFile.exists()) {
+        SingleInstanceCookieJar.instance?.dispose();
+        SingleInstanceCookieJar.instance = null;
+        final target = File(FilePath.join(App.dataPath, 'cookie.db'));
+        if (await target.exists()) {
+          await target.delete();
+          dataApplied = true;
+        }
+        await cookieFile.rename(target.path);
+        dataApplied = true;
+        SingleInstanceCookieJar.instance = SingleInstanceCookieJar(target.path);
+      }
+
+      final comicSourceDir = Directory(
+        FilePath.join(cacheDirPath, 'comic_source'),
       );
+      if (comicSourceDir.existsSync()) {
+        final target = Directory(FilePath.join(App.dataPath, 'comic_source'));
+        if (await target.exists()) {
+          await target.delete(recursive: true);
+          dataApplied = true;
+        }
+        await target.create();
+        dataApplied = true;
+        for (final source in comicSourceDir.listSync()) {
+          if (source is File) {
+            await source.copy(FilePath.join(target.path, source.name));
+          }
+        }
+        await ComicSourceManager().reload();
+      }
+    } finally {
+      await cacheDir.deleteIgnoreError(recursive: true);
+    }
+  } catch (error, stackTrace) {
+    if (dataApplied) {
+      try {
+        await notifyAppDataSettingsChanged();
+      } catch (notificationError, notificationStackTrace) {
+        Log.error(
+          'Import Data',
+          'Failed to notify app data settings changed: $notificationError',
+          notificationStackTrace,
+        );
+      }
     }
     Error.throwWithStackTrace(error, stackTrace);
-  } finally {
-    await cacheDir.deleteIgnoreError(recursive: true);
-    await stageDir.deleteIgnoreError(recursive: true);
-    if (success || rolledBack) {
-      await backupDir.deleteIgnoreError(recursive: true);
-    }
   }
-  if (success && importedSettingsChanged) {
-    await _notifyAppDataSettingsChanged();
+  if (dataApplied) {
+    await notifyAppDataSettingsChanged();
   }
-}
-
-Future<void> _validateIncomingSources(Directory comicSourceDir) async {
-  if (!await comicSourceDir.exists()) return;
-
-  final entities = await comicSourceDir.list().toList();
-  final seenKeys = <String>{};
-
-  for (final entity in entities) {
-    if (entity is! File) {
-      throw const FormatException(
-        'Unexpected directory inside archive comic_source',
-      );
-    }
-    final name = p.basename(entity.path);
-    SourceFileMetadata.validateFileName(name);
-
-    if (name == SourceFileMetadata.sidecarFileName) {
-      await SourceFileMetadata.read(comicSourceDir);
-      continue;
-    }
-
-    if (name.endsWith('.js')) {
-      final content = await entity.readAsString();
-      final probe = await ComicSourceParser.probeKey(content, entity.path);
-      if (!probe.isSuccess || probe.key == null) {
-        throw FormatException(
-          'Invalid or unsafe comic source script in archive "$name": '
-          '${probe.failure?.name ?? "unknown"}',
-        );
-      }
-      final key = probe.key!;
-      if (!seenKeys.add(key)) {
-        throw FormatException(
-          'Duplicate comic source identity in archive: $key ($name)',
-        );
-      }
-      continue;
-    }
-
-    if (name.endsWith('.data')) {
-      final key = name.substring(0, name.length - 5);
-      SourceFileMetadata.validateKey(key);
-      final raw = await entity.readAsString();
-      final decoded = jsonDecode(raw);
-      if (decoded is! Map) {
-        throw FormatException('Invalid source session format in "$name"');
-      }
-      continue;
-    }
-
-    throw FormatException('Unexpected file in archive comic_source: $name');
-  }
-}
-
-Map<String, dynamic> _decodeImportAppdata(String content) {
-  var data = jsonDecode(content);
-  if (data is! Map) {
-    throw const FormatException("Invalid appdata.json root");
-  }
-  var result = Map<String, dynamic>.from(data);
-  var settings = result["settings"];
-  if (settings != null) {
-    if (settings is! Map) {
-      throw const FormatException("Invalid appdata.json settings");
-    }
-    result["settings"] = Map<String, dynamic>.from(settings);
-  }
-  var searchHistory = result["searchHistory"];
-  if (searchHistory != null) {
-    if (searchHistory is! List ||
-        searchHistory.any((element) => element is! String)) {
-      throw const FormatException("Invalid appdata.json searchHistory");
-    }
-    result["searchHistory"] = List<String>.from(searchHistory);
-  }
-  return result;
-}
-
-class _ImportReplacement {
-  const _ImportReplacement._({
-    required this.targetPath,
-    required this.backupPath,
-    required this.wasExisting,
-    required this.isDirectory,
-  });
-
-  factory _ImportReplacement.file(
-    String targetPath,
-    Directory backupDir,
-    String backupName,
-  ) {
-    return _ImportReplacement._(
-      targetPath: targetPath,
-      backupPath: FilePath.join(backupDir.path, backupName),
-      wasExisting: File(targetPath).existsSync(),
-      isDirectory: false,
-    );
-  }
-
-  factory _ImportReplacement.directory(
-    String targetPath,
-    Directory backupDir,
-    String backupName,
-  ) {
-    return _ImportReplacement._(
-      targetPath: targetPath,
-      backupPath: FilePath.join(backupDir.path, backupName),
-      wasExisting: Directory(targetPath).existsSync(),
-      isDirectory: true,
-    );
-  }
-
-  final String targetPath;
-  final String backupPath;
-  final bool wasExisting;
-  final bool isDirectory;
-
-  void backup() {
-    if (!wasExisting) return;
-    if (isDirectory) {
-      Directory(targetPath).renameSync(backupPath);
-    } else {
-      File(targetPath).renameSync(backupPath);
-    }
-  }
-
-  void restore() {
-    if (isDirectory) {
-      Directory(targetPath).deleteIfExistsSync(recursive: true);
-      if (wasExisting && Directory(backupPath).existsSync()) {
-        Directory(backupPath).renameSync(targetPath);
-      }
-    } else {
-      File(targetPath).deleteIfExistsSync();
-      if (wasExisting && File(backupPath).existsSync()) {
-        File(backupPath).renameSync(targetPath);
-      }
-    }
-  }
-}
-
-void _replaceFileForImport({
-  required File source,
-  required String targetPath,
-  required Directory backupDir,
-  required String backupName,
-  required List<_ImportReplacement> replacements,
-}) {
-  var replacement = _ImportReplacement.file(targetPath, backupDir, backupName);
-  replacement.backup();
-  replacements.add(replacement);
-  source.renameSync(targetPath);
-}
-
-void _replaceDirectoryForImport({
-  required Directory source,
-  required String targetPath,
-  required Directory backupDir,
-  required String backupName,
-  required List<_ImportReplacement> replacements,
-}) {
-  var replacement = _ImportReplacement.directory(
-    targetPath,
-    backupDir,
-    backupName,
-  );
-  replacement.backup();
-  replacements.add(replacement);
-  source.renameSync(targetPath);
-}
-
-Future<void> _rollbackImport({
-  required List<_ImportReplacement> replacements,
-  required bool reloadHistory,
-  required bool reloadLocalFavorites,
-  required bool reloadCookies,
-  required bool reloadComicSources,
-  required bool waitForHistoryWrites,
-}) async {
-  final history = HistoryManager.cache;
-  if (waitForHistoryWrites && history != null && history.isInitialized) {
-    await history.waitForAsyncWrites();
-  }
-  if (reloadHistory) {
-    _closeHistoryManagerForImport();
-  }
-  if (reloadLocalFavorites) {
-    await _closeLocalFavoritesManagerForImport();
-  }
-  if (reloadCookies) {
-    _closeCookieJarForImport();
-  }
-
-  for (var replacement in replacements.reversed) {
-    replacement.restore();
-  }
-
-  final databaseReloads = <Future<void>>[
-    if (reloadHistory) HistoryManager().init(),
-    if (reloadLocalFavorites)
-      LocalFavoritesManager().init(reconcileReadingBinding: false),
-  ];
-  if (reloadCookies) _openCookieJarForImport();
-  await Future.wait(databaseReloads);
-  if (reloadComicSources) {
-    await ComicSourceManager().reload();
-  }
-}
-
-void _closeHistoryManagerForImport() {
-  try {
-    final manager = HistoryManager.cache;
-    if (manager == null) {
-      return;
-    }
-    manager.close();
-  } catch (_) {
-    // ignore partially initialized managers
-  }
-}
-
-Future<void> _closeLocalFavoritesManagerForImport() async {
-  final manager = LocalFavoritesManager.cache;
-  if (manager == null) {
-    return;
-  }
-  await manager.waitForPendingReads();
-  manager.close();
-}
-
-void _closeCookieJarForImport() {
-  try {
-    SingleInstanceCookieJar.instance?.dispose();
-  } catch (_) {
-    // ignore partially initialized cookie jars
-  } finally {
-    SingleInstanceCookieJar.instance = null;
-  }
-}
-
-void _openCookieJarForImport() {
-  SingleInstanceCookieJar.instance = SingleInstanceCookieJar(
-    FilePath.join(App.dataPath, "cookie.db"),
-  );
 }
 
 Future<void> importPicaData(File file) async {
@@ -611,7 +301,7 @@ Future<void> importPicaData(File file) async {
               "title": comic["title"],
               "subtitle": comic["subtitle"],
               "cover": comic["cover"],
-              "readEpisode": [comic["ep"]],
+              "readEpisode": [comic["ep"].toString()],
             }),
           );
         }

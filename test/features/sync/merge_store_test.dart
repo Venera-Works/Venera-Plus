@@ -1681,7 +1681,6 @@ void main() {
         expect(store.pendingUnavailableDomains, isEmpty);
         expect(store.pendingBatchIds, [batch.id]);
         expect(store.pendingBatch(batch.id).id, batch.id);
-        expect(store.legacyCheckpointInventory, isNull);
 
         // Migration is one-shot: legacy backups remain untouched, and all
         // durable records plus the snapshot reference survive process restart.
@@ -1737,39 +1736,102 @@ void main() {
       },
     );
 
-    test('checkpoint migration inventory is durable and frozen', () async {
+    test('old SQLite metadata preserves causal and pending state', () async {
       final store = MergeStore(tempDir, 'device-alpha');
       await store.load();
-      expect(store.legacyCheckpointInventory, isNull);
+      final retiredKey = syncRecordKey('folder', ['retired']);
+      final observedKey = syncRecordKey('folder', ['observed']);
+      await store.capture({
+        retiredKey: {'name': 'Retained as a tombstone'},
+        observedKey: {'name': 'Observed business state'},
+      });
+      await store.capture({
+        observedKey: {'name': 'Observed business state'},
+      });
+      await store.markReceived('remote-1.json');
 
-      final inventory = {'legacy/checkpoint.json': List.filled(64, 'a').join()};
-      await store.completeCheckpointMigration(inventory);
-      expect(store.legacyCheckpointInventory, inventory);
-      await expectLater(
-        store.completeCheckpointMigration({'different.json': 'different'}),
-        throwsStateError,
-      );
-      final importedInventory = {
-        ...inventory,
-        'newly-imported.json': 'new-digest',
+      final pendingKey = syncRecordKey('folder', ['pending']);
+      final pendingApply = {
+        pendingKey: {'name': 'Pending remote apply'},
       };
-      await store.completeCheckpointMigration(
-        importedInventory,
-        acceptChanges: true,
-      );
-      expect(store.legacyCheckpointInventory, importedInventory);
+      await store.stageApply(pendingApply, unavailableDomains: {'source'});
+      final batchId = store.pendingBatchIds.single;
+      final document = store.document.toJson();
+      final localObservation = store.localObservation.toJson();
+      final batch = store.pendingBatch(batchId).toJson();
+
+      for (final path in [
+        '${tempDir.path}/merge_store.sqlite3',
+        '${tempDir.path}/merge_store.sqlite3.bak',
+      ]) {
+        final database = sqlite3.open(path);
+        try {
+          database.execute('''
+            INSERT OR REPLACE INTO merge_store_meta(key, value)
+            VALUES ('checkpointMigrationComplete', '1');
+          ''');
+          database.execute('''
+            CREATE TABLE merge_checkpoint_inventory (
+              path TEXT PRIMARY KEY NOT NULL,
+              digest TEXT NOT NULL
+            );
+          ''');
+          database.execute(
+            'INSERT INTO merge_checkpoint_inventory(path, digest) VALUES (?, ?);',
+            ['legacy.json', 'obsolete-digest'],
+          );
+        } finally {
+          database.close();
+        }
+      }
+
+      void expectPreserved(MergeStore value) {
+        final documentState = value.document.toJson();
+        expect(documentState, document);
+        expect(value.localObservation.toJson(), localObservation);
+        expect(value.document.counterFor('device-alpha'), 2);
+        expect(value.document.materialize().containsKey(retiredKey), isFalse);
+        expect(value.observed, {
+          observedKey: {'name': 'Observed business state'},
+        });
+        expect(value.received, {'remote-1.json'});
+        expect(value.pendingApply, pendingApply);
+        expect(value.pendingUnavailableDomains, {'source'});
+        expect(value.pendingBatchIds, [batchId]);
+        expect(value.pendingBatch(batchId).toJson(), batch);
+      }
 
       final reopened = MergeStore(tempDir, 'device-alpha');
       await reopened.load();
-      expect(reopened.legacyCheckpointInventory, importedInventory);
+      expectPreserved(reopened);
+      await reopened.save();
+      expectPreserved(reopened);
 
-      final emptyDirectory = Directory('${tempDir.path}/empty-inventory');
-      final emptyStore = MergeStore(emptyDirectory, 'device-beta');
-      await emptyStore.load();
-      await emptyStore.completeCheckpointMigration({});
-      final emptyReopened = MergeStore(emptyDirectory, 'device-beta');
-      await emptyReopened.load();
-      expect(emptyReopened.legacyCheckpointInventory, isEmpty);
+      for (final path in [
+        '${tempDir.path}/merge_store.sqlite3',
+        '${tempDir.path}/merge_store.sqlite3.bak',
+      ]) {
+        final database = sqlite3.open(path);
+        try {
+          expect(
+            database.select(
+              "SELECT key FROM merge_store_meta WHERE key = 'checkpointMigrationComplete';",
+            ),
+            isEmpty,
+          );
+          expect(
+            database.select(
+              "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'merge_checkpoint_inventory';",
+            ),
+            isEmpty,
+          );
+        } finally {
+          database.close();
+        }
+      }
+      final reloaded = MergeStore(tempDir, 'device-alpha');
+      await reloaded.load();
+      expectPreserved(reloaded);
     });
 
     test(

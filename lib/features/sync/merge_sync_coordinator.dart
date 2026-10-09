@@ -13,6 +13,7 @@ import '../../foundation/appdata_sync_policy.dart';
 import '../../foundation/log.dart';
 import '../../foundation/res.dart';
 import '../../network/webdav.dart';
+import '../comic_source/comic_source.dart';
 import '../favorites/favorites.dart';
 import '../history/history.dart';
 import 'data_sync.dart';
@@ -34,29 +35,6 @@ class ConcurrentEditException implements Exception {
 
   @override
   String toString() => 'ConcurrentEditException: $message';
-}
-
-class _V4ArchiveMigration {
-  _V4ArchiveMigration({
-    required this.inventory,
-    required this.document,
-    required this.publishArchive,
-    required this.acceptChanges,
-    required this.imported,
-  }) : assert(!publishArchive || document != null);
-
-  final List<MergeRemoteEntry> inventory;
-  final MergeDocument? document;
-  final bool publishArchive;
-  final bool acceptChanges;
-  final bool imported;
-}
-
-class _VerifiedV5Publication {
-  const _VerifiedV5Publication({required this.entry, required this.batch});
-
-  final MergeRemoteEntry entry;
-  final MergeBatch batch;
 }
 
 class _SyncDiagnostics {
@@ -82,45 +60,6 @@ Future<T> _measureSyncPhase<T>(
   } finally {
     diagnostics.add(phase, stopwatch.elapsedMilliseconds);
   }
-}
-
-bool _sameV4Entry(MergeRemoteEntry left, MergeRemoteEntry right) =>
-    left.filename == right.filename &&
-    left.actor == right.actor &&
-    left.counter == right.counter &&
-    left.digest == right.digest &&
-    left.layout == right.layout;
-
-bool _sameV4Inventory(
-  List<MergeRemoteEntry> left,
-  List<MergeRemoteEntry> right,
-) {
-  if (left.length != right.length) return false;
-  final rightByPath = {for (final entry in right) entry.filename: entry};
-  return left.every((entry) {
-    final other = rightByPath[entry.filename];
-    return other != null && _sameV4Entry(entry, other);
-  });
-}
-
-String _v4InventoryDigest(List<MergeRemoteEntry> inventory) {
-  final entries = inventory.toList()
-    ..sort((a, b) => a.filename.compareTo(b.filename));
-  return sha256
-      .convert(
-        utf8.encode(
-          canonicalSyncJson([
-            for (final entry in entries)
-              {
-                'filename': entry.filename,
-                'actor': entry.actor,
-                'counter': entry.counter,
-                'digest': entry.digest,
-              },
-          ]),
-        ),
-      )
-      .toString();
 }
 
 Future<T> _measureCoordinatorPhase<T>(
@@ -176,6 +115,8 @@ class MergeSyncCoordinator {
   int Function()? getGenerationOverride;
 
   int _getGeneration() => getGenerationOverride?.call() ?? 0;
+  _SyncDiagnostics? _activeDiagnostics;
+  bool _counterReconciliationComplete = false;
 
   static const _favoriteDomains = {'folder', 'favorite', 'favoriteRole'};
   static const _historyDomains = {'history', 'historyChapter', 'imageFavorite'};
@@ -190,14 +131,6 @@ class MergeSyncCoordinator {
   final Set<String> _changedRecordKeys = {};
   SyncLocalSnapshot? _cachedSnapshot;
   int? _capturedGeneration;
-  bool _legacyChangesDetected = false;
-  bool _v4ChangesDetected = false;
-  bool get legacyChangesDetected =>
-      _legacyChangesDetected || _v4ChangesDetected;
-  int get pendingChangeCount => store.pendingRecordCount;
-  bool _counterReconciliationComplete = false;
-  _SyncDiagnostics? _activeDiagnostics;
-  _V4ArchiveMigration? _cachedV4Migration;
   int _lastSyncDurationMs = 0;
   int get lastSyncDurationMs => _lastSyncDurationMs;
 
@@ -228,6 +161,8 @@ class MergeSyncCoordinator {
     }
     return Map.unmodifiable(result);
   }
+
+  int get pendingChangeCount => store.pendingRecordCount;
 
   Future<T> _measure<T>(String phase, Future<T> Function() action) =>
       _measureCoordinatorPhase(_activeDiagnostics, phase, action);
@@ -304,6 +239,80 @@ class MergeSyncCoordinator {
       _legacyUnavailableDomains = domains;
     }
     _legacyIssuesLoaded = true;
+  }
+
+  String? _legacyIssueDomain(SyncSourceIssue issue) {
+    final filename = issue.filename.toLowerCase();
+    if (filename.endsWith('.js') ||
+        filename == SourceFileMetadata.sidecarFileName.toLowerCase()) {
+      return 'source';
+    }
+    if (filename.endsWith('.data')) return 'sourceSession';
+    return null;
+  }
+
+  Future<void> _reconcileExplicitLegacySourceHealth({
+    required String backupName,
+    required LegacyMergeSeed seed,
+    required List<SyncSourceIssue> previousIssues,
+    required Set<String> previousUnavailableDomains,
+    required List<SyncSourceIssue> issues,
+    required Set<String> unavailableDomains,
+  }) async {
+    final currentIssueFilenames = seed.sourceIssues
+        .map((issue) => issue.filename)
+        .toSet();
+    final updatedIssues = <SyncSourceIssue>[];
+    final repairedDomains = <String>{};
+    for (final issue in previousIssues) {
+      if (issue.archiveName != backupName ||
+          !seed.appliedOverrideFilenames.contains(issue.filename) ||
+          issue.backupPath == null) {
+        updatedIssues.add(issue);
+        continue;
+      }
+
+      var archiveMatches = false;
+      try {
+        final backup = File(issue.backupPath!);
+        if (await backup.exists()) {
+          archiveMatches =
+              (await sha256.bind(backup.openRead()).first)
+                  .toString()
+                  .toLowerCase() ==
+              seed.id;
+        }
+      } catch (_) {}
+      if (!archiveMatches) {
+        updatedIssues.add(issue);
+        continue;
+      }
+
+      if (currentIssueFilenames.contains(issue.filename)) continue;
+      final domain = _legacyIssueDomain(issue);
+      if (domain != null) repairedDomains.add(domain);
+    }
+    for (final issue in seed.sourceIssues) {
+      if (!updatedIssues.contains(issue)) updatedIssues.add(issue);
+    }
+
+    final updatedDomains = Set<String>.of(previousUnavailableDomains)
+      ..addAll(seed.unavailableDomains);
+    for (final domain in repairedDomains) {
+      if (seed.unavailableDomains.contains(domain)) continue;
+      final blockedByIssue = updatedIssues.any((issue) {
+        final issueDomain = _legacyIssueDomain(issue);
+        return issueDomain == null || issueDomain == domain;
+      });
+      if (!blockedByIssue) updatedDomains.remove(domain);
+    }
+
+    issues
+      ..clear()
+      ..addAll(updatedIssues);
+    unavailableDomains
+      ..clear()
+      ..addAll(updatedDomains);
   }
 
   Future<void> _saveLegacyIssues() async {
@@ -753,20 +762,26 @@ class MergeSyncCoordinator {
     }
   }
 
-  /// Performs one-time legacy `.venera` snapshot migration if needed.
-  Future<void> migrateLegacyIfNeeded({
+  /// Seeds causal state from the WebDAV root's original `.venera` backups.
+  ///
+  /// Supplying [backupName] bypasses the automatic migration marker and reads
+  /// only that validated root file. Explicit imports never alter the automatic
+  /// migration marker. They clear an old source issue only when a verified
+  /// override for the same archive hash has actually repaired that entry.
+  Future<bool> migrateLegacyIfNeeded({
     Directory? customScratchDir,
     bool applyToLocal = true,
+    String? backupName,
   }) async {
     final markerKey = 'legacyMigrationDone_$endpointHash';
-    if (appdata.implicitData[markerKey] == true) {
-      return;
+    if (backupName == null && appdata.implicitData[markerKey] == true) {
+      return false;
     }
 
     await _loadLegacyIssuesIfNeeded();
 
-    // A newly published checkpoint cannot substitute for reading legacy roots
-    // during this endpoint's first archive cutover.
+    // Discover only the current Pack layout to avoid re-seeding a backup whose
+    // stable seed actor is already present locally or remotely.
     final remoteEntries = await _measure(
       'discover',
       () => remote.list(latestOnly: false),
@@ -775,14 +790,12 @@ class MergeSyncCoordinator {
     for (final entry in remoteEntries) {
       try {
         final batch = await _measure('download', () => remote.download(entry));
-        await _measure('merge', () async {
-          remoteDocs.add(batch.document);
-          if (!applyToLocal) {
-            for (final v in batch.document.vclock.entries) {
-              store.document.setCounterFloor(v.key, v.value);
-            }
+        remoteDocs.add(batch.document);
+        if (!applyToLocal) {
+          for (final value in batch.document.vclock.entries) {
+            store.document.setCounterFloor(value.key, value.value);
           }
-        });
+        }
       } on MergeRemoteCorruptException {
         Log.warning(
           'MergeSyncCoordinator',
@@ -799,38 +812,47 @@ class MergeSyncCoordinator {
     final backupDir = Directory('${stateDirectory.path}/legacy_source_backups');
     var hasUnhandledSourceIssues =
         _legacySourceIssues.isNotEmpty || _legacyUnavailableDomains.isNotEmpty;
+    final previousLegacyIssues = List<SyncSourceIssue>.of(_legacySourceIssues);
+    final previousLegacyDomains = Set<String>.of(_legacyUnavailableDomains);
     final accumulatedLegacyIssues = List<SyncSourceIssue>.of(
       _legacySourceIssues,
     );
     final accumulatedLegacyDomains = Set<String>.of(_legacyUnavailableDomains);
+    var imported = false;
     try {
-      final overrideDir = Directory('${stateDirectory.path}/legacy_overrides');
       final reader = LegacySyncReader(
         remote.client,
         scratch,
         preferences: preferencesAdapter,
         verifiedSourceBackupDirectory: backupDir,
-        legacyOverrideDirectory: overrideDir,
+        legacyOverrideDirectory: Directory(
+          '${stateDirectory.path}/legacy_overrides',
+        ),
       );
-      final seeds = await _measure('download', reader.readSeeds);
-      if (seeds.isNotEmpty) {
-        // A fresh set of verified archives is authoritative for old legacy
-        // health; a resolved override removes its exact prior issue here.
+      final seeds = await _measure(
+        'download',
+        () => reader.readSeeds(backupName: backupName),
+      );
+      if (backupName == null && seeds.isNotEmpty) {
         hasUnhandledSourceIssues = false;
         accumulatedLegacyIssues.clear();
         accumulatedLegacyDomains.clear();
       }
+
       if (seeds.isNotEmpty) {
         final observation = store.localObservation;
         await _captureStable(observation: observation);
+        var changed = false;
         for (final seed in seeds) {
-          accumulatedLegacyDomains.addAll(seed.unavailableDomains);
-          if (seed.sourceIssues.isNotEmpty ||
-              seed.unavailableDomains.isNotEmpty) {
-            hasUnhandledSourceIssues = true;
-            for (final issue in seed.sourceIssues) {
-              if (!accumulatedLegacyIssues.contains(issue)) {
-                accumulatedLegacyIssues.add(issue);
+          if (backupName == null) {
+            accumulatedLegacyDomains.addAll(seed.unavailableDomains);
+            if (seed.sourceIssues.isNotEmpty ||
+                seed.unavailableDomains.isNotEmpty) {
+              hasUnhandledSourceIssues = true;
+              for (final issue in seed.sourceIssues) {
+                if (!accumulatedLegacyIssues.contains(issue)) {
+                  accumulatedLegacyIssues.add(issue);
+                }
               }
             }
           }
@@ -843,19 +865,12 @@ class MergeSyncCoordinator {
           }
 
           final baseActor = 'legacy_seed_${seed.id}';
-          final hasBaseCoverage = isActorCovered(baseActor);
-          if (hasBaseCoverage) {
-            // Full archive was previously seeded under baseActor; do NOT allocate new domain seeds
-            // as old reader never allowed partial migration and re-seeding would resurrect retired fields!
-            continue;
-          }
+          if (isActorCovered(baseActor)) continue;
 
-          // Check per-domain coverage across validated local/remote docs
           final domainsInSeed = seed.records.keys.map(syncRecordDomain).toSet();
           if (seed.sourceVariants.isNotEmpty) {
             domainsInSeed.add('source');
           }
-
           for (final domain in domainsInSeed) {
             final domainActor = 'legacy_seed_${seed.id}_$domain';
             if (isActorCovered(domainActor) ||
@@ -865,37 +880,49 @@ class MergeSyncCoordinator {
 
             final domainRecords = Map<String, Map<String, Object?>>.fromEntries(
               seed.records.entries.where(
-                (e) => syncRecordDomain(e.key) == domain,
+                (entry) => syncRecordDomain(entry.key) == domain,
               ),
             );
             if (domainRecords.isNotEmpty) {
-              final domainDoc = MergeDocument();
-              domainDoc.captureLocal(
-                domainActor,
-                {},
-                domainRecords,
-                bootstrap: true,
-              );
+              final domainDoc = MergeDocument()
+                ..captureLocal(domainActor, {}, domainRecords, bootstrap: true);
               store.document.merge(domainDoc);
+              changed = true;
             }
             if (domain == 'source' && seed.sourceVariants.isNotEmpty) {
               for (final entry in seed.sourceVariants.entries) {
-                final recordKey = entry.key;
                 for (final script in entry.value) {
                   final variantDoc = MergeDocument.createSourceVariantSeed(
-                    recordKey,
+                    entry.key,
                     script,
                   );
                   if (!store.document.dominates(variantDoc)) {
                     store.document.merge(variantDoc);
+                    changed = true;
                   }
                 }
               }
             }
           }
         }
-        await store.enqueueCheckpoint();
-        if (applyToLocal) await _applyMerged(observation);
+        if (changed) {
+          imported = true;
+          await store.enqueueCheckpoint();
+          if (applyToLocal) await _applyMerged(store.localObservation);
+        }
+        if (backupName != null && seeds.isNotEmpty) {
+          await _reconcileExplicitLegacySourceHealth(
+            backupName: backupName,
+            seed: seeds.single,
+            previousIssues: previousLegacyIssues,
+            previousUnavailableDomains: previousLegacyDomains,
+            issues: accumulatedLegacyIssues,
+            unavailableDomains: accumulatedLegacyDomains,
+          );
+          hasUnhandledSourceIssues =
+              accumulatedLegacyIssues.isNotEmpty ||
+              accumulatedLegacyDomains.isNotEmpty;
+        }
       }
     } catch (_) {
       Log.error('MergeSyncCoordinator', 'Legacy migration failed.');
@@ -908,7 +935,11 @@ class MergeSyncCoordinator {
       }
     }
 
-    if (hasUnhandledSourceIssues) {
+    if (backupName != null) {
+      _legacySourceIssues = accumulatedLegacyIssues;
+      _legacyUnavailableDomains = accumulatedLegacyDomains;
+      await _saveLegacyIssues();
+    } else if (hasUnhandledSourceIssues) {
       _legacySourceIssues = accumulatedLegacyIssues;
       _legacyUnavailableDomains = accumulatedLegacyDomains;
       await _saveLegacyIssues();
@@ -917,21 +948,13 @@ class MergeSyncCoordinator {
       _legacyUnavailableDomains = const {};
       await _saveLegacyIssues();
       appdata.implicitData[markerKey] = true;
-      _cleanOldBaselineKeys();
       await appdata.writeImplicitData();
     }
+    return imported;
   }
 
-  void _cleanOldBaselineKeys() {
-    appdata.implicitData.remove('webdavSyncBaseline');
-    appdata.implicitData.remove('webdavSyncBaselineEtag');
-    appdata.implicitData.remove('webdavSyncBaselineTime');
-    appdata.implicitData.remove('webdavSyncLastRemoteFile');
-    appdata.implicitData.remove('webdavSyncLastRemoteVersion');
-  }
-
-  /// If state was restored from backup, reconciles highest known actor counter from
-  /// remote checkpoints before capturing new local edits.
+  /// Restored local backups may have rolled back actor counters. Reconcile only
+  /// against this device's commits in the current Pack namespace.
   Future<void> reconcileBackupRecoveryIfNeeded() async {
     if (!store.recoveredFromBackup || _counterReconciliationComplete) return;
 
@@ -940,29 +963,13 @@ class MergeSyncCoordinator {
         'discover',
         () => remote.list(latestOnly: false),
       );
-      final v4Entries = await _measure(
-        'discover',
-        () => remote.listV4(latestOnly: false),
-      );
-      final legacyEntries = await _measure(
-        'discover',
-        remote.listLegacyCheckpoints,
-      );
       var highest = 0;
-      // Reserve even an uncommitted OWN filename's allocation conservatively.
-      // Only verified contents may enter causal observation or business state.
-      for (final (entry, legacy) in [
-        for (final item in entries) (item, false),
-        for (final item in v4Entries) (item, false),
-        for (final item in legacyEntries) (item, true),
-      ].where((item) => item.$1.actor == actor)) {
+      for (final entry in entries.where((entry) => entry.actor == actor)) {
         if (entry.counter > highest) highest = entry.counter;
         try {
           final batch = await _measure(
             'download',
-            () => legacy
-                ? remote.downloadLegacyCheckpoint(entry)
-                : remote.download(entry),
+            () => remote.download(entry),
           );
           await _measure('merge', () async {
             store.document.merge(batch.document);
@@ -987,13 +994,32 @@ class MergeSyncCoordinator {
     }
   }
 
-  /// Reads the highest complete checkpoint for each actor, retaining same-counter
-  /// collisions and falling back past incomplete uploads without swallowing I/O.
-  Future<bool> _mergeRemoteEntries(
-    List<MergeRemoteEntry> entries, {
-    bool legacy = false,
-    bool requireCompleteHeads = false,
-  }) async {
+  /// Lists only valid original backups stored at the WebDAV root.
+  Future<List<LegacyRemoteBackup>> listLegacyBackups() {
+    final scratch = Directory('${stateDirectory.path}_legacy_list');
+    return _measure(
+      'discover',
+      () => LegacySyncReader(
+        remote.client,
+        scratch,
+        preferences: preferencesAdapter,
+      ).listBackups(),
+    );
+  }
+
+  /// Imports a selected root backup through the same causal seed path as the
+  /// automatic migration, while honoring local apply and publish direction.
+  Future<Res<bool>> importLegacyBackup(
+    String backupName, {
+    required SyncDirection direction,
+  }) => performSync(
+    direction: direction,
+    checkRemote: true,
+    forceCapture: true,
+    legacyBackupName: backupName,
+  );
+
+  Future<bool> _mergeRemoteEntries(List<MergeRemoteEntry> entries) async {
     final byActor = <String, List<MergeRemoteEntry>>{};
     for (final entry in entries) {
       byActor.putIfAbsent(entry.actor, () => []).add(entry);
@@ -1003,7 +1029,6 @@ class MergeSyncCoordinator {
     for (final candidates in byActor.values) {
       candidates.sort((a, b) => b.counter.compareTo(a.counter));
       int? highestSucceeded;
-      int? highestIncomplete;
       for (final entry in candidates) {
         if (highestSucceeded != null && entry.counter < highestSucceeded) {
           continue;
@@ -1015,9 +1040,7 @@ class MergeSyncCoordinator {
         try {
           final batch = await _measure(
             'download',
-            () => legacy
-                ? remote.downloadLegacyCheckpoint(entry)
-                : remote.download(entry),
+            () => remote.download(entry),
           );
           await _measure('merge', () async {
             store.document.merge(batch.document);
@@ -1026,193 +1049,14 @@ class MergeSyncCoordinator {
           highestSucceeded = entry.counter;
           changed = true;
         } on MergeRemoteCorruptException {
-          highestIncomplete ??= entry.counter;
           Log.warning(
             'MergeSyncCoordinator',
             'An incomplete checkpoint candidate was skipped.',
           );
         }
       }
-      if (requireCompleteHeads &&
-          highestIncomplete != null &&
-          (highestSucceeded == null || highestIncomplete >= highestSucceeded)) {
-        throw StateError(
-          'The latest checkpoint candidates are incomplete. Finish or recover '
-          'the older device synchronization before migrating; no checkpoint '
-          'has been marked as migrated.',
-        );
-      }
     }
     return changed;
-  }
-
-  /// The old namespace is a migration source, not a second ongoing authority.
-  /// Explicit consent is required to import writes made by a non-upgraded peer.
-  Future<bool> _migrateCheckpointLayout({bool acceptChanges = false}) async {
-    final entries = await _measure('discover', remote.listLegacyCheckpoints);
-    final inventory = {
-      for (final entry in entries) entry.filename: entry.digest,
-    };
-    final previous = store.legacyCheckpointInventory;
-    final unexpected =
-        previous != null &&
-        inventory.entries.any((entry) => previous[entry.key] != entry.value);
-    _legacyChangesDetected = unexpected;
-    if (unexpected && !acceptChanges) {
-      throw StateError(
-        'An older device has written to the previous sync format. Upgrade or '
-        'stop all older devices, then explicitly import legacy sync changes '
-        'from synchronization settings. No legacy data has been deleted.',
-      );
-    }
-    if (previous != null && !acceptChanges) return false;
-    await _mergeRemoteEntries(
-      entries,
-      legacy: true,
-      requireCompleteHeads: true,
-    );
-    final imported = entries.isNotEmpty && (previous == null || unexpected);
-    if (imported) {
-      // Preserve the bridge as a publication, including in download-only mode
-      // where it must remain pending until the user permits uploads.
-      // Even a retry whose files were already received must stage this bridge:
-      // an earlier interruption may have happened before enqueue or completion.
-      await store.enqueueCheckpoint();
-    }
-    await store.completeCheckpointMigration({
-      if (previous != null) ...previous,
-      ...inventory,
-    }, acceptChanges: acceptChanges);
-    _legacyChangesDetected = false;
-    return imported;
-  }
-
-  String get _acceptedV4InventoryKey =>
-      'syncV5AcceptedV4Inventory_$endpointHash';
-
-  String? get _acceptedV4InventoryDigest {
-    final digest = appdata.implicitData[_acceptedV4InventoryKey];
-    if (digest is! String || !RegExp(r'^[0-9a-f]{64}$').hasMatch(digest)) {
-      return null;
-    }
-    return digest;
-  }
-
-  Future<void> _rememberAcceptedV4Inventory(String digest) async {
-    final key = _acceptedV4InventoryKey;
-    final previous = appdata.implicitData[key];
-    if (previous == digest) return;
-    appdata.implicitData[key] = digest;
-    try {
-      await appdata.writeImplicitData();
-    } catch (_) {
-      if (previous == null) {
-        appdata.implicitData.remove(key);
-      } else {
-        appdata.implicitData[key] = previous;
-      }
-      rethrow;
-    }
-  }
-
-  Future<void> _ensureV4BridgeCheckpoint(MergeDocument target) async {
-    if (store.outbox.any((batch) => batch.document.dominates(target))) return;
-    // Keep a durable bridge intent in the outbox. Marker publication and local
-    // acknowledgement are ordered after its independently verified v5 commit.
-    await store.enqueueCheckpoint();
-  }
-
-  Future<_V4ArchiveMigration> _prepareV4Archive({
-    required bool acceptChanges,
-  }) async {
-    final inventory = await _measure(
-      'discover',
-      () => remote.listV4(latestOnly: false),
-    );
-    final archive = await _measure('download', remote.readV4Archive);
-    if (archive == null) {
-      final digest = _v4InventoryDigest(inventory);
-      final previousDigest = _acceptedV4InventoryDigest;
-      if (previousDigest != null &&
-          previousDigest != digest &&
-          !acceptChanges) {
-        _v4ChangesDetected = true;
-        throw StateError(
-          'An older device has written to the v4 sync format before its '
-          'archive was published. Stop older writers and explicitly import '
-          'the detected changes from synchronization settings.',
-        );
-      }
-      if (previousDigest != digest) await _rememberAcceptedV4Inventory(digest);
-      await _mergeRemoteEntries(inventory, requireCompleteHeads: true);
-      final document = store.document.clone();
-      await _ensureV4BridgeCheckpoint(document);
-      _v4ChangesDetected = false;
-      return _V4ArchiveMigration(
-        inventory: inventory,
-        document: document,
-        publishArchive: true,
-        acceptChanges: false,
-        imported: inventory.isNotEmpty,
-      );
-    }
-
-    if (_sameV4Inventory(inventory, archive.inventory)) {
-      _v4ChangesDetected = false;
-      return _V4ArchiveMigration(
-        inventory: inventory,
-        document: null,
-        publishArchive: false,
-        acceptChanges: false,
-        imported: false,
-      );
-    }
-
-    final liveByPath = {for (final entry in inventory) entry.filename: entry};
-    if (archive.inventory.any((entry) {
-      final live = liveByPath[entry.filename];
-      return live == null || !_sameV4Entry(entry, live);
-    })) {
-      _v4ChangesDetected = true;
-      throw StateError(
-        'A frozen v4 checkpoint is missing from remote storage. Restore the '
-        'retained v4 files before importing further old-format changes.',
-      );
-    }
-
-    final digest = _v4InventoryDigest(inventory);
-    final previouslyAccepted = _acceptedV4InventoryDigest == digest;
-    _v4ChangesDetected = true;
-    if (!previouslyAccepted && !acceptChanges) {
-      throw StateError(
-        'An older device has written to the frozen v4 sync format. Upgrade or '
-        'stop all older devices, then explicitly import legacy sync changes '
-        'from synchronization settings. No legacy data has been deleted.',
-      );
-    }
-    if (!previouslyAccepted) await _rememberAcceptedV4Inventory(digest);
-
-    await _mergeRemoteEntries(inventory, requireCompleteHeads: true);
-    final document = store.document.clone();
-    await _ensureV4BridgeCheckpoint(document);
-    _v4ChangesDetected = false;
-    return _V4ArchiveMigration(
-      inventory: inventory,
-      document: document,
-      publishArchive: true,
-      acceptChanges: true,
-      imported: true,
-    );
-  }
-
-  void _rememberCompletedV4Migration(_V4ArchiveMigration migration) {
-    _cachedV4Migration = _V4ArchiveMigration(
-      inventory: migration.inventory,
-      document: null,
-      publishArchive: false,
-      acceptChanges: false,
-      imported: false,
-    );
   }
 
   /// Executes synchronization according to direction and independent pull timing.
@@ -1220,7 +1064,7 @@ class MergeSyncCoordinator {
     required SyncDirection direction,
     bool checkRemote = true,
     bool forceCapture = true,
-    bool acceptLegacyChanges = false,
+    String? legacyBackupName,
   }) async {
     remote.resetTransferStats();
     final diagnostics = _SyncDiagnostics();
@@ -1243,37 +1087,20 @@ class MergeSyncCoordinator {
         }
       });
       final observation = store.localObservation;
-      final needsRemoteCheck =
-          checkRemote ||
-          acceptLegacyChanges ||
-          store.legacyCheckpointInventory == null;
+      final markerKey = 'legacyMigrationDone_$endpointHash';
+      final shouldMigrateLegacy =
+          legacyBackupName != null || appdata.implicitData[markerKey] != true;
       var importedLegacy = false;
-      if (needsRemoteCheck) {
-        importedLegacy = await _measure('legacyMigration', () async {
-          final imported = await _migrateCheckpointLayout(
-            acceptChanges: acceptLegacyChanges,
-          );
-          await migrateLegacyIfNeeded(
-            applyToLocal: direction != SyncDirection.uploadOnly,
-          );
-          return imported;
-        });
-      }
-      final cachedMigration = _cachedV4Migration;
-      final _V4ArchiveMigration v4Migration;
-      if (needsRemoteCheck ||
-          cachedMigration == null ||
-          cachedMigration.publishArchive ||
-          _v4ChangesDetected) {
-        _cachedV4Migration = null;
-        v4Migration = await _measure(
+      if (shouldMigrateLegacy) {
+        importedLegacy = await _measure(
           'legacyMigration',
-          () => _prepareV4Archive(acceptChanges: acceptLegacyChanges),
+          () => migrateLegacyIfNeeded(
+            applyToLocal: direction != SyncDirection.uploadOnly,
+            backupName: legacyBackupName,
+          ),
         );
-      } else {
-        // A local-only upload must not reset the independent remote-check cadence.
-        v4Migration = cachedMigration;
       }
+      final needsRemoteCheck = checkRemote;
 
       List<MergeRemoteEntry>? discovered;
       if (direction != SyncDirection.uploadOnly && needsRemoteCheck) {
@@ -1284,7 +1111,7 @@ class MergeSyncCoordinator {
         await _mergeRemoteEntries(discovered);
       }
       if (direction != SyncDirection.uploadOnly &&
-          (needsRemoteCheck || v4Migration.imported)) {
+          (needsRemoteCheck || importedLegacy)) {
         // Capture edits that arrived while waiting for remote data before
         // making a durable selection; the apply guard remains authoritative.
         final stable = await _measure(
@@ -1319,19 +1146,11 @@ class MergeSyncCoordinator {
       if (direction != SyncDirection.downloadOnly) {
         await _uploadOutboxWithRecovery(
           discovered: discovered,
-          ensurePublished: needsRemoteCheck || v4Migration.publishArchive,
-          v4Migration: v4Migration,
+          ensurePublished: needsRemoteCheck || forceCapture,
         );
       }
-      if (direction != SyncDirection.downloadOnly ||
-          !v4Migration.publishArchive) {
-        _rememberCompletedV4Migration(v4Migration);
-      }
-      return Res(
-        !acceptLegacyChanges || importedLegacy || v4Migration.imported,
-      );
+      return legacyBackupName == null ? const Res(true) : Res(importedLegacy);
     } catch (error) {
-      _cachedV4Migration = null;
       Log.error(
         'MergeSyncCoordinator',
         'performSync failed (${error.runtimeType})',
@@ -1389,11 +1208,6 @@ class MergeSyncCoordinator {
           await reconcileBackupRecoveryIfNeeded();
         }
       });
-      await _measure('legacyMigration', () => _migrateCheckpointLayout());
-      final v4Migration = await _measure(
-        'legacyMigration',
-        () => _prepareV4Archive(acceptChanges: false),
-      );
       final captured = await _measure('capture', _captureStable);
       final observation = store.localObservation;
       await store.resolveAll(
@@ -1408,18 +1222,10 @@ class MergeSyncCoordinator {
       applyCompleted = true;
 
       if (direction != SyncDirection.downloadOnly) {
-        await _uploadOutboxWithRecovery(
-          ensurePublished: true,
-          v4Migration: v4Migration,
-        );
-      }
-      if (direction != SyncDirection.downloadOnly ||
-          !v4Migration.publishArchive) {
-        _rememberCompletedV4Migration(v4Migration);
+        await _uploadOutboxWithRecovery(ensurePublished: true);
       }
       return const Res(true);
     } on MergeStorePersistenceException {
-      _cachedV4Migration = null;
       Log.error(
         'MergeSyncCoordinator',
         'Conflict resolution persistence failed.',
@@ -1430,7 +1236,6 @@ class MergeSyncCoordinator {
         'commit could be confirmed.',
       );
     } catch (error) {
-      _cachedV4Migration = null;
       Log.error(
         'MergeSyncCoordinator',
         'Conflict resolution failed (${error.runtimeType})',
@@ -1470,30 +1275,6 @@ class MergeSyncCoordinator {
   static const _compactBatchThreshold = 32;
   static const _compactMinimumInterval = Duration(days: 7);
   static const _compactCountThrottle = Duration(hours: 24);
-
-  Future<_VerifiedV5Publication> _verifyV5Publication(
-    String uploadedPath,
-    MergeBatch expectedBatch,
-  ) async {
-    final proof = MergeRemoteEntry.tryParsePackCommit(
-      uploadedPath,
-      actor: expectedBatch.actor,
-    );
-    if (proof == null || proof.counter != expectedBatch.counter) {
-      throw const FormatException(
-        'The published v5 commit path does not match its snapshot.',
-      );
-    }
-    final verified = await _measure('download', () => remote.download(proof));
-    if (verified.actor != expectedBatch.actor ||
-        verified.counter != expectedBatch.counter ||
-        verified.id != expectedBatch.id) {
-      throw const FormatException(
-        'The published v5 commit readback does not match its snapshot.',
-      );
-    }
-    return _VerifiedV5Publication(entry: proof, batch: verified);
-  }
 
   Future<void> _compactIfDue(
     MergeSnapshot snapshot,
@@ -1556,7 +1337,6 @@ class MergeSyncCoordinator {
   Future<void> _uploadOutboxWithRecovery({
     List<MergeRemoteEntry>? discovered,
     bool ensurePublished = true,
-    required _V4ArchiveMigration v4Migration,
   }) async {
     if (!ensurePublished && store.pendingBatchIds.isEmpty) return;
     final priorEntries =
@@ -1564,8 +1344,8 @@ class MergeSyncCoordinator {
         (ensurePublished
             ? await _measure('discover', () => remote.list(latestOnly: false))
             : null);
-    // An already-acknowledged local store may have no outbox in the new remote
-    // namespace. Seed it once unless this actor already has a published commit.
+    // A durable local state may have no outbox in the new namespace. Publish
+    // its full causal document once unless this actor already has a commit.
     if (priorEntries != null &&
         store.pendingBatchIds.isEmpty &&
         !priorEntries.any((entry) => entry.actor == actor)) {
@@ -1573,7 +1353,6 @@ class MergeSyncCoordinator {
     }
     MergeSnapshot? lastUploaded;
     var newlyUploadedCommitCount = 0;
-    var archivePublished = !v4Migration.publishArchive;
 
     final pendingIds = store.pendingBatchIds;
     for (final id in pendingIds) {
@@ -1590,43 +1369,32 @@ class MergeSyncCoordinator {
       } on MergeRemoteConflictException {
         Log.warning(
           'MergeSyncCoordinator',
-          'A v5 publication conflict requires a dominating replacement.',
+          'A Pack publication conflict requires a dominating replacement.',
         );
         final replacement = await store.enqueueCheckpoint();
         final replacementSnapshot = store.pendingSnapshot(replacement.id);
+        final replacementBatch = store.pendingBatch(replacement.id);
+        if (!replacementBatch.document.dominates(expectedBatch.document)) {
+          throw StateError(
+            'The replacement checkpoint does not cover the pending intent.',
+          );
+        }
         final replacementPath = await _measure(
           'upload',
           () => remote.uploadSnapshot(replacementSnapshot),
         );
-        final replacementBatch = store.pendingBatch(replacement.id);
-        if (!archivePublished &&
-            replacementBatch.document.dominates(v4Migration.document!)) {
-          final verified = await _verifyV5Publication(
-            replacementPath,
-            replacementBatch,
-          );
-          if (!verified.batch.document.dominates(v4Migration.document!)) {
-            throw const FormatException(
-              'The v5 commit does not cover the imported v4 history.',
-            );
-          }
-          await _measure(
-            'upload',
-            () => remote.publishV4Archive(
-              MergeRemoteV4Archive(
-                inventory: v4Migration.inventory,
-                proof: verified.entry,
-              ),
-              acceptChanges: v4Migration.acceptChanges,
-            ),
-          );
-          archivePublished = true;
-        }
-        if (!archivePublished) {
-          throw StateError(
-            'The replacement checkpoint does not cover imported v4 history.',
+        final publishedEntry = MergeRemoteEntry.tryParsePackCommit(
+          replacementPath,
+          actor: actor,
+        );
+        if (publishedEntry == null ||
+            publishedEntry.counter != replacementBatch.counter) {
+          throw const FormatException(
+            'The replacement Pack commit path does not match its checkpoint.',
           );
         }
+        // uploadSnapshot returns only after exact manifest and Pack read-back
+        // verification, so acknowledgement follows the durable publication.
         await store.acknowledge(id);
         await store.acknowledge(replacement.id);
         await store.markReceived(replacementPath);
@@ -1635,28 +1403,15 @@ class MergeSyncCoordinator {
         continue;
       }
 
-      if (!archivePublished &&
-          expectedBatch.document.dominates(v4Migration.document!)) {
-        final verified = await _verifyV5Publication(
-          uploadedPath,
-          expectedBatch,
+      final publishedEntry = MergeRemoteEntry.tryParsePackCommit(
+        uploadedPath,
+        actor: actor,
+      );
+      if (publishedEntry == null ||
+          publishedEntry.counter != expectedBatch.counter) {
+        throw const FormatException(
+          'The Pack commit path does not match its checkpoint.',
         );
-        if (!verified.batch.document.dominates(v4Migration.document!)) {
-          throw const FormatException(
-            'The v5 commit does not cover the imported v4 history.',
-          );
-        }
-        await _measure(
-          'upload',
-          () => remote.publishV4Archive(
-            MergeRemoteV4Archive(
-              inventory: v4Migration.inventory,
-              proof: verified.entry,
-            ),
-            acceptChanges: v4Migration.acceptChanges,
-          ),
-        );
-        archivePublished = true;
       }
       await store.acknowledge(id);
       await store.markReceived(uploadedPath);
@@ -1664,12 +1419,6 @@ class MergeSyncCoordinator {
       newlyUploadedCommitCount++;
     }
 
-    if (!archivePublished) {
-      throw StateError(
-        'The v4 migration bridge remains pending until a verified v5 commit '
-        'covers the imported history.',
-      );
-    }
     if (lastUploaded != null) {
       await _compactIfDue(
         lastUploaded,

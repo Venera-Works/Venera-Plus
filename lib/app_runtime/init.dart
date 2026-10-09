@@ -128,16 +128,17 @@ Future<void> init() async {
     );
     return binding?.scopeId == libraryId && binding?.subjectId == subjectId;
   });
-  registerAppDataSettingsChangedHandler(
-    () => refreshRuntimeAfterSettingsImport(
+  registerAppDataSettingsChangedHandler(() async {
+    DataSync().onDataChanged();
+    await refreshRuntimeAfterSettingsImport(
       resetWebDavLibrary: WebDavLibrarySource.onSettingsImported,
       reloadComicSources: () async {
         await ComicSourceManager().reload();
       },
       initializeBangumi: BangumiService().initialize,
       checkForAutomaticSync: WebDavLibrarySource.checkForAutomaticSync,
-    ),
-  );
+    );
+  });
   SyncPreferencesAdapter.registerSettingsImportedCallback(() async {
     WebDavLibrarySource.onSettingsImported();
     // Source/session refresh belongs to the adapter's post-journal phase.

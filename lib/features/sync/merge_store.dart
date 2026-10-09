@@ -38,7 +38,6 @@ class MergeStore {
   bool _recoveredFromBackup = false;
   bool _needsCounterReconciliation = false;
   bool _counterFloorDirty = false;
-  Map<String, String>? _legacyCheckpointInventory;
 
   MergeStore(this.directory, this.actor) {
     if (actor.isEmpty) {
@@ -84,41 +83,6 @@ class MergeStore {
   /// Recovery may have lost publication counters. The controller must reconcile
   /// OWN-actor remote checkpoints before replay/capture, even for an empty cloud.
   bool get recoveredFromBackup => _recoveredFromBackup;
-
-  /// Frozen inventory of the endpoint's pre-v4 checkpoint files.
-  /// Null means the one-time checkpoint migration has not completed.
-  Map<String, String>? get legacyCheckpointInventory =>
-      _legacyCheckpointInventory == null
-      ? null
-      : Map.unmodifiable(_legacyCheckpointInventory!);
-
-  Future<void> completeCheckpointMigration(
-    Map<String, String> inventory, {
-    bool acceptChanges = false,
-  }) async {
-    _ensureLoaded();
-    final next = Map<String, String>.of(inventory);
-    if (next.entries.any((entry) => entry.key.isEmpty || entry.value.isEmpty)) {
-      throw ArgumentError.value(
-        inventory,
-        'inventory',
-        'Paths and digests must not be empty',
-      );
-    }
-    final existing = _legacyCheckpointInventory;
-    if (existing != null && !acceptChanges) {
-      if (!syncValuesEqual(existing, next)) {
-        throw StateError('Checkpoint migration inventory is already frozen');
-      }
-      return;
-    }
-    final merged = existing == null
-        ? next
-        : (Map<String, String>.of(existing)..addAll(next));
-    if (existing != null && syncValuesEqual(existing, merged)) return;
-    _legacyCheckpointInventory = Map.unmodifiable(merged);
-    await save();
-  }
 
   File get _stateFile => File('${directory.path}/state.json');
   File get _backupFile => File('${_stateFile.path}.bak');
@@ -237,7 +201,6 @@ class MergeStore {
     );
     _initialized =
         databaseState?.initialized ?? legacyState?.initialized ?? false;
-    _legacyCheckpointInventory = databaseState?.checkpointMigrationInventory;
     _recoveredFromBackup = recovered;
     _needsCounterReconciliation = recovered;
     _counterFloorDirty = false;
@@ -789,7 +752,6 @@ class MergeStore {
         pendingApply: _pendingApply,
         pendingUnavailableDomains: _pendingUnavailableDomains,
         initialized: _initialized,
-        checkpointMigrationInventory: _legacyCheckpointInventory,
       );
       _outboxSnapshotCache.addAll(newSnapshots);
       _outboxCache.clear();

@@ -23,7 +23,6 @@ class MergeStoreDatabase {
   final Map<(String, String, String), String> _persistedRows = {};
   final Map<String, String> _persistedMeta = {};
   final Set<String> _persistedReceived = {};
-  final Map<String, String> _persistedInventory = {};
   final Set<String> _persistedOutboxIds = {};
   final Map<String, Set<String>> _persistedOutboxChangedRecords = {};
   int _persistedRevision = 0;
@@ -41,7 +40,6 @@ class MergeStoreDatabase {
     _persistedRows.clear();
     _persistedMeta.clear();
     _persistedReceived.clear();
-    _persistedInventory.clear();
     _persistedOutboxIds.clear();
     _persistedOutboxChangedRecords.clear();
     _persistedRevision = 0;
@@ -137,9 +135,6 @@ class MergeStoreDatabase {
     _persistedReceived
       ..clear()
       ..addAll(state.received);
-    _persistedInventory
-      ..clear()
-      ..addAll(state.checkpointMigrationInventory ?? const <String, String>{});
     _persistedOutboxIds
       ..clear()
       ..addAll(state.outboxIds);
@@ -256,7 +251,6 @@ class MergeStoreDatabase {
     required SyncRecords? pendingApply,
     required Set<String> pendingUnavailableDomains,
     required bool initialized,
-    required Map<String, String>? checkpointMigrationInventory,
   }) async {
     if (_loaded && !_databaseExists) {
       throw StateError('Invalid SQLite store lifecycle');
@@ -274,16 +268,10 @@ class MergeStoreDatabase {
         pendingUnavailableDomains.toList()..sort(),
       ),
       'legacyStateMigrated': '1',
-      'checkpointMigrationComplete': checkpointMigrationInventory == null
-          ? '0'
-          : '1',
       'outboxDeltasVersion': '1',
       'commitRevision': '$_persistedRevision',
     };
     final nextReceived = Set<String>.of(received);
-    final nextInventory = checkpointMigrationInventory == null
-        ? <String, String>{}
-        : Map<String, String>.of(checkpointMigrationInventory);
     final nextOutboxIds = List<String>.of(outboxIds);
     if (nextOutboxIds.toSet().length != nextOutboxIds.length) {
       throw const FormatException('Duplicate pending outbox id');
@@ -292,7 +280,6 @@ class MergeStoreDatabase {
     final rowsChanged = !_sameRowValues(_persistedRows, nextRows);
     final metaChanged = !_sameMap(_persistedMeta, nextMeta);
     final receivedChanged = !_sameSet(_persistedReceived, nextReceived);
-    final inventoryChanged = !_sameMap(_persistedInventory, nextInventory);
     final desiredOutbox = nextOutboxIds.toSet();
     final removedOutbox = _persistedOutboxIds.difference(desiredOutbox);
     final addedOutbox = desiredOutbox.difference(_persistedOutboxIds);
@@ -327,7 +314,6 @@ class MergeStoreDatabase {
         !rowsChanged &&
         !metaChanged &&
         !receivedChanged &&
-        !inventoryChanged &&
         removedOutbox.isEmpty &&
         changedOutboxDeltas.isEmpty &&
         addedOutbox.isEmpty) {
@@ -374,10 +360,14 @@ class MergeStoreDatabase {
           _assertCommitRevision(database, schema: 'replica');
         }
         for (final schema in ['main', 'replica']) {
+          if (_persistedMeta.containsKey('checkpointMigrationComplete')) {
+            database.execute(
+              'DROP TABLE IF EXISTS $schema.merge_checkpoint_inventory;',
+            );
+          }
           _applyRowDiff(database, nextRows, schema: schema);
           _applyMetaDiff(database, nextMeta, schema: schema);
           _applyReceivedDiff(database, nextReceived, schema: schema);
-          _applyInventoryDiff(database, nextInventory, schema: schema);
           _applyOutboxChanges(
             database,
             schema: schema,
@@ -411,9 +401,6 @@ class MergeStoreDatabase {
     _persistedReceived
       ..clear()
       ..addAll(nextReceived);
-    _persistedInventory
-      ..clear()
-      ..addAll(nextInventory);
     _persistedOutboxIds
       ..clear()
       ..addAll(desiredOutbox);
@@ -464,12 +451,12 @@ class MergeStoreDatabase {
         'hasPendingApply',
         'pendingUnavailableDomains',
         'legacyStateMigrated',
-        'checkpointMigrationComplete',
         'outboxDeltasVersion',
         'commitRevision',
       };
-      if (meta.length != requiredMeta.length ||
-          !meta.keys.toSet().containsAll(requiredMeta)) {
+      const allowedMeta = {...requiredMeta, 'checkpointMigrationComplete'};
+      if (!meta.keys.toSet().containsAll(requiredMeta) ||
+          !allowedMeta.containsAll(meta.keys)) {
         throw const FormatException('Invalid merge SQLite metadata');
       }
       if (meta['actor'] != actor) {
@@ -478,8 +465,9 @@ class MergeStoreDatabase {
       if (!{'0', '1'}.contains(meta['initialized']) ||
           !{'0', '1'}.contains(meta['hasPendingApply']) ||
           meta['legacyStateMigrated'] != '1' ||
-          !{'0', '1'}.contains(meta['checkpointMigrationComplete']) ||
-          meta['outboxDeltasVersion'] != '1') {
+          meta['outboxDeltasVersion'] != '1' ||
+          (meta.containsKey('checkpointMigrationComplete') &&
+              !{'0', '1'}.contains(meta['checkpointMigrationComplete']))) {
         throw const FormatException('Invalid merge SQLite metadata values');
       }
       final commitRevision = int.tryParse(meta['commitRevision']!);
@@ -649,23 +637,6 @@ class MergeStoreDatabase {
           throw const FormatException('Missing outbox snapshot object');
         }
       }
-      final inventory = <String, String>{};
-      for (final row in database.select(
-        'SELECT path, digest FROM merge_checkpoint_inventory;',
-      )) {
-        final path = row['path'] as String;
-        final digest = row['digest'] as String;
-        if (path.isEmpty || inventory.containsKey(path)) {
-          throw const FormatException('Invalid checkpoint inventory');
-        }
-        inventory[path] = digest;
-      }
-      final inventoryComplete = meta['checkpointMigrationComplete'] == '1';
-      if (!inventoryComplete && inventory.isNotEmpty) {
-        throw const FormatException(
-          'Checkpoint inventory exists before migration',
-        );
-      }
       return MergeStoreDatabaseState(
         document: document,
         localObservation: localObservation,
@@ -676,7 +647,6 @@ class MergeStoreDatabase {
         pendingApply: pendingApply,
         pendingUnavailableDomains: pendingUnavailableDomains,
         initialized: meta['initialized'] == '1',
-        checkpointMigrationInventory: inventoryComplete ? inventory : null,
         recoveredFromBackup: recoveredFromBackup,
         persistedRows: rows,
         persistedMeta: meta,
@@ -761,12 +731,6 @@ class MergeStoreDatabase {
         record_key TEXT NOT NULL,
         PRIMARY KEY (batch_id, record_key),
         FOREIGN KEY (batch_id) REFERENCES merge_outbox(batch_id) ON DELETE CASCADE
-      );
-    ''');
-    database.execute('''
-      CREATE TABLE IF NOT EXISTS $schema.merge_checkpoint_inventory (
-        path TEXT PRIMARY KEY NOT NULL,
-        digest TEXT NOT NULL
       );
     ''');
     database.execute('PRAGMA $schema.user_version = 1;');
@@ -953,31 +917,6 @@ class MergeStoreDatabase {
       database.execute(
         'INSERT INTO $schema.merge_received(filename) VALUES (?);',
         [filename],
-      );
-    }
-  }
-
-  void _applyInventoryDiff(
-    Database database,
-    Map<String, String> next, {
-    required String schema,
-  }) {
-    for (final path in _persistedInventory.keys) {
-      if (!next.containsKey(path)) {
-        database.execute(
-          'DELETE FROM $schema.merge_checkpoint_inventory WHERE path = ?;',
-          [path],
-        );
-      }
-    }
-    for (final entry in next.entries) {
-      if (_persistedInventory[entry.key] == entry.value) continue;
-      database.execute(
-        '''
-        INSERT OR REPLACE INTO $schema.merge_checkpoint_inventory(path, digest)
-        VALUES (?, ?);
-        ''',
-        [entry.key, entry.value],
       );
     }
   }
@@ -1189,7 +1128,6 @@ class MergeStoreDatabaseState {
   final Set<String> pendingUnavailableDomains;
   final Map<String, Set<String>> outboxChangedRecords;
   final bool initialized;
-  final Map<String, String>? checkpointMigrationInventory;
   final bool recoveredFromBackup;
   final Map<(String, String, String), String> persistedRows;
   final Map<String, String> persistedMeta;
@@ -1205,7 +1143,6 @@ class MergeStoreDatabaseState {
     required this.outboxChangedRecords,
     required this.pendingUnavailableDomains,
     required this.initialized,
-    required this.checkpointMigrationInventory,
     required this.recoveredFromBackup,
     required this.persistedRows,
     required this.persistedMeta,
@@ -1221,7 +1158,6 @@ class MergeStoreDatabaseState {
     outboxChangedRecords: outboxChangedRecords,
     pendingUnavailableDomains: pendingUnavailableDomains,
     initialized: initialized,
-    checkpointMigrationInventory: checkpointMigrationInventory,
     recoveredFromBackup: value,
     persistedRows: persistedRows,
     persistedMeta: persistedMeta,

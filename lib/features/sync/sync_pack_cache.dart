@@ -11,9 +11,10 @@ import 'sync_pack.dart';
 
 /// Rebuildable bounded LRU disk cache for verified packs and publication maps.
 ///
-/// Manifest keys are hashed before becoming filenames; callers should scope a
-/// key to the endpoint, actor, and device folder. This cache is only a reuse
-/// hint: publishers must independently verify remote pack availability.
+/// Manifest keys are hashed before becoming filenames; callers should scope
+/// each key to the remote layout, endpoint, actor, and device folder. This
+/// cache is only a reuse hint: publishers must independently verify remote pack
+/// availability.
 final class SyncPackCache {
   SyncPackCache(this.root, {this.maxBytes = 128 * 1024 * 1024}) {
     if (maxBytes < 0) throw ArgumentError.value(maxBytes, 'maxBytes');

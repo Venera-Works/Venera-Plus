@@ -13,7 +13,6 @@ void cliPrint(Map<String, dynamic> data) {
   print('[CLI PRINT] ${jsonEncode(data)}');
 }
 
-/// The real dispatcher and CLI tests share this command grammar.
 ({String action, int argumentIndex}) parseHeadlessSyncCommand(
   List<String> args,
   int commandIndex,
@@ -25,14 +24,50 @@ void cliPrint(Map<String, dynamic> data) {
   final actionIndex = commandIndex + (grouped ? 1 : 0);
   if (actionIndex >= args.length ||
       !(grouped
-              ? const {'up', 'down', 'sync', 'conflicts', 'resolve'}
+              ? const {
+                  'up',
+                  'down',
+                  'sync',
+                  'conflicts',
+                  'resolve',
+                  'backups',
+                  'import-backup',
+                }
               : const {'sync', 'conflicts', 'resolve'})
           .contains(args[actionIndex])) {
     throw const FormatException(
-      'Invalid sync command. Use webdav up, down, sync, conflicts, or resolve.',
+      'Invalid sync command. Use webdav up, down, sync, conflicts, resolve, backups, or import-backup <name> --confirm.',
     );
   }
   return (action: args[actionIndex], argumentIndex: actionIndex + 1);
+}
+
+void parseHeadlessWebdavBackupsArguments(List<String> args, int startIndex) {
+  if (startIndex != args.length) {
+    throw const FormatException(
+      'The webdav backups command takes no arguments.',
+    );
+  }
+}
+
+String parseHeadlessWebdavImportBackupArguments(
+  List<String> args,
+  int startIndex,
+) {
+  if (startIndex >= args.length ||
+      args[startIndex].isEmpty ||
+      args[startIndex].startsWith('--')) {
+    throw const FormatException('Missing required backup name.');
+  }
+  if (startIndex + 1 >= args.length || args[startIndex + 1] != '--confirm') {
+    throw const FormatException('Importing a root backup requires --confirm.');
+  }
+  if (startIndex + 2 != args.length) {
+    throw const FormatException(
+      'Unexpected argument for webdav import-backup.',
+    );
+  }
+  return args[startIndex];
 }
 
 /// IDs are opaque engine output, including duration-resolution candidates.
@@ -186,13 +221,32 @@ Future<void> runHeadlessMode(List<String> args) async {
     exit(1);
   }
 
-  // Need to initialize the app for some features to work
-  await init();
-
   var command = args[commandIndex];
   var subCommand = (commandIndex + 1 < args.length)
       ? args[commandIndex + 1]
       : null;
+  ({String action, int argumentIndex})? parsedWebdavCommand;
+  String? confirmedBackupName;
+  if (command == 'webdav') {
+    try {
+      final parsed = parseHeadlessSyncCommand(args, commandIndex);
+      if (parsed.action == 'backups') {
+        parseHeadlessWebdavBackupsArguments(args, parsed.argumentIndex);
+      } else if (parsed.action == 'import-backup') {
+        confirmedBackupName = parseHeadlessWebdavImportBackupArguments(
+          args,
+          parsed.argumentIndex,
+        );
+      }
+      parsedWebdavCommand = parsed;
+    } on FormatException catch (error) {
+      cliPrint({'status': 'error', 'message': error.message});
+      exit(1);
+    }
+  }
+
+  // Need to initialize the app for some features to work
+  await init();
 
   switch (command) {
     case 'webdav':
@@ -200,7 +254,8 @@ Future<void> runHeadlessMode(List<String> args) async {
     case 'conflicts':
     case 'resolve':
       try {
-        final parsed = parseHeadlessSyncCommand(args, commandIndex);
+        final parsed =
+            parsedWebdavCommand ?? parseHeadlessSyncCommand(args, commandIndex);
         switch (parsed.action) {
           case 'up':
             await _handleWebdavTransfer(upload: true);
@@ -216,6 +271,18 @@ Future<void> runHeadlessMode(List<String> args) async {
             break;
           case 'resolve':
             await _handleWebdavResolve(args, parsed.argumentIndex);
+            break;
+          case 'backups':
+            await _handleWebdavBackups();
+            break;
+          case 'import-backup':
+            final backupName =
+                confirmedBackupName ??
+                parseHeadlessWebdavImportBackupArguments(
+                  args,
+                  parsed.argumentIndex,
+                );
+            await _handleWebdavImportBackup(backupName);
             break;
         }
       } on FormatException catch (error) {
@@ -517,6 +584,81 @@ Future<void> _handleWebdavConflicts() async {
     'message': 'Sync conflicts retrieved.',
     'data': {'count': conflicts.length, 'conflicts': sanitizedConflicts},
   });
+}
+
+Future<void> _handleWebdavBackups() async {
+  cliPrint({'status': 'running', 'message': 'Listing WebDAV root backups...'});
+  try {
+    await DataSync().waitForStartupMerge();
+    await DataSync().waitForSync();
+    final backups = await DataSync().listLegacyBackups();
+    cliPrint({
+      'status': 'success',
+      'message': 'WebDAV root backups retrieved.',
+      'data': {
+        'count': backups.length,
+        'backups': [
+          for (final backup in backups)
+            {'name': backup.name, 'day': backup.day, 'version': backup.version},
+        ],
+      },
+    });
+  } catch (_) {
+    cliPrint({
+      'status': 'error',
+      'message': 'Could not list WebDAV root backups.',
+    });
+    exit(1);
+  }
+}
+
+Future<void> _handleWebdavImportBackup(String backupName) async {
+  cliPrint({
+    'status': 'running',
+    'message': 'Importing the confirmed WebDAV root backup...',
+  });
+  try {
+    await DataSync().waitForStartupMerge();
+    await DataSync().waitForSync();
+    final result = await DataSync().importLegacyBackup(backupName);
+    if (result.error) {
+      cliPrint({
+        'status': 'error',
+        'message': 'WebDAV root backup import failed.',
+      });
+      exit(1);
+    }
+    final snapshot = DataSync().statusSnapshot;
+    if (snapshot.isPartial) {
+      cliPrint({
+        'status': 'partial',
+        'message': result.data
+            ? 'WebDAV root backup processed with partial sources. Review source issues in Data Sync.'
+            : 'No new WebDAV root backup data to import.',
+        'data': {
+          'imported': result.data,
+          'sourceIssues': headlessSyncSourceIssuePreviews(
+            snapshot.sourceIssues,
+          ),
+          'unavailableDomains': snapshot.unavailableDomains.toList()..sort(),
+        },
+      });
+    } else {
+      cliPrint({
+        'status': 'success',
+        'message': result.data
+            ? 'WebDAV root backup imported.'
+            : 'No new WebDAV root backup data to import.',
+        'data': {'imported': result.data},
+      });
+    }
+  } catch (_) {
+    cliPrint({
+      'status': 'error',
+      'message': 'WebDAV root backup import failed.',
+    });
+    exit(1);
+  }
 }
 
 Future<void> _handleWebdavResolve(List<String> args, int startIndex) async {

@@ -6,6 +6,10 @@ final _reservedDeviceName = RegExp(
   r'^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$',
   caseSensitive: false,
 );
+final _reservedSyncDirectory = RegExp(
+  r'^(sync-v4|sync-v5)$',
+  caseSensitive: false,
+);
 
 /// Returns a safe, non-empty single directory segment for a sync device.
 ///
@@ -23,7 +27,8 @@ String normalizeSyncDeviceName(String name) {
     throw const FormatException('Device name must be a non-empty path segment');
   }
 
-  if (_reservedDeviceName.hasMatch(normalized)) {
+  if (_reservedDeviceName.hasMatch(normalized) ||
+      _reservedSyncDirectory.hasMatch(normalized)) {
     return '_$normalized';
   }
   return normalized;

@@ -27,15 +27,26 @@ Manage WebDAV data synchronization.
 - **`webdav down`**: Merges valid remote checkpoints, retaining local edit candidates, without publishing. Rejected in upload-only direction. This is not forced download overwrite.
 - **`webdav conflicts`**: Reads record/field conflicts currently known locally; it does not fetch new remote content. Top-level **`conflicts`** does the same. To inspect up-to-date remote conflicts, first run synchronization in a direction allowing remote reads.
 - **`webdav resolve`**: Selects an existing candidate for one field of one record. Top-level **`resolve`** does the same. Arguments are described below.
+- **`webdav backups`**: Lists numeric original backups in the WebDAV root. Results use `data.count` and `data.backups`; each item contains only `name`, `day`, and `version`. Listing itself does not read archive bodies.
+- **`webdav import-backup <name> --confirm`**: Causally merges the explicitly selected root backup in the configured direction, not local ZIP overwrite restore. Use its complete listed filename and explicit confirmation. Missing confirmation is rejected before application initialization and cannot trigger initial automatic seed reading.
 
 Commands wait for startup recovery and existing sync/configuration work. Actual operation failures report `status: error` and a nonzero exit code; commands cannot bypass direction restrictions. Authentication, network, and application errors are not success, and unfinished work is retained for retry. A later failure does not pretend to undo already committed remote or local changes. See [App Data Synchronization](data_sync.en.md) for protocol, one-time legacy migration, and crash-recovery boundaries.
 
 A complete successful transfer through `webdav sync` / `sync` outputs `status: success`, with `data.conflictCount` and `data.hasConflict` describing conflicts still requiring attention. **Unresolved candidate conflicts can coexist with success (exit code 0).** Success does not mean every candidate was selected automatically. When source domains are unavailable but other domains transfer successfully, `sync`, `up`, and `down` output `status: partial` (exit code 0), including `data.unavailableDomains` and `data.sourceIssues`; `sync` still includes conflict counts. Source summaries expose only filenames, safe reasons and translations, backup availability, and action hints, never script/session bodies, source identities, or private backup paths. `repairAction` distinguishes in-app replacement, recovery retry, and the prerequisite of restoring a complete journal; damaged backups are not presented as directly restorable data. `up` / `down` do not include conflict lists; query `conflicts` separately.
 
+Successful backup import reports `data.imported`: `true` means new seed domains were imported; repeated imports return `false`, not an alias for transport success. Partial source problems report `status: partial` (exit code 0), safe source summaries, unavailable domains, and `data.imported`. Actual errors exit nonzero. Valid commands retain ordinary startup recovery/initial automatic-seed behavior; listing backups is not a switch disabling startup synchronization.
+
 **Example:**
 
 ```bash
 venera-plus --headless webdav up
+```
+
+**Select and confirm an original root backup:**
+
+```bash
+venera-plus --headless webdav backups
+venera-plus --headless webdav import-backup 20261008-1.venera --confirm
 ```
 
 **Resolving individual conflicts:**
