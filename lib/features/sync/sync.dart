@@ -9,6 +9,7 @@ export 'merge_snapshot.dart';
 export 'sync_pack.dart';
 export 'sync_pack_cache.dart';
 export 'merge_store.dart';
+export 'merge_store_error.dart';
 export 'merge_sync_coordinator.dart';
 export 'sync_conflict_dialog.dart';
 export 'legacy_sync_reader.dart';

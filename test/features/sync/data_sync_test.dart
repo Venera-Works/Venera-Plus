@@ -1172,28 +1172,290 @@ void main() {
     );
 
     test(
-      'startup corruption is an error and never reports recovery ready',
+      'concurrent startup reloads a stale capture and preserves both devices intents across restart',
       () async {
-        final hash = MergeSyncCoordinator.computeEndpointHash(
-          'https://example.com/dav',
-          'user',
+        const actor = 'recovery_writer';
+        final stateDir = Directory('${tempDir.path}/recovery_writer');
+        final themeKey = syncRecordKey('setting', ['theme']);
+        final queuedKey = syncRecordKey('search', ['durable queued search']);
+        final exportStarted = Completer<void>();
+        final releaseExport = Completer<void>();
+        var interrupted = false;
+        localRecords = {
+          themeKey: {'value': 'dark'},
+        };
+        late MergeDocument priorIntent;
+        final coordinator = MergeSyncCoordinator(
+          endpointHash: 'recovery_writer',
+          stateDirectory: stateDir,
+          actor: actor,
+          store: MergeStore(stateDir, actor),
+          remote: MergeRemote(client, deviceName: 'Recovery Writer'),
+          exportFavoritesOverride: () => {},
+          exportHistoryOverride: () async => {},
+          applyFavoritesOverride: (_) {},
+          applyHistoryOverride: (_) {},
+          exportPreferencesOverride: () async {
+            if (!interrupted) {
+              interrupted = true;
+              exportStarted.complete();
+              await releaseExport.future;
+              final writer = MergeStore(stateDir, actor);
+              await writer.load();
+              await writer.capture({
+                queuedKey: {'order': 0},
+              });
+              priorIntent = writer
+                  .pendingBatch(writer.pendingBatchIds.single)
+                  .document;
+              localRecords[queuedKey] = {'order': 0};
+            }
+            return cloneSyncRecords(localRecords);
+          },
+          applyPreferencesOverride: (records, {beforeCommit}) async {
+            beforeCommit?.call();
+            localRecords = cloneSyncRecords(records);
+          },
+          getGenerationOverride: () => 0,
         );
-        final directory = Directory('${tempDir.path}/sync_state_$hash');
-        directory.createSync(recursive: true);
-        File('${directory.path}/state.json').writeAsStringSync('{}');
-        final before = cloneSyncRecords(localRecords);
-        final sync = DataSync();
-        await expectLater(sync.waitForStartupMerge(), throwsStateError);
-        expect(sync.isReady, isFalse);
-        expect(sync.lastError, isNotNull);
-        expect((await sync.syncNow()).error, isTrue);
-        expect(localRecords, before);
+        final first = coordinator.startupRecovery();
+        await exportStarted.future;
+        final overlapping = coordinator.startupRecovery();
+        releaseExport.complete();
+        await Future.wait([first, overlapping]);
+        expect(coordinator.store.document.counterFor(actor), 2);
+        expect(coordinator.store.observed, {
+          themeKey: {'value': 'dark'},
+          queuedKey: {'order': 0},
+        });
+        final queuedId = coordinator.store.pendingBatchIds.single;
         expect(
-          transport.requests.where((request) => request.method == 'PUT'),
-          isEmpty,
+          coordinator.store
+              .pendingBatch(queuedId)
+              .document
+              .dominates(priorIntent),
+          isTrue,
         );
+        await coordinator.startupRecovery();
+        await coordinator.captureLocalChanges();
+        expect(coordinator.store.pendingBatchIds, [queuedId]);
+        expect(coordinator.store.document.counterFor(actor), 2);
+        expect(
+          (await coordinator.performSync(
+            direction: SyncDirection.uploadOnly,
+          )).success,
+          isTrue,
+        );
+
+        final readerDir = Directory('${tempDir.path}/recovery_reader');
+        var readerRecords = <String, Map<String, Object?>>{
+          themeKey: {'value': 'other device edit'},
+        };
+        MergeSyncCoordinator makeReader() => MergeSyncCoordinator(
+          endpointHash: 'recovery_reader',
+          stateDirectory: readerDir,
+          actor: 'recovery_reader',
+          store: MergeStore(readerDir, 'recovery_reader'),
+          remote: MergeRemote(client, deviceName: 'Recovery Reader'),
+          exportFavoritesOverride: () => {},
+          exportHistoryOverride: () async => {},
+          applyFavoritesOverride: (_) {},
+          applyHistoryOverride: (_) {},
+          exportPreferencesOverride: () async =>
+              cloneSyncRecords(readerRecords),
+          applyPreferencesOverride: (records, {beforeCommit}) async {
+            beforeCommit?.call();
+            readerRecords = cloneSyncRecords(records);
+          },
+          getGenerationOverride: () => 0,
+        );
+        var reader = makeReader();
+        await reader.startupRecovery();
+        expect(
+          (await reader.performSync(
+            direction: SyncDirection.downloadOnly,
+          )).success,
+          isTrue,
+        );
+        expect(readerRecords[queuedKey], {'order': 0});
+        reader = makeReader();
+        await reader.startupRecovery();
+        final themeConflict = reader.conflicts.firstWhere(
+          (conflict) => conflict.recordKey == themeKey,
+        );
+        expect(
+          themeConflict.candidates.map((candidate) => candidate.value),
+          containsAll(['dark', 'other device edit']),
+        );
+        expect(reader.store.document.dominates(priorIntent), isTrue);
       },
     );
+
+    for (final failure in ['missing', 'corrupt', 'http']) {
+      test(
+        'backup recovery retains pending intent and verification obligation after $failure Pack and restart',
+        () async {
+          const actor = 'backup_recovery_device';
+          final stateDir = Directory(
+            '${tempDir.path}/backup_recovery_$failure',
+          );
+          final localKey = syncRecordKey('setting', ['theme']);
+          final remoteKey = syncRecordKey('search', ['own remote search']);
+          localRecords = {
+            localKey: {'value': 'durable local edit'},
+          };
+          final original = MergeStore(stateDir, actor);
+          await original.load();
+          await original.capture(localRecords);
+          final originalId = original.pendingBatchIds.single;
+          final originalIntent = original.pendingBatch(originalId).document;
+          final remote = MergeRemote(client, deviceName: 'Backup Recovery');
+          final earlier = originalIntent.clone()..setCounterFloor(actor, 5);
+          final earlierPath = await remote.upload(
+            MergeBatch.create(actor: actor, counter: 5, document: earlier),
+          );
+          final newest = originalIntent.clone()..setCounterFloor(actor, 12);
+          newest.captureLocal(actor, localRecords, {
+            ...localRecords,
+            remoteKey: {'order': 0},
+          });
+          final newestPath = await remote.upload(
+            MergeBatch.create(actor: actor, counter: 13, document: newest),
+          );
+          final earlierManifest = SyncPackManifest.parse(
+            transport.remoteFiles[earlierPath]!,
+          );
+          final newestManifest = SyncPackManifest.parse(
+            transport.remoteFiles[newestPath]!,
+          );
+          final packDigest = newestManifest.packs.keys.firstWhere(
+            (digest) => !earlierManifest.packs.containsKey(digest),
+          );
+          final packPath =
+              '${newestPath.substring(0, newestPath.indexOf('/commits/'))}'
+              '/packs/$packDigest.pack';
+          final intactPack = transport.remoteFiles[packPath]!;
+          switch (failure) {
+            case 'missing':
+              transport.remoteFiles.remove(packPath);
+            case 'corrupt':
+              final broken = Uint8List.fromList(intactPack);
+              broken[broken.length ~/ 2] ^= 0xff;
+              transport.remoteFiles[packPath] = broken;
+            case 'http':
+              transport.downloadFailureStatuses[packPath] = 500;
+          }
+          await File(
+            '${stateDir.path}/merge_store.sqlite3',
+          ).writeAsString('CORRUPT_PRIMARY_FOR_RECOVERY');
+          MergeSyncCoordinator makeCoordinator() => MergeSyncCoordinator(
+            endpointHash: 'backup_recovery_$failure',
+            stateDirectory: stateDir,
+            actor: actor,
+            store: MergeStore(stateDir, actor),
+            remote: remote,
+            exportFavoritesOverride: () => {},
+            exportHistoryOverride: () async => {},
+            applyFavoritesOverride: (_) {},
+            applyHistoryOverride: (_) {},
+            exportPreferencesOverride: () async =>
+                cloneSyncRecords(localRecords),
+            applyPreferencesOverride: (records, {beforeCommit}) async {
+              beforeCommit?.call();
+              localRecords = cloneSyncRecords(records);
+            },
+            getGenerationOverride: () => 0,
+          );
+          var coordinator = makeCoordinator();
+          await expectLater(
+            coordinator.startupRecovery(),
+            throwsA(isA<MergeStoreRemoteRecoveryException>()),
+          );
+          expect(coordinator.store.document.counterFor(actor), 1);
+          expect(coordinator.store.pendingBatchIds, [originalId]);
+          expect(coordinator.store.received, isEmpty);
+          final afterFailure = MergeStore(stateDir, actor);
+          await afterFailure.load();
+          expect(afterFailure.recoveredFromBackup, isTrue);
+          await expectLater(
+            afterFailure.capture(localRecords),
+            throwsStateError,
+          );
+          expect(afterFailure.pendingBatchIds, [originalId]);
+          expect(
+            afterFailure.pendingBatch(originalId).document.toJson(),
+            originalIntent.toJson(),
+          );
+          transport.remoteFiles[packPath] = intactPack;
+          transport.downloadFailureStatuses.clear();
+          localRecords[localKey] = {'value': 'new physical user edit'};
+          coordinator = makeCoordinator();
+          await coordinator.startupRecovery();
+          expect(coordinator.store.document.counterFor(actor), 14);
+          expect(coordinator.store.observed[localKey], {
+            'value': 'new physical user edit',
+          });
+          final replacementId = coordinator.store.pendingBatchIds.single;
+          expect(
+            coordinator.store
+                .pendingBatch(replacementId)
+                .document
+                .dominates(originalIntent),
+            isTrue,
+          );
+          expect(coordinator.store.document.materialize()[remoteKey], {
+            'order': 0,
+          });
+          await coordinator.startupRecovery();
+          expect(coordinator.store.pendingBatchIds, [replacementId]);
+          final verifiedRestart = MergeStore(stateDir, actor);
+          await verifiedRestart.load();
+          expect(verifiedRestart.recoveredFromBackup, isFalse);
+          expect(verifiedRestart.document.counterFor(actor), 14);
+        },
+      );
+    }
+
+    for (final artifact in ['legacy', 'sqlite']) {
+      test(
+        '$artifact startup corruption fails safely without changing local intent',
+        () async {
+          final hash = MergeSyncCoordinator.computeEndpointHash(
+            'https://example.com/dav',
+            'user',
+          );
+          final directory = Directory('${tempDir.path}/sync_state_$hash');
+          directory.createSync(recursive: true);
+          final damagedFiles = artifact == 'legacy'
+              ? [File('${directory.path}/state.json')]
+              : [
+                  File('${directory.path}/merge_store.sqlite3'),
+                  File('${directory.path}/merge_store.sqlite3.bak'),
+                ];
+          for (final file in damagedFiles) {
+            file.writeAsStringSync('PRIVATE-SYNC-STATE', flush: true);
+          }
+          final before = cloneSyncRecords(localRecords);
+          final sync = DataSync();
+          await expectLater(
+            sync.waitForStartupMerge(),
+            throwsA(isA<MergeStoreIntegrityException>()),
+          );
+          expect(sync.isReady, isFalse);
+          expect(sync.lastError, startsWith('SYNC_STATE_INVALID:'));
+          expect(sync.lastError, isNot(contains('PRIVATE-SYNC-STATE')));
+          expect((await sync.syncNow()).error, isTrue);
+          expect(localRecords, before);
+          for (final file in damagedFiles) {
+            expect(file.readAsStringSync(), 'PRIVATE-SYNC-STATE');
+          }
+          expect(
+            transport.requests.where((request) => request.method == 'PUT'),
+            isEmpty,
+          );
+        },
+      );
+    }
     test(
       'initial exporter failure rejects tasks while persistent, recovers after fix without reset',
       () async {
@@ -1878,6 +2140,7 @@ class _VirtualWebDavTransport implements HttpClientAdapter {
   final remoteEtags = <String, String>{};
   final remoteDirs = <String>{};
   final simulateFailurePaths = <String>{};
+  final downloadFailureStatuses = <String, int>{};
   final requests = <RequestOptions>[];
   void Function()? onDownloadHook;
   void Function(String path)? onPutHook;
@@ -1941,6 +2204,10 @@ class _VirtualWebDavTransport implements HttpClientAdapter {
     }
 
     if (options.method == 'GET') {
+      final failureStatus = downloadFailureStatuses[path];
+      if (failureStatus != null) {
+        return ResponseBody.fromString('Download failure', failureStatus);
+      }
       onDownloadHook?.call();
       final fileBytes = remoteFiles[path];
       if (fileBytes != null) {

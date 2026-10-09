@@ -359,6 +359,84 @@ void main() {
       expect(calls.uploads, 2);
     },
   );
+  scheduleTest(
+    'unrecoverable state errors pause automatic work and preserve pending data',
+    (clock, calls) async {
+      appdata.implicitData['webdavSyncTiming'] = 'realtime';
+      appdata.implicitData['webdavSyncDirection'] = 'uploadOnly';
+      final sync = DataSync();
+      await sync.waitForStartupMerge();
+      await sync.waitForSync();
+
+      var failPublication = true;
+      DataSync.debugUploadOverride = () async {
+        calls.uploads++;
+        final coordinator = sync.coordinator!;
+        await coordinator.captureLocalChanges();
+        final store = coordinator.store;
+        if (failPublication) {
+          final batch = store.outbox.last;
+          return Res.error(
+            MergeOutboxCounterConflictException(
+              actor: batch.actor,
+              counter: batch.counter,
+              existingBatchId: batch.id,
+              incomingBatchId: 'conflicting-publication',
+            ).toString(),
+          );
+        }
+        for (final id in store.pendingBatchIds) {
+          await store.acknowledge(id);
+        }
+        return const Res(true);
+      };
+
+      calls.edit(sync);
+      await clock.elapse(const Duration(minutes: 3));
+      final failed = await sync.waitForSync();
+      expect(failed.error, isTrue);
+      expect(
+        sync.statusSnapshot.lastError,
+        contains('SYNC_OUTBOX_COUNTER_CONFLICT'),
+      );
+      expect(sync.hasPendingChanges, isTrue);
+      final coordinator = sync.coordinator!;
+      final pendingIds = coordinator.store.pendingBatchIds;
+      expect(pendingIds, hasLength(1));
+      final pendingDocument = coordinator.store
+          .pendingBatch(pendingIds.single)
+          .document
+          .toJson();
+      final publicationCount = calls.uploads;
+
+      sync.onDataChanged();
+      sync.checkForAutomaticSync();
+      await clock.elapse(const Duration(hours: 2));
+      await sync.waitForSync();
+
+      expect(calls.uploads, publicationCount);
+      expect(coordinator.store.pendingBatchIds, pendingIds);
+      final reopened = MergeStore(
+        coordinator.stateDirectory,
+        coordinator.actor,
+      );
+      await reopened.load();
+      expect(reopened.pendingBatchIds, pendingIds);
+      expect(
+        reopened.pendingBatch(pendingIds.single).document.toJson(),
+        pendingDocument,
+      );
+      expect(sync.hasPendingChanges, isTrue);
+
+      failPublication = false;
+      final manual = await sync.syncNow();
+      expect(manual.success, isTrue, reason: manual.errorMessage);
+      expect(calls.uploads, publicationCount + 1);
+      expect(coordinator.store.outbox, isEmpty);
+      expect(sync.hasPendingChanges, isFalse);
+      expect(sync.lastError, isNull);
+    },
+  );
 
   scheduleTest('future timestamps recover and dispose cancels timers', (
     clock,

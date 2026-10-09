@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:isolate';
 
 import 'package:sqlite3/sqlite3.dart';
+import 'package:venera_plus/features/sync/data_sync.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
@@ -187,6 +188,7 @@ Future<void> importAppData(File file, {bool checkVersion = false}) async {
   } catch (error, stackTrace) {
     if (dataApplied) {
       try {
+        DataSync.instance?.onLocalDataRestored();
         await notifyAppDataSettingsChanged();
       } catch (notificationError, notificationStackTrace) {
         Log.error(
@@ -199,6 +201,7 @@ Future<void> importAppData(File file, {bool checkVersion = false}) async {
     Error.throwWithStackTrace(error, stackTrace);
   }
   if (dataApplied) {
+    DataSync.instance?.onLocalDataRestored();
     await notifyAppDataSettingsChanged();
   }
 }

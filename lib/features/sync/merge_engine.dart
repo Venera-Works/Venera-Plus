@@ -141,7 +141,7 @@ class _Cell {
     values[dot] = copy;
   }
 
-  void merge(_Cell other) {
+  void validateIdentity(_Cell other) {
     for (final entry in other.seen.entries) {
       if (seen.containsKey(entry.key) && seen[entry.key] != entry.value) {
         throw const FormatException(
@@ -149,6 +149,10 @@ class _Cell {
         );
       }
     }
+  }
+
+  void merge(_Cell other) {
+    validateIdentity(other);
     seen.addAll(other.seen);
     values.addAll(other.values);
     for (final entry in other.retired.entries) {
@@ -289,16 +293,17 @@ class _Record {
     return bases.values.values.map(totalFor).toSet().length > 1;
   }
 
-  void merge(_Record other) {
+  void _validateContributions(_Record other) {
     // An actor's contribution is lifetime cumulative, including absorbed prefixes.
     // A newer dot may not reduce it, even across resets or reincarnations.
-    final incomingByActor = <String, (MergeDot, int)>{
-      for (final entry in other.contributions.values.entries)
-        MergeDot.parse(entry.key).actor: (
-          MergeDot.parse(entry.key),
-          entry.value as int,
-        ),
-    };
+    if (contributions.values.isEmpty || other.contributions.values.isEmpty) {
+      return;
+    }
+    final incomingByActor = <String, (MergeDot, int)>{};
+    for (final entry in other.contributions.values.entries) {
+      final dot = MergeDot.parse(entry.key);
+      incomingByActor[dot.actor] = (dot, entry.value as int);
+    }
     for (final entry in contributions.values.entries) {
       final mine = MergeDot.parse(entry.key);
       final incoming = incomingByActor[mine.actor];
@@ -309,6 +314,20 @@ class _Record {
         throw const FormatException('Nonmonotonic duration contribution');
       }
     }
+  }
+
+  void validateIdentity(_Record other) {
+    _validateContributions(other);
+    presence.validateIdentity(other.presence);
+    bases.validateIdentity(other.bases);
+    contributions.validateIdentity(other.contributions);
+    for (final entry in other.fields.entries) {
+      fields[entry.key]?.validateIdentity(entry.value);
+    }
+  }
+
+  void merge(_Record other) {
+    _validateContributions(other);
     presence.merge(other.presence);
     for (final entry in other.fields.entries) {
       fields.putIfAbsent(entry.key, _Cell.new).merge(entry.value);
@@ -762,7 +781,7 @@ class MergeDocument {
     return value.toInt();
   }
 
-  void merge(MergeDocument other) {
+  void _validateEventDigests(MergeDocument other) {
     for (final entry in other._eventDigests.entries) {
       if (_eventDigests.containsKey(entry.key) &&
           _eventDigests[entry.key] != entry.value) {
@@ -771,6 +790,19 @@ class MergeDocument {
         );
       }
     }
+  }
+
+  /// Validates shared event/cell identities and cumulative durations without
+  /// copying or merging either document. Incomparable causal branches are valid.
+  void validateEventIdentities(MergeDocument other) {
+    _validateEventDigests(other);
+    for (final entry in other._records.entries) {
+      _records[entry.key]?.validateIdentity(entry.value);
+    }
+  }
+
+  void merge(MergeDocument other) {
+    _validateEventDigests(other);
     // Construct before committing so corruption cannot partially mutate a document.
     final merged = <String, _Record>{};
     for (final key in <String>{..._records.keys, ...other._records.keys}) {
@@ -1234,6 +1266,17 @@ class MergeBatch {
         'counter': counter,
         'document': document.toJson(),
       });
+
+  /// Rechecks a publication supplied by a caller without copying its document.
+  /// A matching id alone is not proof after a mutable document was changed.
+  void validateIdentity() {
+    if (actor.isEmpty ||
+        counter <= 0 ||
+        document.counterFor(actor) != counter ||
+        id != _computeId(actor, counter, document)) {
+      throw const FormatException('Batch counter or digest mismatch');
+    }
+  }
 
   /// The wire payload omits its own digest: a body cannot hash itself.
   /// Durable [toJson] includes the digest; transport authenticates these bytes

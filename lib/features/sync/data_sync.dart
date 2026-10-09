@@ -22,6 +22,7 @@ import 'package:webdav_client/webdav_client.dart' as dav;
 
 import 'legacy_sync_reader.dart';
 import 'merge_remote.dart';
+import 'merge_store_error.dart';
 import 'merge_store.dart';
 import 'merge_sync_coordinator.dart';
 import 'sync_preferences_adapter.dart';
@@ -48,6 +49,7 @@ class _SyncRequest {
     this.trigger,
     this.checkRemote = false,
     this.forceCapture = false,
+    this.automatic = false,
   });
   final _DataSyncTask type;
   final Future<Res<bool>> Function() run;
@@ -55,7 +57,15 @@ class _SyncRequest {
   final String? trigger;
   final bool checkRemote;
   final bool forceCapture;
+  final bool automatic;
   final completer = Completer<Res<bool>>();
+}
+
+class _BlockedSyncState {
+  const _BlockedSyncState(this.cause, this.diagnostic);
+
+  final Object cause;
+  final String diagnostic;
 }
 
 enum SyncDirection { bidirectional, uploadOnly, downloadOnly }
@@ -159,6 +169,10 @@ class DataSync with ChangeNotifier {
   static const _remoteCheckInterval = Duration(minutes: 10);
 
   static const _importZoneKey = #_dataSyncImporting;
+  static final _rawSqliteException = RegExp(
+    r'\bsqliteexception\s*(?:\(|:)',
+    caseSensitive: false,
+  );
   late String _appDataSettingsSnapshot;
   late String _appDataSearchSnapshot;
 
@@ -222,26 +236,37 @@ class DataSync with ChangeNotifier {
   bool _startupReady = false;
   Object? _startupError;
   bool _coordinatorNeedsRecovery = true;
+  // Invalidates recovery completion on endpoint changes and profile restores.
+  int _configurationGeneration = 0;
+  Future<void>? _coordinatorLoadFlight;
+  int? _coordinatorLoadFlightGeneration;
+  final Map<String, _BlockedSyncState> _blockedStateByEndpoint = {};
   bool get isReady => _startupReady && !_coordinatorNeedsRecovery;
 
   Future<void> _initializeStartup() async {
+    final generation = _configurationGeneration;
     try {
       if (hasConfiguration) {
         await runZoned(
           _ensureCoordinatorLoaded,
           zoneValues: {_importZoneKey: true},
         );
-        if (_coordinator != null) _startupReady = true;
-      } else {
+      } else if (generation == _configurationGeneration) {
         _coordinatorNeedsRecovery = false;
         _startupReady = true;
       }
-      checkForAutomaticSync(startup: true);
-    } catch (e, s) {
-      Log.error('DataSync', 'Startup initialization failed: $e\n$s');
-      _startupError = e;
-      _lastError = e.toString();
-      if (!_disposed) notifyListeners();
+      if (isReady) {
+        checkForAutomaticSync(startup: true);
+      }
+    } catch (error) {
+      if (generation == _configurationGeneration) {
+        _startupError = error;
+        _startupReady = false;
+        _lastError = _formatSyncError(error);
+        Log.error('DataSync', 'Startup initialization failed: $_lastError');
+        _blockAutomaticStateIfNeeded(error);
+        if (!_disposed) notifyListeners();
+      }
     } finally {
       if (!_startupCompleter.isCompleted) {
         _startupCompleter.complete();
@@ -253,8 +278,28 @@ class DataSync with ChangeNotifier {
   Future<void> waitForStartupMerge() async {
     await _startupCompleter.future;
     if (!isReady) {
-      throw StateError('Sync startup recovery failed: $_startupError');
+      final blocked = _currentBlockedState;
+      if (blocked != null) {
+        Error.throwWithStackTrace(blocked.cause, StackTrace.current);
+      }
+      final error = _startupError;
+      if (error is MergeStoreStateException) {
+        Error.throwWithStackTrace(error, StackTrace.current);
+      }
+      throw StateError(
+        'Sync startup recovery failed: ${_formatSyncError(error)}',
+      );
     }
+  }
+
+  /// Invalidates the loaded synchronization view after a local profile restore.
+  /// The next task must reload durable state before capturing the restored data.
+  void onLocalDataRestored() {
+    if (_disposed) return;
+    _configurationGeneration++;
+    _coordinator?.store.invalidateForBusinessRestore();
+    _coordinatorNeedsRecovery = hasConfiguration;
+    Zone.root.run(() => onDataChanged());
   }
 
   void onDataChanged({Set<String>? domains}) {
@@ -287,8 +332,9 @@ class DataSync with ChangeNotifier {
   void _writeImplicitStatus() {
     unawaited(
       appdata.writeImplicitData().catchError((Object error, StackTrace stack) {
-        Log.error('Data Sync', error, stack);
-        _lastError = error.toString();
+        final diagnostic = _formatSyncError(error);
+        Log.error('Data Sync', diagnostic);
+        _lastError = diagnostic;
         if (!_disposed) notifyListeners();
       }),
     );
@@ -299,10 +345,113 @@ class DataSync with ChangeNotifier {
     return value is int ? DateTime.fromMillisecondsSinceEpoch(value) : null;
   }
 
+  String? get _currentEndpointHash {
+    final endpoint = _validateConfig();
+    if (endpoint == null || !endpoint.isValid) return null;
+    return MergeSyncCoordinator.computeEndpointHash(
+      endpoint.url,
+      endpoint.user,
+    );
+  }
+
+  _BlockedSyncState? get _currentBlockedState {
+    final endpointHash = _currentEndpointHash;
+    return endpointHash == null ? null : _blockedStateByEndpoint[endpointHash];
+  }
+
+  bool get _automaticStateBlocked => _currentBlockedState != null;
+
+  String _formatSyncError(Object? error) {
+    if (error == null) return 'Unknown synchronization error';
+    return _formatSyncMessage(mergeStoreErrorMessage(error));
+  }
+
+  String _formatSyncMessage(String? message) {
+    if (message == null) return 'Unknown synchronization error';
+    if (_rawSqliteException.hasMatch(message)) {
+      return 'SYNC_LOCAL_DATABASE_FAILURE: Local synchronization database '
+          'operation failed; inspect or repair the local state before retrying.';
+    }
+    return message;
+  }
+
+  String? _stateErrorCode(String? message) {
+    if (message == null ||
+        message.startsWith('SYNC_STATE_CHANGED:') ||
+        message.startsWith('SYNC_RECOVERY_REMOTE_UNVERIFIED:') ||
+        message.startsWith('SYNC_LOCAL_DATABASE_FAILURE:')) {
+      return null;
+    }
+    return RegExp(r'^(SYNC_[A-Z0-9_]+):').firstMatch(message)?.group(1);
+  }
+
+  _BlockedSyncState? _blockedStateFor(Object error) {
+    if (error is MergeStoreStateException) {
+      if (error.recoverable) return null;
+      return _BlockedSyncState(error, _formatSyncError(error));
+    }
+    final diagnostic = _formatSyncError(error);
+    final code = _stateErrorCode(diagnostic);
+    if (code == null) return null;
+    final message = diagnostic.substring(code.length + 1).trimLeft();
+    return _BlockedSyncState(
+      MergeStoreStateException(code, message),
+      diagnostic,
+    );
+  }
+
+  _BlockedSyncState? _blockedStateForMessage(String? message) {
+    final diagnostic = _formatSyncMessage(message);
+    final code = _stateErrorCode(diagnostic);
+    if (code == null) return null;
+    final detail = diagnostic.substring(code.length + 1).trimLeft();
+    return _BlockedSyncState(
+      MergeStoreStateException(code, detail),
+      diagnostic,
+    );
+  }
+
+  void _blockAutomaticStateIfNeeded(Object error, {String? endpointHash}) {
+    final blocked = _blockedStateFor(error);
+    if (blocked != null) {
+      _storeAutomaticStateBlock(blocked, endpointHash: endpointHash);
+    }
+  }
+
+  void _storeAutomaticStateBlock(
+    _BlockedSyncState blocked, {
+    String? endpointHash,
+  }) {
+    final hash = endpointHash ?? _currentEndpointHash;
+    if (hash == null) return;
+    _blockedStateByEndpoint[hash] = blocked;
+    _scheduleTimer?.cancel();
+    _scheduleTimer = null;
+    _debounceTimer?.cancel();
+    _debounceTimer = null;
+    _remoteCheckTimer?.cancel();
+    _remoteCheckTimer = null;
+    for (final request
+        in _queue.where((request) => request.automatic).toList()) {
+      _queue.remove(request);
+      request.completer.complete(Res.error(blocked.diagnostic));
+    }
+  }
+
+  void _clearCurrentStateBlock() {
+    final hash = _currentEndpointHash;
+    if (hash == null) return;
+    final blocked = _blockedStateByEndpoint.remove(hash);
+    if (blocked == null) return;
+    if (_lastError == blocked.diagnostic) _lastError = null;
+    if (identical(_startupError, blocked.cause)) _startupError = null;
+  }
+
   DateTime? get _retryNotBefore => _readTimestamp('webdavSyncRetryAfter');
 
   bool get _automaticWorkBlocked {
-    if (_automaticAuthenticationBlocked ||
+    if (_currentBlockedState != null ||
+        _automaticAuthenticationBlocked ||
         appdata.implicitData['webdavSyncAuthenticationBlocked'] == true) {
       return true;
     }
@@ -355,6 +504,7 @@ class DataSync with ChangeNotifier {
         _configuring ||
         timing != SyncTiming.realtime ||
         !isEnabled ||
+        _currentBlockedState != null ||
         _automaticAuthenticationBlocked ||
         appdata.implicitData['webdavSyncAuthenticationBlocked'] == true) {
       return;
@@ -474,7 +624,10 @@ class DataSync with ChangeNotifier {
   bool get hasConfiguration => _validateConfig()?.isValid == true;
 
   bool get hasPendingChanges {
-    if (_coordinator != null && _coordinator!.store.outbox.isNotEmpty) {
+    final coordinator = _coordinator;
+    if (coordinator != null &&
+        !coordinator.store.needsRecovery &&
+        coordinator.store.outbox.isNotEmpty) {
       return true;
     }
     return appdata.implicitData['webdavSyncPending'] == true;
@@ -522,7 +675,7 @@ class DataSync with ChangeNotifier {
     }
 
     if (timing == SyncTiming.scheduled) {
-      if (_automaticAuthenticationBlocked) return;
+      if (_automaticStateBlocked || _automaticAuthenticationBlocked) return;
       final last = _readTimestamp('webdavSyncLastAttempt');
       final interval = Duration(minutes: intervalMinutes);
       final elapsed = last == null ? interval : _now.difference(last);
@@ -583,7 +736,7 @@ class DataSync with ChangeNotifier {
     required bool forceCapture,
     bool remoteOnly = false,
   }) {
-    if (_disposed || !isEnabled) return;
+    if (_disposed || !isEnabled || _automaticStateBlocked) return;
     if (_active != null) {
       return;
     }
@@ -610,6 +763,7 @@ class DataSync with ChangeNotifier {
         trigger: effectiveTrigger,
         checkRemote: checkRemote,
         forceCapture: forceCapture,
+        automatic: true,
       ),
     );
   }
@@ -660,6 +814,7 @@ class DataSync with ChangeNotifier {
       };
       var mutated = false;
       var committed = false;
+      String? attemptedEndpointHash;
       try {
         MergeSyncCoordinator? prepared;
         String? resolvedDeviceName;
@@ -682,6 +837,7 @@ class DataSync with ChangeNotifier {
             endpoint.url,
             endpoint.user,
           );
+          attemptedEndpointHash = hash;
           final actor = await MergeSyncCoordinator.getOrCreateActorId();
           final directory =
               debugStateDirFactory?.call(hash) ??
@@ -711,7 +867,9 @@ class DataSync with ChangeNotifier {
         appdata.implicitData['webdavSyncIntervalMinutes'] =
             intervalOptions.contains(minutes) ? minutes : 30;
         appdata.implicitData['webdavSyncPending'] =
-            prepared?.store.outbox.isNotEmpty ?? false;
+            (prepared?.store.outbox.isNotEmpty ?? false) ||
+            _localDirty ||
+            appdata.implicitData['webdavSyncPending'] == true;
         if (normalizedExcludedDomains != null) {
           appdata.implicitData[appdataSyncExcludedDomainsKey] =
               normalizedExcludedDomains.toList()..sort();
@@ -724,10 +882,12 @@ class DataSync with ChangeNotifier {
         await appdata.saveData(false);
         await appdata.writeImplicitData();
         committed = true;
+        _configurationGeneration++;
         _coordinator = prepared;
         _coordinatorNeedsRecovery = prepared != null;
         _startupReady = true;
-        _startupError = null;
+        _startupError = _currentBlockedState?.cause;
+        _lastError = _currentBlockedState?.diagnostic;
         _automaticAuthenticationBlocked = false;
         if (prepared != null && timing != SyncTiming.manual) {
           unawaited(
@@ -743,12 +903,22 @@ class DataSync with ChangeNotifier {
                   : 'Startup check',
               checkRemote: direction != SyncDirection.uploadOnly,
               forceCapture: true,
+              automatic: true,
             ),
           );
         }
         return const Res(true);
-      } catch (error, stack) {
-        Log.error('Data Sync', 'Configure error: $error\n$stack');
+      } catch (error) {
+        if (error is MergeStoreStateException &&
+            attemptedEndpointHash != null &&
+            attemptedEndpointHash == _currentEndpointHash) {
+          _blockAutomaticStateIfNeeded(
+            error,
+            endpointHash: attemptedEndpointHash,
+          );
+        }
+        final diagnostic = _formatSyncError(error);
+        Log.error('Data Sync', 'Configure error: $diagnostic');
         if (mutated && !committed) {
           appdata.settings['webdav'] = oldConfig;
           appdata.settings['disableSyncFields'] = oldFields;
@@ -767,11 +937,12 @@ class DataSync with ChangeNotifier {
             await appdata.writeImplicitData();
           } catch (restoreError) {
             return Res.error(
-              '$error; restoring configuration failed: $restoreError',
+              '$diagnostic; restoring configuration failed: '
+              '${_formatSyncError(restoreError)}',
             );
           }
         }
-        return Res.error(error.toString());
+        return Res.error(diagnostic);
       } finally {
         _configuring = false;
         if (!_disposed) notifyListeners();
@@ -780,6 +951,7 @@ class DataSync with ChangeNotifier {
   }
 
   bool _handleWindowClose() {
+    if (_automaticStateBlocked) return true;
     if (_hasUploadWork) {
       _showWindowCloseDialog();
       return false;
@@ -1014,38 +1186,133 @@ class DataSync with ChangeNotifier {
   }
 
   Future<void> _ensureCoordinatorLoaded() async {
-    if (_coordinator == null) {
+    while (true) {
+      final generation = _configurationGeneration;
+      final flight = _coordinatorLoadFlight;
+      if (flight != null) {
+        final flightGeneration = _coordinatorLoadFlightGeneration;
+        try {
+          await flight;
+        } catch (error, stack) {
+          if (generation == _configurationGeneration &&
+              flightGeneration == generation) {
+            Error.throwWithStackTrace(error, stack);
+          }
+        }
+        if (generation != _configurationGeneration ||
+            flightGeneration != generation) {
+          if (identical(_coordinatorLoadFlight, flight)) {
+            _coordinatorLoadFlight = null;
+            _coordinatorLoadFlightGeneration = null;
+          }
+          continue;
+        }
+        return;
+      }
+
+      final load = _loadCoordinatorForGeneration(generation);
+      _coordinatorLoadFlight = load;
+      _coordinatorLoadFlightGeneration = generation;
+      try {
+        await load;
+      } catch (error, stack) {
+        if (generation != _configurationGeneration) continue;
+        _startupError = error;
+        _startupReady = false;
+        _lastError = _formatSyncError(error);
+        _blockAutomaticStateIfNeeded(
+          error,
+          endpointHash: _coordinator?.endpointHash,
+        );
+        if (!_disposed) notifyListeners();
+        Error.throwWithStackTrace(error, stack);
+      } finally {
+        if (identical(_coordinatorLoadFlight, load)) {
+          _coordinatorLoadFlight = null;
+          _coordinatorLoadFlightGeneration = null;
+        }
+      }
+      if (generation == _configurationGeneration) return;
+    }
+  }
+
+  Future<void> _loadCoordinatorForGeneration(int generation) async {
+    if (generation != _configurationGeneration) return;
+    var coordinator = _coordinator;
+    if (coordinator == null) {
       final endpoint = _validateConfig();
-      if (endpoint == null || !endpoint.isValid) return;
+      if (endpoint == null || !endpoint.isValid) {
+        if (generation == _configurationGeneration) {
+          _coordinatorNeedsRecovery = false;
+          _startupReady = true;
+        }
+        return;
+      }
       final hash = MergeSyncCoordinator.computeEndpointHash(
         endpoint.url,
         endpoint.user,
       );
       final actor = await MergeSyncCoordinator.getOrCreateActorId();
+      if (generation != _configurationGeneration) return;
       final deviceName = await _resolveDeviceName();
+      if (generation != _configurationGeneration ||
+          _currentEndpointHash != hash) {
+        return;
+      }
       appdata.implicitData['webdavSyncDeviceName'] = deviceName;
       await appdata.writeImplicitData();
+      if (generation != _configurationGeneration ||
+          _currentEndpointHash != hash) {
+        return;
+      }
       final directory =
           debugStateDirFactory?.call(hash) ??
           Directory(FilePath.join(App.dataPath, 'sync_state_$hash'));
-      _coordinator = _createCoordinator(
+      coordinator = _createCoordinator(
         hash,
         directory,
         actor,
         _client(endpoint),
         deviceName,
       );
+      _coordinator = coordinator;
       _coordinatorNeedsRecovery = true;
     }
-    if (_coordinatorNeedsRecovery || _coordinator!.store.needsRecovery) {
-      await _coordinator!.startupRecovery();
-      _coordinatorNeedsRecovery = false;
+
+    if (_coordinatorNeedsRecovery || coordinator.store.needsRecovery) {
+      try {
+        await coordinator.startupRecovery();
+      } catch (_) {
+        if (generation != _configurationGeneration &&
+            identical(coordinator, _coordinator) &&
+            _coordinatorNeedsRecovery) {
+          coordinator.store.invalidateForBusinessRestore();
+        }
+        rethrow;
+      }
+    }
+    if (generation != _configurationGeneration ||
+        !identical(coordinator, _coordinator)) {
+      if (generation != _configurationGeneration &&
+          identical(coordinator, _coordinator) &&
+          _coordinatorNeedsRecovery) {
+        // A restore can invalidate this store while recovery is in flight;
+        // repeat invalidation after the old flight has finished so its load
+        // cannot clear the restore's reload requirement.
+        coordinator.store.invalidateForBusinessRestore();
+      }
+      return;
+    }
+    _coordinatorNeedsRecovery = false;
+    _startupReady = true;
+    _startupError = null;
+    final blocked = _blockedStateByEndpoint.remove(coordinator.endpointHash);
+    if (blocked != null && _lastError == blocked.diagnostic) {
+      _lastError = null;
     }
     final dirtyDomains = _unattachedDirtyDomains;
     if (dirtyDomains == null || dirtyDomains.isNotEmpty) {
-      _coordinator!.markDirty(
-        dirtyDomains == null ? null : Set.of(dirtyDomains),
-      );
+      coordinator.markDirty(dirtyDomains == null ? null : Set.of(dirtyDomains));
       _unattachedDirtyDomains = <String>{};
     }
   }
@@ -1465,8 +1732,8 @@ class DataSync with ChangeNotifier {
   Future<void> _writeImplicitStatusAndWait() async {
     try {
       await appdata.writeImplicitData();
-    } catch (error, stack) {
-      Log.error('Data Sync', error, stack);
+    } catch (error) {
+      Log.error('Data Sync', _formatSyncError(error));
     }
   }
 
@@ -1610,10 +1877,13 @@ class DataSync with ChangeNotifier {
     String? trigger,
     bool checkRemote = false,
     bool forceCapture = false,
+    bool automatic = false,
   }) {
     if (_disposed) {
       return Future.value(const Res.error('Sync service is disposed'));
     }
+    final blocked = automatic ? _currentBlockedState : null;
+    if (blocked != null) return Future.value(Res.error(blocked.diagnostic));
     if (key != null && _queue.isNotEmpty) {
       final queued = _queue.last;
       if (queued.key == key &&
@@ -1630,6 +1900,7 @@ class DataSync with ChangeNotifier {
       trigger: trigger,
       checkRemote: checkRemote,
       forceCapture: forceCapture,
+      automatic: automatic,
     );
     _scheduleTimer?.cancel();
     _scheduleTimer = null;
@@ -1672,7 +1943,10 @@ class DataSync with ChangeNotifier {
     var runGeneration = _changeGeneration;
     try {
       if (!_disposed) notifyListeners();
-      if (request.type != _DataSyncTask.configure &&
+      final blocked = request.automatic ? _currentBlockedState : null;
+      if (blocked != null) {
+        result = Res.error(blocked.diagnostic);
+      } else if (request.type != _DataSyncTask.configure &&
           request.type != _DataSyncTask.repair &&
           !hasConfiguration) {
         result = const Res.error(
@@ -1682,30 +1956,22 @@ class DataSync with ChangeNotifier {
         if (request.type != _DataSyncTask.configure &&
             request.type != _DataSyncTask.repair) {
           await _startupCompleter.future;
-          if (!isReady) {
-            try {
-              await runZoned(
-                _ensureCoordinatorLoaded,
-                zoneValues: {_importZoneKey: true},
-              );
-              if (_coordinator != null) {
-                _startupReady = true;
-                _startupError = null;
-              }
-            } catch (error, stack) {
-              Log.error(
-                'DataSync',
-                'Startup recovery retry failed: $error\n$stack',
-              );
-              _startupError = error;
-              _startupReady = false;
-              _lastError = error.toString();
-              if (!_disposed) notifyListeners();
-              throw StateError('Sync startup recovery failed: $_startupError');
-            }
+          if (!isReady || (_coordinator?.store.needsRecovery ?? false)) {
+            await runZoned(
+              _ensureCoordinatorLoaded,
+              zoneValues: {_importZoneKey: true},
+            );
           }
           if (!isReady) {
-            throw StateError('Sync startup recovery failed: $_startupError');
+            final failedState = _currentBlockedState;
+            if (failedState != null) {
+              Error.throwWithStackTrace(failedState.cause, StackTrace.current);
+            }
+            final startupError = _startupError;
+            if (startupError != null) {
+              Error.throwWithStackTrace(startupError, StackTrace.current);
+            }
+            throw StateError('Sync startup recovery did not complete');
           }
         }
         runGeneration = _changeGeneration;
@@ -1714,6 +1980,12 @@ class DataSync with ChangeNotifier {
           zoneValues: {_importZoneKey: true},
         );
         if (result.success) {
+          if (!request.automatic &&
+              request.type != _DataSyncTask.configure &&
+              request.type != _DataSyncTask.repair &&
+              request.type != _DataSyncTask.listBackups) {
+            _clearCurrentStateBlock();
+          }
           if (_activeRequestDidRemote) {
             appdata.implicitData['webdavSyncLastSuccess'] =
                 _now.millisecondsSinceEpoch;
@@ -1733,20 +2005,29 @@ class DataSync with ChangeNotifier {
             _flushRequested = false;
           }
         } else {
-          _recordSyncFailure(result.errorMessage);
+          final message = _formatSyncMessage(result.errorMessage);
+          if (request.type != _DataSyncTask.configure) {
+            final blocked = _blockedStateForMessage(message);
+            if (blocked != null) _storeAutomaticStateBlock(blocked);
+          }
+          result = Res.error(message);
+          _recordSyncFailure(message);
         }
         await _writeImplicitStatusAndWait();
       }
-    } catch (error, stack) {
+    } catch (error) {
+      final diagnostic = _formatSyncError(error);
       Log.error(
         'Data Sync',
-        request.type == _DataSyncTask.repair ? 'Source repair failed' : error,
-        stack,
+        request.type == _DataSyncTask.repair
+            ? 'Source repair failed: $diagnostic'
+            : diagnostic,
       );
+      _blockAutomaticStateIfNeeded(error);
       result = Res.error(
         request.type == _DataSyncTask.repair
             ? 'Source repair could not complete because local storage or runtime access failed.'
-            : error.toString(),
+            : diagnostic,
       );
       if (request.type != _DataSyncTask.configure &&
           request.type != _DataSyncTask.repair &&
@@ -1759,7 +2040,7 @@ class DataSync with ChangeNotifier {
       _isDownloading = false;
     }
 
-    _lastError = result.errorMessage;
+    _lastError = result.errorMessage ?? _currentBlockedState?.diagnostic;
     _active = null;
     final next = _queue.isEmpty ? null : _queue.removeAt(0);
     if (next != null) _active = next;
@@ -1790,6 +2071,7 @@ class DataSync with ChangeNotifier {
   }
 
   bool _isAuthenticationFailure(String? message) {
+    if (message?.startsWith('SYNC_') == true) return false;
     final value = message?.toLowerCase() ?? '';
     return RegExp(r'\b(?:401|403)\b').hasMatch(value) ||
         value.contains('unauthorized') ||

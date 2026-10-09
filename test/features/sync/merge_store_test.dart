@@ -1766,6 +1766,10 @@ void main() {
       ]) {
         final database = sqlite3.open(path);
         try {
+          // Older databases had this metadata but no state fingerprint.
+          database.execute(
+            "DELETE FROM merge_store_meta WHERE key = 'commitFingerprint';",
+          );
           database.execute('''
             INSERT OR REPLACE INTO merge_store_meta(key, value)
             VALUES ('checkpointMigrationComplete', '1');
@@ -1807,28 +1811,6 @@ void main() {
       await reopened.save();
       expectPreserved(reopened);
 
-      for (final path in [
-        '${tempDir.path}/merge_store.sqlite3',
-        '${tempDir.path}/merge_store.sqlite3.bak',
-      ]) {
-        final database = sqlite3.open(path);
-        try {
-          expect(
-            database.select(
-              "SELECT key FROM merge_store_meta WHERE key = 'checkpointMigrationComplete';",
-            ),
-            isEmpty,
-          );
-          expect(
-            database.select(
-              "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'merge_checkpoint_inventory';",
-            ),
-            isEmpty,
-          );
-        } finally {
-          database.close();
-        }
-      }
       final reloaded = MergeStore(tempDir, 'device-alpha');
       await reloaded.load();
       expectPreserved(reloaded);

@@ -21,6 +21,7 @@ import 'legacy_sync_reader.dart';
 import 'merge_remote.dart';
 import 'merge_snapshot.dart';
 import 'merge_store.dart';
+import 'merge_store_error.dart';
 import 'sync_preferences_adapter.dart';
 
 const bool _syncDiagnosticsEnabled =
@@ -117,6 +118,7 @@ class MergeSyncCoordinator {
   int _getGeneration() => getGenerationOverride?.call() ?? 0;
   _SyncDiagnostics? _activeDiagnostics;
   bool _counterReconciliationComplete = false;
+  Future<void>? _startupRecoveryFuture;
 
   static const _favoriteDomains = {'folder', 'favorite', 'favoriteRole'};
   static const _historyDomains = {'history', 'historyChapter', 'imageFavorite'};
@@ -706,7 +708,25 @@ class MergeSyncCoordinator {
 
   /// A pending target may have been partly applied before a crash. Preserve the
   /// real profile as a concurrent branch before choosing any replacement target.
-  Future<void> startupRecovery() async {
+  Future<void> startupRecovery() =>
+      _startupRecoveryFuture ??= _startupRecoveryWithReload().whenComplete(() {
+        _startupRecoveryFuture = null;
+      });
+
+  Future<void> _startupRecoveryWithReload() async {
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        await _startupRecoveryOnce();
+        return;
+      } on MergeStoreStaleStateException {
+        if (attempt == 1) rethrow;
+        // Discard the failed runtime attempt, load the committed state, and
+        // recapture actual business data with its validated allocation floor.
+      }
+    }
+  }
+
+  Future<void> _startupRecoveryOnce() async {
     markDirty();
     await _loadLegacyIssuesIfNeeded();
     _counterReconciliationComplete = false;
@@ -963,33 +983,77 @@ class MergeSyncCoordinator {
         'discover',
         () => remote.list(latestOnly: false),
       );
+      MergeDocument? verifiedDocument;
+      final verifiedFilenames = <String>[];
+      final publications = <int, String>{};
       var highest = 0;
       for (final entry in entries.where((entry) => entry.actor == actor)) {
-        if (entry.counter > highest) highest = entry.counter;
-        try {
-          final batch = await _measure(
-            'download',
-            () => remote.download(entry),
+        final batch = await _measure('download', () => remote.download(entry));
+        final priorId = publications[batch.counter];
+        if (priorId != null && priorId != batch.id) {
+          throw MergeOutboxCounterConflictException(
+            actor: actor,
+            counter: batch.counter,
+            existingBatchId: priorId,
+            incomingBatchId: batch.id,
+            metadata: {'phase': 'remote_recovery'},
           );
-          await _measure('merge', () async {
-            store.document.merge(batch.document);
-            await store.markReceived(entry.filename);
-          });
-        } on MergeRemoteCorruptException {
-          Log.warning(
-            'MergeSyncCoordinator',
-            'An uncommitted recovery candidate was skipped.',
+        }
+        publications[batch.counter] = batch.id;
+        try {
+          final staged = verifiedDocument ?? store.document;
+          if (staged.dominates(batch.document)) {
+            staged.validateEventIdentities(batch.document);
+          } else {
+            verifiedDocument ??= store.document.clone();
+            verifiedDocument.merge(batch.document);
+          }
+        } on FormatException {
+          throw MergeStoreIntegrityException(
+            metadata: {
+              'phase': 'remote_recovery',
+              'reason': 'causal_identity_conflict',
+              'actor': actor,
+              'counter': batch.counter,
+              'batchId': batch.id,
+            },
+          );
+        }
+        if (batch.counter > highest) highest = batch.counter;
+        verifiedFilenames.add(entry.filename);
+      }
+      // No durable writes, acknowledgements, or allocation-floor changes until
+      // every required own publication and its referenced Packs were verified.
+      if (verifiedDocument != null) {
+        try {
+          store.document.merge(verifiedDocument);
+        } on FormatException {
+          throw MergeStoreIntegrityException(
+            metadata: {
+              'phase': 'remote_recovery',
+              'reason': 'causal_identity_conflict',
+              'actor': actor,
+            },
           );
         }
       }
-      store.reconcileActorCounter(actor, highest);
+      store.reconcileActorCounter(
+        actor,
+        highest,
+        verifiedFilenames: verifiedFilenames,
+      );
       await store.save();
       _counterReconciliationComplete = true;
+    } on MergeStoreStateException {
+      rethrow;
     } catch (error) {
-      throw StateError(
-        'Cannot verify remote state after restoring from local backup. '
-        'Reconciliation is required to prevent counter regression '
-        '(${error.runtimeType}).',
+      throw MergeStoreRemoteRecoveryException(
+        metadata: {
+          'phase': 'remote_recovery',
+          'actor': actor,
+          'errorType': error.runtimeType.toString(),
+          if (error is MergeRemoteException) 'httpStatus': error.statusCode,
+        },
       );
     }
   }
@@ -1153,9 +1217,11 @@ class MergeSyncCoordinator {
     } catch (error) {
       Log.error(
         'MergeSyncCoordinator',
-        'performSync failed (${error.runtimeType})',
+        error is MergeStoreStateException
+            ? 'performSync failed: $error'
+            : 'performSync failed (${error.runtimeType})',
       );
-      return Res.error(error.toString());
+      return Res.error(mergeStoreErrorMessage(error));
     } finally {
       total.stop();
       diagnostics.add('totalDurationMs', total.elapsedMilliseconds);
@@ -1225,7 +1291,11 @@ class MergeSyncCoordinator {
         await _uploadOutboxWithRecovery(ensurePublished: true);
       }
       return const Res(true);
-    } on MergeStorePersistenceException {
+    } on MergeStorePersistenceException catch (error) {
+      if (error.cause is MergeStoreStateException) {
+        Log.error('MergeSyncCoordinator', mergeStoreErrorMessage(error.cause));
+        return Res.error(mergeStoreErrorMessage(error.cause));
+      }
       Log.error(
         'MergeSyncCoordinator',
         'Conflict resolution persistence failed.',
@@ -1238,9 +1308,13 @@ class MergeSyncCoordinator {
     } catch (error) {
       Log.error(
         'MergeSyncCoordinator',
-        'Conflict resolution failed (${error.runtimeType})',
+        error is MergeStoreStateException
+            ? 'Conflict resolution failed: $error'
+            : 'Conflict resolution failed (${error.runtimeType})',
       );
-      if (!batchCommitted) return Res.error(error.toString());
+      if (error is MergeStoreStateException || !batchCommitted) {
+        return Res.error(mergeStoreErrorMessage(error));
+      }
       if (applyCompleted) {
         return Res.error(
           'Resolution batch was durably saved and applied locally, but '

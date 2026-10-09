@@ -5,6 +5,7 @@ import 'dart:math';
 import '../../foundation/sync_records.dart';
 import 'merge_engine.dart';
 import 'merge_store_database.dart';
+import 'merge_store_error.dart';
 import 'merge_snapshot.dart';
 
 export '../../foundation/sync_records.dart';
@@ -37,6 +38,7 @@ class MergeStore {
   bool _saving = false;
   bool _recoveredFromBackup = false;
   bool _needsCounterReconciliation = false;
+  bool _counterReconciliationVerified = false;
   bool _counterFloorDirty = false;
 
   MergeStore(this.directory, this.actor) {
@@ -48,6 +50,12 @@ class MergeStore {
 
   MergeDocument get document => _document;
   bool get needsRecovery => !_loaded;
+
+  /// A business backup changes the physical baseline outside merge application.
+  /// Keep durable intent intact and require a fresh validated view before capture.
+  void invalidateForBusinessRestore() {
+    _loaded = false;
+  }
 
   /// Causality of the last actually observed business state, not merely received
   /// or published checkpoints. Callers retain this branch across transfer retries.
@@ -98,8 +106,12 @@ class MergeStore {
     for (final suffix in ['', '.tmp', '.bak']) {
       final journal = File('${directory.path}/apply_journal.json$suffix');
       if (await _exists(journal)) {
-        throw FormatException(
-          'Unsupported separate apply journal: ${journal.path}',
+        throw MergeStoreIntegrityException(
+          metadata: {
+            'phase': 'load',
+            'reason': 'unsupported_separate_apply_journal',
+            'actor': actor,
+          },
         );
       }
     }
@@ -125,8 +137,14 @@ class MergeStore {
         } on _StoreActorMismatch {
           rethrow;
         } catch (error) {
-          throw FormatException(
-            'Invalid merge state and backup: $primaryError; $error',
+          throw MergeStoreIntegrityException(
+            metadata: {
+              'phase': 'load',
+              'reason': 'no_valid_legacy_state',
+              'actor': actor,
+              'primaryErrorType': primaryError?.runtimeType.toString(),
+              'backupErrorType': error.runtimeType.toString(),
+            },
           );
         }
       }
@@ -140,11 +158,29 @@ class MergeStore {
           // A temp file alone is an interrupted first commit, not a fresh endpoint.
           // Recover its fully validated state, but force counter reconciliation.
           if (!hasPrimary && hasTemporary && !hasBackupTemporary) {
-            legacyState = await _readState(_temporaryFile);
-            recovered = true;
+            try {
+              legacyState = await _readState(_temporaryFile);
+              recovered = true;
+            } on _StoreActorMismatch {
+              rethrow;
+            } catch (error) {
+              throw MergeStoreIntegrityException(
+                metadata: {
+                  'phase': 'load',
+                  'reason': 'invalid_temporary_legacy_state',
+                  'actor': actor,
+                  'errorType': error.runtimeType.toString(),
+                },
+              );
+            }
           } else {
-            throw FormatException(
-              'No valid committed merge state: $primaryError',
+            throw MergeStoreIntegrityException(
+              metadata: {
+                'phase': 'load',
+                'reason': 'no_valid_legacy_state',
+                'actor': actor,
+                'primaryErrorType': primaryError?.runtimeType.toString(),
+              },
             );
           }
         }
@@ -203,6 +239,7 @@ class MergeStore {
         databaseState?.initialized ?? legacyState?.initialized ?? false;
     _recoveredFromBackup = recovered;
     _needsCounterReconciliation = recovered;
+    _counterReconciliationVerified = false;
     _counterFloorDirty = false;
     _loaded = true;
     if (databaseState == null) await save();
@@ -383,18 +420,27 @@ class MergeStore {
 
   /// Called only after successful remote reconciliation, including an empty
   /// listing. Floors own allocation without manufacturing observed causality.
-  void reconcileActorCounter(String targetActor, int highestKnownCounter) {
+  void reconcileActorCounter(
+    String targetActor,
+    int highestKnownCounter, {
+    Iterable<String> verifiedFilenames = const [],
+  }) {
     _ensureLoaded();
     if (targetActor != actor || highestKnownCounter < 0) {
       throw ArgumentError(
         'Only a nonnegative OWN-actor counter may be reconciled',
       );
     }
-    if (highestKnownCounter > _document.counterFor(actor)) {
+    if (_needsCounterReconciliation ||
+        highestKnownCounter > _document.counterFor(actor)) {
       _counterFloorDirty = true;
+    }
+    for (final filename in verifiedFilenames) {
+      if (_received.add(filename)) _counterFloorDirty = true;
     }
     _document.setCounterFloor(actor, highestKnownCounter);
     _needsCounterReconciliation = false;
+    _counterReconciliationVerified = true;
   }
 
   /// Commits the apply target together with the document/outbox before DB writes.
@@ -752,11 +798,17 @@ class MergeStore {
         pendingApply: _pendingApply,
         pendingUnavailableDomains: _pendingUnavailableDomains,
         initialized: _initialized,
+        counterReconciliationRequired: _needsCounterReconciliation
+            ? true
+            : _counterReconciliationVerified
+            ? false
+            : null,
       );
       _outboxSnapshotCache.addAll(newSnapshots);
       _outboxCache.clear();
 
       _counterFloorDirty = false;
+      _counterReconciliationVerified = false;
     } catch (_) {
       _loaded = false;
       rethrow;
@@ -769,27 +821,71 @@ class MergeStore {
     MergeBatch batch, {
     Set<String> changedRecordKeys = const {},
   }) {
-    final mergedChangedRecordKeys = Set<String>.of(changedRecordKeys);
-    if (_outboxIds.contains(batch.id)) {
-      mergedChangedRecordKeys.addAll(
-        _outboxChangedRecords[batch.id] ?? const <String>{},
-      );
-      _outboxCache[batch.id] = batch;
-      _setOutboxChangedRecords(batch.id, mergedChangedRecordKeys);
-      return;
-    }
-    for (final priorId in List<String>.of(_outboxIds)) {
-      final prior = pendingBatch(priorId);
-      if (batch.document.dominates(prior.document)) {
-        mergedChangedRecordKeys.addAll(
-          _outboxChangedRecords[priorId] ?? const <String>{},
+    try {
+      if (batch.actor != actor ||
+          batch.counter <= 0 ||
+          batch.document.counterFor(actor) != batch.counter) {
+        throw MergeStoreIntegrityException(
+          metadata: {'phase': 'queue', 'actor': actor, 'batchId': batch.id},
         );
-        _removeOutbox(priorId);
       }
+      final mergedChangedKeys = Set<String>.of(changedRecordKeys);
+      final dominatedIds = <String>[];
+      var alreadyQueued = false;
+      // Inspect the complete queue before changing it. Coverage cannot authorize
+      // giving a different publication the same allocation identity.
+      for (final priorId in _outboxIds) {
+        final prior = pendingBatch(priorId);
+        if (priorId == batch.id) {
+          if (prior.actor != batch.actor ||
+              prior.counter != batch.counter ||
+              !syncValuesEqual(
+                prior.document.toJson(),
+                batch.document.toJson(),
+              )) {
+            throw MergeStoreIntegrityException(
+              metadata: {
+                'phase': 'queue',
+                'reason': 'batch_identity_changed',
+                'actor': actor,
+                'batchId': batch.id,
+                'counter': batch.counter,
+              },
+            );
+          }
+          alreadyQueued = true;
+          mergedChangedKeys.addAll(_outboxChangedRecords[priorId] ?? const {});
+          continue;
+        }
+        if (prior.actor == batch.actor && prior.counter == batch.counter) {
+          throw MergeOutboxCounterConflictException(
+            actor: batch.actor,
+            counter: batch.counter,
+            existingBatchId: prior.id,
+            incomingBatchId: batch.id,
+            metadata: {
+              'phase': 'queue',
+              'ownCounter': _document.counterFor(actor),
+            },
+          );
+        }
+        if (batch.document.dominates(prior.document)) {
+          mergedChangedKeys.addAll(_outboxChangedRecords[priorId] ?? const {});
+          dominatedIds.add(priorId);
+        }
+      }
+      for (final id in dominatedIds) {
+        _removeOutbox(id);
+      }
+      if (!alreadyQueued) _outboxIds.add(batch.id);
+      _outboxCache[batch.id] = batch;
+      _setOutboxChangedRecords(batch.id, mergedChangedKeys);
+    } catch (_) {
+      // The enclosing capture may already have changed its in-memory document.
+      // Never allocate again from that failed attempt; durable load is required.
+      _loaded = false;
+      rethrow;
     }
-    _outboxIds.add(batch.id);
-    _outboxCache[batch.id] = batch;
-    _setOutboxChangedRecords(batch.id, mergedChangedRecordKeys);
   }
 
   void _setOutboxChangedRecords(String id, Set<String> recordKeys) {
@@ -1167,7 +1263,19 @@ class _StoreState {
 
 class _StoreActorMismatch extends StateError {
   _StoreActorMismatch(String expected, String actual)
-    : super('Store actor mismatch: expected "$expected", found "$actual"');
+    : super(
+        MergeStoreIntegrityException(
+          metadata: {
+            'phase': 'load',
+            'reason': 'actor_mismatch',
+            'actor': expected,
+            'storedActor': actual,
+          },
+        ).toString(),
+      );
+
+  @override
+  String toString() => message;
 }
 
 /// The durable state replacement failed after the in-memory batch was staged.
@@ -1179,5 +1287,6 @@ class MergeStorePersistenceException implements Exception {
   const MergeStorePersistenceException(this.cause);
 
   @override
-  String toString() => 'MergeStore persistence status is uncertain: $cause';
+  String toString() =>
+      'MergeStore persistence status is uncertain: ${mergeStoreErrorMessage(cause)}';
 }

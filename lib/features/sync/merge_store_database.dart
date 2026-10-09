@@ -8,6 +8,7 @@ import 'package:crypto/crypto.dart';
 import '../../foundation/sync_records.dart';
 import 'merge_engine.dart';
 import 'merge_snapshot.dart';
+import 'merge_store_error.dart';
 
 /// Normalized, close-after-use SQLite persistence backing [MergeStore].
 ///
@@ -20,19 +21,39 @@ class MergeStoreDatabase {
   final Directory directory;
   final String actor;
 
-  final Map<(String, String, String), String> _persistedRows = {};
+  static final RegExp _safeBatchIdPattern = RegExp(r'^[0-9a-f]{64}$');
+  Map<(String, String, String), String> _persistedRows = {};
   final Map<String, String> _persistedMeta = {};
   final Set<String> _persistedReceived = {};
   final Set<String> _persistedOutboxIds = {};
+  final Map<String, (String, int)> _persistedOutboxIdentities = {};
+  final Map<String, String> _persistedOutboxFingerprints = {};
   final Map<String, Set<String>> _persistedOutboxChangedRecords = {};
   int _persistedRevision = 0;
+  int _persistedOwnCounter = 0;
+  String? _persistedStateFingerprint;
+  bool _persistedFingerprintStored = false;
   bool _loaded = false;
   bool _databaseExists = false;
 
   MergeStoreDatabase(this.directory, this.actor);
 
   File get _databaseFile => File('${directory.path}/merge_store.sqlite3');
+  File get _recoveryMarkerFile => File('${_databaseFile.path}.reconcile');
   File get _backupFile => File('${_databaseFile.path}.bak');
+  Future<void> _writeCounterRecoveryMarker() async {
+    if (await _exists(_recoveryMarkerFile)) return;
+    await _recoveryMarkerFile.writeAsString(
+      'counter-reconciliation-required\n',
+      flush: true,
+    );
+  }
+
+  Future<void> _clearCounterRecoveryMarker() async {
+    if (await _exists(_recoveryMarkerFile)) {
+      await _recoveryMarkerFile.delete();
+    }
+  }
 
   Future<MergeStoreDatabaseState?> load() async {
     _loaded = false;
@@ -40,20 +61,40 @@ class MergeStoreDatabase {
     _persistedRows.clear();
     _persistedMeta.clear();
     _persistedReceived.clear();
-    _persistedOutboxIds.clear();
     _persistedOutboxChangedRecords.clear();
+    _persistedOutboxIds.clear();
+    _persistedOutboxIdentities.clear();
+    _persistedOutboxFingerprints.clear();
     _persistedRevision = 0;
+    _persistedOwnCounter = 0;
+    _persistedStateFingerprint = null;
+    _persistedFingerprintStored = false;
     await directory.create(recursive: true);
+    var recoveryMarkerExists = await _exists(_recoveryMarkerFile);
     final primaryExists = await _exists(_databaseFile);
     final backupExists = await _exists(_backupFile);
     if (!backupExists) {
       for (final suffix in ['.bak-journal', '.bak-wal', '.bak-shm']) {
         if (await _exists(File('${_databaseFile.path}$suffix'))) {
-          throw const FormatException('Incomplete merge SQLite replica');
+          throw MergeStoreIntegrityException(
+            metadata: {
+              'phase': 'load',
+              'reason': 'incomplete_sqlite_replica',
+              'actor': actor,
+            },
+          );
         }
       }
     }
     if (!primaryExists && !backupExists) {
+      if (recoveryMarkerExists) {
+        throw MergeStoreIntegrityException(
+          metadata: {
+            'phase': 'load',
+            'reason': 'recovery_marker_without_database',
+          },
+        );
+      }
       for (final suffix in [
         '.tmp',
         '.restore.tmp',
@@ -66,7 +107,13 @@ class MergeStoreDatabase {
         '.bak-shm',
       ]) {
         if (await _exists(File('${_databaseFile.path}$suffix'))) {
-          throw const FormatException('Incomplete merge SQLite state');
+          throw MergeStoreIntegrityException(
+            metadata: {
+              'phase': 'load',
+              'reason': 'incomplete_sqlite_state',
+              'actor': actor,
+            },
+          );
         }
       }
       _loaded = false;
@@ -98,31 +145,257 @@ class MergeStoreDatabase {
         backupError = error;
       }
     }
+    var primaryUninitialized = !primaryExists;
+    var backupUninitialized = !backupExists;
+    if (primaryState == null && primaryExists) {
+      primaryUninitialized = _isUninitializedDatabase(_databaseFile);
+      if (primaryUninitialized) primaryError = null;
+    }
+    if (backupState == null && backupExists) {
+      backupUninitialized = _isUninitializedDatabase(_backupFile);
+      if (backupUninitialized) backupError = null;
+    }
+    if (primaryUninitialized && backupUninitialized && recoveryMarkerExists) {
+      throw MergeStoreIntegrityException(
+        metadata: {
+          'phase': 'load',
+          'reason': 'recovery_marker_without_database',
+          'actor': actor,
+        },
+      );
+    }
+    if (primaryUninitialized && backupUninitialized) {
+      for (final suffix in [
+        '.tmp',
+        '.restore.tmp',
+        '.bak.tmp',
+        '-journal',
+        '-wal',
+        '-shm',
+        '.bak-journal',
+        '.bak-wal',
+        '.bak-shm',
+      ]) {
+        if (await _exists(File('${_databaseFile.path}$suffix'))) {
+          throw MergeStoreIntegrityException(
+            metadata: {
+              'phase': 'load',
+              'reason': 'incomplete_sqlite_state',
+              'actor': actor,
+            },
+          );
+        }
+      }
+      _loaded = false;
+      _databaseExists = false;
+      _persistedRevision = 0;
+      return null;
+    }
+    if (primaryState != null &&
+        backupState != null &&
+        primaryState.commitRevision == backupState.commitRevision &&
+        !_sameCriticalState(primaryState, backupState)) {
+      throw MergeStoreReplicaDivergenceException(
+        metadata: _divergenceMetadata(
+          phase: 'load',
+          loadedRevision: null,
+          mainRevision: primaryState.commitRevision,
+          replicaRevision: backupState.commitRevision,
+          mainOwnCounter: primaryState.document.counterFor(actor),
+          replicaOwnCounter: backupState.document.counterFor(actor),
+          mainOutboxIds: primaryState.outboxIds,
+          replicaOutboxIds: backupState.outboxIds,
+          reason: 'same_revision_different_state',
+        ),
+      );
+    }
+    late final MergeStoreDatabaseState? recoveryCandidate;
+    if (primaryState == null) {
+      recoveryCandidate = backupState;
+    } else if (backupState == null ||
+        backupState.commitRevision <= primaryState.commitRevision) {
+      recoveryCandidate = primaryState;
+    } else {
+      recoveryCandidate = backupState;
+    }
+    if (recoveryCandidate != null &&
+        !_hasValidStoredFingerprint(recoveryCandidate)) {
+      throw MergeStoreIntegrityException(
+        metadata: _divergenceMetadata(
+          phase: 'load',
+          loadedRevision: null,
+          mainRevision: primaryState?.commitRevision,
+          replicaRevision: backupState?.commitRevision,
+          mainOwnCounter: primaryState?.document.counterFor(actor) ?? 0,
+          replicaOwnCounter: backupState?.document.counterFor(actor) ?? 0,
+          mainOutboxIds: primaryState?.outboxIds ?? const <String>[],
+          replicaOutboxIds: backupState?.outboxIds ?? const <String>[],
+          reason: 'state_fingerprint_mismatch',
+        ),
+      );
+    }
 
-    late final MergeStoreDatabaseState state;
+    var didCopyStateFile = false;
+    var selectedFromBackup = false;
+    late MergeStoreDatabaseState selectedState;
     if (primaryState == null) {
       if (backupState == null) {
-        throw FormatException(
-          'Invalid merge SQLite state and backup: $primaryError; $backupError',
+        throw MergeStoreIntegrityException(
+          metadata: {
+            'phase': 'load',
+            'reason': 'no_valid_replica',
+            'actor': actor,
+            'primaryErrorType':
+                primaryError?.runtimeType.toString() ?? 'missing',
+            'backupErrorType': backupError?.runtimeType.toString() ?? 'missing',
+          },
         );
       }
+      await _writeCounterRecoveryMarker();
+      recoveryMarkerExists = true;
       await _restorePrimaryFromBackup();
-      state = backupState.withRecovery(true);
+      didCopyStateFile = true;
+      selectedFromBackup = true;
+      selectedState = backupState.withRecovery(true);
     } else if (backupState == null) {
       await _repairBackupFromPrimary();
-      state = primaryState;
+      didCopyStateFile = true;
+      selectedState = primaryState;
     } else if (backupState.commitRevision > primaryState.commitRevision) {
+      await _writeCounterRecoveryMarker();
+      recoveryMarkerExists = true;
       await _restorePrimaryFromBackup();
-      state = backupState.withRecovery(true);
+      didCopyStateFile = true;
+      selectedFromBackup = true;
+      selectedState = backupState.withRecovery(true);
     } else {
       if (backupState.commitRevision < primaryState.commitRevision) {
         await _repairBackupFromPrimary();
+        didCopyStateFile = true;
       }
-      state = primaryState;
+      selectedState = primaryState;
     }
 
+    if (didCopyStateFile) {
+      final finalPrimaryState = _readDatabase(
+        _databaseFile,
+        recoveredFromBackup: false,
+      );
+      final finalBackupState = _readDatabase(
+        _backupFile,
+        recoveredFromBackup: false,
+      );
+      if (finalPrimaryState.commitRevision != finalBackupState.commitRevision) {
+        throw MergeStoreStaleStateException(
+          metadata: _divergenceMetadata(
+            phase: 'postCopy',
+            loadedRevision: null,
+            mainRevision: finalPrimaryState.commitRevision,
+            replicaRevision: finalBackupState.commitRevision,
+            mainOwnCounter: finalPrimaryState.document.counterFor(actor),
+            replicaOwnCounter: finalBackupState.document.counterFor(actor),
+            mainOutboxIds: finalPrimaryState.outboxIds,
+            replicaOutboxIds: finalBackupState.outboxIds,
+            reason: 'revision_changed_during_copy',
+          ),
+        );
+      }
+      if (!_sameCriticalState(finalPrimaryState, finalBackupState)) {
+        throw MergeStoreReplicaDivergenceException(
+          metadata: _divergenceMetadata(
+            phase: 'postCopy',
+            loadedRevision: null,
+            mainRevision: finalPrimaryState.commitRevision,
+            replicaRevision: finalBackupState.commitRevision,
+            mainOwnCounter: finalPrimaryState.document.counterFor(actor),
+            replicaOwnCounter: finalBackupState.document.counterFor(actor),
+            mainOutboxIds: finalPrimaryState.outboxIds,
+            replicaOutboxIds: finalBackupState.outboxIds,
+            reason: 'same_revision_different_state',
+          ),
+        );
+      }
+      if (!_hasValidStoredFingerprint(finalPrimaryState)) {
+        throw MergeStoreIntegrityException(
+          metadata: _divergenceMetadata(
+            phase: 'postCopy',
+            loadedRevision: null,
+            mainRevision: finalPrimaryState.commitRevision,
+            replicaRevision: finalBackupState.commitRevision,
+            mainOwnCounter: finalPrimaryState.document.counterFor(actor),
+            replicaOwnCounter: finalBackupState.document.counterFor(actor),
+            mainOutboxIds: finalPrimaryState.outboxIds,
+            replicaOutboxIds: finalBackupState.outboxIds,
+            reason: 'state_fingerprint_mismatch',
+          ),
+        );
+      }
+      selectedState = finalPrimaryState.withRecovery(selectedFromBackup);
+    }
+
+    final state = recoveryMarkerExists
+        ? selectedState.withRecovery(true)
+        : selectedState;
     _activateState(state);
     return state;
+  }
+
+  bool _isUninitializedDatabase(File file) {
+    Database? database;
+    var transactionOpen = false;
+    try {
+      database = sqlite3.open(file.path);
+      database.execute('PRAGMA busy_timeout = 5000;');
+      database.execute('BEGIN;');
+      transactionOpen = true;
+      final integrity = database.select('PRAGMA integrity_check;');
+      if (integrity.length != 1 || integrity.single.values.first != 'ok') {
+        return false;
+      }
+      final userVersion = database
+          .select('PRAGMA user_version;')
+          .single
+          .values
+          .first;
+      if (userVersion != 0 && userVersion != 1) return false;
+      const knownTables = {
+        'merge_store_meta',
+        'merge_document_records',
+        'merge_document_vclock',
+        'merge_document_event_digests',
+        'merge_business_records',
+        'merge_received',
+        'merge_outbox',
+        'merge_snapshot_objects',
+        'merge_outbox_objects',
+        'merge_outbox_changed_records',
+        'merge_checkpoint_inventory',
+      };
+      for (final row in database.select('''
+        SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name NOT LIKE 'sqlite_%';
+        ''')) {
+        final table = row['name'] as String;
+        if (!knownTables.contains(table) ||
+            database.select('SELECT 1 FROM $table LIMIT 1;').isNotEmpty) {
+          return false;
+        }
+      }
+      database.execute('COMMIT;');
+      transactionOpen = false;
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      if (transactionOpen) {
+        try {
+          database!.execute('ROLLBACK;');
+        } catch (_) {}
+      }
+      try {
+        database?.close();
+      } catch (_) {}
+    }
   }
 
   void _activateState(MergeStoreDatabaseState state) {
@@ -138,10 +411,19 @@ class MergeStoreDatabase {
     _persistedOutboxIds
       ..clear()
       ..addAll(state.outboxIds);
+    _persistedOutboxIdentities
+      ..clear()
+      ..addAll(state.outboxIdentities);
+    _persistedOutboxFingerprints
+      ..clear()
+      ..addAll(state.outboxFingerprints);
     _persistedOutboxChangedRecords
       ..clear()
       ..addAll(state.outboxChangedRecords);
     _persistedRevision = state.commitRevision;
+    _persistedOwnCounter = state.document.counterFor(actor);
+    _persistedStateFingerprint = state.commitFingerprint;
+    _persistedFingerprintStored = state.hasCommitFingerprint;
     _databaseExists = true;
     _loaded = true;
   }
@@ -251,9 +533,14 @@ class MergeStoreDatabase {
     required SyncRecords? pendingApply,
     required Set<String> pendingUnavailableDomains,
     required bool initialized,
+    bool? counterReconciliationRequired,
   }) async {
     if (_loaded && !_databaseExists) {
       throw StateError('Invalid SQLite store lifecycle');
+    }
+    if (counterReconciliationRequired == true) {
+      await directory.create(recursive: true);
+      await _writeCounterRecoveryMarker();
     }
     final nextRows = _encodeRows(
       {'document': document, 'localObservation': localObservation},
@@ -276,10 +563,6 @@ class MergeStoreDatabase {
     if (nextOutboxIds.toSet().length != nextOutboxIds.length) {
       throw const FormatException('Duplicate pending outbox id');
     }
-
-    final rowsChanged = !_sameRowValues(_persistedRows, nextRows);
-    final metaChanged = !_sameMap(_persistedMeta, nextMeta);
-    final receivedChanged = !_sameSet(_persistedReceived, nextReceived);
     final desiredOutbox = nextOutboxIds.toSet();
     final removedOutbox = _persistedOutboxIds.difference(desiredOutbox);
     final addedOutbox = desiredOutbox.difference(_persistedOutboxIds);
@@ -287,6 +570,40 @@ class MergeStoreDatabase {
       throw const FormatException(
         'Changed-record metadata has no outbox batch',
       );
+    }
+    for (final entry in newOutboxBatches.entries) {
+      final batch = entry.value;
+      if (entry.key != batch.id ||
+          !_isSafeBatchId(batch.id) ||
+          !desiredOutbox.contains(entry.key) ||
+          batch.actor != actor ||
+          batch.counter <= 0 ||
+          batch.document.counterFor(actor) != batch.counter) {
+        throw MergeStoreIntegrityException(
+          metadata: {
+            'phase': 'commit',
+            'reason': 'invalid_new_batch_identity',
+            'actor': actor,
+            'counter': batch.counter,
+            if (_isSafeBatchId(batch.id)) 'batchId': batch.id,
+          },
+        );
+      }
+      if (!addedOutbox.contains(entry.key)) {
+        try {
+          batch.validateIdentity();
+        } on FormatException {
+          throw MergeStoreIntegrityException(
+            metadata: {
+              'phase': 'commit',
+              'reason': 'invalid_new_batch_identity',
+              'actor': actor,
+              'counter': batch.counter,
+              if (_isSafeBatchId(batch.id)) 'batchId': batch.id,
+            },
+          );
+        }
+      }
     }
     final nextOutboxChangedRecords = <String, Set<String>>{};
     for (final entry in outboxChangedRecords.entries) {
@@ -309,38 +626,54 @@ class MergeStoreDatabase {
               ),
             )
             .toSet();
-    final needsCreate = !_databaseExists;
-    if (!needsCreate &&
-        !rowsChanged &&
-        !metaChanged &&
-        !receivedChanged &&
-        removedOutbox.isEmpty &&
-        changedOutboxDeltas.isEmpty &&
-        addedOutbox.isEmpty) {
+    final rowsAreUnchanged = _sameRowValues(_persistedRows, nextRows);
+    final persistedMetaWithoutFingerprint = Map<String, String>.of(
+      _persistedMeta,
+    )..remove('commitFingerprint');
+    final stateChanged =
+        !_databaseExists ||
+        !rowsAreUnchanged ||
+        !_sameMap(persistedMetaWithoutFingerprint, nextMeta) ||
+        !_sameSet(_persistedReceived, nextReceived) ||
+        removedOutbox.isNotEmpty ||
+        changedOutboxDeltas.isNotEmpty ||
+        addedOutbox.isNotEmpty;
+    final clearRecoveryMarker =
+        counterReconciliationRequired == false &&
+        await _exists(_recoveryMarkerFile);
+    if (!stateChanged && !clearRecoveryMarker) {
       return const <String, MergeSnapshot>{};
     }
-    final nextRevision = _persistedRevision + 1;
-    nextMeta['commitRevision'] = '$nextRevision';
-
+    final nextRowFingerprints = rowsAreUnchanged
+        ? _persistedRows
+        : <(String, String, String), String>{
+            for (final entry in nextRows.entries)
+              entry.key: _rowFingerprint(entry.value),
+          };
     for (final id in addedOutbox) {
       if (!newOutboxBatches.containsKey(id)) {
-        throw StateError('Missing in-memory batch for new outbox entry "$id"');
+        throw MergeStoreIntegrityException(
+          metadata: {
+            'phase': 'commit',
+            'reason': 'missing_new_batch',
+            'actor': actor,
+            if (_isSafeBatchId(id)) 'batchId': id,
+          },
+        );
       }
     }
+    final nextRevision = _persistedRevision + (stateChanged ? 1 : 0);
+    nextMeta['commitRevision'] = '$nextRevision';
     final nextOutboxSnapshots = <String, MergeSnapshot>{};
-    for (final id in addedOutbox) {
-      final batch = newOutboxBatches[id]!;
-      if (batch.actor != actor ||
-          batch.counter <= 0 ||
-          batch.document.counterFor(actor) != batch.counter) {
-        throw const FormatException('Invalid new outbox batch');
-      }
-      nextOutboxSnapshots[id] = MergeSnapshot.fromBatch(
-        batch,
-        encodingCache: _snapshotEncodingCache,
-      );
-    }
+    final nextOutboxIdentities = Map<String, (String, int)>.of(
+      _persistedOutboxIdentities,
+    )..removeWhere((id, _) => removedOutbox.contains(id));
+    final nextOutboxFingerprints = Map<String, String>.of(
+      _persistedOutboxFingerprints,
+    )..removeWhere((id, _) => removedOutbox.contains(id));
+    String? nextStateFingerprint = _persistedStateFingerprint;
 
+    final backupExistedBeforeAttach = await _exists(_backupFile);
     Database? database;
     try {
       database = sqlite3.open(_databaseFile.path);
@@ -353,48 +686,217 @@ class MergeStoreDatabase {
       database.execute('PRAGMA foreign_keys = ON;');
       database.execute('BEGIN IMMEDIATE;');
       try {
-        _ensureSchema(database, schema: 'main');
-        _ensureSchema(database, schema: 'replica');
-        if (_databaseExists) {
-          _assertCommitRevision(database, schema: 'main');
-          _assertCommitRevision(database, schema: 'replica');
-        }
-        for (final schema in ['main', 'replica']) {
-          if (_persistedMeta.containsKey('checkpointMigrationComplete')) {
-            database.execute(
-              'DROP TABLE IF EXISTS $schema.merge_checkpoint_inventory;',
+        if (!_databaseExists) {
+          final mainRevision = _committedRevisionIfPresent(
+            database,
+            schema: 'main',
+          );
+          final replicaRevision = _committedRevisionIfPresent(
+            database,
+            schema: 'replica',
+          );
+          if (mainRevision != null || replicaRevision != null) {
+            throw MergeStoreStaleStateException(
+              metadata: _freshInitializationMetadata(
+                database,
+                mainRevision: mainRevision,
+                replicaRevision: replicaRevision,
+                desiredOutboxIds: desiredOutbox,
+                removedOutboxIds: removedOutbox,
+                addedOutboxIds: addedOutbox,
+                ownCounter: document.counterFor(actor),
+              ),
             );
           }
-          _applyRowDiff(database, nextRows, schema: schema);
-          _applyMetaDiff(database, nextMeta, schema: schema);
-          _applyReceivedDiff(database, nextReceived, schema: schema);
-          _applyOutboxChanges(
+        }
+        _ensureSchema(database, schema: 'main');
+        _ensureSchema(database, schema: 'replica');
+        final mainView = _readCommitView(database, schema: 'main');
+        final replicaView = _readCommitView(database, schema: 'replica');
+        if (_databaseExists) {
+          _assertCommitViews(
             database,
-            schema: schema,
-            removed: removedOutbox,
-            added: addedOutbox,
-            newBatches: newOutboxBatches,
-            deltaChanges: changedOutboxDeltas,
-            changedRecords: nextOutboxChangedRecords,
-            newSnapshots: nextOutboxSnapshots,
+            mainView,
+            replicaView,
+            ownCounter: document.counterFor(actor),
+            desiredOutboxIds: desiredOutbox,
+            removedOutboxIds: removedOutbox,
+            addedOutboxIds: addedOutbox,
+          );
+        } else if (!_isEmptyCommitView(mainView) ||
+            !_isEmptyCommitView(replicaView)) {
+          throw MergeStoreStaleStateException(
+            metadata: _divergenceMetadata(
+              phase: 'freshInitialization',
+              loadedRevision: null,
+              mainRevision: mainView.revision,
+              replicaRevision: replicaView.revision,
+              mainOwnCounter: mainView.ownCounter,
+              replicaOwnCounter: replicaView.ownCounter,
+              ownCounter: document.counterFor(actor),
+              mainOutboxIds: mainView.outboxIdentities.keys,
+              replicaOutboxIds: replicaView.outboxIdentities.keys,
+              reason: 'fresh_store_not_empty',
+              desiredOutboxIds: desiredOutbox,
+              removedOutboxIds: removedOutbox,
+              addedOutboxIds: addedOutbox,
+            ),
           );
         }
+        final ownCounter = document.counterFor(actor);
+        if (ownCounter < mainView.ownCounter ||
+            ownCounter < replicaView.ownCounter) {
+          throw MergeStoreStaleStateException(
+            metadata: _divergenceMetadata(
+              phase: 'commit',
+              loadedRevision: _persistedRevision,
+              mainRevision: mainView.revision,
+              replicaRevision: replicaView.revision,
+              mainOwnCounter: mainView.ownCounter,
+              replicaOwnCounter: replicaView.ownCounter,
+              mainOutboxIds: mainView.outboxIdentities.keys,
+              replicaOutboxIds: replicaView.outboxIdentities.keys,
+              desiredOutboxIds: desiredOutbox,
+              removedOutboxIds: removedOutbox,
+              addedOutboxIds: addedOutbox,
+              ownCounter: ownCounter,
+              reason: 'candidate_counter_regressed',
+            ),
+          );
+        }
+        _assertOutboxSlots(
+          mainView.outboxIdentities,
+          newOutboxBatches,
+          addedOutbox,
+          mainRevision: mainView.revision,
+          replicaRevision: replicaView.revision,
+          ownCounter: document.counterFor(actor),
+          mainOwnCounter: mainView.ownCounter,
+          replicaOwnCounter: replicaView.ownCounter,
+          desiredOutboxIds: desiredOutbox,
+          removedOutboxIds: removedOutbox,
+        );
+        for (final batch in newOutboxBatches.values) {
+          _validateBatchCausalCompatibility(
+            batch,
+            document: document,
+            localObservation: localObservation,
+            phase: 'commit',
+          );
+        }
+        for (final id in addedOutbox) {
+          final batch = newOutboxBatches[id]!;
+          try {
+            nextOutboxSnapshots[id] = MergeSnapshot.fromBatch(
+              batch,
+              encodingCache: _snapshotEncodingCache,
+            );
+          } on FormatException {
+            throw MergeStoreIntegrityException(
+              metadata: {
+                'phase': 'commit',
+                'reason': 'invalid_new_batch_identity',
+                'actor': actor,
+                'counter': batch.counter,
+                if (_isSafeBatchId(batch.id)) 'batchId': batch.id,
+              },
+            );
+          }
+        }
+        for (final id in addedOutbox) {
+          final batch = newOutboxBatches[id]!;
+          final snapshot = nextOutboxSnapshots[id]!;
+          nextOutboxIdentities[id] = (batch.actor, batch.counter);
+          nextOutboxFingerprints[id] = _outboxFingerprint(
+            id: id,
+            batchActor: batch.actor,
+            counter: batch.counter,
+            manifestDigest: sha256
+                .convert(snapshot.serializeManifest())
+                .toString(),
+            objectFingerprints: {
+              for (final entry in snapshot.objects.entries)
+                entry.key: sha256.convert(entry.value).toString(),
+            },
+          );
+        }
+        if (stateChanged) {
+          nextStateFingerprint = _stateFingerprint(
+            rows: nextRowFingerprints,
+            meta: nextMeta,
+            received: nextReceived,
+            outboxIdentities: nextOutboxIdentities,
+            outboxFingerprints: nextOutboxFingerprints,
+            outboxChangedRecords: nextOutboxChangedRecords,
+          );
+          nextMeta['commitFingerprint'] = nextStateFingerprint;
+        }
+        if (stateChanged) {
+          for (final schema in ['main', 'replica']) {
+            if (_persistedMeta.containsKey('checkpointMigrationComplete')) {
+              database.execute(
+                'DROP TABLE IF EXISTS $schema.merge_checkpoint_inventory;',
+              );
+            }
+            _applyRowDiff(
+              database,
+              nextRows,
+              schema: schema,
+              fingerprints: nextRowFingerprints,
+            );
+            _applyMetaDiff(database, nextMeta, schema: schema);
+            _applyReceivedDiff(database, nextReceived, schema: schema);
+            _applyOutboxChanges(
+              database,
+              schema: schema,
+              removed: removedOutbox,
+              added: addedOutbox,
+              newBatches: newOutboxBatches,
+              deltaChanges: changedOutboxDeltas,
+              changedRecords: nextOutboxChangedRecords,
+              newSnapshots: nextOutboxSnapshots,
+            );
+          }
+        }
         database.execute('COMMIT;');
-      } catch (_) {
-        database.execute('ROLLBACK;');
-        rethrow;
+      } catch (error, stackTrace) {
+        try {
+          database.execute('ROLLBACK;');
+        } on Object {
+          // Preserve the transaction's original failure.
+        }
+        try {
+          database.close();
+        } on Object {
+          // Preserve the transaction's original failure.
+        }
+        database = null;
+        if (!backupExistedBeforeAttach) {
+          try {
+            if (await _exists(_backupFile) && await _backupFile.length() == 0) {
+              await _backupFile.delete();
+            }
+          } on Object {
+            // Preserve the transaction's original failure.
+          }
+        }
+        Error.throwWithStackTrace(error, stackTrace);
       }
     } finally {
       database?.close();
     }
 
-    _persistedRows
-      ..clear()
-      ..addEntries(
-        nextRows.entries.map(
-          (entry) => MapEntry(entry.key, _rowFingerprint(entry.value)),
-        ),
-      );
+    if (clearRecoveryMarker) {
+      try {
+        await _clearCounterRecoveryMarker();
+      } on Object {
+        _loaded = false;
+        rethrow;
+      }
+    }
+    if (!stateChanged) return const <String, MergeSnapshot>{};
+
+    _persistedRows = nextRowFingerprints;
     _persistedMeta
       ..clear()
       ..addAll(nextMeta);
@@ -404,11 +906,20 @@ class MergeStoreDatabase {
     _persistedOutboxIds
       ..clear()
       ..addAll(desiredOutbox);
+    _persistedOutboxIdentities
+      ..clear()
+      ..addAll(nextOutboxIdentities);
+    _persistedOutboxFingerprints
+      ..clear()
+      ..addAll(nextOutboxFingerprints);
     _persistedOutboxChangedRecords
       ..clear()
       ..addAll(nextOutboxChangedRecords);
-    _databaseExists = true;
     _persistedRevision = nextRevision;
+    _persistedOwnCounter = document.counterFor(actor);
+    _persistedStateFingerprint = nextStateFingerprint;
+    _persistedFingerprintStored = true;
+    _databaseExists = true;
     _loaded = true;
     return Map.unmodifiable(nextOutboxSnapshots);
   }
@@ -421,6 +932,7 @@ class MergeStoreDatabase {
     try {
       database = sqlite3.open(file.path);
       database.execute('PRAGMA busy_timeout = 5000;');
+      database.execute('BEGIN;');
       final integrity = database.select('PRAGMA integrity_check;');
       if (integrity.length != 1 || integrity.single.values.first != 'ok') {
         throw const FormatException('SQLite integrity check failed');
@@ -454,7 +966,11 @@ class MergeStoreDatabase {
         'outboxDeltasVersion',
         'commitRevision',
       };
-      const allowedMeta = {...requiredMeta, 'checkpointMigrationComplete'};
+      const allowedMeta = {
+        ...requiredMeta,
+        'checkpointMigrationComplete',
+        'commitFingerprint',
+      };
       if (!meta.keys.toSet().containsAll(requiredMeta) ||
           !allowedMeta.containsAll(meta.keys)) {
         throw const FormatException('Invalid merge SQLite metadata');
@@ -476,6 +992,7 @@ class MergeStoreDatabase {
           '$commitRevision' != meta['commitRevision']) {
         throw const FormatException('Invalid merge commit revision');
       }
+      final storedCommitFingerprint = meta['commitFingerprint'];
       final rows = <(String, String, String), String>{};
       final documents = <String, MergeDocument>{};
       for (final scope in ['document', 'localObservation']) {
@@ -589,21 +1106,73 @@ class MergeStoreDatabase {
         }
       }
       final outboxIds = <String>[];
+      final outboxIdSet = <String>{};
       final outboxCounters = <int>{};
-      for (final row in database.select(
-        'SELECT batch_id, actor, counter FROM merge_outbox ORDER BY counter ASC, batch_id ASC;',
-      )) {
+      final outboxIdentities = <String, (String, int)>{};
+      final outboxFingerprints = <String, String>{};
+      for (final row in database.select('''
+        SELECT batch_id, actor, counter, manifest
+        FROM merge_outbox
+        ORDER BY counter ASC, batch_id ASC;
+        ''')) {
         final id = row['batch_id'] as String;
         final batchActor = row['actor'] as String;
         final counter = row['counter'] as int;
-        if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(id) ||
+        final manifest = _asBytes(row['manifest']);
+        if (!_isSafeBatchId(id) ||
             batchActor != actor ||
             counter <= 0 ||
             counter > document.counterFor(batchActor) ||
-            !outboxCounters.add(counter)) {
+            !outboxCounters.add(counter) ||
+            !outboxIdSet.add(id)) {
           throw const FormatException('Invalid durable outbox metadata');
         }
+        final objectRows = database.select(
+          '''
+          SELECT refs.path, objects.content
+          FROM merge_outbox_objects AS refs
+          LEFT JOIN merge_snapshot_objects AS objects ON objects.path = refs.path
+          WHERE refs.batch_id = ?
+          ORDER BY refs.path ASC;
+          ''',
+          [id],
+        );
+        final objects = <String, Uint8List>{};
+        final objectFingerprints = <String, String>{};
+        for (final objectRow in objectRows) {
+          final path = objectRow['path'] as String;
+          final content = objectRow['content'];
+          if (path.isEmpty || content == null || objects.containsKey(path)) {
+            throw const FormatException('Invalid outbox snapshot object ref');
+          }
+          final bytes = _asBytes(content);
+          objects[path] = bytes;
+          objectFingerprints[path] = sha256.convert(bytes).toString();
+        }
+        final batch = MergeSnapshot.decode(manifest, objects);
+        if (batch.id != id ||
+            batch.actor != batchActor ||
+            batch.counter != counter ||
+            batch.document.counterFor(actor) != counter) {
+          throw const FormatException('Invalid persisted outbox identity');
+        }
+        try {
+          batch.document.validateEventIdentities(document);
+          batch.document.validateEventIdentities(localObservation);
+        } on FormatException {
+          throw const FormatException(
+            'Persisted outbox conflicts with local causal identity',
+          );
+        }
         outboxIds.add(id);
+        outboxIdentities[id] = (batchActor, counter);
+        outboxFingerprints[id] = _outboxFingerprint(
+          id: id,
+          batchActor: batchActor,
+          counter: counter,
+          manifestDigest: sha256.convert(manifest).toString(),
+          objectFingerprints: objectFingerprints,
+        );
       }
       final outboxChangedRecords = <String, Set<String>>{};
       for (final row in database.select(
@@ -611,7 +1180,7 @@ class MergeStoreDatabase {
       )) {
         final batchId = row['batch_id'] as String;
         final key = row['record_key'] as String;
-        if (!outboxIds.contains(batchId)) {
+        if (!outboxIdSet.contains(batchId)) {
           throw const FormatException('Orphaned changed-record metadata');
         }
         _validateRecordKey(key);
@@ -624,25 +1193,37 @@ class MergeStoreDatabase {
       for (final row in database.select(
         'SELECT batch_id, path FROM merge_outbox_objects;',
       )) {
-        final batchId = row['batch_id'] as String;
-        final path = row['path'] as String;
-        if (!outboxIds.contains(batchId) || path.isEmpty) {
+        if (!outboxIdSet.contains(row['batch_id'] as String) ||
+            (row['path'] as String).isEmpty) {
           throw const FormatException('Orphaned outbox object reference');
         }
-        final object = database.select(
-          'SELECT 1 FROM merge_snapshot_objects WHERE path = ?;',
-          [path],
-        );
-        if (object.length != 1) {
-          throw const FormatException('Missing outbox snapshot object');
-        }
       }
-      return MergeStoreDatabaseState(
+      if (database.select('''
+            SELECT 1 FROM merge_snapshot_objects AS objects
+            WHERE NOT EXISTS (
+              SELECT 1 FROM merge_outbox_objects AS refs
+              WHERE refs.path = objects.path
+            )
+            LIMIT 1;
+          ''').isNotEmpty) {
+        throw const FormatException('Unreferenced snapshot object');
+      }
+      final stateFingerprint = _stateFingerprint(
+        rows: rows,
+        meta: meta,
+        received: received,
+        outboxIdentities: outboxIdentities,
+        outboxFingerprints: outboxFingerprints,
+        outboxChangedRecords: outboxChangedRecords,
+      );
+      final state = MergeStoreDatabaseState(
         document: document,
         localObservation: localObservation,
         observed: observed,
         received: received,
         outboxIds: outboxIds,
+        outboxIdentities: outboxIdentities,
+        outboxFingerprints: outboxFingerprints,
         outboxChangedRecords: outboxChangedRecords,
         pendingApply: pendingApply,
         pendingUnavailableDomains: pendingUnavailableDomains,
@@ -651,7 +1232,26 @@ class MergeStoreDatabase {
         persistedRows: rows,
         persistedMeta: meta,
         commitRevision: commitRevision,
+        commitFingerprint: stateFingerprint,
+        hasCommitFingerprint: storedCommitFingerprint != null,
       );
+      database.execute('COMMIT;');
+      return state;
+    } catch (error, stackTrace) {
+      if (database != null) {
+        try {
+          database.execute('ROLLBACK;');
+        } on Object {
+          // Preserve the read operation's original failure.
+        }
+      }
+      try {
+        database?.close();
+      } on Object {
+        // Preserve the read operation's original failure.
+      }
+      database = null;
+      Error.throwWithStackTrace(error, stackTrace);
     } finally {
       database?.close();
     }
@@ -745,23 +1345,683 @@ class MergeStoreDatabase {
     }
   }
 
-  void _assertCommitRevision(Database database, {required String schema}) {
-    final rows = database.select('''
-      SELECT key, value FROM $schema.merge_store_meta
-      WHERE key IN ('actor', 'commitRevision');
-      ''');
-    final metadata = <String, String>{
-      for (final row in rows) row['key'] as String: row['value'] as String,
+  _DatabaseCommitView _readCommitView(
+    Database database, {
+    required String schema,
+  }) {
+    final meta = <String, String>{
+      for (final row in database.select(
+        'SELECT key, value FROM $schema.merge_store_meta;',
+      ))
+        row['key'] as String: row['value'] as String,
     };
-    if (metadata['actor'] != null && metadata['actor'] != actor) {
-      throw _DatabaseActorMismatch(actor, metadata['actor']!);
+    if (meta['actor'] != null && meta['actor'] != actor) {
+      throw _DatabaseActorMismatch(actor, meta['actor']!);
     }
-    if (metadata.length != 2 ||
-        metadata['actor'] != actor ||
-        metadata['commitRevision'] != '$_persistedRevision') {
-      throw const FormatException('Attached SQLite replica revision mismatch');
+    final rawRevision = meta['commitRevision'];
+    final revision = int.tryParse(rawRevision ?? '');
+    final canonicalRevision =
+        revision != null && revision > 0 && '$revision' == rawRevision
+        ? revision
+        : null;
+    final ownCounterRows = database.select(
+      '''
+      SELECT counter FROM $schema.merge_document_vclock
+      WHERE scope = 'document' AND actor = ?;
+      ''',
+      [actor],
+    );
+    final identities = <String, (String, int)>{};
+    for (final row in database.select('''
+      SELECT batch_id, actor, counter FROM $schema.merge_outbox
+      ORDER BY batch_id ASC;
+      ''')) {
+      identities[row['batch_id'] as String] = (
+        row['actor'] as String,
+        row['counter'] as int,
+      );
+    }
+    final hasDurableData = database.select('''
+          SELECT 1
+          WHERE EXISTS (SELECT 1 FROM $schema.merge_store_meta)
+             OR EXISTS (SELECT 1 FROM $schema.merge_document_vclock)
+             OR EXISTS (SELECT 1 FROM $schema.merge_document_event_digests)
+             OR EXISTS (SELECT 1 FROM $schema.merge_document_records)
+             OR EXISTS (SELECT 1 FROM $schema.merge_business_records)
+             OR EXISTS (SELECT 1 FROM $schema.merge_received)
+             OR EXISTS (SELECT 1 FROM $schema.merge_outbox)
+             OR EXISTS (SELECT 1 FROM $schema.merge_outbox_objects)
+             OR EXISTS (SELECT 1 FROM $schema.merge_snapshot_objects)
+             OR EXISTS (SELECT 1 FROM $schema.merge_outbox_changed_records);
+        ''').isNotEmpty;
+    return _DatabaseCommitView(
+      revision: canonicalRevision,
+      ownCounter: ownCounterRows.isEmpty
+          ? 0
+          : ownCounterRows.single['counter'] as int,
+      meta: meta,
+      outboxIdentities: identities,
+      hasDurableData: hasDurableData,
+    );
+  }
+
+  void _assertCommitViews(
+    Database database,
+    _DatabaseCommitView main,
+    _DatabaseCommitView replica, {
+    required int ownCounter,
+    required Set<String> desiredOutboxIds,
+    required Set<String> removedOutboxIds,
+    required Set<String> addedOutboxIds,
+  }) {
+    if (main.revision == replica.revision &&
+        _hasReplicaStateDifference(database)) {
+      throw MergeStoreReplicaDivergenceException(
+        metadata: _divergenceMetadata(
+          phase: 'commit',
+          loadedRevision: _persistedRevision,
+          mainRevision: main.revision,
+          replicaRevision: replica.revision,
+          mainOwnCounter: main.ownCounter,
+          replicaOwnCounter: replica.ownCounter,
+          ownCounter: ownCounter,
+          mainOutboxIds: main.outboxIdentities.keys,
+          replicaOutboxIds: replica.outboxIdentities.keys,
+          desiredOutboxIds: desiredOutboxIds,
+          removedOutboxIds: removedOutboxIds,
+          addedOutboxIds: addedOutboxIds,
+          reason: 'same_revision_different_state',
+        ),
+      );
+    }
+    if (main.revision != replica.revision ||
+        main.revision != _persistedRevision ||
+        replica.revision != _persistedRevision) {
+      throw MergeStoreStaleStateException(
+        metadata: _divergenceMetadata(
+          phase: 'commit',
+          loadedRevision: _persistedRevision,
+          mainRevision: main.revision,
+          replicaRevision: replica.revision,
+          mainOwnCounter: main.ownCounter,
+          replicaOwnCounter: replica.ownCounter,
+          ownCounter: ownCounter,
+          mainOutboxIds: main.outboxIdentities.keys,
+          replicaOutboxIds: replica.outboxIdentities.keys,
+          desiredOutboxIds: desiredOutboxIds,
+          removedOutboxIds: removedOutboxIds,
+          addedOutboxIds: addedOutboxIds,
+          reason: 'revision_changed',
+        ),
+      );
+    }
+    final legacyStateChanged =
+        !_persistedFingerprintStored &&
+        (!_matchesLoadedTables(database, schema: 'main') ||
+            !_matchesLoadedTables(database, schema: 'replica'));
+    if (!_matchesLoadedView(main) ||
+        !_matchesLoadedView(replica) ||
+        legacyStateChanged) {
+      throw MergeStoreStaleStateException(
+        metadata: _divergenceMetadata(
+          phase: 'commit',
+          loadedRevision: _persistedRevision,
+          mainRevision: main.revision,
+          replicaRevision: replica.revision,
+          mainOwnCounter: main.ownCounter,
+          replicaOwnCounter: replica.ownCounter,
+          ownCounter: ownCounter,
+          mainOutboxIds: main.outboxIdentities.keys,
+          replicaOutboxIds: replica.outboxIdentities.keys,
+          desiredOutboxIds: desiredOutboxIds,
+          removedOutboxIds: removedOutboxIds,
+          addedOutboxIds: addedOutboxIds,
+          reason: 'durable_state_changed',
+        ),
+      );
     }
   }
+
+  bool _hasReplicaStateDifference(Database database) => database.select('''
+        SELECT 1
+        WHERE EXISTS (
+          SELECT 1 FROM main.merge_store_meta AS m
+          WHERE NOT EXISTS (
+            SELECT 1 FROM replica.merge_store_meta AS r
+            WHERE r.key = m.key AND r.value IS m.value
+          )
+        )
+        OR EXISTS (
+          SELECT 1 FROM replica.merge_store_meta AS r
+          WHERE NOT EXISTS (
+            SELECT 1 FROM main.merge_store_meta AS m
+            WHERE m.key = r.key AND m.value IS r.value
+          )
+        )
+        OR EXISTS (
+          SELECT 1 FROM main.merge_document_vclock AS m
+          WHERE NOT EXISTS (
+            SELECT 1 FROM replica.merge_document_vclock AS r
+            WHERE r.scope = m.scope AND r.actor = m.actor
+              AND r.counter IS m.counter
+          )
+        )
+        OR EXISTS (
+          SELECT 1 FROM replica.merge_document_vclock AS r
+          WHERE NOT EXISTS (
+            SELECT 1 FROM main.merge_document_vclock AS m
+            WHERE m.scope = r.scope AND m.actor = r.actor
+              AND m.counter IS r.counter
+          )
+        )
+        OR EXISTS (
+          SELECT 1 FROM main.merge_document_event_digests AS m
+          WHERE NOT EXISTS (
+            SELECT 1 FROM replica.merge_document_event_digests AS r
+            WHERE r.scope = m.scope AND r.dot = m.dot
+              AND r.digest IS m.digest
+          )
+        )
+        OR EXISTS (
+          SELECT 1 FROM replica.merge_document_event_digests AS r
+          WHERE NOT EXISTS (
+            SELECT 1 FROM main.merge_document_event_digests AS m
+            WHERE m.scope = r.scope AND m.dot = r.dot
+              AND m.digest IS r.digest
+          )
+        )
+        OR EXISTS (
+          SELECT 1 FROM main.merge_document_records AS m
+          WHERE NOT EXISTS (
+            SELECT 1 FROM replica.merge_document_records AS r
+            WHERE r.scope = m.scope AND r.record_key = m.record_key
+              AND r.value_json IS m.value_json
+          )
+        )
+        OR EXISTS (
+          SELECT 1 FROM replica.merge_document_records AS r
+          WHERE NOT EXISTS (
+            SELECT 1 FROM main.merge_document_records AS m
+            WHERE m.scope = r.scope AND m.record_key = r.record_key
+              AND m.value_json IS r.value_json
+          )
+        )
+        OR EXISTS (
+          SELECT 1 FROM main.merge_business_records AS m
+          WHERE NOT EXISTS (
+            SELECT 1 FROM replica.merge_business_records AS r
+            WHERE r.kind = m.kind AND r.record_key = m.record_key
+              AND r.value_json IS m.value_json
+          )
+        )
+        OR EXISTS (
+          SELECT 1 FROM replica.merge_business_records AS r
+          WHERE NOT EXISTS (
+            SELECT 1 FROM main.merge_business_records AS m
+            WHERE m.kind = r.kind AND m.record_key = r.record_key
+              AND m.value_json IS r.value_json
+          )
+        )
+        OR EXISTS (
+          SELECT 1 FROM main.merge_received AS m
+          WHERE NOT EXISTS (
+            SELECT 1 FROM replica.merge_received AS r
+            WHERE r.filename = m.filename
+          )
+        )
+        OR EXISTS (
+          SELECT 1 FROM replica.merge_received AS r
+          WHERE NOT EXISTS (
+            SELECT 1 FROM main.merge_received AS m
+            WHERE m.filename = r.filename
+          )
+        )
+        OR EXISTS (
+          SELECT 1 FROM main.merge_outbox AS m
+          WHERE NOT EXISTS (
+            SELECT 1 FROM replica.merge_outbox AS r
+            WHERE r.batch_id = m.batch_id AND r.actor IS m.actor
+              AND r.counter IS m.counter AND r.manifest IS m.manifest
+          )
+        )
+        OR EXISTS (
+          SELECT 1 FROM replica.merge_outbox AS r
+          WHERE NOT EXISTS (
+            SELECT 1 FROM main.merge_outbox AS m
+            WHERE m.batch_id = r.batch_id AND m.actor IS r.actor
+              AND m.counter IS r.counter AND m.manifest IS r.manifest
+          )
+        )
+        OR EXISTS (
+          SELECT 1 FROM main.merge_outbox_objects AS m
+          WHERE NOT EXISTS (
+            SELECT 1 FROM replica.merge_outbox_objects AS r
+            WHERE r.batch_id = m.batch_id AND r.path = m.path
+          )
+        )
+        OR EXISTS (
+          SELECT 1 FROM replica.merge_outbox_objects AS r
+          WHERE NOT EXISTS (
+            SELECT 1 FROM main.merge_outbox_objects AS m
+            WHERE m.batch_id = r.batch_id AND m.path = r.path
+          )
+        )
+        OR EXISTS (
+          SELECT 1 FROM main.merge_snapshot_objects AS m
+          WHERE NOT EXISTS (
+            SELECT 1 FROM replica.merge_snapshot_objects AS r
+            WHERE r.path = m.path AND r.content IS m.content
+          )
+        )
+        OR EXISTS (
+          SELECT 1 FROM replica.merge_snapshot_objects AS r
+          WHERE NOT EXISTS (
+            SELECT 1 FROM main.merge_snapshot_objects AS m
+            WHERE m.path = r.path AND m.content IS r.content
+          )
+        )
+        OR EXISTS (
+          SELECT 1 FROM main.merge_outbox_changed_records AS m
+          WHERE NOT EXISTS (
+            SELECT 1 FROM replica.merge_outbox_changed_records AS r
+            WHERE r.batch_id = m.batch_id AND r.record_key = m.record_key
+          )
+        )
+        OR EXISTS (
+          SELECT 1 FROM replica.merge_outbox_changed_records AS r
+          WHERE NOT EXISTS (
+            SELECT 1 FROM main.merge_outbox_changed_records AS m
+            WHERE m.batch_id = r.batch_id AND m.record_key = r.record_key
+          )
+        )
+        LIMIT 1;
+      ''').isNotEmpty;
+
+  void _assertOutboxSlots(
+    Map<String, (String, int)> persistedIdentities,
+    Map<String, MergeBatch> proposedBatches,
+    Set<String> addedIds, {
+    required int? mainRevision,
+    required int? replicaRevision,
+    required int ownCounter,
+    required int mainOwnCounter,
+    required int replicaOwnCounter,
+    required Set<String> desiredOutboxIds,
+    required Set<String> removedOutboxIds,
+  }) {
+    for (final entry in proposedBatches.entries) {
+      final persisted = persistedIdentities[entry.key];
+      final batch = entry.value;
+      if (persisted != null && persisted != (batch.actor, batch.counter)) {
+        throw MergeStoreIntegrityException(
+          metadata: {
+            'phase': 'commit',
+            'reason': 'persisted_batch_identity_changed',
+            'actor': actor,
+            'counter': batch.counter,
+            if (_isSafeBatchId(batch.id)) 'batchId': batch.id,
+          },
+        );
+      }
+    }
+    final slotOwners = <(String, int), String>{
+      for (final entry in persistedIdentities.entries) entry.value: entry.key,
+    };
+    for (final id in addedIds.toList()..sort()) {
+      final batch = proposedBatches[id]!;
+      final slot = (batch.actor, batch.counter);
+      final existingId = slotOwners[slot];
+      if (existingId != null && existingId != id) {
+        throw MergeOutboxCounterConflictException(
+          actor: batch.actor,
+          counter: batch.counter,
+          existingBatchId: existingId,
+          incomingBatchId: id,
+          metadata: {
+            'phase': 'commit',
+            'loadedRevision': _persistedRevision,
+            'mainRevision': mainRevision,
+            'replicaRevision': replicaRevision,
+            'ownCounter': ownCounter,
+            'mainOwnCounter': mainOwnCounter,
+            'replicaOwnCounter': replicaOwnCounter,
+            'persistedOutboxIds': _safeBatchIds(
+              _persistedOutboxIdentities.keys,
+            ),
+            'desiredOutboxIds': _safeBatchIds(desiredOutboxIds),
+            'removedOutboxIds': _safeBatchIds(removedOutboxIds),
+            'addedOutboxIds': _safeBatchIds(addedIds),
+          },
+        );
+      }
+      slotOwners[slot] = id;
+    }
+  }
+
+  void _validateBatchCausalCompatibility(
+    MergeBatch batch, {
+    required MergeDocument document,
+    required MergeDocument localObservation,
+    required String phase,
+  }) {
+    try {
+      batch.document.validateEventIdentities(document);
+      batch.document.validateEventIdentities(localObservation);
+    } on FormatException {
+      throw MergeStoreIntegrityException(
+        metadata: {
+          'phase': phase,
+          'reason': 'outbox_event_identity_conflict',
+          'actor': batch.actor,
+          'counter': batch.counter,
+          if (_isSafeBatchId(batch.id)) 'batchId': batch.id,
+        },
+      );
+    }
+  }
+
+  int? _committedRevisionIfPresent(
+    Database database, {
+    required String schema,
+  }) {
+    if (!_hasTable(database, schema: schema, table: 'merge_store_meta')) {
+      return null;
+    }
+    final metadata = <String, String>{
+      for (final row in database.select('''
+        SELECT key, value FROM $schema.merge_store_meta
+        WHERE key IN ('actor', 'commitRevision');
+        '''))
+        row['key'] as String: row['value'] as String,
+    };
+    final storedActor = metadata['actor'];
+    if (storedActor != null && storedActor != actor) {
+      throw _DatabaseActorMismatch(actor, storedActor);
+    }
+    final rawRevision = metadata['commitRevision'];
+    final revision = int.tryParse(rawRevision ?? '');
+    if (storedActor != actor ||
+        revision == null ||
+        revision <= 0 ||
+        '$revision' != rawRevision) {
+      return null;
+    }
+    return revision;
+  }
+
+  Map<String, Object?> _freshInitializationMetadata(
+    Database database, {
+    required int? mainRevision,
+    required int? replicaRevision,
+    required int ownCounter,
+    required Set<String> desiredOutboxIds,
+    required Set<String> removedOutboxIds,
+    required Set<String> addedOutboxIds,
+  }) => _divergenceMetadata(
+    phase: 'freshInitialization',
+    loadedRevision: null,
+    mainRevision: mainRevision,
+    replicaRevision: replicaRevision,
+    mainOwnCounter: _readOwnCounter(database, schema: 'main'),
+    ownCounter: ownCounter,
+    replicaOwnCounter: _readOwnCounter(database, schema: 'replica'),
+    mainOutboxIds: _readOutboxIds(database, schema: 'main'),
+    replicaOutboxIds: _readOutboxIds(database, schema: 'replica'),
+    desiredOutboxIds: desiredOutboxIds,
+    removedOutboxIds: removedOutboxIds,
+    addedOutboxIds: addedOutboxIds,
+    reason: 'durable_store_appeared',
+  );
+
+  int _readOwnCounter(Database database, {required String schema}) {
+    if (!_hasTable(database, schema: schema, table: 'merge_document_vclock')) {
+      return 0;
+    }
+    final rows = database.select(
+      '''
+      SELECT counter FROM $schema.merge_document_vclock
+      WHERE scope = 'document' AND actor = ?;
+      ''',
+      [actor],
+    );
+    return rows.isEmpty ? 0 : rows.single['counter'] as int;
+  }
+
+  List<String> _readOutboxIds(Database database, {required String schema}) {
+    if (!_hasTable(database, schema: schema, table: 'merge_outbox')) {
+      return const <String>[];
+    }
+    return [
+      for (final row in database.select(
+        'SELECT batch_id FROM $schema.merge_outbox ORDER BY batch_id;',
+      ))
+        row['batch_id'] as String,
+    ];
+  }
+
+  bool _hasTable(
+    Database database, {
+    required String schema,
+    required String table,
+  }) => database.select(
+    'SELECT 1 FROM $schema.sqlite_master WHERE type = ? AND name = ?;',
+    ['table', table],
+  ).isNotEmpty;
+
+  bool _isEmptyCommitView(_DatabaseCommitView view) =>
+      view.revision == null && !view.hasDurableData;
+
+  bool _matchesLoadedView(_DatabaseCommitView view) =>
+      view.revision == _persistedRevision &&
+      view.ownCounter == _persistedOwnCounter &&
+      _sameMap(view.meta, _persistedMeta) &&
+      _sameMap(view.outboxIdentities, _persistedOutboxIdentities) &&
+      _sameSet(view.outboxIdentities.keys.toSet(), _persistedOutboxIds) &&
+      view.meta['commitFingerprint'] ==
+          (_persistedFingerprintStored ? _persistedStateFingerprint : null);
+
+  bool _matchesLoadedTables(Database database, {required String schema}) {
+    try {
+      final meta = <String, String>{
+        for (final row in database.select(
+          'SELECT key, value FROM $schema.merge_store_meta;',
+        ))
+          row['key'] as String: row['value'] as String,
+      };
+      if (!_sameMap(meta, _persistedMeta)) return false;
+
+      var rowCount = 0;
+      bool rowMatches(String kind, String scope, String key, String value) {
+        rowCount++;
+        return _persistedRows[(kind, scope, key)] == _rowFingerprint(value);
+      }
+
+      for (final row in database.select(
+        'SELECT scope, actor, counter FROM $schema.merge_document_vclock;',
+      )) {
+        final scope = row['scope'] as String;
+        final actor = row['actor'] as String;
+        final counter = row['counter'] as int;
+        if (!rowMatches('vclock', scope, actor, '$counter')) return false;
+      }
+      for (final row in database.select(
+        'SELECT scope, dot, digest FROM $schema.merge_document_event_digests;',
+      )) {
+        if (!rowMatches(
+          'event',
+          row['scope'] as String,
+          row['dot'] as String,
+          row['digest'] as String,
+        )) {
+          return false;
+        }
+      }
+      for (final row in database.select(
+        'SELECT scope, record_key, value_json FROM $schema.merge_document_records;',
+      )) {
+        if (!rowMatches(
+          'doc',
+          row['scope'] as String,
+          row['record_key'] as String,
+          row['value_json'] as String,
+        )) {
+          return false;
+        }
+      }
+      for (final row in database.select(
+        'SELECT kind, record_key, value_json FROM $schema.merge_business_records;',
+      )) {
+        if (!rowMatches(
+          row['kind'] as String,
+          '',
+          row['record_key'] as String,
+          row['value_json'] as String,
+        )) {
+          return false;
+        }
+      }
+      if (rowCount != _persistedRows.length) return false;
+
+      var receivedCount = 0;
+      for (final row in database.select(
+        'SELECT filename FROM $schema.merge_received;',
+      )) {
+        receivedCount++;
+        if (!_persistedReceived.contains(row['filename'] as String)) {
+          return false;
+        }
+      }
+      if (receivedCount != _persistedReceived.length) return false;
+
+      var outboxCount = 0;
+      for (final row in database.select('''
+        SELECT batch_id, actor, counter, manifest
+        FROM $schema.merge_outbox
+        ORDER BY batch_id ASC;
+        ''')) {
+        final id = row['batch_id'] as String;
+        final batchActor = row['actor'] as String;
+        final counter = row['counter'] as int;
+        final manifest = row['manifest'];
+        if (manifest is! List<int> ||
+            _persistedOutboxIdentities[id] != (batchActor, counter)) {
+          return false;
+        }
+        outboxCount++;
+        final objectRows = database.select(
+          '''
+          SELECT refs.path, objects.content
+          FROM $schema.merge_outbox_objects AS refs
+          LEFT JOIN $schema.merge_snapshot_objects AS objects
+            ON objects.path = refs.path
+          WHERE refs.batch_id = ?
+          ORDER BY refs.path ASC;
+          ''',
+          [id],
+        );
+        final objectFingerprints = <String, String>{};
+        for (final objectRow in objectRows) {
+          final path = objectRow['path'] as String;
+          final content = objectRow['content'];
+          if (path.isEmpty ||
+              content is! List<int> ||
+              objectFingerprints.containsKey(path)) {
+            return false;
+          }
+          objectFingerprints[path] = sha256.convert(content).toString();
+        }
+        final fingerprint = _outboxFingerprint(
+          id: id,
+          batchActor: batchActor,
+          counter: counter,
+          manifestDigest: sha256.convert(manifest).toString(),
+          objectFingerprints: objectFingerprints,
+        );
+        if (_persistedOutboxFingerprints[id] != fingerprint) return false;
+      }
+      if (outboxCount != _persistedOutboxIdentities.length) return false;
+
+      var changedRecordCount = 0;
+      for (final row in database.select(
+        'SELECT batch_id, record_key FROM $schema.merge_outbox_changed_records;',
+      )) {
+        final batchId = row['batch_id'] as String;
+        final key = row['record_key'] as String;
+        changedRecordCount++;
+        if (!(_persistedOutboxChangedRecords[batchId]?.contains(key) ??
+            false)) {
+          return false;
+        }
+      }
+      final expectedChangedRecordCount = _persistedOutboxChangedRecords.values
+          .fold<int>(0, (total, keys) => total + keys.length);
+      if (changedRecordCount != expectedChangedRecordCount ||
+          database.select('''
+                SELECT 1 FROM $schema.merge_outbox_objects AS refs
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM $schema.merge_outbox AS batches
+                  WHERE batches.batch_id = refs.batch_id
+                )
+                LIMIT 1;
+              ''').isNotEmpty ||
+          database.select('''
+                SELECT 1 FROM $schema.merge_snapshot_objects AS objects
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM $schema.merge_outbox_objects AS refs
+                  WHERE refs.path = objects.path
+                )
+                LIMIT 1;
+              ''').isNotEmpty) {
+        return false;
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  bool _isSafeBatchId(String id) => _safeBatchIdPattern.hasMatch(id);
+
+  List<String> _safeBatchIds(Iterable<String> ids) {
+    final safeIds = [
+      for (final id in ids)
+        if (_isSafeBatchId(id)) id,
+    ]..sort();
+    return safeIds;
+  }
+
+  Map<String, Object?> _divergenceMetadata({
+    required String phase,
+    required int? loadedRevision,
+    required int? mainRevision,
+    required int? replicaRevision,
+    required int mainOwnCounter,
+    required int replicaOwnCounter,
+    Iterable<String> mainOutboxIds = const <String>[],
+    Iterable<String> replicaOutboxIds = const <String>[],
+    Iterable<String> desiredOutboxIds = const <String>[],
+    Iterable<String> removedOutboxIds = const <String>[],
+    Iterable<String> addedOutboxIds = const <String>[],
+    required String reason,
+    int? ownCounter,
+  }) => {
+    'phase': phase,
+    'reason': reason,
+    'actor': actor,
+    'loadedRevision': ?loadedRevision,
+    'mainRevision': ?mainRevision,
+    if (loadedRevision != null) 'loadedOwnCounter': _persistedOwnCounter,
+    'ownCounter': ?ownCounter,
+    'replicaRevision': ?replicaRevision,
+    'mainOwnCounter': mainOwnCounter,
+    'replicaOwnCounter': replicaOwnCounter,
+    'mainOutboxIds': _safeBatchIds(mainOutboxIds),
+    'replicaOutboxIds': _safeBatchIds(replicaOutboxIds),
+    'persistedOutboxIds': _safeBatchIds(_persistedOutboxIdentities.keys),
+    'desiredOutboxIds': _safeBatchIds(desiredOutboxIds),
+    'removedOutboxIds': _safeBatchIds(removedOutboxIds),
+    'addedOutboxIds': _safeBatchIds(addedOutboxIds),
+  };
 
   Map<(String, String, String), String> _encodeRows(
     Map<String, MergeDocument> documents,
@@ -803,6 +2063,7 @@ class MergeStoreDatabase {
     Database database,
     Map<(String, String, String), String> next, {
     required String schema,
+    required Map<(String, String, String), String> fingerprints,
   }) {
     for (final entry in _persistedRows.entries) {
       if (next.containsKey(entry.key)) continue;
@@ -836,7 +2097,7 @@ class MergeStoreDatabase {
       }
     }
     for (final entry in next.entries) {
-      if (_persistedRows[entry.key] == _rowFingerprint(entry.value)) continue;
+      if (_persistedRows[entry.key] == fingerprints[entry.key]) continue;
       final (kind, scope, key) = entry.key;
       switch (kind) {
         case 'doc':
@@ -1094,6 +2355,111 @@ class MergeStoreDatabase {
     return true;
   }
 
+  static bool _sameCriticalState(
+    MergeStoreDatabaseState left,
+    MergeStoreDatabaseState right,
+  ) =>
+      _sameMap(left.persistedRows, right.persistedRows) &&
+      _sameMap(left.persistedMeta, right.persistedMeta) &&
+      _sameSet(left.received, right.received) &&
+      _sameSet(left.outboxIds.toSet(), right.outboxIds.toSet()) &&
+      _sameMap(left.outboxIdentities, right.outboxIdentities) &&
+      _sameMap(left.outboxFingerprints, right.outboxFingerprints) &&
+      _sameSetMap(left.outboxChangedRecords, right.outboxChangedRecords);
+  static bool _hasValidStoredFingerprint(MergeStoreDatabaseState state) =>
+      !state.hasCommitFingerprint ||
+      state.persistedMeta['commitFingerprint'] == state.commitFingerprint;
+
+  static bool _sameSetMap(
+    Map<String, Set<String>> left,
+    Map<String, Set<String>> right,
+  ) =>
+      left.length == right.length &&
+      left.entries.every(
+        (entry) =>
+            right.containsKey(entry.key) &&
+            _sameSet(entry.value, right[entry.key]!),
+      );
+
+  static String _outboxFingerprint({
+    required String id,
+    required String batchActor,
+    required int counter,
+    required String manifestDigest,
+    required Map<String, String> objectFingerprints,
+  }) {
+    final objects = objectFingerprints.entries.toList()
+      ..sort((left, right) => left.key.compareTo(right.key));
+    return _rowFingerprint(
+      canonicalSyncJson({
+        'id': id,
+        'actor': batchActor,
+        'counter': counter,
+        'manifest': manifestDigest,
+        'objects': [
+          for (final object in objects)
+            {'path': object.key, 'digest': object.value},
+        ],
+      }),
+    );
+  }
+
+  static String _stateFingerprint({
+    required Map<(String, String, String), String> rows,
+    required Map<String, String> meta,
+    required Set<String> received,
+    required Map<String, (String, int)> outboxIdentities,
+    required Map<String, String> outboxFingerprints,
+    required Map<String, Set<String>> outboxChangedRecords,
+  }) {
+    final digestSink = _DigestSink();
+    final output = sha256.startChunkedConversion(digestSink);
+    void addJson(Object? value) {
+      output.add(utf8.encode(canonicalSyncJson(value)));
+      output.add(utf8.encode('\n'));
+    }
+
+    final fingerprintFreeMeta = Map<String, String>.of(meta)
+      ..remove('commitFingerprint');
+    addJson(['meta', fingerprintFreeMeta]);
+
+    final rowKeys = rows.keys.toList()
+      ..sort((left, right) {
+        final kind = left.$1.compareTo(right.$1);
+        if (kind != 0) return kind;
+        final scope = left.$2.compareTo(right.$2);
+        return scope != 0 ? scope : left.$3.compareTo(right.$3);
+      });
+    for (final key in rowKeys) {
+      addJson(['row', key.$1, key.$2, key.$3, rows[key]]);
+    }
+
+    final receivedNames = received.toList()..sort();
+    for (final name in receivedNames) {
+      addJson(['received', name]);
+    }
+
+    final identities = outboxIdentities.entries.toList()
+      ..sort((left, right) => left.key.compareTo(right.key));
+    for (final entry in identities) {
+      addJson(['outboxIdentity', entry.key, entry.value.$1, entry.value.$2]);
+    }
+    final outboxIds = outboxFingerprints.keys.toList()..sort();
+    for (final id in outboxIds) {
+      addJson(['outboxContent', id, outboxFingerprints[id]]);
+    }
+
+    final changedBatches = outboxChangedRecords.entries.toList()
+      ..sort((left, right) => left.key.compareTo(right.key));
+    for (final entry in changedBatches) {
+      final recordKeys = entry.value.toList()..sort();
+      addJson(['changedRecords', entry.key, recordKeys]);
+    }
+
+    output.close();
+    return digestSink.value!.toString();
+  }
+
   static bool _sameRowValues(
     Map<(String, String, String), String> persisted,
     Map<(String, String, String), String> next,
@@ -1124,6 +2490,8 @@ class MergeStoreDatabaseState {
   final SyncRecords observed;
   final Set<String> received;
   final List<String> outboxIds;
+  final Map<String, (String, int)> outboxIdentities;
+  final Map<String, String> outboxFingerprints;
   final SyncRecords? pendingApply;
   final Set<String> pendingUnavailableDomains;
   final Map<String, Set<String>> outboxChangedRecords;
@@ -1132,6 +2500,8 @@ class MergeStoreDatabaseState {
   final Map<(String, String, String), String> persistedRows;
   final Map<String, String> persistedMeta;
   final int commitRevision;
+  final String commitFingerprint;
+  final bool hasCommitFingerprint;
 
   const MergeStoreDatabaseState({
     required this.document,
@@ -1140,6 +2510,8 @@ class MergeStoreDatabaseState {
     required this.received,
     required this.outboxIds,
     required this.pendingApply,
+    required this.outboxIdentities,
+    required this.outboxFingerprints,
     required this.outboxChangedRecords,
     required this.pendingUnavailableDomains,
     required this.initialized,
@@ -1147,6 +2519,8 @@ class MergeStoreDatabaseState {
     required this.persistedRows,
     required this.persistedMeta,
     required this.commitRevision,
+    required this.commitFingerprint,
+    required this.hasCommitFingerprint,
   });
   MergeStoreDatabaseState withRecovery(bool value) => MergeStoreDatabaseState(
     document: document,
@@ -1154,6 +2528,8 @@ class MergeStoreDatabaseState {
     observed: observed,
     received: received,
     outboxIds: outboxIds,
+    outboxIdentities: outboxIdentities,
+    outboxFingerprints: outboxFingerprints,
     pendingApply: pendingApply,
     outboxChangedRecords: outboxChangedRecords,
     pendingUnavailableDomains: pendingUnavailableDomains,
@@ -1162,10 +2538,52 @@ class MergeStoreDatabaseState {
     persistedRows: persistedRows,
     persistedMeta: persistedMeta,
     commitRevision: commitRevision,
+    commitFingerprint: commitFingerprint,
+    hasCommitFingerprint: hasCommitFingerprint,
   );
+}
+
+class _DatabaseCommitView {
+  final int? revision;
+  final int ownCounter;
+  final Map<String, String> meta;
+  final Map<String, (String, int)> outboxIdentities;
+  final bool hasDurableData;
+
+  const _DatabaseCommitView({
+    required this.revision,
+    required this.ownCounter,
+    required this.meta,
+    required this.outboxIdentities,
+    required this.hasDurableData,
+  });
 }
 
 class _DatabaseActorMismatch extends StateError {
   _DatabaseActorMismatch(String expected, String actual)
-    : super('Store actor mismatch: expected "$expected", found "$actual"');
+    : super(
+        MergeStoreIntegrityException(
+          metadata: {
+            'phase': 'load',
+            'reason': 'actor_mismatch',
+            'actor': expected,
+            'storedActor': actual,
+          },
+        ).toString(),
+      );
+
+  @override
+  String toString() => message;
+}
+
+class _DigestSink implements Sink<Digest> {
+  Digest? value;
+
+  @override
+  void add(Digest digest) {
+    value = digest;
+  }
+
+  @override
+  void close() {}
 }

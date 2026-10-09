@@ -521,6 +521,78 @@ void main() {
       );
 
       test(
+        'original restore reloads durable sync state before recapturing changed settings',
+        () async {
+          DataSync.resetForTesting();
+          DataSync.debugDisableWindowCloseHandler = true;
+          appdata.settings['webdav'] = [
+            'https://example.com/dav',
+            'user',
+            'pass',
+          ];
+          appdata.settings['cacheSize'] = 2048;
+          appdata.implicitData['syncDeviceId'] = 'native_restore_device';
+          appdata.implicitData['webdavSyncDeviceName'] = 'Native Restore';
+          appdata.implicitData['webdavSyncTiming'] = 'manual';
+          final key = syncRecordKey('setting', ['cacheSize']);
+          DataSync.debugExportRecords = () async => {
+            key: {'value': appdata.settings['cacheSize']},
+          };
+          DataSync.debugApplyRecords = (records, {beforeCommit}) async {
+            beforeCommit?.call();
+            appdata.settings['cacheSize'] = records[key]!['value'];
+          };
+          final sync = DataSync();
+          try {
+            await sync.waitForStartupMerge();
+            final coordinator = sync.coordinator!;
+            final actor = coordinator.actor;
+            expect(coordinator.store.document.counterFor(actor), 1);
+            final concurrentWriter = MergeStore(
+              coordinator.stateDirectory,
+              actor,
+            );
+            await concurrentWriter.load();
+            appdata.settings['cacheSize'] = 1024;
+            await concurrentWriter.capture({
+              key: {'value': 1024},
+            });
+            final pendingIntent = concurrentWriter
+                .pendingBatch(concurrentWriter.pendingBatchIds.single)
+                .document;
+            final archive = await _createArchive(
+              root,
+              textEntries: {
+                'appdata.json': jsonEncode({
+                  'settings': {'cacheSize': 512},
+                  'searchHistory': <String>[],
+                }),
+              },
+            );
+            await importAppData(archive);
+            expect(appdata.settings['cacheSize'], 512);
+            expect(coordinator.store.needsRecovery, isTrue);
+            await coordinator.captureLocalChanges();
+            expect(coordinator.store.document.counterFor(actor), 3);
+            expect(coordinator.store.observed[key], {'value': 512});
+            final replacement = coordinator.store.pendingBatch(
+              coordinator.store.pendingBatchIds.single,
+            );
+            expect(replacement.document.dominates(pendingIntent), isTrue);
+            final restarted = MergeStore(coordinator.stateDirectory, actor);
+            await restarted.load();
+            expect(restarted.document.counterFor(actor), 3);
+            expect(restarted.observed[key], {'value': 512});
+            expect(restarted.pendingBatchIds, [replacement.id]);
+          } finally {
+            await sync.waitForStartupMerge().catchError((_) {});
+            await sync.waitForSync();
+            DataSync.resetForTesting();
+          }
+        },
+      );
+
+      test(
         'keeps earlier history replacement after a later appdata failure',
         () async {
           _addHistory('from-backup', 'Backup history');
