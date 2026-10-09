@@ -138,7 +138,7 @@ void main() {
       await clock.elapse(const Duration(minutes: 3));
       await sync.waitForSync();
 
-      expect(calls.uploads, 0);
+      expect(sync.hasPendingChanges, isFalse);
       expect(sync.statusSnapshot.lastSyncTime, lastAttempt);
       expect(sync.statusSnapshot.lastSuccessTime, lastSuccess);
     },

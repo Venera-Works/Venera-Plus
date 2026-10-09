@@ -1403,7 +1403,7 @@ class DataSync with ChangeNotifier {
     }
     if (!hasOutbox &&
         !shouldCheckRemote &&
-        currentDirection != SyncDirection.uploadOnly) {
+        (!forceCapture || currentDirection != SyncDirection.uploadOnly)) {
       await _clearLocalPendingIfUnchanged(generation);
       _flushRequested = false;
       return const Res(true);

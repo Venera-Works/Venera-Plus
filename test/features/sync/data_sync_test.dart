@@ -514,45 +514,77 @@ void main() {
             },
           };
         }
+        final expectedRecords = cloneSyncRecords(localRecords);
         final sync = DataSync();
         final initial = await sync.syncNow();
         expect(initial.success, isTrue, reason: initial.errorMessage);
-        final historyObjects = {
-          for (final entry in transport.remoteFiles.entries)
-            if (entry.key.contains('/objects/history/')) entry.key: entry.value,
+
+        Future<SyncPackManifest> latestOwnManifest() async {
+          final actor = sync.coordinator!.actor;
+          final latest = (await MergeRemote(client).list())
+              .where((entry) => entry.actor == actor)
+              .reduce(
+                (current, candidate) =>
+                    candidate.counter > current.counter ? candidate : current,
+              );
+          final bytes = transport.remoteFiles[latest.filename];
+          if (bytes == null) {
+            throw StateError('Missing published manifest ${latest.filename}');
+          }
+          return SyncPackManifest.parse(bytes);
+        }
+
+        Map<String, Map<String, Object?>> historyReferences(
+          SyncPackManifest manifest,
+        ) => {
+          for (final reference in manifest.objects)
+            if (reference['domain'] == 'history')
+              reference['path']! as String: reference,
         };
-        expect(historyObjects, isNotEmpty);
+
+        final initialHistoryReferences = historyReferences(
+          await latestOwnManifest(),
+        );
+        expect(
+          initialHistoryReferences.values.fold<int>(
+            0,
+            (count, reference) => count + (reference['recordCount']! as int),
+          ),
+          120,
+        );
+        final oldHistoryPackFilenames = initialHistoryReferences.values
+            .map((reference) => '${reference['packSha256']! as String}.pack')
+            .toSet();
+
         transport.requests.clear();
         localRecords[theme] = {'value': 'light'};
+        expectedRecords[theme] = {'value': 'light'};
         sync.onDataChanged(domains: {'setting'});
         final updated = await sync.syncNow();
         expect(updated.success, isTrue, reason: updated.errorMessage);
-        final dataPuts = transport.requests.where(
-          (request) =>
-              request.method == 'PUT' && request.uri.path.endsWith('.json.gz'),
+
+        final updatedHistoryReferences = historyReferences(
+          await latestOwnManifest(),
         );
+        expect(updatedHistoryReferences, initialHistoryReferences);
         expect(
-          dataPuts.any(
-            (request) => request.uri.path.contains('/objects/setting/'),
+          transport.requests.where(
+            (request) =>
+                request.method == 'PUT' &&
+                request.uri.pathSegments.isNotEmpty &&
+                oldHistoryPackFilenames.contains(request.uri.pathSegments.last),
           ),
-          isTrue,
+          isEmpty,
         );
-        expect(
-          dataPuts.any(
-            (request) => request.uri.path.contains('/objects/history/'),
-          ),
-          isFalse,
-        );
-        for (final entry in historyObjects.entries) {
-          expect(transport.remoteFiles[entry.key], entry.value);
-        }
+
+        final freshRemote = MergeRemote(client);
         final published = MergeDocument();
-        for (final entry in await sync.coordinator!.remote.list()) {
-          published.merge(
-            (await sync.coordinator!.remote.download(entry)).document,
-          );
+        for (final entry in await freshRemote.list()) {
+          published.merge((await freshRemote.download(entry)).document);
         }
-        expect(published.materialize(), localRecords);
+        final readBack = published.materialize();
+        expect(readBack, expectedRecords);
+        expect(readBack[theme], {'value': 'light'});
       },
     );
 
@@ -560,12 +592,17 @@ void main() {
       'v4 migration archives same-counter heads after a verified v5 bridge',
       () async {
         final key = syncRecordKey('setting', ['migrationCollision']);
-        final left = MergeDocument()
-          ..captureLocal('older_device', {}, {
+        final baselineRecords = {
+          key: {'value': 'base'},
+        };
+        final baseline = MergeDocument()
+          ..captureLocal('older_device', {}, baselineRecords);
+        final left = baseline.clone()
+          ..captureLocal('left_peer', baselineRecords, {
             key: {'value': 'left'},
           });
-        final right = MergeDocument()
-          ..captureLocal('older_device', {}, {
+        final right = baseline.clone()
+          ..captureLocal('right_peer', baselineRecords, {
             key: {'value': 'right'},
           });
         final leftBatch = MergeBatch.create(
