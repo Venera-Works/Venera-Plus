@@ -27,6 +27,9 @@ import 'merge_sync_coordinator.dart';
 import 'sync_preferences_adapter.dart';
 import 'sync_device.dart';
 
+const bool _syncDiagnosticsEnabled =
+    kDebugMode || bool.fromEnvironment('VENERA_SYNC_DIAGNOSTICS');
+
 enum _DataSyncTask { sync, upload, download, configure, resolve, repair }
 
 class _SyncRequest {
@@ -69,6 +72,7 @@ class DataSyncStatusSnapshot {
     this.isPartial = false,
     this.lastTrigger,
     this.lastSuccessTime = 0,
+    this.lastSyncDurationMs = 0,
     this.pendingChangeCount = 0,
     this.changedRecordCounts = const {},
     this.uploadedBytes = 0,
@@ -87,13 +91,14 @@ class DataSyncStatusSnapshot {
   final bool isSyncing;
   final int lastSyncTime;
   final String? lastError;
+  final String? lastTrigger;
+  final int lastSuccessTime;
   final bool hasConflict;
   final int conflictCount;
   final List<SyncSourceIssue> sourceIssues;
   final Set<String> unavailableDomains;
   final bool isPartial;
-  final String? lastTrigger;
-  final int lastSuccessTime;
+  final int lastSyncDurationMs;
   final int pendingChangeCount;
   final Map<String, int> changedRecordCounts;
   final int uploadedBytes;
@@ -483,6 +488,7 @@ class DataSync with ChangeNotifier {
   int get downloadedBytes => _coordinator?.remote.downloadedBytes ?? 0;
   int get uploadedObjects => _coordinator?.remote.uploadedObjects ?? 0;
   int get downloadedObjects => _coordinator?.remote.downloadedObjects ?? 0;
+  int get lastSyncDurationMs => _coordinator?.lastSyncDurationMs ?? 0;
 
   @visibleForTesting
   static DateTime Function()? debugNow;
@@ -933,6 +939,7 @@ class DataSync with ChangeNotifier {
         : null,
     lastSuccessTime:
         _readTimestamp('webdavSyncLastSuccess')?.millisecondsSinceEpoch ?? 0,
+    lastSyncDurationMs: lastSyncDurationMs,
     pendingChangeCount: pendingChangeCount,
     changedRecordCounts: changedRecordCounts,
     uploadedBytes: uploadedBytes,
@@ -1394,7 +1401,9 @@ class DataSync with ChangeNotifier {
     if (!forceCapture || !shouldCheckRemote) {
       hasOutbox = await coordinator.captureLocalChanges();
     }
-    if (!hasOutbox && !shouldCheckRemote) {
+    if (!hasOutbox &&
+        !shouldCheckRemote &&
+        currentDirection != SyncDirection.uploadOnly) {
       await _clearLocalPendingIfUnchanged(generation);
       _flushRequested = false;
       return const Res(true);
@@ -1509,6 +1518,7 @@ class DataSync with ChangeNotifier {
     final shouldCheckRemote =
         checkRemote && direction != SyncDirection.uploadOnly;
     if (direction != SyncDirection.downloadOnly &&
+        direction != SyncDirection.uploadOnly &&
         !shouldCheckRemote &&
         forceCapture) {
       final generation = _changeGeneration;
@@ -1539,11 +1549,7 @@ class DataSync with ChangeNotifier {
     if (coordinator == null) {
       return const Res.error('WebDAV is not configured');
     }
-    final generation = _changeGeneration;
-    if (forceCapture && !await coordinator.captureLocalChanges()) {
-      await _clearLocalPendingIfUnchanged(generation);
-      return const Res(true);
-    }
+    if (forceCapture) await coordinator.captureLocalChanges();
     return _performCoordinatorSync(
       direction: SyncDirection.uploadOnly,
       checkRemote: false,
@@ -1768,5 +1774,5 @@ class DataSync with ChangeNotifier {
 
   dav.Client _client(WebDavEndpoint endpoint) =>
       debugClientFactory?.call(endpoint) ??
-      endpoint.createClient(logRequests: true);
+      endpoint.createClient(logRequests: _syncDiagnosticsEnabled);
 }

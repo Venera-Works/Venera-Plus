@@ -1,8 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_plus/features/sync/merge_engine.dart';
-import 'package:venera_plus/features/sync/merge_snapshot.dart';
+import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/sync_records.dart';
 
 void main() {
@@ -202,6 +201,79 @@ void main() {
       throwsFormatException,
     );
   });
+  test(
+    'encoding cache preserves v4 bytes and fingerprints causal event digests',
+    () {
+      const actor = 'snapshot_cache_actor';
+      final key = syncRecordKey('setting', ['themeMode']);
+      final document = MergeDocument();
+      document.captureLocal(actor, const {}, {
+        key: {'value': 'dark'},
+      });
+      final batch = MergeBatch.create(
+        actor: actor,
+        counter: document.counterFor(actor),
+        document: document,
+      );
+      final cache = MergeSnapshotEncodingCache(maxBytes: 1024 * 1024);
+      final uncached = MergeSnapshot.fromBatch(batch);
+      final first = MergeSnapshot.fromBatch(batch, encodingCache: cache);
+      expect(
+        first.serializeManifest(),
+        orderedEquals(uncached.serializeManifest()),
+      );
+      expect(first.objects.keys, unorderedEquals(uncached.objects.keys));
+      for (final path in first.objects.keys) {
+        expect(first.objects[path], orderedEquals(uncached.objects[path]!));
+      }
+      final encodedBytes = cache.encodedBytes;
+      expect(encodedBytes, greaterThan(0));
+
+      final repeated = MergeSnapshot.fromBatch(batch, encodingCache: cache);
+      expect(
+        repeated.serializeManifest(),
+        orderedEquals(first.serializeManifest()),
+      );
+      expect(cache.hits, first.objects.length);
+      expect(cache.encodedBytes, encodedBytes);
+
+      final causalDocument = document.clone();
+      final dark = causalDocument.materialize();
+      final light = Map<String, Map<String, Object?>>.of(dark)
+        ..[key] = {'value': 'light'};
+      causalDocument.captureLocal(actor, dark, light);
+      final restoredDark = Map<String, Map<String, Object?>>.of(light)
+        ..[key] = {'value': 'dark'};
+      causalDocument.captureLocal(actor, light, restoredDark);
+      final causalBatch = MergeBatch.create(
+        actor: actor,
+        counter: causalDocument.counterFor(actor),
+        document: causalDocument,
+      );
+      expect(causalBatch.document.materialize(), batch.document.materialize());
+      expect(
+        causalBatch.document.toJson()['eventDigests'],
+        isNot(batch.document.toJson()['eventDigests']),
+      );
+      final causalSnapshot = MergeSnapshot.fromBatch(
+        causalBatch,
+        encodingCache: cache,
+      );
+      expect(cache.hits, first.objects.length);
+      expect(cache.encodedBytes, greaterThan(encodedBytes));
+      expect(
+        causalSnapshot.objects.keys.single,
+        isNot(first.objects.keys.single),
+      );
+      expect(
+        MergeSnapshot.decode(
+          causalSnapshot.serializeManifest(),
+          causalSnapshot.objects,
+        ).toJson(),
+        causalBatch.toJson(),
+      );
+    },
+  );
 }
 
 List<String> _pathsFor(MergeSnapshot snapshot, String domain) =>

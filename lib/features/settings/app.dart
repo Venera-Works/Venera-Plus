@@ -113,6 +113,11 @@ class _DataSyncStatusPanel extends StatelessWidget {
             }),
           ),
           Text(
+            'Last sync duration: @duration ms'.tlParams({
+              'duration': status.lastSyncDurationMs,
+            }),
+          ),
+          Text(
             'Uploaded: @bytes bytes in @objects objects'.tlParams({
               'bytes': status.uploadedBytes,
               'objects': status.uploadedObjects,

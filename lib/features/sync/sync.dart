@@ -6,6 +6,8 @@ export 'sync_action_button.dart';
 export 'merge_engine.dart';
 export 'merge_remote.dart';
 export 'merge_snapshot.dart';
+export 'sync_pack.dart';
+export 'sync_pack_cache.dart';
 export 'merge_store.dart';
 export 'merge_sync_coordinator.dart';
 export 'sync_conflict_dialog.dart';

@@ -51,10 +51,15 @@ class WebDavEndpoint {
 }
 
 class _WebDavDiagnostics extends Interceptor {
-  // Preserve the encoded path and its case, but never log URL credentials,
-  // query parameters, fragments, headers, or request/response bodies.
+  // Endpoint paths can identify a device or a private WebDAV namespace.
+  // Diagnostics retain only the origin and never log paths or URL secrets.
   static String _safeUrl(Uri uri) {
-    return uri.replace(userInfo: '').toString().split(RegExp(r'[?#]')).first;
+    if (uri.scheme.isEmpty || uri.host.isEmpty) return '[invalid URL]';
+    return Uri(
+      scheme: uri.scheme,
+      host: uri.host,
+      port: uri.hasPort ? uri.port : null,
+    ).toString();
   }
 
   static String _request(RequestOptions options) {

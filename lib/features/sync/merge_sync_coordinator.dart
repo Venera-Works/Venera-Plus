@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kDebugMode;
+
 import 'package:crypto/crypto.dart';
 import 'package:uuid/uuid.dart';
 
@@ -20,6 +22,9 @@ import 'merge_snapshot.dart';
 import 'merge_store.dart';
 import 'sync_preferences_adapter.dart';
 
+const bool _syncDiagnosticsEnabled =
+    kDebugMode || bool.fromEnvironment('VENERA_SYNC_DIAGNOSTICS');
+
 /// Exception thrown when local data changes during the apply commit stage.
 class ConcurrentEditException implements Exception {
   final String message;
@@ -29,6 +34,102 @@ class ConcurrentEditException implements Exception {
 
   @override
   String toString() => 'ConcurrentEditException: $message';
+}
+
+class _V4ArchiveMigration {
+  _V4ArchiveMigration({
+    required this.inventory,
+    required this.document,
+    required this.publishArchive,
+    required this.acceptChanges,
+    required this.imported,
+  }) : assert(!publishArchive || document != null);
+
+  final List<MergeRemoteEntry> inventory;
+  final MergeDocument? document;
+  final bool publishArchive;
+  final bool acceptChanges;
+  final bool imported;
+}
+
+class _VerifiedV5Publication {
+  const _VerifiedV5Publication({required this.entry, required this.batch});
+
+  final MergeRemoteEntry entry;
+  final MergeBatch batch;
+}
+
+class _SyncDiagnostics {
+  final Map<String, int> phaseDurationsMs = {};
+
+  void add(String phase, int milliseconds) {
+    phaseDurationsMs.update(
+      phase,
+      (current) => current + milliseconds,
+      ifAbsent: () => milliseconds,
+    );
+  }
+}
+
+Future<T> _measureSyncPhase<T>(
+  _SyncDiagnostics diagnostics,
+  String phase,
+  Future<T> Function() action,
+) async {
+  final stopwatch = Stopwatch()..start();
+  try {
+    return await action();
+  } finally {
+    diagnostics.add(phase, stopwatch.elapsedMilliseconds);
+  }
+}
+
+bool _sameV4Entry(MergeRemoteEntry left, MergeRemoteEntry right) =>
+    left.filename == right.filename &&
+    left.actor == right.actor &&
+    left.counter == right.counter &&
+    left.digest == right.digest &&
+    left.layout == right.layout;
+
+bool _sameV4Inventory(
+  List<MergeRemoteEntry> left,
+  List<MergeRemoteEntry> right,
+) {
+  if (left.length != right.length) return false;
+  final rightByPath = {for (final entry in right) entry.filename: entry};
+  return left.every((entry) {
+    final other = rightByPath[entry.filename];
+    return other != null && _sameV4Entry(entry, other);
+  });
+}
+
+String _v4InventoryDigest(List<MergeRemoteEntry> inventory) {
+  final entries = inventory.toList()
+    ..sort((a, b) => a.filename.compareTo(b.filename));
+  return sha256
+      .convert(
+        utf8.encode(
+          canonicalSyncJson([
+            for (final entry in entries)
+              {
+                'filename': entry.filename,
+                'actor': entry.actor,
+                'counter': entry.counter,
+                'digest': entry.digest,
+              },
+          ]),
+        ),
+      )
+      .toString();
+}
+
+Future<T> _measureCoordinatorPhase<T>(
+  _SyncDiagnostics? diagnostics,
+  String phase,
+  Future<T> Function() action,
+) async {
+  if (diagnostics == null) return action();
+  return _measureSyncPhase(diagnostics, phase, action);
 }
 
 /// Coordinates multi-device merge synchronization across business domains.
@@ -90,9 +191,15 @@ class MergeSyncCoordinator {
   SyncLocalSnapshot? _cachedSnapshot;
   int? _capturedGeneration;
   bool _legacyChangesDetected = false;
-  bool get legacyChangesDetected => _legacyChangesDetected;
+  bool _v4ChangesDetected = false;
+  bool get legacyChangesDetected =>
+      _legacyChangesDetected || _v4ChangesDetected;
   int get pendingChangeCount => store.pendingRecordCount;
   bool _counterReconciliationComplete = false;
+  _SyncDiagnostics? _activeDiagnostics;
+  _V4ArchiveMigration? _cachedV4Migration;
+  int _lastSyncDurationMs = 0;
+  int get lastSyncDurationMs => _lastSyncDurationMs;
 
   /// Hints only narrow reads; startup, explicit checks and failed guards still
   /// reconcile the entire profile so external file edits cannot be missed.
@@ -121,6 +228,9 @@ class MergeSyncCoordinator {
     }
     return Map.unmodifiable(result);
   }
+
+  Future<T> _measure<T>(String phase, Future<T> Function() action) =>
+      _measureCoordinatorPhase(_activeDiagnostics, phase, action);
 
   Set<String> _recordChanges(SyncRecords before, SyncRecords after) {
     final domains = <String>{};
@@ -657,20 +767,26 @@ class MergeSyncCoordinator {
 
     // A newly published checkpoint cannot substitute for reading legacy roots
     // during this endpoint's first archive cutover.
+    final remoteEntries = await _measure(
+      'discover',
+      () => remote.list(latestOnly: false),
+    );
     final remoteDocs = <MergeDocument>[];
-    for (final entry in await remote.list(latestOnly: false)) {
+    for (final entry in remoteEntries) {
       try {
-        final batch = await remote.download(entry);
-        remoteDocs.add(batch.document);
-        if (!applyToLocal) {
-          for (final v in batch.document.vclock.entries) {
-            store.document.setCounterFloor(v.key, v.value);
+        final batch = await _measure('download', () => remote.download(entry));
+        await _measure('merge', () async {
+          remoteDocs.add(batch.document);
+          if (!applyToLocal) {
+            for (final v in batch.document.vclock.entries) {
+              store.document.setCounterFloor(v.key, v.value);
+            }
           }
-        }
-      } on MergeRemoteCorruptException catch (error) {
-        Log.error(
+        });
+      } on MergeRemoteCorruptException {
+        Log.warning(
           'MergeSyncCoordinator',
-          'Uncommitted snapshot artifact: $error',
+          'An uncommitted snapshot candidate was skipped.',
         );
       }
     }
@@ -696,7 +812,7 @@ class MergeSyncCoordinator {
         verifiedSourceBackupDirectory: backupDir,
         legacyOverrideDirectory: overrideDir,
       );
-      final seeds = await reader.readSeeds();
+      final seeds = await _measure('download', reader.readSeeds);
       if (seeds.isNotEmpty) {
         // A fresh set of verified archives is authoritative for old legacy
         // health; a resolved override removes its exact prior issue here.
@@ -781,8 +897,8 @@ class MergeSyncCoordinator {
         await store.enqueueCheckpoint();
         if (applyToLocal) await _applyMerged(observation);
       }
-    } catch (e, s) {
-      Log.error('MergeSyncCoordinator', 'Legacy migration error: $e\n$s');
+    } catch (_) {
+      Log.error('MergeSyncCoordinator', 'Legacy migration failed.');
       rethrow;
     } finally {
       if (await scratch.exists()) {
@@ -820,36 +936,53 @@ class MergeSyncCoordinator {
     if (!store.recoveredFromBackup || _counterReconciliationComplete) return;
 
     try {
-      final entries = await remote.list(latestOnly: false);
-      final legacyEntries = await remote.listLegacyCheckpoints();
+      final entries = await _measure(
+        'discover',
+        () => remote.list(latestOnly: false),
+      );
+      final v4Entries = await _measure(
+        'discover',
+        () => remote.listV4(latestOnly: false),
+      );
+      final legacyEntries = await _measure(
+        'discover',
+        remote.listLegacyCheckpoints,
+      );
       var highest = 0;
       // Reserve even an uncommitted OWN filename's allocation conservatively.
       // Only verified contents may enter causal observation or business state.
       for (final (entry, legacy) in [
         for (final item in entries) (item, false),
+        for (final item in v4Entries) (item, false),
         for (final item in legacyEntries) (item, true),
       ].where((item) => item.$1.actor == actor)) {
         if (entry.counter > highest) highest = entry.counter;
         try {
-          final batch = legacy
-              ? await remote.downloadLegacyCheckpoint(entry)
-              : await remote.download(entry);
-          store.document.merge(batch.document);
-          await store.markReceived(entry.filename);
-        } on MergeRemoteCorruptException catch (error) {
-          Log.error(
+          final batch = await _measure(
+            'download',
+            () => legacy
+                ? remote.downloadLegacyCheckpoint(entry)
+                : remote.download(entry),
+          );
+          await _measure('merge', () async {
+            store.document.merge(batch.document);
+            await store.markReceived(entry.filename);
+          });
+        } on MergeRemoteCorruptException {
+          Log.warning(
             'MergeSyncCoordinator',
-            'Uncommitted recovery artifact: $error',
+            'An uncommitted recovery candidate was skipped.',
           );
         }
       }
       store.reconcileActorCounter(actor, highest);
       await store.save();
       _counterReconciliationComplete = true;
-    } catch (e) {
+    } catch (error) {
       throw StateError(
-        'Cannot verify remote state after restoring from local backup: $e. '
-        'Reconciliation is required to prevent counter regression.',
+        'Cannot verify remote state after restoring from local backup. '
+        'Reconciliation is required to prevent counter regression '
+        '(${error.runtimeType}).',
       );
     }
   }
@@ -880,18 +1013,23 @@ class MergeSyncCoordinator {
           continue;
         }
         try {
-          final batch = legacy
-              ? await remote.downloadLegacyCheckpoint(entry)
-              : await remote.download(entry);
-          store.document.merge(batch.document);
-          await store.markReceived(entry.filename);
+          final batch = await _measure(
+            'download',
+            () => legacy
+                ? remote.downloadLegacyCheckpoint(entry)
+                : remote.download(entry),
+          );
+          await _measure('merge', () async {
+            store.document.merge(batch.document);
+            await store.markReceived(entry.filename);
+          });
           highestSucceeded = entry.counter;
           changed = true;
-        } on MergeRemoteCorruptException catch (error) {
+        } on MergeRemoteCorruptException {
           highestIncomplete ??= entry.counter;
-          Log.error(
+          Log.warning(
             'MergeSyncCoordinator',
-            'Incomplete checkpoint ${entry.filename}: $error',
+            'An incomplete checkpoint candidate was skipped.',
           );
         }
       }
@@ -899,9 +1037,9 @@ class MergeSyncCoordinator {
           highestIncomplete != null &&
           (highestSucceeded == null || highestIncomplete >= highestSucceeded)) {
         throw StateError(
-          'The latest legacy checkpoint is incomplete. Finish or recover the '
-          'older device synchronization before migrating; legacy files have '
-          'not been deleted or marked as migrated.',
+          'The latest checkpoint candidates are incomplete. Finish or recover '
+          'the older device synchronization before migrating; no checkpoint '
+          'has been marked as migrated.',
         );
       }
     }
@@ -911,7 +1049,7 @@ class MergeSyncCoordinator {
   /// The old namespace is a migration source, not a second ongoing authority.
   /// Explicit consent is required to import writes made by a non-upgraded peer.
   Future<bool> _migrateCheckpointLayout({bool acceptChanges = false}) async {
-    final entries = await remote.listLegacyCheckpoints();
+    final entries = await _measure('discover', remote.listLegacyCheckpoints);
     final inventory = {
       for (final entry in entries) entry.filename: entry.digest,
     };
@@ -949,6 +1087,134 @@ class MergeSyncCoordinator {
     return imported;
   }
 
+  String get _acceptedV4InventoryKey =>
+      'syncV5AcceptedV4Inventory_$endpointHash';
+
+  String? get _acceptedV4InventoryDigest {
+    final digest = appdata.implicitData[_acceptedV4InventoryKey];
+    if (digest is! String || !RegExp(r'^[0-9a-f]{64}$').hasMatch(digest)) {
+      return null;
+    }
+    return digest;
+  }
+
+  Future<void> _rememberAcceptedV4Inventory(String digest) async {
+    final key = _acceptedV4InventoryKey;
+    final previous = appdata.implicitData[key];
+    if (previous == digest) return;
+    appdata.implicitData[key] = digest;
+    try {
+      await appdata.writeImplicitData();
+    } catch (_) {
+      if (previous == null) {
+        appdata.implicitData.remove(key);
+      } else {
+        appdata.implicitData[key] = previous;
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> _ensureV4BridgeCheckpoint(MergeDocument target) async {
+    if (store.outbox.any((batch) => batch.document.dominates(target))) return;
+    // Keep a durable bridge intent in the outbox. Marker publication and local
+    // acknowledgement are ordered after its independently verified v5 commit.
+    await store.enqueueCheckpoint();
+  }
+
+  Future<_V4ArchiveMigration> _prepareV4Archive({
+    required bool acceptChanges,
+  }) async {
+    final inventory = await _measure(
+      'discover',
+      () => remote.listV4(latestOnly: false),
+    );
+    final archive = await _measure('download', remote.readV4Archive);
+    if (archive == null) {
+      final digest = _v4InventoryDigest(inventory);
+      final previousDigest = _acceptedV4InventoryDigest;
+      if (previousDigest != null &&
+          previousDigest != digest &&
+          !acceptChanges) {
+        _v4ChangesDetected = true;
+        throw StateError(
+          'An older device has written to the v4 sync format before its '
+          'archive was published. Stop older writers and explicitly import '
+          'the detected changes from synchronization settings.',
+        );
+      }
+      if (previousDigest != digest) await _rememberAcceptedV4Inventory(digest);
+      await _mergeRemoteEntries(inventory, requireCompleteHeads: true);
+      final document = store.document.clone();
+      await _ensureV4BridgeCheckpoint(document);
+      _v4ChangesDetected = false;
+      return _V4ArchiveMigration(
+        inventory: inventory,
+        document: document,
+        publishArchive: true,
+        acceptChanges: false,
+        imported: inventory.isNotEmpty,
+      );
+    }
+
+    if (_sameV4Inventory(inventory, archive.inventory)) {
+      _v4ChangesDetected = false;
+      return _V4ArchiveMigration(
+        inventory: inventory,
+        document: null,
+        publishArchive: false,
+        acceptChanges: false,
+        imported: false,
+      );
+    }
+
+    final liveByPath = {for (final entry in inventory) entry.filename: entry};
+    if (archive.inventory.any((entry) {
+      final live = liveByPath[entry.filename];
+      return live == null || !_sameV4Entry(entry, live);
+    })) {
+      _v4ChangesDetected = true;
+      throw StateError(
+        'A frozen v4 checkpoint is missing from remote storage. Restore the '
+        'retained v4 files before importing further old-format changes.',
+      );
+    }
+
+    final digest = _v4InventoryDigest(inventory);
+    final previouslyAccepted = _acceptedV4InventoryDigest == digest;
+    _v4ChangesDetected = true;
+    if (!previouslyAccepted && !acceptChanges) {
+      throw StateError(
+        'An older device has written to the frozen v4 sync format. Upgrade or '
+        'stop all older devices, then explicitly import legacy sync changes '
+        'from synchronization settings. No legacy data has been deleted.',
+      );
+    }
+    if (!previouslyAccepted) await _rememberAcceptedV4Inventory(digest);
+
+    await _mergeRemoteEntries(inventory, requireCompleteHeads: true);
+    final document = store.document.clone();
+    await _ensureV4BridgeCheckpoint(document);
+    _v4ChangesDetected = false;
+    return _V4ArchiveMigration(
+      inventory: inventory,
+      document: document,
+      publishArchive: true,
+      acceptChanges: true,
+      imported: true,
+    );
+  }
+
+  void _rememberCompletedV4Migration(_V4ArchiveMigration migration) {
+    _cachedV4Migration = _V4ArchiveMigration(
+      inventory: migration.inventory,
+      document: null,
+      publishArchive: false,
+      acceptChanges: false,
+      imported: false,
+    );
+  }
+
   /// Executes synchronization according to direction and independent pull timing.
   Future<Res<bool>> performSync({
     required SyncDirection direction,
@@ -957,20 +1223,25 @@ class MergeSyncCoordinator {
     bool acceptLegacyChanges = false,
   }) async {
     remote.resetTransferStats();
+    final diagnostics = _SyncDiagnostics();
+    final total = Stopwatch()..start();
+    _activeDiagnostics = diagnostics;
     if (forceCapture) {
       _changedRecordKeys.clear();
       markDirty();
     }
     try {
-      if (store.needsRecovery || store.pendingApply != null) {
-        await startupRecovery();
-      } else {
-        await reconcileBackupRecoveryIfNeeded();
-      }
-      final captured = await _captureStable();
-      if (captured.snapshot.needsSourceNormalization) {
-        await _normalizeSourcesLocally(captured);
-      }
+      await _measure('capture', () async {
+        if (store.needsRecovery || store.pendingApply != null) {
+          await startupRecovery();
+        } else {
+          await reconcileBackupRecoveryIfNeeded();
+        }
+        final captured = await _captureStable();
+        if (captured.snapshot.needsSourceNormalization) {
+          await _normalizeSourcesLocally(captured);
+        }
+      });
       final observation = store.localObservation;
       final needsRemoteCheck =
           checkRemote ||
@@ -978,22 +1249,48 @@ class MergeSyncCoordinator {
           store.legacyCheckpointInventory == null;
       var importedLegacy = false;
       if (needsRemoteCheck) {
-        importedLegacy = await _migrateCheckpointLayout(
-          acceptChanges: acceptLegacyChanges,
+        importedLegacy = await _measure('legacyMigration', () async {
+          final imported = await _migrateCheckpointLayout(
+            acceptChanges: acceptLegacyChanges,
+          );
+          await migrateLegacyIfNeeded(
+            applyToLocal: direction != SyncDirection.uploadOnly,
+          );
+          return imported;
+        });
+      }
+      final cachedMigration = _cachedV4Migration;
+      final _V4ArchiveMigration v4Migration;
+      if (needsRemoteCheck ||
+          cachedMigration == null ||
+          cachedMigration.publishArchive ||
+          _v4ChangesDetected) {
+        _cachedV4Migration = null;
+        v4Migration = await _measure(
+          'legacyMigration',
+          () => _prepareV4Archive(acceptChanges: acceptLegacyChanges),
         );
-        await migrateLegacyIfNeeded(
-          applyToLocal: direction != SyncDirection.uploadOnly,
-        );
+      } else {
+        // A local-only upload must not reset the independent remote-check cadence.
+        v4Migration = cachedMigration;
       }
 
       List<MergeRemoteEntry>? discovered;
       if (direction != SyncDirection.uploadOnly && needsRemoteCheck) {
-        discovered = await remote.list(latestOnly: false);
+        discovered = await _measure<List<MergeRemoteEntry>>(
+          'discover',
+          () => remote.list(latestOnly: false),
+        );
         await _mergeRemoteEntries(discovered);
-        // Rules are opt-in and limited to non-secret ordinary setting values.
-        // Capture edits that arrived while waiting for the remote before making
-        // any durable selection; the normal apply guard remains authoritative.
-        final stable = await _captureStable(observation: observation);
+      }
+      if (direction != SyncDirection.uploadOnly &&
+          (needsRemoteCheck || v4Migration.imported)) {
+        // Capture edits that arrived while waiting for remote data before
+        // making a durable selection; the apply guard remains authoritative.
+        final stable = await _measure(
+          'capture',
+          () => _captureStable(observation: observation),
+        );
         final preference = appdata.implicitData['syncPreferredSettingActor'];
         final resolutions = store.document
             .preferredSettingResolutions(
@@ -1009,22 +1306,54 @@ class MergeSyncCoordinator {
             resolutions,
             unavailableDomains: unavailableDomains,
           );
-          await _applyMerged(observation, stagedGeneration: stable.generation);
+          await _measure(
+            'apply',
+            () =>
+                _applyMerged(observation, stagedGeneration: stable.generation),
+          );
         } else {
-          await _applyMerged(observation);
+          await _measure('apply', () => _applyMerged(observation));
         }
       }
 
       if (direction != SyncDirection.downloadOnly) {
         await _uploadOutboxWithRecovery(
           discovered: discovered,
-          ensurePublished: needsRemoteCheck,
+          ensurePublished: needsRemoteCheck || v4Migration.publishArchive,
+          v4Migration: v4Migration,
         );
       }
-      return Res(!acceptLegacyChanges || importedLegacy);
-    } catch (e, s) {
-      Log.error('MergeSyncCoordinator', 'performSync error: $e\n$s');
-      return Res.error(e.toString());
+      if (direction != SyncDirection.downloadOnly ||
+          !v4Migration.publishArchive) {
+        _rememberCompletedV4Migration(v4Migration);
+      }
+      return Res(
+        !acceptLegacyChanges || importedLegacy || v4Migration.imported,
+      );
+    } catch (error) {
+      _cachedV4Migration = null;
+      Log.error(
+        'MergeSyncCoordinator',
+        'performSync failed (${error.runtimeType})',
+      );
+      return Res.error(error.toString());
+    } finally {
+      total.stop();
+      diagnostics.add('totalDurationMs', total.elapsedMilliseconds);
+      _lastSyncDurationMs = total.elapsedMilliseconds;
+      if (_syncDiagnosticsEnabled) {
+        final phases = diagnostics.phaseDurationsMs.entries.toList()
+          ..sort((a, b) => a.key.compareTo(b.key));
+        Log.info(
+          'MergeSyncCoordinator',
+          'Sync timing ms: ${phases.map((entry) => '${entry.key}=${entry.value}').join(' ')}',
+        );
+        Log.info(
+          'MergeSyncCoordinator',
+          'Sync transfer stats: ${canonicalSyncJson(remote.transferStats)}',
+        );
+      }
+      _activeDiagnostics = null;
     }
   }
 
@@ -1047,38 +1376,66 @@ class MergeSyncCoordinator {
         ),
     ]);
     remote.resetTransferStats();
+    final diagnostics = _SyncDiagnostics();
+    final total = Stopwatch()..start();
+    _activeDiagnostics = diagnostics;
     var batchCommitted = false;
     var applyCompleted = false;
     try {
-      if (store.needsRecovery || store.pendingApply != null) {
-        await startupRecovery();
-      }
-      await _migrateCheckpointLayout();
-      final captured = await _captureStable();
+      await _measure('capture', () async {
+        if (store.needsRecovery || store.pendingApply != null) {
+          await startupRecovery();
+        } else {
+          await reconcileBackupRecoveryIfNeeded();
+        }
+      });
+      await _measure('legacyMigration', () => _migrateCheckpointLayout());
+      final v4Migration = await _measure(
+        'legacyMigration',
+        () => _prepareV4Archive(acceptChanges: false),
+      );
+      final captured = await _measure('capture', _captureStable);
       final observation = store.localObservation;
       await store.resolveAll(
         immutableResolutions,
         unavailableDomains: unavailableDomains,
       );
       batchCommitted = true;
-      await _applyMerged(observation, stagedGeneration: captured.generation);
+      await _measure(
+        'apply',
+        () => _applyMerged(observation, stagedGeneration: captured.generation),
+      );
       applyCompleted = true;
 
       if (direction != SyncDirection.downloadOnly) {
-        await _uploadOutboxWithRecovery();
+        await _uploadOutboxWithRecovery(
+          ensurePublished: true,
+          v4Migration: v4Migration,
+        );
       }
-
+      if (direction != SyncDirection.downloadOnly ||
+          !v4Migration.publishArchive) {
+        _rememberCompletedV4Migration(v4Migration);
+      }
       return const Res(true);
-    } on MergeStorePersistenceException catch (e, s) {
-      Log.error('MergeSyncCoordinator', 'resolveConflicts error: $e\n$s');
+    } on MergeStorePersistenceException {
+      _cachedV4Migration = null;
+      Log.error(
+        'MergeSyncCoordinator',
+        'Conflict resolution persistence failed.',
+      );
       return Res.error(
         'Batch persistence status is uncertain; reopen sync or restart to '
         'recover before retrying. The save operation failed before its '
         'commit could be confirmed.',
       );
-    } catch (e, s) {
-      Log.error('MergeSyncCoordinator', 'resolveConflicts error: $e\n$s');
-      if (!batchCommitted) return Res.error(e.toString());
+    } catch (error) {
+      _cachedV4Migration = null;
+      Log.error(
+        'MergeSyncCoordinator',
+        'Conflict resolution failed (${error.runtimeType})',
+      );
+      if (!batchCommitted) return Res.error(error.toString());
       if (applyCompleted) {
         return Res.error(
           'Resolution batch was durably saved and applied locally, but '
@@ -1089,6 +1446,108 @@ class MergeSyncCoordinator {
         'Resolution batch was durably saved, but local application or '
         'publishing may be incomplete. Restart or retry sync to recover it.',
       );
+    } finally {
+      total.stop();
+      diagnostics.add('totalDurationMs', total.elapsedMilliseconds);
+      _lastSyncDurationMs = total.elapsedMilliseconds;
+      if (_syncDiagnosticsEnabled) {
+        final phases = diagnostics.phaseDurationsMs.entries.toList()
+          ..sort((a, b) => a.key.compareTo(b.key));
+        Log.info(
+          'MergeSyncCoordinator',
+          'Sync timing ms: ${phases.map((entry) => '${entry.key}=${entry.value}').join(' ')}',
+        );
+        Log.info(
+          'MergeSyncCoordinator',
+          'Sync transfer stats: ${canonicalSyncJson(remote.transferStats)}',
+        );
+      }
+      _activeDiagnostics = null;
+    }
+  }
+
+  static const _compactMinimumOwnCommits = 3;
+  static const _compactBatchThreshold = 32;
+  static const _compactMinimumInterval = Duration(days: 7);
+  static const _compactCountThrottle = Duration(hours: 24);
+
+  Future<_VerifiedV5Publication> _verifyV5Publication(
+    String uploadedPath,
+    MergeBatch expectedBatch,
+  ) async {
+    final proof = MergeRemoteEntry.tryParsePackCommit(
+      uploadedPath,
+      actor: expectedBatch.actor,
+    );
+    if (proof == null || proof.counter != expectedBatch.counter) {
+      throw const FormatException(
+        'The published v5 commit path does not match its snapshot.',
+      );
+    }
+    final verified = await _measure('download', () => remote.download(proof));
+    if (verified.actor != expectedBatch.actor ||
+        verified.counter != expectedBatch.counter ||
+        verified.id != expectedBatch.id) {
+      throw const FormatException(
+        'The published v5 commit readback does not match its snapshot.',
+      );
+    }
+    return _VerifiedV5Publication(entry: proof, batch: verified);
+  }
+
+  Future<void> _compactIfDue(
+    MergeSnapshot snapshot,
+    List<MergeRemoteEntry>? priorEntries, {
+    required int newlyUploadedCommitCount,
+  }) async {
+    final ownCommitCount =
+        (priorEntries ?? const <MergeRemoteEntry>[])
+            .where((entry) => entry.actor == actor)
+            .length +
+        newlyUploadedCommitCount;
+    if (ownCommitCount < _compactMinimumOwnCommits) return;
+
+    final key = 'syncV5LastCompactionAttempt_$endpointHash';
+    final previousValue = appdata.implicitData[key];
+    final previousTime = previousValue is int
+        ? DateTime.fromMillisecondsSinceEpoch(previousValue)
+        : null;
+    final now = DateTime.now();
+    final elapsed = previousTime == null ? null : now.difference(previousTime);
+    final countDue =
+        ownCommitCount >= _compactBatchThreshold &&
+        (elapsed == null || elapsed >= _compactCountThrottle);
+    final timeDue = elapsed != null && elapsed >= _compactMinimumInterval;
+    if (!countDue && !timeDue) return;
+
+    try {
+      final candidates =
+          priorEntries ??
+          await _measure<List<MergeRemoteEntry>>(
+            'discover',
+            () => remote.list(latestOnly: false),
+          );
+      await _measure(
+        'compact',
+        () => remote.compact(
+          MergeSnapshot.decode(snapshot.serializeManifest(), snapshot.objects),
+          candidates,
+        ),
+      );
+    } catch (_) {
+      // Compaction only removes obsolete own commit records. It is cleanup,
+      // never a prerequisite for the already verified publication.
+      Log.warning('MergeSyncCoordinator', 'Remote compaction was skipped.');
+    } finally {
+      appdata.implicitData[key] = now.millisecondsSinceEpoch;
+      try {
+        await appdata.writeImplicitData();
+      } catch (_) {
+        Log.warning(
+          'MergeSyncCoordinator',
+          'The remote compaction throttle could not be persisted.',
+        );
+      }
     }
   }
 
@@ -1097,53 +1556,125 @@ class MergeSyncCoordinator {
   Future<void> _uploadOutboxWithRecovery({
     List<MergeRemoteEntry>? discovered,
     bool ensurePublished = true,
+    required _V4ArchiveMigration v4Migration,
   }) async {
     if (!ensurePublished && store.pendingBatchIds.isEmpty) return;
     final priorEntries =
         discovered ??
         (ensurePublished
-            ? await remote.list(latestOnly: false)
-            : const <MergeRemoteEntry>[]);
+            ? await _measure('discover', () => remote.list(latestOnly: false))
+            : null);
     // An already-acknowledged local store may have no outbox in the new remote
-    // namespace. Seed it once unless this actor already has a published checkpoint.
-    if (store.pendingBatchIds.isEmpty &&
+    // namespace. Seed it once unless this actor already has a published commit.
+    if (priorEntries != null &&
+        store.pendingBatchIds.isEmpty &&
         !priorEntries.any((entry) => entry.actor == actor)) {
       await store.enqueueCheckpoint();
     }
     MergeSnapshot? lastUploaded;
+    var newlyUploadedCommitCount = 0;
+    var archivePublished = !v4Migration.publishArchive;
 
     final pendingIds = store.pendingBatchIds;
     for (final id in pendingIds) {
       // A replacement publication may subsume older queued references.
       if (!store.pendingBatchIds.contains(id)) continue;
       final snapshot = store.pendingSnapshot(id);
+      final expectedBatch = store.pendingBatch(id);
+      String uploadedPath;
       try {
-        final uploadedPath = await remote.uploadSnapshot(snapshot);
-        await store.acknowledge(id);
-        await store.markReceived(uploadedPath);
-        lastUploaded = snapshot;
-      } on MergeRemoteConflictException catch (e) {
-        Log.error(
+        uploadedPath = await _measure(
+          'upload',
+          () => remote.uploadSnapshot(snapshot),
+        );
+      } on MergeRemoteConflictException {
+        Log.warning(
           'MergeSyncCoordinator',
-          'Upload conflict on $id: $e. Reserving replacement checkpoint dominating intended batch.',
+          'A v5 publication conflict requires a dominating replacement.',
         );
         final replacement = await store.enqueueCheckpoint();
         final replacementSnapshot = store.pendingSnapshot(replacement.id);
-        final uploadedPath = await remote.uploadSnapshot(replacementSnapshot);
+        final replacementPath = await _measure(
+          'upload',
+          () => remote.uploadSnapshot(replacementSnapshot),
+        );
+        final replacementBatch = store.pendingBatch(replacement.id);
+        if (!archivePublished &&
+            replacementBatch.document.dominates(v4Migration.document!)) {
+          final verified = await _verifyV5Publication(
+            replacementPath,
+            replacementBatch,
+          );
+          if (!verified.batch.document.dominates(v4Migration.document!)) {
+            throw const FormatException(
+              'The v5 commit does not cover the imported v4 history.',
+            );
+          }
+          await _measure(
+            'upload',
+            () => remote.publishV4Archive(
+              MergeRemoteV4Archive(
+                inventory: v4Migration.inventory,
+                proof: verified.entry,
+              ),
+              acceptChanges: v4Migration.acceptChanges,
+            ),
+          );
+          archivePublished = true;
+        }
+        if (!archivePublished) {
+          throw StateError(
+            'The replacement checkpoint does not cover imported v4 history.',
+          );
+        }
         await store.acknowledge(id);
         await store.acknowledge(replacement.id);
-        await store.markReceived(uploadedPath);
+        await store.markReceived(replacementPath);
         lastUploaded = replacementSnapshot;
+        newlyUploadedCommitCount++;
+        continue;
       }
+
+      if (!archivePublished &&
+          expectedBatch.document.dominates(v4Migration.document!)) {
+        final verified = await _verifyV5Publication(
+          uploadedPath,
+          expectedBatch,
+        );
+        if (!verified.batch.document.dominates(v4Migration.document!)) {
+          throw const FormatException(
+            'The v5 commit does not cover the imported v4 history.',
+          );
+        }
+        await _measure(
+          'upload',
+          () => remote.publishV4Archive(
+            MergeRemoteV4Archive(
+              inventory: v4Migration.inventory,
+              proof: verified.entry,
+            ),
+            acceptChanges: v4Migration.acceptChanges,
+          ),
+        );
+        archivePublished = true;
+      }
+      await store.acknowledge(id);
+      await store.markReceived(uploadedPath);
+      lastUploaded = snapshot;
+      newlyUploadedCommitCount++;
     }
 
-    if (lastUploaded != null && ensurePublished) {
-      await remote.compact(
-        MergeSnapshot.decode(
-          lastUploaded.serializeManifest(),
-          lastUploaded.objects,
-        ),
+    if (!archivePublished) {
+      throw StateError(
+        'The v4 migration bridge remains pending until a verified v5 commit '
+        'covers the imported history.',
+      );
+    }
+    if (lastUploaded != null) {
+      await _compactIfDue(
+        lastUploaded,
         priorEntries,
+        newlyUploadedCommitCount: newlyUploadedCommitCount,
       );
     }
   }

@@ -50,6 +50,9 @@ String _syncActionStatusSummary(DataSyncStatusSnapshot status) {
     }),
     'Sync Conflict (@count pending)'.tlParams({'count': status.conflictCount}),
     'Changed records: @counts'.tlParams({'counts': countSummary}),
+    'Last sync duration: @duration ms'.tlParams({
+      'duration': status.lastSyncDurationMs,
+    }),
     'Uploaded: @bytes bytes in @objects objects'.tlParams({
       'bytes': status.uploadedBytes,
       'objects': status.uploadedObjects,

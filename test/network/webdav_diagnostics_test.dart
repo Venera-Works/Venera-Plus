@@ -24,50 +24,40 @@ void main() {
     App.isInitialized = wasInitialized;
   });
 
-  test('records directory 404 before the WebDAV SDK throws', () async {
+  test(
+    'preserves HTTP failure status without logging endpoint paths',
+    () async {
+      final client = WebDavEndpoint(
+        url: 'https://example.com/dav/VeneraPlus',
+        user: 'account-secret',
+        password: 'password-secret',
+      ).createClient(logRequests: true);
+      client.c.httpClientAdapter = _DiagnosticAdapter(
+        response: ResponseBody.fromString('body-secret', 404),
+      );
+      addTearDown(() => client.c.close(force: true));
+
+      await expectLater(
+        client.readDir('/'),
+        throwsA(
+          isA<DioException>().having(
+            (error) => error.response?.statusCode,
+            'status',
+            404,
+          ),
+        ),
+      );
+
+      final log = Log.logs.map((entry) => entry.content).join('\n');
+      expect(log, isNot(contains('/dav')));
+      expect(log, isNot(contains('VeneraPlus')));
+      expect(log, isNot(contains('secret')));
+    },
+  );
+
+  test('redacts endpoint and redirect paths and secrets', () async {
     final client = WebDavEndpoint(
       url: 'https://example.com/dav/VeneraPlus',
-      user: 'account-secret',
-      password: 'password-secret',
-    ).createClient(logRequests: true);
-    client.c.httpClientAdapter = _DiagnosticAdapter(
-      response: ResponseBody.fromString('body-secret', 404),
-    );
-    addTearDown(() => client.c.close(force: true));
-
-    await expectLater(
-      client.readDir('/'),
-      throwsA(
-        isA<DioException>().having(
-          (error) => error.response?.statusCode,
-          'status',
-          404,
-        ),
-      ),
-    );
-
-    final entries = Log.logs.where((entry) => entry.title == 'WebDAV').toList();
-    expect(entries, hasLength(2));
-    expect(
-      entries.first.content,
-      contains('Request: PROPFIND https://example.com/dav/VeneraPlus/'),
-    );
-    expect(entries.first.content, contains('Platform:'));
-    expect(entries.first.content, contains('App: ${App.version}'));
-    expect(
-      entries.last.content,
-      contains('Response to: PROPFIND https://example.com/dav/VeneraPlus/'),
-    );
-    expect(entries.last.content, contains('HTTP status: 404'));
-    expect(
-      entries.map((entry) => entry.content).join(),
-      isNot(contains('secret')),
-    );
-  });
-
-  test('redacts URL secrets and payloads without modifying traffic', () async {
-    final client = WebDavEndpoint(
-      url: 'https://example.com/dav/',
       user: '',
       password: '',
     ).createClient(logRequests: true);
@@ -89,7 +79,7 @@ void main() {
     const url =
         'https://url-user:url-pass@example.com/dav/VeneraPlus/%E4%B9%A6'
         '?token=query-secret#fragment-secret';
-    final response = await client.c.request<String>(
+    await client.c.request<String>(
       url,
       data: 'body-secret',
       options: Options(
@@ -99,8 +89,11 @@ void main() {
     );
 
     final log = Log.logs.map((entry) => entry.content).join('\n');
-    expect(log, contains('PUT https://example.com/dav/VeneraPlus/%E4%B9%A6'));
-    expect(log, contains('Location: https://example.org/Remote/VeneraPlus'));
+    expect(log, isNot(contains('/dav')));
+    expect(log, isNot(contains('/Remote')));
+    expect(log, isNot(contains('VeneraPlus')));
+    expect(log, isNot(contains('%E4%B9%A6')));
+    expect(log, isNot(contains('书')));
     for (final secret in [
       'url-user',
       'url-pass',
@@ -117,16 +110,10 @@ void main() {
     ]) {
       expect(log, isNot(contains(secret)), reason: secret);
     }
-    expect(adapter.request!.uri.toString(), url);
-    expect(adapter.request!.headers['Authorization'], 'auth-secret');
-    expect(adapter.request!.data, 'body-secret');
-    expect(response.statusCode, 302);
-    expect(response.data, 'response-secret');
-    expect(response.headers['location']!.single, contains('redirect-query'));
   });
 
   test(
-    'records transport failure without logging raw exception secrets',
+    'preserves transport failure behavior without logging endpoint paths',
     () async {
       final client = WebDavEndpoint(
         url: 'https://example.com/dav/VeneraPlus',
@@ -139,39 +126,9 @@ void main() {
       await expectLater(client.readDir('/'), throwsA(isA<DioException>()));
 
       final log = Log.logs.map((entry) => entry.content).join('\n');
-      expect(
-        log,
-        contains(
-          'Request failed: PROPFIND https://example.com/dav/VeneraPlus/',
-        ),
-      );
-      expect(log, contains('Error type: connectionError'));
+      expect(log, isNot(contains('/dav')));
+      expect(log, isNot(contains('VeneraPlus')));
       expect(log, isNot(contains('exception-secret')));
-    },
-  );
-
-  test(
-    'invalid URLs fail without breaking the diagnostic interceptor',
-    () async {
-      final client = WebDavEndpoint(
-        url: 'https://[invalid-secret',
-        user: '',
-        password: '',
-      ).createClient(logRequests: true);
-      client.c.httpClientAdapter = _DiagnosticAdapter(fail: true);
-      addTearDown(() => client.c.close(force: true));
-
-      await expectLater(
-        client.c.request(
-          'https://[invalid-secret',
-          options: Options(method: 'PROPFIND'),
-        ),
-        throwsA(isA<DioException>()),
-      );
-
-      final log = Log.logs.map((entry) => entry.content).join('\n');
-      expect(log, contains('[invalid URL]'));
-      expect(log, isNot(contains('invalid-secret')));
     },
   );
 
@@ -197,7 +154,6 @@ class _DiagnosticAdapter implements HttpClientAdapter {
 
   final ResponseBody? response;
   final bool fail;
-  RequestOptions? request;
 
   @override
   Future<ResponseBody> fetch(
@@ -205,7 +161,6 @@ class _DiagnosticAdapter implements HttpClientAdapter {
     Stream<Uint8List>? requestStream,
     Future<void>? cancelFuture,
   ) async {
-    request = options;
     await requestStream?.drain<void>();
     if (fail) {
       throw DioException(

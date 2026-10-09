@@ -15,6 +15,8 @@ import 'merge_snapshot.dart';
 /// and immutable snapshot object references. No connection escapes an operation,
 /// which also ensures Windows can replace/restore the database between commits.
 class MergeStoreDatabase {
+  final MergeSnapshotEncodingCache _snapshotEncodingCache =
+      MergeSnapshotEncodingCache();
   final Directory directory;
   final String actor;
 
@@ -347,7 +349,10 @@ class MergeStoreDatabase {
           batch.document.counterFor(actor) != batch.counter) {
         throw const FormatException('Invalid new outbox batch');
       }
-      nextOutboxSnapshots[id] = MergeSnapshot.fromBatch(batch);
+      nextOutboxSnapshots[id] = MergeSnapshot.fromBatch(
+        batch,
+        encodingCache: _snapshotEncodingCache,
+      );
     }
 
     Database? database;

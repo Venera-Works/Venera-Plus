@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:collection';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -73,8 +74,10 @@ class MergeSnapshot {
   /// SHA-256 of the exact canonical manifest bytes.
   late final String digest = sha256.convert(_manifestBytes).toString();
 
-  /// Encodes [batch] into deterministic stable partitions.
-  factory MergeSnapshot.fromBatch(MergeBatch batch) {
+  factory MergeSnapshot.fromBatch(
+    MergeBatch batch, {
+    MergeSnapshotEncodingCache? encodingCache,
+  }) {
     if (!_isSafeActor(batch.actor)) {
       throw const FormatException('Invalid snapshot actor');
     }
@@ -178,17 +181,29 @@ class MergeSnapshot {
         'records': partition.records,
         'eventDigests': eventDigests,
       };
-      final uncompressed = Uint8List.fromList(
-        utf8.encode(canonicalSyncJson(payload)),
-      );
+      final uncompressed = utf8.encode(canonicalSyncJson(payload));
       if (uncompressed.length > maxUncompressedObjectBytes) {
         throw const FormatException(
           'Snapshot object exceeds decompressed size limit',
         );
       }
-      final compressed = Uint8List.fromList(
-        GZipCodec(level: 6).encode(uncompressed),
-      );
+      final Uint8List compressed;
+      if (encodingCache == null) {
+        compressed = Uint8List.fromList(
+          GZipCodec(level: 6).encode(uncompressed),
+        );
+      } else {
+        final fingerprint = sha256.convert(uncompressed).toString();
+        final cached = encodingCache._read(fingerprint);
+        if (cached == null) {
+          compressed = Uint8List.fromList(
+            GZipCodec(level: 6).encode(uncompressed),
+          );
+          encodingCache._remember(fingerprint, compressed);
+        } else {
+          compressed = cached;
+        }
+      }
       if (compressed.length > maxCompressedObjectBytes) {
         throw const FormatException(
           'Snapshot object exceeds compressed size limit',
@@ -276,10 +291,10 @@ class MergeSnapshot {
   /// Returns an independent byte buffer suitable for durable storage or upload.
   Uint8List serializeManifest() => Uint8List.fromList(_manifestBytes);
 
-  /// Reconstructs and validates a full causal [MergeBatch].
-  static MergeBatch decode(
+  /// Validates canonical v4 publication metadata and logical object references
+  /// without requiring the referenced object bytes.
+  static Map<String, Object?> validateManifestMetadata(
     Uint8List manifestBytes,
-    Map<String, Uint8List> objects,
   ) {
     if (manifestBytes.isEmpty || manifestBytes.length > maxManifestBytes) {
       throw const FormatException('Invalid snapshot manifest size');
@@ -329,17 +344,12 @@ class MergeSnapshot {
     }
     final refs = refsValue
         .map((value) => _asMap(value, 'object reference'))
-        .toList();
-    final canonical = utf8.encode(canonicalSyncJson(manifest));
-    if (!_bytesEqual(canonical, manifestBytes)) {
+        .toList(growable: false);
+    if (!_bytesEqual(utf8.encode(canonicalSyncJson(manifest)), manifestBytes)) {
       throw const FormatException('Snapshot manifest is not canonical JSON');
     }
-
-    final records = <String, Object?>{};
-    final eventDigests = <String, Object?>{};
     final referencedPaths = <String>{};
-    final partitions = <String>{};
-    final suppliedPaths = objects.keys.toSet();
+    final partitions = <(String, String)>{};
     String? previousPath;
     var totalCompressed = 0;
     var totalUncompressed = 0;
@@ -381,17 +391,56 @@ class MergeSnapshot {
           'Invalid or duplicate snapshot object reference',
         );
       }
-      final canonicalPath = path;
-      if (previousPath != null && previousPath.compareTo(canonicalPath) >= 0) {
+      if (previousPath != null && previousPath.compareTo(path) >= 0) {
         throw const FormatException(
           'Snapshot object references are not sorted',
         );
       }
-      previousPath = canonicalPath;
-      final partitionKey = '$domain\u0000$partition';
-      if (!partitions.add(partitionKey)) {
+      previousPath = path;
+      if (!partitions.add((domain, partition))) {
         throw const FormatException('Duplicate snapshot partition reference');
       }
+      totalCompressed += compressedSize;
+      totalUncompressed += uncompressedSize;
+      if (totalCompressed > maxTotalCompressedBytes ||
+          totalUncompressed > maxTotalUncompressedBytes) {
+        throw const FormatException('Snapshot exceeds aggregate size limits');
+      }
+    }
+    return Map.unmodifiable(_freezeMap(manifest));
+  }
+
+  /// Reconstructs and validates a full causal [MergeBatch].
+  static MergeBatch decode(
+    Uint8List manifestBytes,
+    Map<String, Uint8List> objects,
+  ) {
+    final manifest = validateManifestMetadata(manifestBytes);
+    final actor = manifest['actor']! as String;
+    final counter = manifest['counter']! as int;
+    final batchId = manifest['batchId']! as String;
+    final manifestVclock = _asIntMap(
+      manifest['vclock'],
+      'snapshot vector clock',
+    );
+    final refs = (manifest['objects']! as List).cast<Map<String, Object?>>();
+
+    final records = <String, Object?>{};
+    final eventDigests = <String, Object?>{};
+    final referencedPaths = {
+      for (final reference in refs) reference['path']! as String,
+    };
+    final suppliedPaths = objects.keys.toSet();
+    var totalCompressed = 0;
+    var totalUncompressed = 0;
+    for (final reference in refs) {
+      final path = reference['path']! as String;
+      final domain = reference['domain']! as String;
+      final partition = reference['partition']! as String;
+      final digest = reference['sha256']! as String;
+      final compressedSize = reference['compressedSize']! as int;
+      final uncompressedSize = reference['uncompressedSize']! as int;
+      final recordCount = reference['recordCount']! as int;
       final compressed = objects[path];
       if (compressed == null ||
           compressed.length != compressedSize ||
@@ -596,6 +645,50 @@ class MergeSnapshot {
       return List.unmodifiable(value.map(_freezeValue));
     }
     return value;
+  }
+}
+
+/// Reuses exact v4 gzip partitions while keeping only rebuildable cache data.
+///
+/// The key fingerprints the complete canonical partition payload, including
+/// record causal state and the event digests needed to validate it. Losing this
+/// cache only requires recompressing the partition.
+final class MergeSnapshotEncodingCache {
+  static const int maxEntries = 4096;
+  MergeSnapshotEncodingCache({this.maxBytes = 32 * 1024 * 1024}) {
+    if (maxBytes < 0) throw ArgumentError.value(maxBytes, 'maxBytes');
+  }
+
+  final int maxBytes;
+  final LinkedHashMap<String, Uint8List> _entries =
+      LinkedHashMap<String, Uint8List>();
+  int _residentBytes = 0;
+  int hits = 0;
+  int encodedBytes = 0;
+  int evictions = 0;
+
+  int get residentBytes => _residentBytes;
+
+  Uint8List? _read(String fingerprint) {
+    final bytes = _entries.remove(fingerprint);
+    if (bytes == null) return null;
+    _entries[fingerprint] = bytes;
+    hits++;
+    return bytes;
+  }
+
+  void _remember(String fingerprint, Uint8List bytes) {
+    encodedBytes += bytes.length;
+    if (bytes.length > maxBytes || maxBytes == 0) return;
+    final previous = _entries.remove(fingerprint);
+    if (previous != null) _residentBytes -= previous.length;
+    _entries[fingerprint] = bytes;
+    _residentBytes += bytes.length;
+    while (_residentBytes > maxBytes || _entries.length > maxEntries) {
+      final oldest = _entries.keys.first;
+      _residentBytes -= _entries.remove(oldest)!.length;
+      evictions++;
+    }
   }
 }
 

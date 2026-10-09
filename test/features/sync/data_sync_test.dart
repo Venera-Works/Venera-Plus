@@ -557,6 +557,391 @@ void main() {
     );
 
     test(
+      'v4 migration archives same-counter heads after a verified v5 bridge',
+      () async {
+        final key = syncRecordKey('setting', ['migrationCollision']);
+        final left = MergeDocument()
+          ..captureLocal('older_device', {}, {
+            key: {'value': 'left'},
+          });
+        final right = MergeDocument()
+          ..captureLocal('older_device', {}, {
+            key: {'value': 'right'},
+          });
+        final leftBatch = MergeBatch.create(
+          actor: 'older_device',
+          counter: left.counterFor('older_device'),
+          document: left,
+        );
+        final rightBatch = MergeBatch.create(
+          actor: 'older_device',
+          counter: right.counterFor('older_device'),
+          document: right,
+        );
+        _seedV4Snapshot(transport, leftBatch, 'Older Device');
+        _seedV4Snapshot(transport, rightBatch, 'Older Device');
+        final retainedV4Files = transport.remoteFiles.keys
+            .where((path) => path.startsWith('VeneraPlus/sync-v4/'))
+            .toSet();
+
+        final sync = DataSync();
+        final result = await sync.syncNow();
+        expect(result.success, isTrue, reason: result.errorMessage);
+
+        final conflict = sync.conflicts.firstWhere(
+          (candidate) => candidate.recordKey == key,
+        );
+        expect(
+          conflict.candidates.map((candidate) => candidate.value),
+          containsAll(['left', 'right']),
+        );
+        final archive = await sync.coordinator!.remote.readV4Archive();
+        expect(archive, isNotNull);
+        expect(archive!.inventory, hasLength(2));
+        expect(
+          archive.inventory.map((entry) => entry.filename).toSet(),
+          retainedV4Files
+              .where(
+                (path) => path.contains('/commits/') && path.endsWith('.json'),
+              )
+              .toSet(),
+        );
+        expect(archive.proofs, hasLength(1));
+        final proof = await sync.coordinator!.remote.download(archive.proof);
+        expect(proof.document.dominates(left), isTrue);
+        expect(proof.document.dominates(right), isTrue);
+        expect(
+          transport.remoteFiles.keys.where(
+            (path) => path.startsWith('VeneraPlus/sync-v4/'),
+          ),
+          containsAll(retainedV4Files),
+        );
+      },
+    );
+
+    test(
+      'local-only sync defers frozen v4 discovery to the remote check',
+      () async {
+        final oldKey = syncRecordKey('setting', ['oldPeer']);
+        final localKey = syncRecordKey('setting', ['localEdit']);
+        final firstValues = {
+          oldKey: {'value': 'first'},
+        };
+        final firstDocument = MergeDocument()
+          ..captureLocal('older_device', {}, firstValues);
+        _seedV4Snapshot(
+          transport,
+          MergeBatch.create(
+            actor: 'older_device',
+            counter: firstDocument.counterFor('older_device'),
+            document: firstDocument,
+          ),
+          'Older Device',
+        );
+        final sync = DataSync();
+        final initial = await sync.syncNow();
+        expect(initial.success, isTrue, reason: initial.errorMessage);
+
+        final secondDocument = firstDocument.clone()
+          ..captureLocal('older_device', firstValues, {
+            oldKey: {'value': 'second'},
+          });
+        _seedV4Snapshot(
+          transport,
+          MergeBatch.create(
+            actor: 'older_device',
+            counter: secondDocument.counterFor('older_device'),
+            document: secondDocument,
+          ),
+          'Older Device',
+        );
+        localRecords[localKey] = {'value': 'local'};
+        sync.coordinator!.markDirty({'setting'});
+        final localOnly = await sync.coordinator!.performSync(
+          direction: SyncDirection.bidirectional,
+          checkRemote: false,
+          forceCapture: false,
+        );
+        expect(localOnly.success, isTrue, reason: localOnly.errorMessage);
+        expect(localRecords[oldKey], {'value': 'first'});
+        expect(localRecords[localKey], {'value': 'local'});
+
+        final checked = await sync.syncNow();
+        expect(checked.error, isTrue);
+        expect(sync.statusSnapshot.legacyChangesDetected, isTrue);
+        final retry = await sync.coordinator!.performSync(
+          direction: SyncDirection.bidirectional,
+          checkRemote: false,
+        );
+        expect(retry.error, isTrue);
+        expect(localRecords[oldKey], {'value': 'first'});
+      },
+    );
+
+    test(
+      'fresh device detects old v4 writes and explicit import appends a receipt',
+      () async {
+        final key = syncRecordKey('setting', ['oldPeer']);
+        final firstValues = {
+          key: {'value': 'first'},
+        };
+        final firstDocument = MergeDocument()
+          ..captureLocal('older_device', {}, firstValues);
+        final firstBatch = MergeBatch.create(
+          actor: 'older_device',
+          counter: firstDocument.counterFor('older_device'),
+          document: firstDocument,
+        );
+        _seedV4Snapshot(transport, firstBatch, 'Older Device');
+
+        final originalDevice = DataSync();
+        final firstSync = await originalDevice.syncNow();
+        expect(firstSync.success, isTrue, reason: firstSync.errorMessage);
+        final archivePath = 'VeneraPlus/sync-v5/archive-v4.json';
+        final frozenMarker = Uint8List.fromList(
+          transport.remoteFiles[archivePath]!,
+        );
+
+        final secondDocument = firstDocument.clone()
+          ..captureLocal('older_device', firstValues, {
+            key: {'value': 'second'},
+          });
+        final secondBatch = MergeBatch.create(
+          actor: 'older_device',
+          counter: secondDocument.counterFor('older_device'),
+          document: secondDocument,
+        );
+        _seedV4Snapshot(transport, secondBatch, 'Older Device');
+
+        final endpointHash = MergeSyncCoordinator.computeEndpointHash(
+          'https://example.com/dav',
+          'user',
+        );
+        DataSync.resetForTesting();
+        appdata.implicitData.remove('syncV5AcceptedV4Inventory_$endpointHash');
+        appdata.implicitData
+          ..['syncDeviceId'] = 'fresh_device'
+          ..['webdavSyncDeviceName'] = 'Fresh Device';
+        localRecords = {};
+        DataSync.debugDisableWindowCloseHandler = true;
+        DataSync.debugClientFactory = (_) => client;
+        DataSync.debugStateDirFactory = (hash) =>
+            Directory('${tempDir.path}/fresh_sync_state_$hash');
+        DataSync.debugExportRecords = () async => Map.from(localRecords);
+        DataSync.debugApplyRecords = (records, {beforeCommit}) async {
+          beforeCommit?.call();
+          localRecords = Map.from(records);
+        };
+
+        final freshDevice = DataSync();
+        final blocked = await freshDevice.syncNow();
+        expect(blocked.error, isTrue);
+        expect(freshDevice.statusSnapshot.legacyChangesDetected, isTrue);
+        expect(localRecords, isEmpty);
+        expect(transport.remoteFiles[archivePath], frozenMarker);
+
+        final imported = await freshDevice.importLegacyChanges();
+        expect(imported.success, isTrue, reason: imported.errorMessage);
+        expect(localRecords[key], {'value': 'second'});
+        final archive = await freshDevice.coordinator!.remote.readV4Archive();
+        expect(archive, isNotNull);
+        expect(archive!.inventory, hasLength(2));
+        expect(archive.proofs, hasLength(2));
+        expect(transport.remoteFiles[archivePath], frozenMarker);
+        expect(
+          transport.remoteFiles.keys.any(
+            (path) => path.startsWith('VeneraPlus/sync-v5/archive-v4-imports/'),
+          ),
+          isTrue,
+        );
+      },
+    );
+
+    test('downloadOnly imports v4 locally without remote PUTs', () async {
+      final key = syncRecordKey('setting', ['downloadOnlyV4']);
+      final document = MergeDocument()
+        ..captureLocal('older_device', {}, {
+          key: {'value': 'remote'},
+        });
+      final batch = MergeBatch.create(
+        actor: 'older_device',
+        counter: document.counterFor('older_device'),
+        document: document,
+      );
+      _seedV4Snapshot(transport, batch, 'Older Device');
+      appdata.implicitData['webdavSyncDirection'] = 'downloadOnly';
+      final sync = DataSync();
+
+      final result = await sync.syncNow();
+
+      expect(result.success, isTrue, reason: result.errorMessage);
+      expect(localRecords[key], {'value': 'remote'});
+      expect(sync.coordinator!.store.outbox, isNotEmpty);
+      expect(
+        transport.requests.where((request) => request.method == 'PUT'),
+        isEmpty,
+      );
+      expect(
+        transport.remoteFiles.containsKey('VeneraPlus/sync-v5/archive-v4.json'),
+        isFalse,
+      );
+    });
+
+    test('uploadOnly never applies remote v5 business records', () async {
+      final key = syncRecordKey('setting', ['direction']);
+      final remoteDocument = MergeDocument()
+        ..captureLocal('remote_device', {}, {
+          key: {'value': 'remote'},
+        });
+      final remoteBatch = MergeBatch.create(
+        actor: 'remote_device',
+        counter: remoteDocument.counterFor('remote_device'),
+        document: remoteDocument,
+      );
+      await MergeRemote(client).upload(remoteBatch);
+      localRecords = {
+        key: {'value': 'local'},
+      };
+      appdata.implicitData['webdavSyncDirection'] = 'uploadOnly';
+      final sync = DataSync();
+
+      final result = await sync.syncNow();
+
+      expect(result.success, isTrue, reason: result.errorMessage);
+      expect(localRecords[key], {'value': 'local'});
+    });
+
+    test(
+      'archive publication failure retains one bridge for restart retry',
+      () async {
+        final key = syncRecordKey('setting', ['retryV4']);
+        final document = MergeDocument()
+          ..captureLocal('older_device', {}, {
+            key: {'value': 'retained'},
+          });
+        final batch = MergeBatch.create(
+          actor: 'older_device',
+          counter: document.counterFor('older_device'),
+          document: document,
+        );
+        _seedV4Snapshot(transport, batch, 'Older Device');
+        const archivePath = 'VeneraPlus/sync-v5/archive-v4.json';
+        transport.simulateFailurePaths.add(archivePath);
+
+        final firstDevice = DataSync();
+        final failed = await firstDevice.syncNow();
+
+        expect(failed.error, isTrue);
+        expect(transport.remoteFiles.containsKey(archivePath), isFalse);
+        final store = firstDevice.coordinator!.store;
+        expect(store.outbox, hasLength(1));
+        final bridgeCounter = store.document.counterFor('test_device_1');
+        final publishedCommits = transport.remoteFiles.keys
+            .where((path) => path.contains('/commits/'))
+            .toSet();
+
+        DataSync.resetForTesting();
+        transport.simulateFailurePaths.clear();
+        DataSync.debugDisableWindowCloseHandler = true;
+        DataSync.debugClientFactory = (_) => client;
+        DataSync.debugExportRecords = () async => Map.from(localRecords);
+        DataSync.debugApplyRecords = (records, {beforeCommit}) async {
+          beforeCommit?.call();
+          localRecords = Map.from(records);
+        };
+        final restarted = DataSync();
+        final retried = await restarted.syncNow();
+
+        expect(retried.success, isTrue, reason: retried.errorMessage);
+        expect(restarted.coordinator!.store.outbox, isEmpty);
+        expect(
+          restarted.coordinator!.store.document.counterFor('test_device_1'),
+          bridgeCounter,
+        );
+        expect(
+          transport.remoteFiles.keys
+              .where((path) => path.contains('/commits/'))
+              .toSet(),
+          publishedCommits,
+        );
+        expect(transport.remoteFiles.containsKey(archivePath), isTrue);
+      },
+    );
+
+    test(
+      'archive proof survives local acknowledgement failure and restart',
+      () async {
+        final key = syncRecordKey('setting', ['ackRetryV4']);
+        final document = MergeDocument()
+          ..captureLocal('older_device', {}, {
+            key: {'value': 'retained'},
+          });
+        final batch = MergeBatch.create(
+          actor: 'older_device',
+          counter: document.counterFor('older_device'),
+          document: document,
+        );
+        _seedV4Snapshot(transport, batch, 'Older Device');
+        const archivePath = 'VeneraPlus/sync-v5/archive-v4.json';
+
+        final firstDevice = DataSync();
+        await firstDevice.waitForStartupMerge();
+        Database? databaseLock;
+        transport.onPutHook = (path) {
+          if (path == archivePath && databaseLock == null) {
+            databaseLock = sqlite3.open(
+              '${firstDevice.coordinator!.stateDirectory.path}/merge_store.sqlite3',
+            )..execute('BEGIN EXCLUSIVE;');
+          }
+        };
+
+        final failed = await firstDevice.syncNow();
+        final committedBeforeRestart = transport.remoteFiles.keys
+            .where((path) => path.contains('/commits/'))
+            .toSet();
+        try {
+          expect(failed.error, isTrue);
+          expect(databaseLock, isNotNull);
+          expect(transport.remoteFiles.containsKey(archivePath), isTrue);
+          final frozenArchive = await firstDevice.coordinator!.remote
+              .readV4Archive();
+          expect(frozenArchive, isNotNull);
+        } finally {
+          if (databaseLock != null) {
+            databaseLock!.execute('ROLLBACK;');
+            databaseLock!.close();
+            databaseLock = null;
+          }
+          transport.onPutHook = null;
+        }
+
+        DataSync.resetForTesting();
+        DataSync.debugDisableWindowCloseHandler = true;
+        DataSync.debugClientFactory = (_) => client;
+        DataSync.debugExportRecords = () async => Map.from(localRecords);
+        DataSync.debugApplyRecords = (records, {beforeCommit}) async {
+          beforeCommit?.call();
+          localRecords = Map.from(records);
+        };
+        final restarted = DataSync();
+        final retried = await restarted.syncNow();
+
+        expect(retried.success, isTrue, reason: retried.errorMessage);
+        expect(restarted.coordinator!.store.outbox, isEmpty);
+        expect(
+          transport.remoteFiles.keys
+              .where((path) => path.contains('/commits/'))
+              .toSet(),
+          committedBeforeRestart,
+        );
+        expect(
+          (await restarted.coordinator!.remote.readV4Archive())!.inventory,
+          hasLength(1),
+        );
+      },
+    );
+
+    test(
       'namespace cutover publishes unchanged durable data without reading sync-v2',
       () async {
         final hash = MergeSyncCoordinator.computeEndpointHash(
@@ -584,15 +969,17 @@ void main() {
         final initial = (await remote.list()).singleWhere(
           (entry) => entry.actor == 'test_device_1',
         );
-        final markerPath = 'VeneraPlus/sync-v4/Test 東京 Device/device.json';
+        final markerPath = 'VeneraPlus/sync-v5/archive-v4.json';
         expect(transport.remoteFiles[markerPath], isNotNull);
-        expect(jsonDecode(utf8.decode(transport.remoteFiles[markerPath]!)), {
-          'actor': 'test_device_1',
-          'name': 'Test 東京 Device',
-        });
+        final archive =
+            jsonDecode(utf8.decode(transport.remoteFiles[markerPath]!))
+                as Map<String, dynamic>;
+        expect(archive['schema'], 1);
+        expect(archive['inventory'], isEmpty);
+        expect((archive['proof'] as Map)['actor'], 'test_device_1');
         expect(
           initial.filename,
-          startsWith('VeneraPlus/sync-v4/Test 東京 Device/commits/'),
+          startsWith('VeneraPlus/sync-v5/Test 東京 Device/commits/'),
         );
         expect(
           (await remote.download(initial)).document.materialize(),
@@ -606,11 +993,61 @@ void main() {
           isFalse,
         );
 
+        final publishedCommits = {
+          for (final path in transport.remoteFiles.keys)
+            if (path.contains('/commits/')) path,
+        };
+        final publishedPacks = {
+          for (final path in transport.remoteFiles.keys)
+            if (path.endsWith('.pack')) path,
+        };
+        transport.requests.clear();
         expect((await sync.syncNow()).success, isTrue);
-        final subsequent = (await remote.list()).singleWhere(
-          (entry) => entry.actor == 'test_device_1',
+        expect(
+          transport.remoteFiles.keys
+              .where((path) => path.contains('/commits/'))
+              .toSet(),
+          publishedCommits,
         );
-        expect(subsequent.filename, initial.filename);
+        expect(
+          transport.remoteFiles.keys
+              .where((path) => path.endsWith('.pack'))
+              .toSet(),
+          publishedPacks,
+        );
+        expect(
+          transport.requests.where((request) => request.method == 'PUT'),
+          isEmpty,
+        );
+
+        DataSync.debugNow = () => DateTime(2026);
+        appdata.implicitData['webdavSyncTiming'] = 'realtime';
+        appdata.implicitData['webdavSyncLastRemoteCheck'] = DateTime(
+          2025,
+          12,
+          31,
+          23,
+          49,
+        ).millisecondsSinceEpoch;
+        transport.requests.clear();
+        sync.checkForAutomaticSync();
+        await sync.waitForSync();
+        expect(
+          transport.remoteFiles.keys
+              .where((path) => path.contains('/commits/'))
+              .toSet(),
+          publishedCommits,
+        );
+        expect(
+          transport.remoteFiles.keys
+              .where((path) => path.endsWith('.pack'))
+              .toSet(),
+          publishedPacks,
+        );
+        expect(
+          transport.requests.where((request) => request.method == 'PUT'),
+          isEmpty,
+        );
       },
     );
 
@@ -909,18 +1346,17 @@ void main() {
         );
         await coordinator.remote.upload(goodBatch);
 
-        // A corrupt checkpoint belongs to a separately identified device.
-        transport.remoteFiles['VeneraPlus/sync-v4/Bad Device/device.json'] =
-            Uint8List.fromList(
-              utf8.encode(
-                canonicalSyncJson({
-                  'actor': 'device_bad',
-                  'name': 'Bad Device',
-                }),
-              ),
-            );
-        final badFilename =
-            'VeneraPlus/sync-v4/Bad Device/commits/1-deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef.json';
+        final badDoc = MergeDocument();
+        badDoc.captureLocal('device_bad', {}, {
+          syncRecordKey('setting', ['bad']): {'value': 'ignored'},
+        });
+        final badBatch = MergeBatch.create(
+          actor: 'device_bad',
+          counter: 1,
+          document: badDoc,
+        );
+        final badFilename = await coordinator.remote.upload(badBatch);
+        // Corrupt the v5 manifest after preserving its valid listed metadata.
         transport.remoteFiles[badFilename] = Uint8List.fromList(
           utf8.encode('{"corrupted": true'),
         );
@@ -974,11 +1410,13 @@ void main() {
         });
         expect(coordinator.store.outbox, isNotEmpty);
         final initialBatch = coordinator.store.outbox.first;
+        final snapshotDigest = SyncPackSnapshot.fromSnapshot(
+          MergeSnapshot.fromBatch(initialBatch),
+        ).digest;
         final targetRemotePath =
-            'VeneraPlus/sync-v4/Device/commits/${initialBatch.counter}-${MergeSnapshot.fromBatch(initialBatch).digest}.json';
+            'VeneraPlus/sync-v5/Device/commits/${initialBatch.counter}-$snapshotDigest.json';
 
         // Inject divergent content to simulate a 412 precondition conflict
-        transport.simulateConflictPaths.add(targetRemotePath);
         transport.remoteFiles[targetRemotePath] = Uint8List.fromList(
           utf8.encode('divergent content'),
         );
@@ -1745,9 +2183,10 @@ class _VirtualWebDavTransport implements HttpClientAdapter {
   final remoteFiles = <String, Uint8List>{};
   final remoteEtags = <String, String>{};
   final remoteDirs = <String>{};
-  final simulateConflictPaths = <String>{};
+  final simulateFailurePaths = <String>{};
   final requests = <RequestOptions>[];
   void Function()? onDownloadHook;
+  void Function(String path)? onPutHook;
   @override
   Future<ResponseBody> fetch(
     RequestOptions options,
@@ -1768,8 +2207,9 @@ class _VirtualWebDavTransport implements HttpClientAdapter {
       return ResponseBody.fromString('', 201);
     }
 
-    if (options.method == 'PUT' && simulateConflictPaths.contains(path)) {
-      return ResponseBody.fromString('Precondition Failed', 412);
+    if (options.method == 'PUT' && simulateFailurePaths.contains(path)) {
+      await requestStream?.drain<void>();
+      return ResponseBody.fromString('Server Error', 500);
     }
     if (options.method == 'PUT') {
       final existing = remoteFiles[path];
@@ -1796,6 +2236,7 @@ class _VirtualWebDavTransport implements HttpClientAdapter {
       final etag = '"${sha256.convert(bytes)}"';
       remoteFiles[path] = bytes;
       remoteEtags[path] = etag;
+      onPutHook?.call(path);
       return ResponseBody.fromString(
         '',
         201,
@@ -1832,4 +2273,34 @@ class _VirtualWebDavTransport implements HttpClientAdapter {
 
   @override
   void close({bool force = false}) {}
+}
+
+void _seedV4Snapshot(
+  _VirtualWebDavTransport transport,
+  MergeBatch batch,
+  String deviceName,
+) {
+  final base = 'VeneraPlus/sync-v4/$deviceName';
+  transport.remoteDirs.addAll({
+    'VeneraPlus',
+    'VeneraPlus/sync-v4',
+    base,
+    '$base/commits',
+    '$base/objects',
+  });
+  final markerPath = '$base/device.json';
+  final marker = Uint8List.fromList(
+    utf8.encode(canonicalSyncJson({'actor': batch.actor, 'name': deviceName})),
+  );
+  transport.remoteFiles.putIfAbsent(markerPath, () => marker);
+  final snapshot = MergeSnapshot.fromBatch(batch);
+  final commitPath = '$base/commits/${batch.counter}-${snapshot.digest}.json';
+  final manifest = snapshot.serializeManifest();
+  transport.remoteFiles[commitPath] = manifest;
+  transport.remoteEtags[commitPath] = '"${sha256.convert(manifest)}"';
+  for (final entry in snapshot.objects.entries) {
+    final path = '$base/objects/${entry.key}';
+    transport.remoteFiles[path] = entry.value;
+    transport.remoteEtags[path] = '"${sha256.convert(entry.value)}"';
+  }
 }

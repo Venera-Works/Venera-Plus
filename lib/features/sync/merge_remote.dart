@@ -9,9 +9,12 @@ import 'package:dio/dio.dart';
 import 'package:path/path.dart' as p;
 import 'package:webdav_client/webdav_client.dart' as dav;
 
+import '../../foundation/sync_records.dart';
 import 'merge_engine.dart';
 import 'merge_snapshot.dart';
 import 'sync_device_name.dart';
+import 'sync_pack.dart';
+import 'sync_pack_cache.dart';
 
 /// Helper to determine whether an HTTP ETag is a legitimate quoted strong validator.
 ///
@@ -80,7 +83,7 @@ class MergeRemoteConflictException extends MergeRemoteException {
       'MergeRemoteConflictException($message${statusCode != null ? ', status: $statusCode' : ''})';
 }
 
-enum MergeRemoteLayout { legacyCheckpoint, snapshotCommit }
+enum MergeRemoteLayout { legacyCheckpoint, snapshotCommit, packCommit }
 
 /// Metadata representation of a remote causal checkpoint candidate file.
 class MergeRemoteEntry {
@@ -177,6 +180,36 @@ class MergeRemoteEntry {
     );
   }
 
+  /// Parses a v5 `VeneraPlus/sync-v5/<device>/commits/<counter>-<hash>.json`.
+  static MergeRemoteEntry? tryParsePackCommit(
+    String fullPath, {
+    required String actor,
+    String? eTag,
+  }) {
+    final segments = fullPath.split('/');
+    if (segments.length != 5 ||
+        segments[0] != 'VeneraPlus' ||
+        segments[1] != 'sync-v5' ||
+        !_isSafeDeviceDirectoryName(segments[2]) ||
+        segments[3] != 'commits' ||
+        !_actorIsSafe(actor)) {
+      return null;
+    }
+    final match = _entryRegex.firstMatch(segments[4]);
+    if (match == null || match.group(0) != segments[4]) return null;
+    final counter = int.tryParse(match.group(1)!);
+    final digest = match.group(2)!.toLowerCase();
+    if (counter == null || counter <= 0) return null;
+    return MergeRemoteEntry(
+      filename: fullPath,
+      actor: actor,
+      counter: counter,
+      digest: digest,
+      eTag: eTag,
+      layout: MergeRemoteLayout.packCommit,
+    );
+  }
+
   /// True if this entry possesses a legitimate quoted strong HTTP validator.
   bool get hasStrongEtag => isStrongEtag(eTag);
 
@@ -200,6 +233,139 @@ class MergeRemoteEntry {
       'MergeRemoteEntry(filename: $filename, actor: $actor, counter: $counter, digest: $digest, eTag: $eTag, layout: $layout)';
 }
 
+/// Immutable record of a frozen v4 inventory and its independently verified
+/// v5 publication proof. Import receipts contain cumulative inventories.
+class MergeRemoteV4Archive {
+  MergeRemoteV4Archive({
+    required List<MergeRemoteEntry> inventory,
+    required MergeRemoteEntry proof,
+  }) : this._(inventory: inventory, proofs: [proof]);
+
+  MergeRemoteV4Archive._({
+    required List<MergeRemoteEntry> inventory,
+    required List<MergeRemoteEntry> proofs,
+  }) : inventory = _freezeV4Inventory(inventory),
+       proofs = List.unmodifiable(proofs.map(_withoutEtag).toList()) {
+    if (this.proofs.isEmpty ||
+        this.proofs.any((entry) {
+          final parsed = MergeRemoteEntry.tryParsePackCommit(
+            entry.filename,
+            actor: entry.actor,
+          );
+          return entry.layout != MergeRemoteLayout.packCommit ||
+              parsed == null ||
+              parsed.counter != entry.counter ||
+              parsed.digest != entry.digest.toLowerCase();
+        })) {
+      throw ArgumentError('V4 archive requires valid v5 proof commits');
+    }
+  }
+
+  final List<MergeRemoteEntry> inventory;
+  final List<MergeRemoteEntry> proofs;
+
+  /// Most recently enumerated accepted proof; [proofs] preserves all receipts.
+  MergeRemoteEntry get proof => proofs.last;
+
+  static MergeRemoteV4Archive fromValidatedReceipts(
+    Iterable<MergeRemoteV4Archive> receipts,
+  ) {
+    final inventoryByPath = <String, MergeRemoteEntry>{};
+    final proofsByPath = <String, MergeRemoteEntry>{};
+    for (final receipt in receipts) {
+      for (final entry in receipt.inventory) {
+        final previous = inventoryByPath[entry.filename];
+        if (previous != null && !_sameArchiveEntry(previous, entry)) {
+          throw const FormatException(
+            'Conflicting entries in frozen v4 archive inventory',
+          );
+        }
+        inventoryByPath[entry.filename] = entry;
+      }
+      for (final proof in receipt.proofs) {
+        proofsByPath[proof.filename] = proof;
+      }
+    }
+    if (proofsByPath.isEmpty) {
+      throw ArgumentError('Cannot build an archive without verified proofs');
+    }
+    final orderedProofs = proofsByPath.values.toList()
+      ..sort((a, b) => a.filename.compareTo(b.filename));
+    return MergeRemoteV4Archive._(
+      inventory: inventoryByPath.values.toList(),
+      proofs: orderedProofs,
+    );
+  }
+
+  static List<MergeRemoteEntry> _freezeV4Inventory(
+    List<MergeRemoteEntry> entries,
+  ) {
+    final byPath = <String, MergeRemoteEntry>{};
+    for (final entry in entries) {
+      final parsed = MergeRemoteEntry.tryParseSnapshot(
+        entry.filename,
+        actor: entry.actor,
+      );
+      if (entry.layout != MergeRemoteLayout.snapshotCommit ||
+          parsed == null ||
+          parsed.counter != entry.counter ||
+          parsed.digest != entry.digest.toLowerCase()) {
+        throw ArgumentError.value(
+          entry,
+          'inventory',
+          'Expected valid v4 commits',
+        );
+      }
+      final normalized = _withoutEtag(entry);
+      final previous = byPath[entry.filename];
+      if (previous != null && !_sameArchiveEntry(previous, normalized)) {
+        throw ArgumentError.value(entry, 'inventory', 'Conflicting v4 path');
+      }
+      byPath[entry.filename] = normalized;
+    }
+    final result = byPath.values.toList()
+      ..sort((a, b) => a.filename.compareTo(b.filename));
+    return List.unmodifiable(result);
+  }
+
+  static MergeRemoteEntry _withoutEtag(MergeRemoteEntry entry) =>
+      MergeRemoteEntry(
+        filename: entry.filename,
+        actor: entry.actor,
+        counter: entry.counter,
+        digest: entry.digest,
+        layout: entry.layout,
+      );
+
+  static bool _sameArchiveEntry(
+    MergeRemoteEntry left,
+    MergeRemoteEntry right,
+  ) =>
+      left.filename == right.filename &&
+      left.actor == right.actor &&
+      left.counter == right.counter &&
+      left.digest == right.digest &&
+      left.layout == right.layout;
+}
+
+bool _sameV4Inventories(
+  List<MergeRemoteEntry> left,
+  List<MergeRemoteEntry> right,
+) {
+  final normalizedLeft = MergeRemoteV4Archive._freezeV4Inventory(left);
+  final normalizedRight = MergeRemoteV4Archive._freezeV4Inventory(right);
+  if (normalizedLeft.length != normalizedRight.length) return false;
+  for (var index = 0; index < normalizedLeft.length; index++) {
+    if (!MergeRemoteV4Archive._sameArchiveEntry(
+      normalizedLeft[index],
+      normalizedRight[index],
+    )) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool _isSafeDeviceDirectoryName(String value) {
   try {
     return normalizeSyncDeviceName(value) == value;
@@ -211,6 +377,59 @@ bool _isSafeDeviceDirectoryName(String value) {
 bool _actorIsSafe(String actor) =>
     MergeRemoteEntry._actorRegex.firstMatch(actor)?.group(0) == actor;
 
+class _RemoteOperation {
+  final verifiedCollections = <String>{};
+  final verifiedRemoteObjects = <String>{};
+  final packChecks = <String, bool>{};
+  final validatedArchiveProofs = <String>{};
+}
+
+Future<void> _runBounded<T>(
+  List<T> items,
+  Future<void> Function(T item) action, {
+  int concurrency = 4,
+}) async {
+  if (items.isEmpty) return;
+  final workerCount = math.min(concurrency, items.length);
+  var nextIndex = 0;
+  Object? firstError;
+  StackTrace? firstStack;
+
+  Future<void> worker() async {
+    while (firstError == null && nextIndex < items.length) {
+      final item = items[nextIndex++];
+      try {
+        await action(item);
+      } on Object catch (error, stackTrace) {
+        firstError ??= error;
+        firstStack ??= stackTrace;
+      }
+    }
+  }
+
+  await Future.wait(List<Future<void>>.generate(workerCount, (_) => worker()));
+  if (firstError != null) {
+    Error.throwWithStackTrace(firstError!, firstStack!);
+  }
+}
+
+class _RequestMethodCounter extends Interceptor {
+  final Map<String, int> counts = {};
+
+  @override
+  void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
+    final method = options.method.toUpperCase();
+    counts.update(method, (count) => count + 1, ifAbsent: () => 1);
+    handler.next(options);
+  }
+
+  Map<String, int> delta(Map<String, int> baseline) => Map.unmodifiable({
+    for (final entry in counts.entries)
+      if (entry.value > (baseline[entry.key] ?? 0))
+        entry.key: entry.value - (baseline[entry.key] ?? 0),
+  });
+}
+
 class _DeviceOwnership {
   const _DeviceOwnership({required this.actor, required this.name});
 
@@ -220,8 +439,8 @@ class _DeviceOwnership {
 
 /// Remote WebDAV transport for VeneraPlus multi-device merge sync.
 ///
-/// New publications use immutable v4 manifests and content-addressed objects;
-/// the older checkpoint layout remains an explicit read-only migration API.
+/// New publications use immutable sync-v5 content-addressed Packs. The v4
+/// snapshot and legacy checkpoint layouts remain explicit read-only paths.
 class MergeRemote {
   MergeRemote(
     this._client, {
@@ -229,15 +448,44 @@ class MergeRemote {
     this.onWarning,
     Directory? cacheDirectory,
   }) : deviceName = normalizeSyncDeviceName(deviceName),
-       _cacheDirectory = cacheDirectory;
+       _cacheDirectory = cacheDirectory {
+    _requestCounter = _counterFor(_client.c);
+    _requestCountBaseline = Map.of(_requestCounter.counts);
+    final root = cacheDirectory;
+    _packCache = root == null
+        ? null
+        : SyncPackCache(Directory(p.join(root.path, 'sync-v5-packs')));
+    _packCacheHitBaseline = _packCache?.hits ?? 0;
+    _packCacheInvalidationBaseline = _packCache?.invalidations ?? 0;
+  }
 
   static const String _namespace = 'VeneraPlus';
-  static const String _snapshotNamespace = 'VeneraPlus/sync-v4';
+  static const String _v4Namespace = 'VeneraPlus/sync-v4';
+  static const String _snapshotNamespace = 'VeneraPlus/sync-v5';
   static const String _markerName = 'device.json';
+  static const String _v4ArchiveName = 'archive-v4.json';
+  static const String _v4ImportDirectory = 'archive-v4-imports';
   static const int _maxVerifiedObjectCacheBytes = 64 * 1024 * 1024;
+  static const int _maxParallelTransfers = 4;
+  static const int _maxCompactionCandidates = 64;
+  static const Duration _maxCompactionDuration = Duration(seconds: 2);
+  static final Expando<_RequestMethodCounter> _requestCounters = Expando();
+  static _RequestMethodCounter _counterFor(Dio dio) {
+    final existing = _requestCounters[dio];
+    if (existing != null) return existing;
+    final created = _RequestMethodCounter();
+    _requestCounters[dio] = created;
+    dio.interceptors.add(created);
+    return created;
+  }
 
   final dav.Client _client;
   final Directory? _cacheDirectory;
+  late final SyncPackCache? _packCache;
+  late final _RequestMethodCounter _requestCounter;
+  late Map<String, int> _requestCountBaseline;
+  int _packCacheHitBaseline = 0;
+  int _packCacheInvalidationBaseline = 0;
   int _cacheTempSequence = 0;
   final String deviceName;
 
@@ -247,6 +495,8 @@ class MergeRemote {
   /// Observable record of non-fatal operational warnings.
   final List<String> warnings = [];
   final Map<String, String> _deviceNames = {};
+  static const int _maxInMemoryPublicationManifests = 4;
+  final Map<String, SyncPackManifest> _publicationManifests = {};
   final Map<String, Uint8List> _verifiedObjects = {};
   int _verifiedObjectCacheBytes = 0;
   int? _persistentObjectCacheBytes;
@@ -254,6 +504,15 @@ class MergeRemote {
   int _downloadedBytes = 0;
   int _uploadedObjects = 0;
   int _downloadedObjects = 0;
+  int _cacheHits = 0;
+  int _cacheInvalidations = 0;
+  int _missingObjects = 0;
+  int _directoryChecks = 0;
+  int _retries = 0;
+  int _deviceCount = 0;
+  int _candidateCommits = 0;
+  int _compressedBytes = 0;
+  int _uncompressedBytes = 0;
 
   dav.Client get client => _client;
   Map<String, String> get deviceNames => Map.unmodifiable(_deviceNames);
@@ -262,16 +521,49 @@ class MergeRemote {
   int get uploadedBytes => _uploadedBytes;
   int get downloadedBytes => _downloadedBytes;
 
-  /// Content objects actually sent or fetched; manifests are excluded.
+  /// Content Packs/objects actually sent or fetched; manifests are excluded.
   int get uploadedObjects => _uploadedObjects;
   int get downloadedObjects => _downloadedObjects;
 
-  /// Resets transfer counters without clearing verified content-address cache.
+  /// Sanitized aggregate counters. No path, actor, headers, or payload is exposed.
+  Map<String, Object?> get transferStats => Map.unmodifiable({
+    'requestCounts': _requestCounter.delta(_requestCountBaseline),
+    'cacheHits': _cacheHits + (_packCache?.hits ?? 0) - _packCacheHitBaseline,
+    'cacheInvalidations':
+        _cacheInvalidations +
+        (_packCache?.invalidations ?? 0) -
+        _packCacheInvalidationBaseline,
+    'missingObjects': _missingObjects,
+    'directoryChecks': _directoryChecks,
+    'retries': _retries,
+    'deviceCount': _deviceCount,
+    'candidateCommits': _candidateCommits,
+    'compressedBytes': _compressedBytes,
+    'uncompressedBytes': _uncompressedBytes,
+    'uploadedBytes': _uploadedBytes,
+    'downloadedBytes': _downloadedBytes,
+    'uploadedObjects': _uploadedObjects,
+    'downloadedObjects': _downloadedObjects,
+  });
+
+  /// Resets sync-run counters without clearing verified content-address cache.
   void resetTransferStats() {
     _uploadedBytes = 0;
     _downloadedBytes = 0;
     _uploadedObjects = 0;
     _downloadedObjects = 0;
+    _cacheHits = 0;
+    _cacheInvalidations = 0;
+    _missingObjects = 0;
+    _directoryChecks = 0;
+    _retries = 0;
+    _deviceCount = 0;
+    _candidateCommits = 0;
+    _compressedBytes = 0;
+    _uncompressedBytes = 0;
+    _requestCountBaseline = Map.of(_requestCounter.counts);
+    _packCacheHitBaseline = _packCache?.hits ?? 0;
+    _packCacheInvalidationBaseline = _packCache?.invalidations ?? 0;
   }
 
   void _recordWarning(String message) {
@@ -287,36 +579,54 @@ class MergeRemote {
 
   /// Validates a complete checkpoint/commit path rather than silently rebasing it.
   String _resolvePath(MergeRemoteEntry entry) {
-    final parsed = entry.layout == MergeRemoteLayout.snapshotCommit
-        ? MergeRemoteEntry.tryParseSnapshot(entry.filename, actor: entry.actor)
-        : MergeRemoteEntry.tryParse(entry.filename, actor: entry.actor);
+    final parsed = switch (entry.layout) {
+      MergeRemoteLayout.legacyCheckpoint => MergeRemoteEntry.tryParse(
+        entry.filename,
+        actor: entry.actor,
+      ),
+      MergeRemoteLayout.snapshotCommit => MergeRemoteEntry.tryParseSnapshot(
+        entry.filename,
+        actor: entry.actor,
+      ),
+      MergeRemoteLayout.packCommit => MergeRemoteEntry.tryParsePackCommit(
+        entry.filename,
+        actor: entry.actor,
+      ),
+    };
     if (parsed == null ||
         parsed.layout != entry.layout ||
         parsed.counter != entry.counter ||
         parsed.digest != entry.digest.toLowerCase()) {
-      throw FormatException(
-        'Invalid checkpoint path for actor ${entry.actor}: ${entry.filename}',
-      );
+      throw const FormatException('Invalid remote commit path or metadata');
     }
     return parsed.filename;
   }
 
   Future<void> _verifyEntryOwnership(MergeRemoteEntry entry) async {
     final segments = entry.filename.split('/');
-    final isSnapshot = entry.layout == MergeRemoteLayout.snapshotCommit;
-    final directoryName = segments[isSnapshot ? 2 : 1];
+    final namespace = switch (entry.layout) {
+      MergeRemoteLayout.legacyCheckpoint => _namespace,
+      MergeRemoteLayout.snapshotCommit => _v4Namespace,
+      MergeRemoteLayout.packCommit => _snapshotNamespace,
+    };
+    final directoryName = segments[namespace == _namespace ? 1 : 2];
     final owner = await _readDeviceOwnership(
       directoryName,
-      namespace: isSnapshot ? _snapshotNamespace : _namespace,
+      namespace: namespace,
     );
     if (owner == null || owner.actor != entry.actor) {
-      throw MergeRemoteCorruptException(
-        'Checkpoint ownership metadata does not match ${entry.filename}',
+      throw const MergeRemoteCorruptException(
+        'Remote checkpoint ownership metadata mismatch',
       );
     }
   }
 
-  Future<void> _ensureCollection(String path) async {
+  Future<void> _ensureCollection(
+    String path, {
+    _RemoteOperation? operation,
+  }) async {
+    if (operation?.verifiedCollections.contains(path) ?? false) return;
+    _directoryChecks++;
     try {
       await _client.mkdir(path);
     } on DioException catch (e) {
@@ -327,22 +637,24 @@ class MergeRemote {
     } on DioException catch (e) {
       if (e.response?.statusCode == 404) {
         throw MergeRemoteException(
-          'Failed to verify WebDAV collection $path',
+          'Failed to verify WebDAV collection',
           statusCode: 404,
           cause: e,
         );
       }
       rethrow;
     }
+    operation?.verifiedCollections.add(path);
   }
 
   Future<void> _ensureNamespaceDirectory({
     String namespace = _namespace,
+    _RemoteOperation? operation,
   }) async {
-    if (namespace == _snapshotNamespace) {
-      await _ensureCollection(_namespace);
+    if (namespace != _namespace) {
+      await _ensureCollection(_namespace, operation: operation);
     }
-    await _ensureCollection(namespace);
+    await _ensureCollection(namespace, operation: operation);
   }
 
   Future<_DeviceOwnership?> _readDeviceOwnership(
@@ -459,14 +771,18 @@ class MergeRemote {
   Future<String> _ensureDeviceDirectory(
     String actor, {
     String namespace = _namespace,
+    _RemoteOperation? operation,
   }) async {
-    await _ensureNamespaceDirectory(namespace: namespace);
+    await _ensureNamespaceDirectory(namespace: namespace, operation: operation);
 
     var directoryName = deviceName;
     for (var attempt = 0; attempt < 2; attempt++) {
       await _ensureCollection(
         _deviceDirectoryPath(directoryName, namespace: namespace),
+        operation: operation,
       );
+      // Ownership is read on every operation even when collection checks are
+      // task-local cached.
       var owner = await _readDeviceOwnership(
         directoryName,
         namespace: namespace,
@@ -495,8 +811,8 @@ class MergeRemote {
         directoryName = fallbackName;
         continue;
       }
-      throw MergeRemoteConflictException(
-        'Device directory ownership collision at $directoryName',
+      throw const MergeRemoteConflictException(
+        'Device directory ownership collision',
       );
     }
     throw const MergeRemoteConflictException(
@@ -610,18 +926,33 @@ class MergeRemote {
   Future<List<MergeRemoteEntry>> listLegacyCheckpoints() =>
       _listLegacyCheckpoints();
 
-  /// Lists v4 commit candidates. Legacy checkpoint paths are never returned here.
-  Future<List<MergeRemoteEntry>> list({bool latestOnly = false}) async {
+  /// Lists v5 Pack commits. v4 candidates are available only through [listV4].
+  Future<List<MergeRemoteEntry>> list({bool latestOnly = false}) =>
+      _listCommits(namespace: _snapshotNamespace, latestOnly: latestOnly);
+
+  /// Lists all v4 commits for explicit migration and frozen-inventory checks.
+  Future<List<MergeRemoteEntry>> listV4({bool latestOnly = false}) =>
+      _listCommits(namespace: _v4Namespace, latestOnly: latestOnly);
+
+  Future<List<MergeRemoteEntry>> _listCommits({
+    required String namespace,
+    required bool latestOnly,
+  }) async {
     _deviceNames.clear();
     List<dav.File> deviceDirectories;
     try {
-      deviceDirectories = await _client.readDir(_snapshotNamespace);
-    } on DioException catch (e) {
-      if (e.response?.statusCode == 404) return const [];
+      deviceDirectories = await _client.readDir(namespace);
+    } on DioException catch (error) {
+      if (error.response?.statusCode == 404) {
+        _deviceCount = 0;
+        _candidateCommits = 0;
+        return const [];
+      }
       rethrow;
     }
 
     final entries = <MergeRemoteEntry>[];
+    _deviceCount = 0;
     for (final directory in deviceDirectories) {
       if (directory.isDir != true) continue;
       final directoryName = directory.name;
@@ -630,29 +961,36 @@ class MergeRemote {
       }
       final owner = await _readDeviceOwnership(
         directoryName,
-        namespace: _snapshotNamespace,
+        namespace: namespace,
         ignoreInvalid: true,
       );
       if (owner == null) continue;
+      _deviceCount++;
       _deviceNames[owner.actor] = owner.name;
 
       final List<dav.File> commitFiles;
       try {
         commitFiles = await _client.readDir(
-          _deviceDirectoryPath(directoryName, namespace: _snapshotNamespace) +
-              '/commits',
+          '${_deviceDirectoryPath(directoryName, namespace: namespace)}/commits',
         );
-      } on DioException catch (e) {
-        if (e.response?.statusCode == 404) continue;
+      } on DioException catch (error) {
+        if (error.response?.statusCode == 404) continue;
         rethrow;
       }
       for (final file in commitFiles) {
         if (file.isDir == true || file.name == null || file.size == 0) continue;
-        final entry = MergeRemoteEntry.tryParseSnapshot(
-          '$_snapshotNamespace/$directoryName/commits/${file.name}',
-          actor: owner.actor,
-          eTag: file.eTag,
-        );
+        final path = '$namespace/$directoryName/commits/${file.name}';
+        final entry = namespace == _v4Namespace
+            ? MergeRemoteEntry.tryParseSnapshot(
+                path,
+                actor: owner.actor,
+                eTag: file.eTag,
+              )
+            : MergeRemoteEntry.tryParsePackCommit(
+                path,
+                actor: owner.actor,
+                eTag: file.eTag,
+              );
         if (entry != null) entries.add(entry);
       }
     }
@@ -664,6 +1002,7 @@ class MergeRemote {
       if (counterOrder != 0) return counterOrder;
       return a.digest.compareTo(b.digest);
     });
+    _candidateCommits = entries.length;
     if (!latestOnly) return entries;
     final highestByActor = <String, int>{};
     for (final entry in entries) {
@@ -677,8 +1016,395 @@ class MergeRemote {
         .toList(growable: false);
   }
 
-  /// Convenience helper to list only the highest-counter v4 candidates.
+  /// Convenience helper to list only the highest-counter v5 candidates.
   Future<List<MergeRemoteEntry>> listLatest() => list(latestOnly: true);
+
+  Future<List<MergeRemoteEntry>> listLatestV4() => listV4(latestOnly: true);
+
+  static const int _maxV4ArchiveBytes = 64 * 1024 * 1024;
+
+  String get _v4ArchivePath => '$_snapshotNamespace/$_v4ArchiveName';
+
+  String _v4ImportPath(String inventoryDigest) =>
+      '$_snapshotNamespace/$_v4ImportDirectory/$inventoryDigest.json';
+
+  Map<String, Object?> _archiveEntryJson(MergeRemoteEntry entry) => {
+    'actor': entry.actor,
+    'counter': entry.counter,
+    'digest': entry.digest,
+    'path': entry.filename,
+  };
+
+  Uint8List _serializeV4Archive(MergeRemoteV4Archive archive) =>
+      Uint8List.fromList(
+        utf8.encode(
+          canonicalSyncJson({
+            'schema': 1,
+            'inventory': archive.inventory.map(_archiveEntryJson).toList(),
+            'proof': _archiveEntryJson(archive.proof),
+          }),
+        ),
+      );
+
+  String _archiveInventoryDigest(MergeRemoteV4Archive archive) => sha256
+      .convert(
+        utf8.encode(
+          canonicalSyncJson(archive.inventory.map(_archiveEntryJson).toList()),
+        ),
+      )
+      .toString();
+
+  MergeRemoteEntry _parseArchiveEntry(
+    Object? value, {
+    required MergeRemoteLayout layout,
+  }) {
+    if (value is! Map<String, dynamic> ||
+        value.length != 4 ||
+        !value.keys.toSet().containsAll(const {
+          'actor',
+          'counter',
+          'digest',
+          'path',
+        })) {
+      throw const FormatException('Invalid v4 archive entry schema');
+    }
+    final actor = value['actor'];
+    final counter = value['counter'];
+    final digest = value['digest'];
+    final path = value['path'];
+    if (actor is! String ||
+        counter is! int ||
+        digest is! String ||
+        path is! String) {
+      throw const FormatException('Invalid v4 archive entry values');
+    }
+    final parsed = switch (layout) {
+      MergeRemoteLayout.snapshotCommit => MergeRemoteEntry.tryParseSnapshot(
+        path,
+        actor: actor,
+      ),
+      MergeRemoteLayout.packCommit => MergeRemoteEntry.tryParsePackCommit(
+        path,
+        actor: actor,
+      ),
+      MergeRemoteLayout.legacyCheckpoint => null,
+    };
+    if (parsed == null ||
+        parsed.counter != counter ||
+        parsed.digest != digest.toLowerCase()) {
+      throw const FormatException('Invalid v4 archive entry identity');
+    }
+    return parsed;
+  }
+
+  Future<MergeRemoteV4Archive?> _readV4ArchiveRecord(
+    String path, {
+    String? expectedInventoryDigest,
+    required _RemoteOperation operation,
+  }) async {
+    final Uint8List markerBytes;
+    try {
+      markerBytes = await _downloadRawBytes(path, maxBytes: _maxV4ArchiveBytes);
+    } on DioException catch (error) {
+      if (error.response?.statusCode == 404) return null;
+      throw MergeRemoteException(
+        'Failed to read v4 archive marker',
+        statusCode: error.response?.statusCode,
+        cause: error,
+      );
+    } on MergeRemoteException catch (error) {
+      if (error.statusCode == 404) return null;
+      rethrow;
+    }
+
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(utf8.decode(markerBytes, allowMalformed: false));
+    } on Object catch (error) {
+      throw MergeRemoteCorruptException(
+        'V4 archive marker is invalid',
+        cause: error,
+      );
+    }
+    if (decoded is! Map<String, dynamic> ||
+        decoded.length != 3 ||
+        !decoded.keys.toSet().containsAll(const {
+          'schema',
+          'inventory',
+          'proof',
+        }) ||
+        decoded['schema'] != 1 ||
+        decoded['inventory'] is! List) {
+      throw const MergeRemoteCorruptException(
+        'V4 archive marker has an invalid schema',
+      );
+    }
+    final inventory = <MergeRemoteEntry>[];
+    try {
+      for (final value in decoded['inventory'] as List) {
+        inventory.add(
+          _parseArchiveEntry(value, layout: MergeRemoteLayout.snapshotCommit),
+        );
+      }
+    } on Object catch (error) {
+      throw MergeRemoteCorruptException(
+        'V4 archive inventory is invalid',
+        cause: error,
+      );
+    }
+    final proof = _parseArchiveEntry(
+      decoded['proof'],
+      layout: MergeRemoteLayout.packCommit,
+    );
+    final archive = MergeRemoteV4Archive(inventory: inventory, proof: proof);
+    if (!_bytesEqual(_serializeV4Archive(archive), markerBytes)) {
+      throw const MergeRemoteCorruptException(
+        'V4 archive marker is not canonical JSON',
+      );
+    }
+    if (expectedInventoryDigest != null &&
+        _archiveInventoryDigest(archive) != expectedInventoryDigest) {
+      throw const MergeRemoteCorruptException(
+        'V4 archive receipt path does not match its inventory',
+      );
+    }
+
+    final markerDigest = sha256.convert(markerBytes).toString();
+    final proofKey = '${proof.filename}:${proof.digest}:$markerDigest';
+    if (operation.validatedArchiveProofs.add(proofKey)) {
+      await _downloadPackCommit(proof);
+    }
+    return archive;
+  }
+
+  /// Reads the immutable marker and every authorized append-only import
+  /// receipt; no inventory is trusted until its v5 proof fully validates.
+  Future<MergeRemoteV4Archive?> readV4Archive() =>
+      _readV4Archive(_RemoteOperation());
+
+  Future<MergeRemoteV4Archive?> _readV4Archive(
+    _RemoteOperation operation,
+  ) async {
+    final baseline = await _readV4ArchiveRecord(
+      _v4ArchivePath,
+      operation: operation,
+    );
+    List<dav.File> receiptFiles;
+    try {
+      receiptFiles = await _client.readDir(
+        '$_snapshotNamespace/$_v4ImportDirectory',
+      );
+    } on DioException catch (error) {
+      if (error.response?.statusCode == 404) {
+        if (baseline == null) return null;
+        return baseline;
+      }
+      throw MergeRemoteException(
+        'Failed to list v4 archive import receipts',
+        statusCode: error.response?.statusCode,
+        cause: error,
+      );
+    }
+    final receiptPattern = RegExp(r'^([0-9a-f]{64})\.json$');
+    final receipts = <MergeRemoteV4Archive>[];
+    if (baseline != null) receipts.add(baseline);
+    for (final file in receiptFiles) {
+      if (file.isDir == true || file.name == null) continue;
+      final match = receiptPattern.firstMatch(file.name!);
+      if (match == null) continue;
+      final receipt = await _readV4ArchiveRecord(
+        '$_snapshotNamespace/$_v4ImportDirectory/${file.name}',
+        expectedInventoryDigest: match.group(1),
+        operation: operation,
+      );
+      if (receipt != null) receipts.add(receipt);
+    }
+    if (baseline == null) {
+      if (receipts.isEmpty) return null;
+      throw const MergeRemoteCorruptException(
+        'V4 archive import receipts exist without the immutable baseline',
+      );
+    }
+    try {
+      return MergeRemoteV4Archive.fromValidatedReceipts(receipts);
+    } on Object catch (error) {
+      throw MergeRemoteCorruptException(
+        'V4 archive receipts contain conflicting inventories',
+        cause: error,
+      );
+    }
+  }
+
+  bool _inventoryContains(
+    List<MergeRemoteEntry> superset,
+    List<MergeRemoteEntry> subset,
+  ) {
+    final byPath = {for (final entry in superset) entry.filename: entry};
+    return subset.every((entry) {
+      final accepted = byPath[entry.filename];
+      return accepted != null &&
+          MergeRemoteV4Archive._sameArchiveEntry(accepted, entry);
+    });
+  }
+
+  /// Creates the initial archive or appends an explicit, immutable import receipt.
+  Future<MergeRemoteV4Archive> publishV4Archive(
+    MergeRemoteV4Archive archive, {
+    bool acceptChanges = false,
+  }) async {
+    final requested = MergeRemoteV4Archive(
+      inventory: archive.inventory,
+      proof: archive.proof,
+    );
+    final operation = _RemoteOperation();
+    final accepted = await _readV4Archive(operation);
+    final liveInventory = await listV4();
+    if (!_sameV4Inventories(liveInventory, requested.inventory)) {
+      throw const MergeRemoteConflictException(
+        'V4 inventory changed while preparing archive publication',
+      );
+    }
+    if (accepted != null) {
+      if (_sameV4Inventories(accepted.inventory, requested.inventory)) {
+        return accepted;
+      }
+      if (!acceptChanges ||
+          !_inventoryContains(requested.inventory, accepted.inventory)) {
+        throw const MergeRemoteConflictException(
+          'Existing v4 archive requires explicit import before extension',
+        );
+      }
+    }
+
+    final markerBytes = _serializeV4Archive(requested);
+    final inventoryDigest = _archiveInventoryDigest(requested);
+    final markerPath = accepted == null
+        ? _v4ArchivePath
+        : _v4ImportPath(inventoryDigest);
+    await _ensureCollection(_snapshotNamespace, operation: operation);
+    if (accepted != null) {
+      await _ensureCollection(
+        '$_snapshotNamespace/$_v4ImportDirectory',
+        operation: operation,
+      );
+    }
+    final markerDigest = sha256.convert(markerBytes).toString();
+    final proofKey =
+        '${requested.proof.filename}:${requested.proof.digest}:$markerDigest';
+    if (operation.validatedArchiveProofs.add(proofKey)) {
+      await _downloadPackCommit(requested.proof, usePackCache: false);
+    }
+    MergeRemoteV4Archive? concurrentlyAccepted;
+    try {
+      await _publishArchiveMarker(markerPath, markerBytes, markerDigest);
+    } on MergeRemoteConflictException catch (error) {
+      if (error.statusCode != 412) rethrow;
+      concurrentlyAccepted = await _readV4Archive(operation);
+      if (concurrentlyAccepted != null &&
+          !_inventoryContains(
+            concurrentlyAccepted.inventory,
+            requested.inventory,
+          ) &&
+          acceptChanges &&
+          _inventoryContains(
+            requested.inventory,
+            concurrentlyAccepted.inventory,
+          )) {
+        await _ensureCollection(
+          '$_snapshotNamespace/$_v4ImportDirectory',
+          operation: operation,
+        );
+        await _publishArchiveMarker(
+          _v4ImportPath(inventoryDigest),
+          markerBytes,
+          markerDigest,
+        );
+        concurrentlyAccepted = null;
+      } else if (concurrentlyAccepted == null ||
+          !_inventoryContains(
+            concurrentlyAccepted.inventory,
+            requested.inventory,
+          )) {
+        rethrow;
+      }
+    }
+
+    final published = concurrentlyAccepted ?? await _readV4Archive(operation);
+    if (published == null ||
+        !_inventoryContains(published.inventory, requested.inventory)) {
+      throw const MergeRemoteConflictException(
+        'Published v4 archive receipt is not visible',
+      );
+    }
+    final afterPublication = await listV4();
+    if (!_sameV4Inventories(afterPublication, published.inventory)) {
+      throw const MergeRemoteConflictException(
+        'Unaccepted v4 commits appeared during archive publication',
+      );
+    }
+    return published;
+  }
+
+  Future<void> _publishArchiveMarker(
+    String path,
+    Uint8List bytes,
+    String digest,
+  ) async {
+    Response? response;
+    try {
+      response = await _client.c.req(
+        _client,
+        'PUT',
+        path,
+        data: _streamBytes(bytes),
+        optionsHandler: (options) {
+          options.headers ??= {};
+          options.headers!['If-None-Match'] = '*';
+          options.headers!['content-length'] = bytes.length;
+          options.headers!['content-type'] = 'application/json; charset=utf-8';
+        },
+      );
+    } on DioException catch (error) {
+      if (error.response?.statusCode == 412) {
+        response = error.response;
+      } else {
+        rethrow;
+      }
+    }
+    if ([200, 201, 204].contains(response?.statusCode)) {
+      _uploadedBytes += bytes.length;
+      final readBack = await _downloadRawBytes(
+        path,
+        maxBytes: _maxV4ArchiveBytes,
+      );
+      if (!_bytesEqual(readBack, bytes) ||
+          sha256.convert(readBack).toString() != digest) {
+        throw const MergeRemoteCorruptException(
+          'V4 archive marker failed read-back verification',
+        );
+      }
+      return;
+    }
+    if (response?.statusCode == 412) {
+      _retries++;
+      final existing = await _downloadRawBytes(
+        path,
+        maxBytes: _maxV4ArchiveBytes,
+      );
+      if (_bytesEqual(existing, bytes) &&
+          sha256.convert(existing).toString() == digest) {
+        return;
+      }
+      throw const MergeRemoteConflictException(
+        'Immutable v4 archive marker already differs',
+        statusCode: 412,
+      );
+    }
+    throw MergeRemoteException(
+      'V4 archive marker publication failed',
+      statusCode: response?.statusCode,
+    );
+  }
 
   /// Downloads and cryptographically verifies a remote causal checkpoint.
   ///
@@ -801,13 +1527,173 @@ class MergeRemote {
     return _downloadLegacyCheckpoint(entry);
   }
 
-  /// Downloads one immutable snapshot commit and all of its referenced objects.
+  /// Downloads one immutable v5 commit and all referenced Packs.
   Future<MergeBatch> download(MergeRemoteEntry entry) {
-    return entry.layout == MergeRemoteLayout.snapshotCommit
-        ? _downloadSnapshot(entry)
-        : _downloadLegacyCheckpoint(entry);
+    if (entry.layout == MergeRemoteLayout.packCommit) {
+      return _downloadPackCommit(entry);
+    }
+    if (entry.layout == MergeRemoteLayout.snapshotCommit) {
+      return _downloadSnapshot(entry);
+    }
+    return _downloadLegacyCheckpoint(entry);
   }
 
+  Future<MergeBatch> _downloadPackCommit(
+    MergeRemoteEntry entry, {
+    bool usePackCache = true,
+  }) async {
+    final remotePath = _resolvePath(entry);
+    await _verifyEntryOwnership(entry);
+    final Uint8List manifestBytes;
+    try {
+      manifestBytes = await _downloadRawBytes(
+        remotePath,
+        maxBytes: SyncPackManifest.maxManifestBytes,
+      );
+    } on DioException catch (error) {
+      if (error.response?.statusCode == 404) {
+        throw const MergeRemoteCorruptException(
+          'Pack commit is missing',
+          statusCode: 404,
+        );
+      }
+      throw MergeRemoteException(
+        'Failed to download Pack commit',
+        statusCode: error.response?.statusCode,
+        cause: error,
+      );
+    } on MergeRemoteException catch (error) {
+      if (error.statusCode == 404) {
+        throw MergeRemoteCorruptException(
+          'Pack commit is missing',
+          statusCode: 404,
+          cause: error,
+        );
+      }
+      rethrow;
+    }
+    if (sha256.convert(manifestBytes).toString() != entry.digest) {
+      throw const MergeRemoteCorruptException('Pack commit digest mismatch');
+    }
+
+    final SyncPackManifest manifest;
+    try {
+      manifest = SyncPackManifest.parse(manifestBytes);
+    } on Object catch (error) {
+      throw MergeRemoteCorruptException(
+        'Pack commit manifest is invalid',
+        cause: error,
+      );
+    }
+    if (manifest.actor != entry.actor ||
+        manifest.counter != entry.counter ||
+        manifest.digest != entry.digest) {
+      throw const MergeRemoteCorruptException(
+        'Pack commit metadata does not match its filename',
+      );
+    }
+
+    final basePath = remotePath.substring(
+      0,
+      remotePath.lastIndexOf('/commits/'),
+    );
+    final packs = <String, SyncPack>{};
+    await _runBounded<String>(manifest.packs.keys.toList(growable: false), (
+      digest,
+    ) async {
+      final expectedSize = manifest.packs[digest]!;
+      SyncPack? pack;
+      if (usePackCache) {
+        try {
+          pack = await _packCache?.read(digest, expectedSize: expectedSize);
+        } on FileSystemException {
+          pack = null;
+        }
+      }
+      if (pack != null) {
+        packs[digest] = pack;
+        return;
+      }
+
+      final packPath = '$basePath/packs/$digest.pack';
+      final Uint8List bytes;
+      try {
+        bytes = await _downloadRawBytes(
+          packPath,
+          maxBytes: expectedSize,
+          countAsObject: true,
+        );
+      } on DioException catch (error) {
+        if (error.response?.statusCode == 404) {
+          _missingObjects++;
+          throw MergeRemoteCorruptException(
+            'Referenced Pack is missing',
+            statusCode: 404,
+            cause: error,
+          );
+        }
+        throw MergeRemoteException(
+          'Failed to download referenced Pack',
+          statusCode: error.response?.statusCode,
+          cause: error,
+        );
+      } on MergeRemoteException catch (error) {
+        if (error.statusCode == 404) {
+          _missingObjects++;
+          throw MergeRemoteCorruptException(
+            'Referenced Pack is missing',
+            statusCode: 404,
+            cause: error,
+          );
+        }
+        rethrow;
+      }
+      if (bytes.length != expectedSize) {
+        throw const MergeRemoteCorruptException(
+          'Referenced Pack size mismatch',
+        );
+      }
+      try {
+        pack = SyncPack.decode(bytes, expectedDigest: digest);
+      } on FormatException catch (error) {
+        throw MergeRemoteCorruptException(
+          'Referenced Pack is corrupt',
+          cause: error,
+        );
+      }
+      packs[digest] = pack;
+      try {
+        await _packCache?.write(pack);
+      } on FileSystemException {
+        // A verified network Pack remains usable when its cache is unwritable.
+      }
+    });
+
+    final MergeBatch batch;
+    try {
+      batch = manifest.decode(packs);
+    } on Object catch (error) {
+      throw MergeRemoteCorruptException(
+        'Pack commit or Pack indexes failed validation',
+        cause: error,
+      );
+    }
+    if (batch.actor != entry.actor ||
+        batch.counter != entry.counter ||
+        batch.id != manifest.batchId) {
+      throw const MergeRemoteCorruptException(
+        'Pack commit document identity mismatch',
+      );
+    }
+    for (final object in manifest.objects) {
+      _compressedBytes += object['compressedSize']! as int;
+      _uncompressedBytes += object['uncompressedSize']! as int;
+    }
+
+    return batch;
+  }
+
+  /// Downloads and verifies one v4 snapshot commit and its objects.
   Future<MergeBatch> _downloadSnapshot(MergeRemoteEntry entry) async {
     final remotePath = _resolvePath(entry);
     await _verifyEntryOwnership(entry);
@@ -874,6 +1760,15 @@ class MergeRemote {
     );
     final objectBytes = <String, Uint8List>{};
     final fetchedObjects = <String, Uint8List>{};
+    final refs =
+        <
+          ({
+            String objectPath,
+            String digest,
+            int compressedSize,
+            String cacheKey,
+          })
+        >[];
     for (final refValue in objectRefs) {
       if (refValue is! Map ||
           refValue['path'] is! String ||
@@ -881,8 +1776,8 @@ class MergeRemote {
           refValue['compressedSize'] is! int ||
           refValue['compressedSize'] <= 0 ||
           refValue['compressedSize'] > MergeSnapshot.maxCompressedObjectBytes) {
-        throw MergeRemoteCorruptException(
-          'Snapshot manifest contains an invalid object reference: $remotePath',
+        throw const MergeRemoteCorruptException(
+          'Snapshot manifest contains an invalid object reference',
         );
       }
       final objectPath = refValue['path'] as String;
@@ -894,73 +1789,82 @@ class MergeRemote {
           objectPath != '${objectPath.split('/').first}/$digest.json.gz' ||
           objectPath.split('/').length != 2 ||
           !objectPaths.add(objectPath)) {
-        throw MergeRemoteCorruptException(
-          'Snapshot manifest contains an unsafe or duplicate object path: $objectPath',
+        throw const MergeRemoteCorruptException(
+          'Snapshot manifest contains an unsafe or duplicate object path',
         );
       }
       totalCompressed += compressedSize;
       if (totalCompressed > MergeSnapshot.maxTotalCompressedBytes) {
-        throw MergeRemoteCorruptException(
-          'Snapshot compressed size exceeds transport limit: $remotePath',
+        throw const MergeRemoteCorruptException(
+          'Snapshot compressed size exceeds transport limit',
         );
       }
+      refs.add((
+        objectPath: objectPath,
+        digest: digest,
+        compressedSize: compressedSize,
+        cacheKey: '$basePath/objects/$objectPath',
+      ));
+    }
 
-      final cacheKey = '$basePath/objects/$objectPath';
+    await _runBounded(refs, (ref) async {
+      final cacheKey = ref.cacheKey;
       var bytes = _verifiedObjects[cacheKey];
       if (bytes != null &&
-          (bytes.length != compressedSize ||
-              sha256.convert(bytes).toString() != digest)) {
+          (bytes.length != ref.compressedSize ||
+              sha256.convert(bytes).toString() != ref.digest)) {
         _forgetVerifiedObject(cacheKey);
+        _cacheInvalidations++;
         bytes = null;
+      } else if (bytes != null) {
+        _cacheHits++;
       }
-      if (bytes == null) {
-        bytes = await _readPersistentObject(
-          cacheKey,
-          expectedSize: compressedSize,
-          expectedDigest: digest,
-        );
-      }
-
+      bytes ??= await _readPersistentObject(
+        cacheKey,
+        expectedSize: ref.compressedSize,
+        expectedDigest: ref.digest,
+      );
       if (bytes == null) {
         try {
           bytes = await _downloadRawBytes(
             cacheKey,
-            maxBytes: compressedSize,
+            maxBytes: ref.compressedSize,
             countAsObject: true,
           );
         } on DioException catch (error) {
           if (error.response?.statusCode == 404) {
-            throw MergeRemoteCorruptException(
-              'Snapshot object is missing: $objectPath',
+            _missingObjects++;
+            throw const MergeRemoteCorruptException(
+              'Snapshot object is missing',
               statusCode: 404,
-              cause: error,
             );
           }
           throw MergeRemoteException(
-            'Failed to download snapshot object $objectPath',
+            'Failed to download snapshot object',
             statusCode: error.response?.statusCode,
             cause: error,
           );
         } on MergeRemoteException catch (error) {
           if (error.statusCode == 404) {
+            _missingObjects++;
             throw MergeRemoteCorruptException(
-              'Snapshot object is missing: $objectPath',
+              'Snapshot object is missing',
               statusCode: 404,
               cause: error,
             );
           }
           rethrow;
         }
-        if (bytes.length != compressedSize ||
-            sha256.convert(bytes).toString() != digest) {
-          throw MergeRemoteCorruptException(
-            'Snapshot object failed content verification: $objectPath',
+        if (bytes.length != ref.compressedSize ||
+            sha256.convert(bytes).toString() != ref.digest) {
+          throw const MergeRemoteCorruptException(
+            'Snapshot object failed content verification',
           );
         }
         fetchedObjects[cacheKey] = bytes;
       }
-      objectBytes[objectPath] = bytes;
-    }
+      objectBytes[ref.objectPath] = bytes;
+    });
 
     final MergeBatch batch;
     try {
@@ -977,6 +1881,11 @@ class MergeRemote {
       throw MergeRemoteCorruptException(
         'Snapshot commit metadata does not match its owner or filename: $remotePath',
       );
+    }
+    for (final refValue in objectRefs) {
+      final object = refValue as Map;
+      _compressedBytes += object['compressedSize']! as int;
+      _uncompressedBytes += object['uncompressedSize']! as int;
     }
     for (final entry in fetchedObjects.entries) {
       _rememberVerifiedObject(entry.key, entry.value);
@@ -1007,9 +1916,7 @@ class MergeRemote {
         final batch = await download(candidate);
         return batch;
       } on MergeRemoteCorruptException catch (e) {
-        _recordWarning(
-          'Skipping corrupt remote checkpoint candidate ${candidate.filename}: ${e.message}',
-        );
+        _recordWarning('Skipping a corrupt remote checkpoint candidate');
         onCorruptCandidate?.call(candidate, e);
       }
     }
@@ -1076,101 +1983,261 @@ class MergeRemote {
     }
   }
 
-  /// Uploads all missing immutable objects first, then conditionally publishes the
-  /// manifest as the sole visible commit point.
+  /// Uploads all missing immutable Packs first, then publishes the v5 manifest.
   Future<String> upload(MergeBatch batch) async {
     return uploadSnapshot(MergeSnapshot.fromBatch(batch));
   }
 
-  /// Uploads an already encoded snapshot without re-compressing its objects.
+  /// Publishes an already encoded v4 logical snapshot using sync-v5 Packs.
   Future<String> uploadSnapshot(MergeSnapshot snapshot) async {
-    final manifest = snapshot.manifest;
-    final actor = manifest['actor'];
-    final counter = manifest['counter'];
-    final batchId = manifest['batchId'];
+    final sourceManifest = snapshot.manifest;
+    final actor = sourceManifest['actor'];
+    final counter = sourceManifest['counter'];
+    final batchId = sourceManifest['batchId'];
     if (actor is! String ||
         !_actorIsSafe(actor) ||
         counter is! int ||
         counter <= 0 ||
         batchId is! String ||
         !RegExp(r'^[0-9a-f]{64}$').hasMatch(batchId) ||
-        manifest['schema'] != 1 ||
-        manifest['documentSchema'] != 3) {
+        sourceManifest['schema'] != 1 ||
+        sourceManifest['documentSchema'] != 3) {
       throw const FormatException('Invalid snapshot publication metadata');
     }
-    final manifestBytes = snapshot.serializeManifest();
-    final manifestDigest = snapshot.digest;
 
     await _client.ping();
+    final operation = _RemoteOperation();
     final directoryName = await _ensureDeviceDirectory(
       actor,
       namespace: _snapshotNamespace,
+      operation: operation,
     );
     final basePath = '$_snapshotNamespace/$directoryName';
-    await _ensureCollection('$basePath/commits');
-    await _ensureCollection('$basePath/objects');
+    await _ensureCollection('$basePath/commits', operation: operation);
+    await _ensureCollection('$basePath/packs', operation: operation);
 
-    for (final object in snapshot.objects.entries) {
-      final segments = object.key.split('/');
-      if (segments.length != 2) {
-        throw FormatException('Invalid snapshot object key: ${object.key}');
+    final publicationKey = _publicationCacheKey(actor, directoryName);
+    var previous = _publicationManifests.remove(publicationKey);
+    if (previous != null) {
+      _publicationManifests[publicationKey] = previous;
+    } else {
+      previous = await _packCache?.readManifest(publicationKey);
+      if (previous != null) {
+        _rememberPublicationManifest(publicationKey, previous);
       }
-      final domain = segments.first;
-      final objectDigest = sha256.convert(object.value).toString();
-      if (object.key != '$domain/$objectDigest.json.gz') {
-        throw FormatException(
-          'Snapshot object path/hash mismatch: ${object.key}',
-        );
-      }
-      await _ensureCollection('$basePath/objects/$domain');
-      await _publishImmutable(
-        '$basePath/objects/${object.key}',
-        object.value,
-        objectDigest,
-        objectCacheKey: '$basePath/objects/${object.key}',
+    }
+    var packed = SyncPackSnapshot.fromSnapshot(snapshot, previous: previous);
+    var packsToUpload = Map<String, SyncPack>.of(packed.packs);
+    var repackAll = false;
+    for (final packEntry in packed.manifest.packs.entries) {
+      final digest = packEntry.key;
+      if (packsToUpload.containsKey(digest)) continue;
+      final cached = await _packCache?.read(
+        digest,
+        expectedSize: packEntry.value,
       );
+      final remotePath = '$basePath/packs/$digest.pack';
+      if (await _remotePackAvailable(
+        remotePath,
+        digest,
+        packEntry.value,
+        operation,
+      )) {
+        continue;
+      }
+      if (cached != null &&
+          cached.digest == digest &&
+          cached.bytes.length == packEntry.value) {
+        packsToUpload[digest] = cached;
+      } else {
+        repackAll = true;
+      }
+    }
+    if (repackAll) {
+      packed = SyncPackSnapshot.fromSnapshot(snapshot);
+      packsToUpload = Map<String, SyncPack>.of(packed.packs);
     }
 
-    // Manifest-last is the atomic visibility boundary for a checkpoint.
+    final manifest = packed.manifest;
+    final manifestBytes = packed.serializeManifest();
+    final manifestDigest = packed.digest;
+    for (final object in manifest.objects) {
+      _compressedBytes += object['compressedSize']! as int;
+      _uncompressedBytes += object['uncompressedSize']! as int;
+    }
+    await _runBounded<SyncPack>(
+      packsToUpload.values.toList(growable: false),
+      (pack) async {
+        final path = '$basePath/packs/${pack.digest}.pack';
+        await _publishImmutable(
+          path,
+          pack.bytes,
+          pack.digest,
+          operation: operation,
+          countAsObject: true,
+        );
+        try {
+          await _packCache?.write(pack);
+        } on FileSystemException {
+          // Network publication remains authoritative if the hint cache fails.
+        }
+      },
+      concurrency: _maxParallelTransfers,
+    );
+
+    // Manifest-last is the atomic visibility boundary for a v5 checkpoint.
     final commitPath = '$basePath/commits/$counter-$manifestDigest.json';
-    await _publishImmutable(commitPath, manifestBytes, manifestDigest);
+    await _publishImmutable(
+      commitPath,
+      manifestBytes,
+      manifestDigest,
+      operation: operation,
+    );
+    _rememberPublicationManifest(publicationKey, manifest);
+    try {
+      await _packCache?.writeManifest(publicationKey, manifest);
+    } on FileSystemException {
+      // The persisted publication map is a rebuildable incremental hint.
+    }
     return commitPath;
+  }
+
+  String _publicationCacheKey(String actor, String directoryName) {
+    final endpoint = sha256
+        .convert(utf8.encode(_client.c.options.baseUrl))
+        .toString();
+    return '$endpoint/$actor/$directoryName';
+  }
+
+  void _rememberPublicationManifest(String key, SyncPackManifest manifest) {
+    _publicationManifests.remove(key);
+    _publicationManifests[key] = manifest;
+    while (_publicationManifests.length > _maxInMemoryPublicationManifests) {
+      _publicationManifests.remove(_publicationManifests.keys.first);
+    }
+  }
+
+  Future<bool> _remotePackAvailable(
+    String path,
+    String digest,
+    int expectedSize,
+    _RemoteOperation operation,
+  ) async {
+    final previous = operation.packChecks[path];
+    if (previous != null) return previous;
+    bool available;
+    try {
+      final response = await _client.c.req(_client, 'HEAD', path);
+      final status = response.statusCode;
+      if (status == 404) {
+        available = false;
+      } else if (status == 405 || status == 501) {
+        available = await _remotePayloadMatches(
+          path,
+          expectedSize,
+          digest,
+          operation: operation,
+          countAsObject: true,
+        );
+      } else if (status != 200) {
+        throw MergeRemoteException(
+          'Failed to verify remote Pack',
+          statusCode: status,
+        );
+      } else {
+        final length = int.tryParse(
+          response.headers.value('content-length') ?? '',
+        );
+        if (length == expectedSize) {
+          available = true;
+          operation.verifiedRemoteObjects.add(path);
+        } else if (length == null) {
+          available = await _remotePayloadMatches(
+            path,
+            expectedSize,
+            digest,
+            operation: operation,
+            countAsObject: true,
+          );
+        } else {
+          available = false;
+        }
+      }
+    } on DioException catch (error) {
+      final status = error.response?.statusCode;
+      if (status == 404) {
+        available = false;
+      } else if (status == 405 || status == 501) {
+        available = await _remotePayloadMatches(
+          path,
+          expectedSize,
+          digest,
+          operation: operation,
+          countAsObject: true,
+        );
+      } else {
+        throw MergeRemoteException(
+          'Failed to verify remote Pack',
+          statusCode: status,
+          cause: error,
+        );
+      }
+    }
+    operation.packChecks[path] = available;
+    return available;
+  }
+
+  Future<bool> _remotePayloadMatches(
+    String path,
+    int expectedSize,
+    String expectedDigest, {
+    _RemoteOperation? operation,
+    bool countAsObject = false,
+  }) async {
+    final bytes = await (() async {
+      try {
+        return await _downloadRawBytes(
+          path,
+          maxBytes: expectedSize,
+          countAsObject: countAsObject,
+        );
+      } on DioException catch (error) {
+        if (error.response?.statusCode == 404) return null;
+        throw MergeRemoteException(
+          'Failed to verify remote immutable payload',
+          statusCode: error.response?.statusCode,
+          cause: error,
+        );
+      } on MergeRemoteException catch (error) {
+        if (error.statusCode == 404) return null;
+        if (error is MergeRemoteCorruptException) return null;
+        rethrow;
+      }
+    })();
+    if (bytes == null ||
+        bytes.length != expectedSize ||
+        sha256.convert(bytes).toString() != expectedDigest) {
+      return false;
+    }
+    operation?.verifiedRemoteObjects.add(path);
+    return true;
   }
 
   Future<void> _publishImmutable(
     String path,
     Uint8List bytes,
     String expectedDigest, {
-    String? objectCacheKey,
+    _RemoteOperation? operation,
+    bool countAsObject = false,
   }) async {
     if (bytes.isEmpty || sha256.convert(bytes).toString() != expectedDigest) {
-      throw FormatException('Local immutable payload digest mismatch: $path');
+      throw const FormatException('Local immutable payload digest mismatch');
     }
-    final maxReadbackBytes = path.endsWith('.gz')
-        ? MergeSnapshot.maxCompressedObjectBytes
-        : MergeSnapshot.maxManifestBytes;
-    if (objectCacheKey != null) {
-      var cached = _verifiedObjects[objectCacheKey];
-      if (cached != null) {
-        if (_bytesEqual(cached, bytes) &&
-            await _remoteObjectExists(path, bytes.length)) {
-          return;
-        }
-        _forgetVerifiedObject(objectCacheKey);
-      }
-      cached = await _readPersistentObject(
-        objectCacheKey,
-        expectedSize: bytes.length,
-        expectedDigest: expectedDigest,
-      );
-      if (cached != null) {
-        if (_bytesEqual(cached, bytes) &&
-            await _remoteObjectExists(path, bytes.length)) {
-          return;
-        }
-        _forgetVerifiedObject(objectCacheKey);
-      }
-    }
+    if (operation?.verifiedRemoteObjects.contains(path) ?? false) return;
+    final isPack = path.endsWith('.pack');
+    final maxReadbackBytes = isPack
+        ? SyncPack.maxPackBytes
+        : SyncPackManifest.maxManifestBytes;
 
     Response? response;
     try {
@@ -1183,8 +2250,8 @@ class MergeRemote {
           options.headers ??= {};
           options.headers!['If-None-Match'] = '*';
           options.headers!['content-length'] = bytes.length;
-          options.headers!['content-type'] = path.endsWith('.gz')
-              ? 'application/gzip'
+          options.headers!['content-type'] = isPack
+              ? 'application/octet-stream'
               : 'application/json; charset=utf-8';
         },
       );
@@ -1198,52 +2265,46 @@ class MergeRemote {
     final status = response?.statusCode;
     if (status == 200 || status == 201 || status == 204) {
       _uploadedBytes += bytes.length;
-      if (objectCacheKey != null) _uploadedObjects++;
+      if (countAsObject) _uploadedObjects++;
       final readBack = await _downloadRawBytes(
         path,
         maxBytes: maxReadbackBytes,
-        countAsObject: objectCacheKey != null,
+        countAsObject: countAsObject,
       );
       if (!_bytesEqual(readBack, bytes) ||
           sha256.convert(readBack).toString() != expectedDigest) {
         throw MergeRemoteCorruptException(
-          'Uploaded immutable payload failed read-back verification: $path',
+          'Uploaded immutable payload failed read-back verification',
           statusCode: status,
         );
       }
-      if (objectCacheKey != null) {
-        _rememberVerifiedObject(objectCacheKey, bytes);
-        await _writePersistentObject(objectCacheKey, bytes);
-      }
+      operation?.verifiedRemoteObjects.add(path);
       return;
     }
     if (status != 412) {
       throw MergeRemoteException(
-        'WebDAV immutable PUT failed for $path: HTTP $status',
+        'WebDAV immutable PUT failed',
         statusCode: status,
       );
     }
 
+    _retries++;
     final existing = await _downloadRawBytes(
       path,
       maxBytes: maxReadbackBytes,
-      countAsObject: objectCacheKey != null,
+      countAsObject: countAsObject,
     );
     if (_bytesEqual(existing, bytes) &&
         sha256.convert(existing).toString() == expectedDigest) {
-      if (objectCacheKey != null) {
-        _rememberVerifiedObject(objectCacheKey, existing);
-        await _writePersistentObject(objectCacheKey, existing);
-      }
+      operation?.verifiedRemoteObjects.add(path);
       return;
     }
 
-    // Only recover a torn retry after a strong validator proves which object is
-    // being replaced; never accept a hash collision or unverified truncation.
+    // Replacing a torn object is safe only with a strong validator.
     try {
       final head = await _client.c.req(_client, 'HEAD', path);
       final validator = strongEtag(head.headers.value('etag'));
-      if (validator != null) {
+      if (head.statusCode == 200 && validator != null) {
         final replacement = await _client.c.req(
           _client,
           'PUT',
@@ -1253,61 +2314,37 @@ class MergeRemote {
             options.headers ??= {};
             options.headers!['If-Match'] = validator;
             options.headers!['content-length'] = bytes.length;
-            options.headers!['content-type'] = path.endsWith('.gz')
-                ? 'application/gzip'
+            options.headers!['content-type'] = isPack
+                ? 'application/octet-stream'
                 : 'application/json; charset=utf-8';
           },
         );
         if ([200, 201, 204].contains(replacement.statusCode)) {
           _uploadedBytes += bytes.length;
-          if (objectCacheKey != null) _uploadedObjects++;
+          if (countAsObject) _uploadedObjects++;
           final verified = await _downloadRawBytes(
             path,
             maxBytes: maxReadbackBytes,
-            countAsObject: objectCacheKey != null,
+            countAsObject: countAsObject,
           );
           if (_bytesEqual(verified, bytes) &&
               sha256.convert(verified).toString() == expectedDigest) {
-            if (objectCacheKey != null) {
-              _rememberVerifiedObject(objectCacheKey, verified);
-              await _writePersistentObject(objectCacheKey, verified);
-            }
+            operation?.verifiedRemoteObjects.add(path);
             return;
           }
-          throw MergeRemoteCorruptException(
-            'Conditionally repaired immutable payload failed verification: $path',
+          throw const MergeRemoteCorruptException(
+            'Conditionally repaired immutable payload failed verification',
           );
         }
       }
     } on DioException catch (error) {
-      if (error.response?.statusCode != 412) rethrow;
+      final code = error.response?.statusCode;
+      if (code != 412 && code != 404 && code != 405 && code != 501) rethrow;
     }
-    throw MergeRemoteConflictException(
-      'Remote immutable payload differs at $path; refusing unproven replacement',
+    throw const MergeRemoteConflictException(
+      'Remote immutable payload differs; refusing unproven replacement',
       statusCode: 412,
     );
-  }
-
-  Future<bool> _remoteObjectExists(String path, int expectedSize) async {
-    try {
-      final response = await _client.c.req(_client, 'HEAD', path);
-      final status = response.statusCode;
-      if (status == 404 || status == 405 || status == 501) return false;
-      if (status != 200) {
-        throw MergeRemoteException(
-          'Failed to verify cached remote object $path',
-          statusCode: status,
-        );
-      }
-      final contentLength = int.tryParse(
-        response.headers.value('content-length') ?? '',
-      );
-      return contentLength == null || contentLength == expectedSize;
-    } on DioException catch (error) {
-      final status = error.response?.statusCode;
-      if (status == 404 || status == 405 || status == 501) return false;
-      rethrow;
-    }
   }
 
   bool _bytesEqual(List<int> left, List<int> right) {
@@ -1360,21 +2397,25 @@ class MergeRemote {
       final type = await FileSystemEntity.type(file.path, followLinks: false);
       if (type == FileSystemEntityType.notFound) return null;
       if (type != FileSystemEntityType.file) {
+        _cacheInvalidations++;
         await _removePersistentFile(file);
         return null;
       }
       final stat = await file.stat();
       if (stat.size != expectedSize ||
           stat.size > MergeSnapshot.maxCompressedObjectBytes) {
+        _cacheInvalidations++;
         await _removePersistentFile(file);
         return null;
       }
       final bytes = await file.readAsBytes();
       if (bytes.length != expectedSize ||
           sha256.convert(bytes).toString() != expectedDigest) {
+        _cacheInvalidations++;
         await _removePersistentFile(file);
         return null;
       }
+      _cacheHits++;
       _rememberVerifiedObject(remotePath, bytes);
       try {
         await file.setLastModified(DateTime.now());
@@ -1504,30 +2545,28 @@ class MergeRemote {
     }
   }
 
-  /// Compacts predecessor checkpoints for the owning actor.
+  /// Compacts bounded sets of own v5 commits after full causal verification.
   ///
-  /// Compaction rules:
-  /// - Only inspects candidates present in [priorEntries] before publication.
-  /// - Only deletes files belonging to [uploaded.actor] (never other actors).
-  /// - Retains the newest fully verified predecessor as a fallback after a corrupt publication.
-  /// - Deletes another predecessor only when [uploaded.document.dominates] covers all its
-  ///   fields, candidates, and tombstones. Counter checks alone are insufficient.
-  /// - Requires a legitimate quoted strong ETag validator (`isStrongEtag(entry.eTag)`);
-  ///   missing, unquoted, or weak validators are retained.
-  /// - Sends conditional DELETE with `If-Match: strongEtag`.
-  /// - Never modifies or removes legacy `.venera` files or files outside namespace.
-  /// - Emits non-fatal warnings for corrupt/undominated candidates; remote service failures
-  ///   are reported as warnings so a successful publication remains successful.
+  /// v4 migration data and immutable Packs are never collected. Weak/missing
+  /// ETags are filtered before downloading any candidate content.
   Future<void> compact(
     MergeBatch uploaded,
     List<MergeRemoteEntry> priorEntries,
   ) async {
+    final timer = Stopwatch()..start();
     final candidatesByPath = <String, MergeRemoteEntry>{};
+    var inspectedEntries = 0;
     for (final entry in priorEntries) {
-      if (entry.layout == MergeRemoteLayout.snapshotCommit &&
+      if (inspectedEntries >= _maxCompactionCandidates ||
+          timer.elapsed >= _maxCompactionDuration) {
+        break;
+      }
+      inspectedEntries++;
+      if (entry.layout == MergeRemoteLayout.packCommit &&
           entry.actor == uploaded.actor &&
           entry.counter < uploaded.counter &&
-          entry.filename.endsWith('.json')) {
+          entry.filename.endsWith('.json') &&
+          strongEtag(entry.eTag) != null) {
         candidatesByPath.putIfAbsent(entry.filename, () => entry);
       }
     }
@@ -1539,39 +2578,73 @@ class MergeRemote {
         if (digestOrder != 0) return digestOrder;
         return a.filename.compareTo(b.filename);
       });
+    if (candidates.isEmpty || timer.elapsed >= _maxCompactionDuration) return;
+
+    final protectedProofPaths = <String>{};
+    try {
+      final archive = await readV4Archive();
+      for (final proof in archive?.proofs ?? const <MergeRemoteEntry>[]) {
+        protectedProofPaths.add(proof.filename);
+      }
+      if (timer.elapsed >= _maxCompactionDuration) {
+        _recordWarning('Compaction time budget exhausted');
+        return;
+      }
+    } on TimeoutException {
+      _recordWarning('Compaction time budget exhausted');
+      return;
+    } on MergeRemoteException {
+      _recordWarning(
+        'Compaction skipped because archive proofs are unavailable',
+      );
+      return;
+    } on FormatException {
+      _recordWarning(
+        'Compaction skipped because archive proof metadata is invalid',
+      );
+      return;
+    }
 
     var retainedValidPredecessor = false;
-    for (final prior in candidates) {
+    var scanned = 0;
+    for (final prior in candidates.take(_maxCompactionCandidates)) {
+      if (scanned >= _maxCompactionCandidates ||
+          timer.elapsed >= _maxCompactionDuration) {
+        break;
+      }
+      if (protectedProofPaths.contains(prior.filename)) continue;
+      if (timer.elapsed >= _maxCompactionDuration) break;
+      scanned++;
       final MergeBatch oldBatch;
       try {
         oldBatch = await download(prior);
-      } on MergeRemoteCorruptException catch (error) {
-        _recordWarning(
-          'Retaining predecessor ${prior.filename}: ${error.message}',
-        );
+      } on TimeoutException {
+        _recordWarning('Compaction time budget exhausted');
+        break;
+      } on MergeRemoteCorruptException {
+        _recordWarning('Retaining a corrupt predecessor checkpoint');
         continue;
       } on MergeRemoteException catch (error) {
         if (error.statusCode == 404) continue;
-        _recordWarning(
-          'Retaining predecessor ${prior.filename}: ${error.message}',
-        );
-        continue;
-      } on FormatException catch (error) {
-        _recordWarning(
-          'Retaining invalid predecessor ${prior.filename}: $error',
-        );
+        _recordWarning('Compaction stopped after a remote service failure');
+        break;
+      } on FormatException {
+        _recordWarning('Retaining an invalid predecessor checkpoint');
         continue;
       }
+      if (timer.elapsed >= _maxCompactionDuration) {
+        _recordWarning('Compaction time budget exhausted');
+        break;
+      }
 
-      // Keep the newest valid predecessor so a corrupt new manifest can fall
-      // back even when this old commit has a strong validator.
+      // Keep the newest fully valid predecessor for rollback.
       if (!retainedValidPredecessor) {
         retainedValidPredecessor = true;
         continue;
       }
       if (!uploaded.document.dominates(oldBatch.document)) {
         _recordWarning(
-          'Retaining predecessor ${prior.filename}: not fully dominated by published checkpoint',
+          'Retaining a predecessor not dominated by the checkpoint',
         );
         continue;
       }
@@ -1580,6 +2653,7 @@ class MergeRemote {
 
       final remotePath = _resolvePath(prior);
       try {
+        if (timer.elapsed >= _maxCompactionDuration) break;
         final response = await _client.c.req(
           _client,
           'DELETE',
@@ -1590,20 +2664,18 @@ class MergeRemote {
           },
         );
         if (![200, 204, 404, 412].contains(response.statusCode)) {
-          _recordWarning(
-            'Compaction DELETE failed for $remotePath: HTTP ${response.statusCode}',
-          );
+          _recordWarning('Compaction conditional delete failed');
         }
+      } on TimeoutException {
+        _recordWarning('Compaction time budget exhausted');
+        break;
       } on DioException catch (error) {
         final status = error.response?.statusCode;
         if (status != 404 && status != 412) {
-          _recordWarning(
-            'Compaction DELETE failed for $remotePath: ${error.message}',
-          );
+          _recordWarning('Compaction conditional delete failed');
         }
       }
     }
-    // Immutable content objects are retained because WebDAV offers no atomic
-    // concurrency guard proving that an apparently unused object stays unused.
+    // Packs remain because directory enumeration cannot prove global liveness.
   }
 }

@@ -74,7 +74,7 @@ Real-time uploading waits **10 seconds** after the latest edit, with at least **
 
 Scheduled mode batches edits within its interval, measured from attempt completion. Changes made during transfer remain pending. Automatic failures use increasing backoff; authentication errors pause automatic retries until credentials are corrected and configuration is saved or a manual retry is made. Timers run only with the application process, not as an OS background keep-alive service. They do not wake the OS after exit; startup/resume catch up overdue work, and suspension can delay execution.
 
-Settings shows actual pending record and conflict counts, the latest successful time, the trigger reason, and uploaded/downloaded bytes and object counts for the operation. It also offers manual sync and confirmed legacy-change import. Counts do not require displaying secret bodies, and pending records are not queue-batch counts; before capture completes, the durable queue count does not represent all unsaved UI edits.
+Settings shows actual pending record and conflict counts, the latest successful time, trigger reason, last sync duration, and uploaded/downloaded bytes and data-block counts for the operation. Blocks count physical Packs or legacy compressed objects, not logical shards. It also offers manual sync and confirmed legacy-change import. Counts do not require displaying secret bodies, and pending records are not queue-batch counts; before capture completes, the durable queue count does not represent all unsaved UI edits.
 
 Synchronization, explicit upload/download, configuration, and conflict handling use one serialized queue. Commands cannot bypass direction restrictions. Local edits continue to be tracked during network reads and file staging; synchronization captures them again and checks for changes before committing, so a stale target does not replace edits made while waiting for the network.
 
@@ -106,26 +106,60 @@ If a recovery journal is corrupt or incomplete, export the original files and ba
 
 ## Cloud Format and Integrity
 
-The new protocol lives under **`VeneraPlus/sync-v4/<device-name>/`** inside the configured WebDAV directory, isolated from old single-file checkpoints:
+The new protocol lives under **`VeneraPlus/sync-v5/<device-name>/`** inside the configured WebDAV directory, isolated from read-only legacy checkpoints and `sync-v4`:
 
 ```text
-VeneraPlus/sync-v4/<device-name>/
-  device.json
-  commits/<counter>-<manifest-SHA256>.json
-  objects/<domain>/<object-SHA256>.json.gz
+VeneraPlus/sync-v5/
+  archive-v4.json
+  archive-v4-imports/<inventory-SHA256>.json
+  <device-name>/
+    device.json
+    commits/<counter>-<manifest-SHA256>.json
+    packs/<Pack-SHA256>.pack
 ```
 
-Each manifest describes a **full causal checkpoint**, preserving records, candidates, and deletions without packing all content into one JSON file. Content is gzip-compressed by domain. Large collections such as favorites and history use 64 stable identity-based buckets; scripts, sessions, and cookies are separate per identity. The global causal clock lives in the manifest so a counter-only change does not invalidate every shard.
+Each manifest describes a **full causal checkpoint**, preserving records, candidates, and deletions. Logical objects retain the v4 gzip encoding: large collections such as favorites and history keep 64 stable identity-based buckets; scripts, sessions, and cookies are sharded per identity. The global causal clock lives in the manifest so a counter-only change does not invalidate every shard. Physical transfer combines multiple logical objects into deterministic, content-addressed Packs targeting 1 MiB; a larger individual object may occupy a larger Pack. Small shards no longer each require a remote file.
 
-Required objects are uploaded and verified first, and the immutable manifest is published last. Content addressing reuses unchanged objects: editing one setting normally uploads its setting object and a new manifest, not history or scripts. Receivers use verified, endpoint-scoped memory and disk object caches that survive restarts. This is **shard-level incremental transfer**, not a per-field network patch stream. Initial sync or an empty cache still needs the required objects, and manifests and discovery have overhead.
+Up to **4 workers** upload and read back required Packs before publishing the immutable manifest. Downloads use the same bounded concurrency, and failure waits for in-flight requests to finish. Verified directories are reused within a task and revalidated on retry, never treated as permanent existence proof. New manifests reference unchanged old Packs and only package changed shards; editing one setting normally uploads one changed Pack and a new manifest, not unchanged history or scripts. No-change operations create neither a new Pack nor a new commit.
+
+The bounded encoding cache includes full causal content and event digests, avoiding repeated gzip work while retaining identical v4 object bytes. Verified, endpoint-scoped Pack/publication caches survive restarts; the Pack disk cache defaults to **128 MiB**. Corrupt or unwritable caches fall back safely, and removing a cache does not lose business state. A full manifest may reference at most **256 MiB** of physical Packs. Sparse old references reaching this limit cause current shards to be repacked, not a full repack on every sync and not deletion of old remote Packs. Initial sync, cleared caches, or rebuilding trusted references still incur full packing/downloading and discovery costs.
 
 Path separators, URL delimiters, and control characters in device names are replaced with underscores, and unsafe trailing dots/spaces are removed. Empty or dot-only names are rejected. If another actor owns the same name, a stable short identifier is appended to the directory instead of overwriting that actor. Renaming preserves the internal actor identity and counters; old directories remain discoverable, with checkpoints subject to the same read and safe-cleanup rules. Synchronization reads every device directory, not just this device's directory. Existing local sync state publishes a full checkpoint when this actor has no checkpoint in the new namespace, even without new local edits.
 
 Reads verify the SHA-256 in the filename, content format, counter, and agreement between directory ownership and the payload actor. GET redirects or missing ETags can still be validated by the content hash. Corrupt or partial candidate files are not committed checkpoints and cannot hide an older valid checkpoint from that device; multiple files with the same counter cannot be resolved by arbitrarily choosing one. Authentication and network failures are actual errors, not evidence that the server has no data.
 
-Uploads use conditional creation and read-back verification before acknowledgement. Manifests and objects are checked for SHA-256, format, domain, path, and resource limits; a manifest with incomplete referenced objects is not a usable commit. A bad file left by this device can only be repaired with verification and a strong ETag precondition, or superseded by a replacement preserving the intended changes. Unconditional overwrite, collisions, and truncation are not success.
+Uploads use conditional creation and read-back verification before acknowledgement. A Pack contains the `VNSPK001` magic, a 4-byte big-endian index length, a canonical JSON index, and original gzip object bytes. The index includes the protocol version, object paths, hashes, payload-relative offsets, compressed/expanded sizes, and codecs; gzip objects are not compressed twice. Reads verify the whole Pack and logical-object SHA-256, format, domain, unique keys, offset boundaries, and resource limits, then retain the original checkpoint's causal and `batchId` verification. A manifest with incomplete references is not usable. A bad file left by this device can only be repaired with verification and a strong ETag precondition, or superseded by a replacement preserving the intended changes. Unconditional overwrite, collisions, and truncation are not success. Unsupported HEAD or missing length falls back to GET verification, not an incomplete existence check.
 
-Cleanup only considers **this device's old commit manifests** discovered before upload and proven causally covered by the new checkpoint. It requires a strong ETag and `If-Match` and retains one valid predecessor for recovery. Other actors, concurrent new files, old-protocol checkpoints, and `.venera` archives are excluded. **Compressed objects and causal deletion information are not automatically collected**: ordinary WebDAV cannot prove that a concurrent manifest will not reference an object, and offline devices may still carry old values. Cloud usage is therefore not guaranteed to remain constant; missing conditional validators retain more manifests.
+Cleanup only considers **this device's old commit manifests** discovered before upload and proven causally covered by the new checkpoint. It requires a strong ETag and `If-Match`, protects v4 archive proofs, and retains one valid predecessor for recovery. Maintenance requires at least 3 own commits. The count threshold is 32, with at least 24 hours between count-triggered attempts; after a previous attempt, 7 days can also trigger maintenance. The first attempt uses the count threshold. Each attempt inspects at most 64 candidates with an approximately 2-second cooperative budget, still draining in-flight requests rather than leaving background deletions.
+
+Other actors, concurrent new files, old-protocol checkpoints, and `.venera` archives are excluded. **Packs, legacy compressed objects, and causal deletion information are not automatically collected**: ordinary WebDAV cannot prove that a concurrent manifest will not reference content, and offline devices may still carry old values. Cloud usage is therefore not guaranteed to remain constant; missing strong conditional validators retain more manifests.
+
+### Performance Diagnostics
+
+Debug mode or the `VENERA_SYNC_DIAGNOSTICS=true` compile-time flag enables phase timings and aggregate transfer statistics; detailed logging is off in ordinary releases. Phases include `capture`, `legacyMigration`, `discover`, `download`, `merge`, `apply`, `upload`, `compact`, and `totalDurationMs`, alongside HTTP-method counts, bytes, physical blocks, and cache statistics. Nested phases can overlap and must not simply be summed into the total. UI duration and transfer summaries do not depend on detailed logging.
+
+Request logs retain only the method, HTTP status, and endpoint origin, never endpoint paths, URL user information, queries/fragments, authorization headers, cookies, sessions, scripts, or request/response bodies. Disabling diagnostics does not weaken content verification.
+
+### Transport Benchmark (Simulated WebDAV)
+
+Windows desktop Dart VM, loopback WebDAV, 50/200/1000 history records, 5 tiny script records, and 1 setting. The server adds either no latency or 100 ms per request. Each v5 scenario has 5 samples; the table reports milliseconds as **p50 / p95**, with nearest-rank p95 (the maximum of 5 samples, including initial JIT overhead). Cold download uses a fresh client without object caches and verifies the complete causal checkpoint. These are synthetic transport measurements, excluding application startup, local capture/business application, and initial legacy migration, not real NAS or Android performance.
+
+| History records | Added latency per request | First upload p50 / p95 | Cold download p50 / p95 | Setting-only edit p50 / p95 |
+|---|---|---|---|---|
+| 50 | 0 ms | 32 / 198 ms | 15 / 45 ms | 31 / 51 ms |
+| 200 | 0 ms | 53 / 85 ms | 40 / 42 ms | 54 / 56 ms |
+| 1000 | 0 ms | 136 / 150 ms | 130 / 140 ms | 134 / 147 ms |
+| 200 | 100 ms | 1976 / 1990 ms | 680 / 686 ms | 1865 / 1897 ms |
+
+The original single-sample v4 baseline versus v5 p50 for the same 200-record, 100-ms scenario (the old baseline is not a p50):
+
+| Operation | Single v4 duration → v5 p50 | HTTP requests |
+|---|---|---|
+| First upload | 30,840 → 1,976 ms | 284 → 18 |
+| Cold download | 7,827 → 680 ms | 72 → 6 |
+| Setting-only edit | 23,369 → 1,865 ms | 216 → 17 |
+
+The initial 67 logical objects drop from **69 physical files to 3**: device metadata, 1 Pack, and 1 manifest. First-upload `MKCOL` and `PROPFIND` counts each fall from 72 to 5. A setting-only edit still uploads just 1 changed Pack. Index and full-manifest metadata are the tradeoff: this tiny-object sample's cold-download file payload increases from 59,441 to 81,493 bytes, approximately 37%; HTTP headers and directory XML are excluded. The goal is fewer round trips and small files, not necessarily fewer bytes. Real SQLite and loopback HTTP also exercised migration, direction changes, explicit old-writer import, archive/acknowledgement restart recovery, and no-change operations with zero PUT and zero Pack GET.
 
 ## Device-Local Fields and Secrets
 
@@ -148,9 +182,11 @@ Saving configuration validates the connection and prepares endpoint state **with
 
 Changing timing/interval reschedules work. Clear all connection fields and save to disconnect. Legacy auto-sync enabled maps to real-time, disabled to manual, and an existing scheduled mode is retained. Old keys are removed once. Direction defaults to bidirectional.
 
-On first use of the new layout, old **`VeneraPlus/<device-name>/<counter>-<SHA256>.json`** causal checkpoints are verified and merged once, their inventory is recorded, and the result is published into `sync-v4` when uploading is allowed. Old files remain read-only and are not rewritten. An incomplete highest checkpoint or a failed read prevents marking migration complete. Download-only can retain a pending migration bridge but cannot upload it.
+On first use of the new layout, old **`VeneraPlus/<device-name>/<counter>-<SHA256>.json`** causal checkpoints are verified and merged once, their inventory is recorded, and the result is published into `sync-v5` when uploading is allowed. Old files remain read-only and are not rewritten. An incomplete highest checkpoint or a failed read prevents marking migration complete. Download-only can retain a pending migration bridge but cannot upload it.
 
-If old clients later create new checkpoints, ordinary sync pauses for review rather than silently combining two continuously written protocols. Upgrade or stop old clients first, then choose and confirm **Import Legacy Changes** in settings. This verifies and imports new legacy checkpoints and updates the migration inventory. With no new legacy checkpoint, it does not claim to have imported new data.
+`sync-v4` is also migrated read-only: freeze its full inventory, merge each actor's highest complete checkpoints including same-counter candidates, independently read back a v5 bridge covering the old causal state, conditionally publish `archive-v4.json`, and only then acknowledge the local bridge. Archive or acknowledgement failures retain recoverable state; restart retries reuse the published commit. Download-only never publishes an archive marker; a later upload-capable direction finishes the bridge. Old v4 files are neither written nor deleted. Local-only uploads reuse completed migration state, while remote checks revalidate the inventory, preserving their independent cadence.
+
+If a remote check detects new checkpoints from old clients after migration, ordinary sync pauses for review rather than silently combining two continuously written protocols. Upgrade or stop old clients first, then choose and confirm **Import Legacy Changes** in settings. This verifies and imports new legacy checkpoints and updates the migration inventory. Explicit v4 imports append v5-proof-backed receipts under `archive-v4-imports/` without rewriting the initial archive; fresh devices recognize those authorized imports too. Missing frozen files must be restored rather than treated as never migrated. With no new legacy checkpoint, the operation does not claim to have imported new data.
 
 On first use of an endpoint, legacy root `.venera` sync archives are **one-time migration seeds only**. They are verified in an isolated directory. All archives with the highest numeric version are read; different files with that version remain seeds/candidates rather than arbitrarily choosing one. Legacy archives are never deleted. Available business domains complete migration independently, while affected source domains remain pending recovery. Failed reads or integrity checks do not mark migration complete. Later root writes from old clients do not automatically enter the new protocol.
 
@@ -158,4 +194,4 @@ Initial legacy migration enforces limits: 512 MiB downloaded per archive, 1 GiB 
 
 Legacy archives support native ZIP64 directory records and signed/unsigned 32-bit or 64-bit data descriptors while retaining CRC, local/central-header consistency, path, entry-boundary, and expansion-limit checks. ZIP64 compatibility does not admit damaged or truncated archives. Source repairs use a **persistent local override layer** bound to the original archive SHA-256 and entry path. Retries apply the override in isolation without rewriting the cloud `.venera` or its original verified backup, and only complete domains still awaiting migration.
 
-**All participating devices should upgrade to `VeneraPlus/sync-v4/<device-name>/`.** Old `VeneraPlus/<device-name>/` causal checkpoints support the controlled migration above; root `.venera` archives remain one-time seeds. Old `sync-v2/` is not read, migrated, or automatically deleted, and old clients do not continuously interoperate with the new layout. Export a `.venera` backup before upgrading. Data present only in `sync-v2/` must first be synchronized locally or exported with an old client. Manual `.venera` import/export remains a separate backup/restore feature, not forced upload/download overwrite or a replacement for choosing an entire conflict version.
+**All participating devices should upgrade to `VeneraPlus/sync-v5/<device-name>/`.** `sync-v4` and old `VeneraPlus/<device-name>/` causal checkpoints support the controlled read-only migration above; root `.venera` archives remain one-time seeds. Old `sync-v2/` is not read, migrated, or automatically deleted, and old clients do not continuously interoperate with the new layout. Export a `.venera` backup before upgrading. Data present only in `sync-v2/` must first be synchronized locally or exported with an old client. Manual `.venera` import/export remains a separate backup/restore feature, not forced upload/download overwrite or a replacement for choosing an entire conflict version.
