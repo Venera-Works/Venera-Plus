@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:venera_plus/foundation/file_interaction.dart' show overrideIO;
 import 'package:venera_plus/foundation/file_system.dart';
 
 void main() {
@@ -230,5 +231,92 @@ void main() {
       // Title is still represented even with a heavy middle.
       expect(filename.startsWith('漫画标题'), isTrue);
     });
+  });
+
+  group('overrideIO filesystem type lookup', () {
+    test('reports Unicode files, directories, and absent paths', () async {
+      final root = await Directory.systemTemp.createTemp(
+        'override-io-file-type-',
+      );
+      final separator = Platform.pathSeparator;
+      final file = File('${root.path}$separator现存文件.txt');
+      final directory = Directory('${root.path}$separator现存目录');
+      final missing = '${root.path}$separator缺失文件.txt';
+
+      try {
+        await file.writeAsString('contents');
+        await directory.create();
+
+        await overrideIO(() async {
+          expect(
+            await FileSystemEntity.type(file.path),
+            FileSystemEntityType.file,
+          );
+          expect(
+            await FileSystemEntity.type(directory.path),
+            FileSystemEntityType.directory,
+          );
+          expect(
+            await FileSystemEntity.type(missing),
+            FileSystemEntityType.notFound,
+          );
+        });
+      } finally {
+        await root.delete(recursive: true);
+      }
+    });
+
+    test(
+      'preserves symbolic-link types with and without following links',
+      () async {
+        final root = await Directory.systemTemp.createTemp(
+          'override-io-file-type-link-',
+        );
+        final separator = Platform.pathSeparator;
+        final target = File('${root.path}$separator目标文件.txt');
+        final link = Link('${root.path}$separator符号链接');
+
+        try {
+          await target.writeAsString('contents');
+          try {
+            await link.create(target.path);
+          } on FileSystemException catch (error) {
+            if (Platform.isWindows && error.osError?.errorCode == 1314) {
+              markTestSkipped(
+                'Creating symbolic links requires the Windows symlink privilege',
+              );
+              return;
+            }
+            rethrow;
+          }
+
+          await overrideIO(() async {
+            expect(
+              await FileSystemEntity.type(link.path, followLinks: false),
+              FileSystemEntityType.link,
+            );
+            expect(
+              await FileSystemEntity.type(link.path, followLinks: true),
+              FileSystemEntityType.file,
+            );
+          });
+
+          await target.delete();
+
+          await overrideIO(() async {
+            expect(
+              await FileSystemEntity.type(link.path, followLinks: false),
+              FileSystemEntityType.link,
+            );
+            expect(
+              await FileSystemEntity.type(link.path, followLinks: true),
+              FileSystemEntityType.notFound,
+            );
+          });
+        } finally {
+          await root.delete(recursive: true);
+        }
+      },
+    );
   });
 }

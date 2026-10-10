@@ -304,6 +304,13 @@ Future<bool> saveFile({
 
 final class _IOOverrides extends IOOverrides {
   @override
+  Future<FileSystemEntityType> fseGetType(String path, bool followLinks) {
+    // Dart 3.11.1's default IO override omits the NUL terminator required
+    // by the native asynchronous type lookup.
+    return super.fseGetType('$path\u0000', followLinks);
+  }
+
+  @override
   Directory createDirectory(String path) {
     if (App.isAndroid) {
       var dir = AndroidDirectory.fromPathSync(path);

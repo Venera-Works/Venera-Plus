@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite3/sqlite3.dart';
+import 'package:venera_plus/foundation/file_interaction.dart' show overrideIO;
 
 import 'package:venera_plus/foundation/sync_records.dart';
 import 'package:venera_plus/features/sync/merge_store.dart';
@@ -200,6 +201,142 @@ void main() {
         expect(_databaseSummary(replica, 'device-alpha'), first);
       },
     );
+
+    test('committed empty store captures inside overrideIO', () async {
+      const actor = 'device-alpha';
+      final primary = File('${tempDir.path}/merge_store.sqlite3');
+      final replica = File('${primary.path}.bak');
+      final emptyStore = MergeStore(tempDir, actor);
+      await emptyStore.load();
+      await emptyStore.save();
+
+      final committedEmpty = _databaseSummary(primary, actor);
+      expect(committedEmpty, _databaseSummary(replica, actor));
+      expect(committedEmpty.revision, 1);
+      expect(committedEmpty.initialized, isFalse);
+      expect(committedEmpty.ownCounter, 0);
+      expect(committedEmpty.outboxCount, 0);
+
+      final recordKey = syncRecordKey('folder', ['first-profile']);
+      final profile = {
+        recordKey: {'name': 'First profile'},
+      };
+      await overrideIO(() async {
+        final reopened = MergeStore(tempDir, actor);
+        await reopened.load();
+        expect(reopened.document.counterFor(actor), 0);
+        expect(reopened.observed, isEmpty);
+        expect(reopened.outbox, isEmpty);
+
+        await reopened.capture(profile);
+        expect(reopened.document.counterFor(actor), 1);
+        expect(reopened.observed, profile);
+        expect(reopened.outbox, hasLength(1));
+        expect(reopened.outbox.single.counter, 1);
+        final batchId = reopened.outbox.single.id;
+
+        final committed = _databaseSummary(primary, actor);
+        expect(committed, _databaseSummary(replica, actor));
+        expect(committed.revision, 2);
+        expect(committed.initialized, isTrue);
+        expect(committed.ownCounter, 1);
+        expect(committed.outboxCount, 1);
+        expect(committed.observedCount, 1);
+
+        final recovered = MergeStore(tempDir, actor);
+        await recovered.load();
+        expect(recovered.document.counterFor(actor), 1);
+        expect(recovered.localObservation.counterFor(actor), 1);
+        expect(recovered.observed, profile);
+        expect(recovered.pendingBatchIds, [batchId]);
+        expect(recovered.outbox.single.counter, 1);
+        expect(_databaseSummary(primary, actor), committed);
+      });
+    });
+
+    test('existing profile preserves causal state inside overrideIO', () async {
+      const actor = 'device-alpha';
+      final primary = File('${tempDir.path}/merge_store.sqlite3');
+      final replica = File('${primary.path}.bak');
+      final recordKey = syncRecordKey('folder', ['profile']);
+      final store = MergeStore(tempDir, actor);
+      await store.load();
+
+      for (var version = 1; version <= 4; version++) {
+        await store.capture({
+          recordKey: {'name': 'Profile $version'},
+        });
+      }
+      expect(store.document.counterFor(actor), 4);
+      final lastBatchId = store.outbox.last.id;
+      await store.acknowledge(lastBatchId);
+      expect(store.outbox, isEmpty);
+
+      final receivedFiles = <String>{
+        'remote-checkpoint-1.json',
+        'remote-checkpoint-2.json',
+        'remote-checkpoint-3.json',
+        'remote-checkpoint-4.json',
+        'remote-checkpoint-5.json',
+        'remote-checkpoint-6.json',
+      };
+      for (final filename in receivedFiles) {
+        await store.markReceived(filename);
+      }
+
+      final profile = {
+        recordKey: {'name': 'Profile 4'},
+      };
+      final revisionEleven = _databaseSummary(primary, actor);
+      expect(revisionEleven, _databaseSummary(replica, actor));
+      expect(revisionEleven.revision, 11);
+      expect(revisionEleven.ownCounter, 4);
+      expect(revisionEleven.outboxCount, 0);
+      expect(revisionEleven.observedCount, 1);
+
+      await overrideIO(() async {
+        final reopened = MergeStore(tempDir, actor);
+        await reopened.load();
+        expect(reopened.observed, profile);
+        expect(reopened.document.counterFor(actor), 4);
+        expect(reopened.localObservation.counterFor(actor), 4);
+        expect(reopened.received, receivedFiles);
+        expect(reopened.outbox, isEmpty);
+        expect(_databaseSummary(primary, actor), revisionEleven);
+
+        final nextProfile = {
+          recordKey: {'name': 'Profile 5'},
+        };
+        await reopened.capture(nextProfile);
+        expect(reopened.observed, nextProfile);
+        expect(reopened.document.counterFor(actor), 5);
+        expect(reopened.outbox, hasLength(1));
+        final pendingBatch = reopened.outbox.single;
+        expect(pendingBatch.counter, 5);
+        expect(pendingBatch.document.materialize(), nextProfile);
+
+        final revisionTwelve = _databaseSummary(primary, actor);
+        expect(revisionTwelve, _databaseSummary(replica, actor));
+        expect(revisionTwelve.revision, 12);
+        expect(revisionTwelve.ownCounter, 5);
+        expect(revisionTwelve.outboxCount, 1);
+        expect(revisionTwelve.observedCount, 1);
+
+        final recovered = MergeStore(tempDir, actor);
+        await recovered.load();
+        expect(recovered.observed, nextProfile);
+        expect(recovered.document.counterFor(actor), 5);
+        expect(recovered.localObservation.counterFor(actor), 5);
+        expect(recovered.received, receivedFiles);
+        expect(recovered.pendingBatchIds, [pendingBatch.id]);
+        expect(
+          recovered.pendingBatch(pendingBatch.id).toJson(),
+          pendingBatch.toJson(),
+        );
+        expect(recovered.outbox.single.document.materialize(), nextProfile);
+        expect(_databaseSummary(primary, actor), revisionTwelve);
+      });
+    });
 
     test(
       'stale empty writer cannot be overwritten and reload enables capture',
@@ -1854,6 +1991,7 @@ void main() {
     test(
       'schema 2 migration preserves received and interrupted apply state',
       () async {
+        const actor = 'device-alpha';
         final state = _legacySchema2State();
         final key = syncRecordKey('folder', ['fixture']);
         state['pendingApply'] = {
@@ -1862,24 +2000,73 @@ void main() {
         state['pendingUnavailableDomains'] = ['source'];
         state['received'] = ['legacy-checkpoint.json'];
         final encoded = jsonEncode(state);
-        await File('${tempDir.path}/state.json').writeAsString(encoded);
-        await File('${tempDir.path}/state.json.bak').writeAsString(encoded);
+        final primary = File('${tempDir.path}/state.json');
+        await primary.writeAsString(encoded);
+        await File('${primary.path}.bak').writeAsString(encoded);
+        final expectedBatch = MergeBatch.fromJson(
+          (state['outbox'] as List).single as Map<String, Object?>,
+        );
 
-        final store = MergeStore(tempDir, 'device-alpha');
-        await store.load();
-        expect(store.pendingApply, {
-          key: {'name': 'Critical'},
-        });
-        expect(store.pendingUnavailableDomains, {'source'});
-        expect(store.received, {'legacy-checkpoint.json'});
+        await overrideIO(() async {
+          final store = MergeStore(tempDir, actor);
+          await store.load();
+          expect(store.document.toJson(), state['document']);
+          expect(store.localObservation.toJson(), state['localObservation']);
+          expect(store.observed, {
+            key: {'name': 'Critical'},
+          });
+          expect(store.pendingBatchIds, [expectedBatch.id]);
+          expect(
+            store.pendingBatch(expectedBatch.id).toJson(),
+            expectedBatch.toJson(),
+          );
+          expect(store.pendingApply, {
+            key: {'name': 'Critical'},
+          });
+          expect(store.pendingUnavailableDomains, {'source'});
+          expect(store.received, {'legacy-checkpoint.json'});
 
-        final reopened = MergeStore(tempDir, 'device-alpha');
-        await reopened.load();
-        expect(reopened.pendingApply, {
-          key: {'name': 'Critical'},
+          final migrated = _databaseSummary(
+            File('${tempDir.path}/merge_store.sqlite3'),
+            actor,
+          );
+          expect(
+            migrated,
+            _databaseSummary(
+              File('${tempDir.path}/merge_store.sqlite3.bak'),
+              actor,
+            ),
+          );
+          expect(migrated.revision, 1);
+          expect(migrated.ownCounter, 1);
+          expect(migrated.outboxCount, 1);
+          expect(migrated.observedCount, 1);
+
+          final reopened = MergeStore(tempDir, actor);
+          await reopened.load();
+          expect(reopened.document.toJson(), state['document']);
+          expect(reopened.localObservation.toJson(), state['localObservation']);
+          expect(reopened.observed, {
+            key: {'name': 'Critical'},
+          });
+          expect(reopened.pendingBatchIds, [expectedBatch.id]);
+          expect(
+            reopened.pendingBatch(expectedBatch.id).toJson(),
+            expectedBatch.toJson(),
+          );
+          expect(reopened.pendingApply, {
+            key: {'name': 'Critical'},
+          });
+          expect(reopened.pendingUnavailableDomains, {'source'});
+          expect(reopened.received, {'legacy-checkpoint.json'});
+          expect(
+            _databaseSummary(
+              File('${tempDir.path}/merge_store.sqlite3'),
+              actor,
+            ),
+            migrated,
+          );
         });
-        expect(reopened.pendingUnavailableDomains, {'source'});
-        expect(reopened.received, {'legacy-checkpoint.json'});
       },
     );
 
