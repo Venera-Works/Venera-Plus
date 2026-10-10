@@ -1521,12 +1521,15 @@ class _WebDavComicLibrarySettingState
 
   Future<void> _refreshWebDavLibrarySource({required bool enabled}) async {
     final manager = ComicSourceManager();
-    manager.remove(WebDavLibrarySource.sourceKey);
+    if (enabled && manager.find(WebDavLibrarySource.sourceKey) != null) return;
     final pages = List<String>.from(appdata.settings['explore_pages']);
-    pages.remove(WebDavLibrarySource.explorePageTitle);
     if (enabled) {
       manager.add(WebDavLibrarySource.create());
+      pages.removeWhere((page) => page == WebDavLibrarySource.explorePageTitle);
       pages.add(WebDavLibrarySource.explorePageTitle);
+    } else {
+      manager.remove(WebDavLibrarySource.sourceKey);
+      pages.removeWhere((page) => page == WebDavLibrarySource.explorePageTitle);
     }
     appdata.settings['explore_pages'] = pages;
     await appdata.saveData(false);

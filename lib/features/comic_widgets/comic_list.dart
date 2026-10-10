@@ -31,6 +31,7 @@ class SliverGridComics extends StatefulWidget {
     this.onLongPressed,
     this.selections,
     this.useFavoriteDisplaySettings = false,
+    this.hideFavoriteBadge = false,
   });
 
   final List<Comic> comics;
@@ -48,6 +49,8 @@ class SliverGridComics extends StatefulWidget {
   final void Function(Comic, int heroID)? onLongPressed;
 
   final bool useFavoriteDisplaySettings;
+
+  final bool hideFavoriteBadge;
 
   @override
   State<SliverGridComics> createState() => _SliverGridComicsState();
@@ -147,6 +150,7 @@ class _SliverGridComicsState extends State<SliverGridComics> {
       onTap: widget.onTap,
       onLongPressed: widget.onLongPressed,
       onBlocked: update,
+      hideFavoriteBadge: widget.hideFavoriteBadge,
       favoriteDisplayMode: favoriteDisplayMode,
       galleryColumns: favoriteDisplayMode == ComicTileDisplayMode.gallery
           ? favoriteDisplayState.galleryColumns
@@ -168,6 +172,7 @@ class _SliverGridComics extends StatelessWidget {
     this.selection,
     this.favoriteDisplayMode,
     this.galleryColumns,
+    required this.hideFavoriteBadge,
   });
 
   final List<Comic> comics;
@@ -191,6 +196,8 @@ class _SliverGridComics extends StatelessWidget {
   final ComicTileDisplayMode? favoriteDisplayMode;
 
   final int? galleryColumns;
+
+  final bool hideFavoriteBadge;
 
   @override
   Widget build(BuildContext context) {
@@ -216,6 +223,7 @@ class _SliverGridComics extends StatelessWidget {
           onBlocked: onBlocked,
           heroID: heroIDs[index],
           displayMode: favoriteDisplayMode,
+          hideFavoriteBadge: hideFavoriteBadge,
         );
         if (selection == null) {
           return comic;

@@ -111,7 +111,20 @@ void main() {
       appdata.settings['comicDisplayMode'] = 'brief';
       appdata.settings[favoriteDisplayModeKey] = favoriteDisplayList;
       appdata.settings[favoriteGalleryColumnsKey] = 0;
+      appdata.settings['showFavoriteStatusOnTile'] = true;
+      appdata.settings['showHistoryStatusOnTile'] = true;
+      appdata.settings['showUpdateStatusOnTile'] = true;
       configureComicWidgets(
+        tileStateResolver: (_) {
+          final showHistory =
+              appdata.settings['showHistoryStatusOnTile'] == true;
+          return ComicTileState(
+            isFavorite: appdata.settings['showFavoriteStatusOnTile'] == true,
+            historyPage: showHistory ? 2 : null,
+            historyMaxPage: showHistory ? 10 : null,
+            hasNewUpdate: appdata.settings['showUpdateStatusOnTile'] == true,
+          );
+        },
         favoriteDisplayStateResolver: () => ComicFavoriteDisplayState(
           isGallery: isFavoriteGalleryMode(),
           galleryColumns: favoriteGalleryColumns(),
@@ -193,6 +206,51 @@ void main() {
         _comicOrder(tester, within: find.byType(SliverGridComics)),
         initialOrder,
       );
+      final firstHomeTile = find.byWidgetPredicate(
+        (widget) => widget is ComicTile && widget.comic.id == 'home-0',
+      );
+      void expectHomeStatusBadges() {
+        expect(find.byIcon(Icons.bookmark_rounded), findsNothing);
+        expect(
+          find.descendant(
+            of: firstHomeTile,
+            matching: find.byType(CustomPaint),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: firstHomeTile,
+            matching: find.byIcon(Icons.update),
+          ),
+          findsOneWidget,
+        );
+      }
+
+      expectHomeStatusBadges();
+
+      final controlComic = manager.getFolderComics('Home reorder').first;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: CustomScrollView(
+              slivers: [
+                SliverGridComics(comics: [controlComic]),
+              ],
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byIcon(Icons.bookmark_rounded), findsOneWidget);
+
+      await tester.pumpWidget(homePage());
+      await tester.pumpAndSettle();
+      appdata.settings[favoriteDisplayModeKey] = favoriteDisplayGallery;
+      await tester.pumpAndSettle();
+      expectHomeStatusBadges();
+      appdata.settings[favoriteDisplayModeKey] = favoriteDisplayList;
+      await tester.pumpAndSettle();
       await _openReorder(tester);
       expect(_comicOrder(tester), initialOrder);
 

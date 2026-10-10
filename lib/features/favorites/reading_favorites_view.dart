@@ -419,6 +419,7 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
       sliverContent = SliverGridComics(
         comics: comics,
         useFavoriteDisplaySettings: true,
+        hideFavoriteBadge: true,
         menuBuilder: _buildMenu,
         onTap: _onComicTap,
       );

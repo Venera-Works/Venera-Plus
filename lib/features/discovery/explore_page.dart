@@ -872,46 +872,53 @@ class _ExplorePageState extends State<ExplorePage>
         );
 
         final padding = EdgeInsets.fromLTRB(12, context.padding.top + 4, 12, 4);
-        final rowWidth = constraints.maxWidth - padding.horizontal;
-        final preferredMobileSourceWidth =
-            MediaQuery.textScalerOf(context).scale(16) * 5 + 10 + 10 + 4 + 20;
-        final reservedSectionWidth = sectionSelector == null ? 0.0 : 100.0;
-        final mobileSourceWidth =
-            (rowWidth -
-                    48 -
-                    (sectionSelector == null ? 8 : 16) -
-                    reservedSectionWidth)
-                .clamp(44.0, preferredMobileSourceWidth)
+        const minWingWidth = 48.0 + 8.0;
+        final maxSectionWidth =
+            (constraints.maxWidth - padding.horizontal - minWingWidth * 2)
+                .clamp(0.0, double.infinity)
                 .toDouble();
 
         return Container(
           padding: padding,
           child: Row(
-            children: [
-              Expanded(
-                child: Row(
-                  children: [
-                    if (App.isDesktop)
-                      Flexible(fit: FlexFit.loose, child: sourceSelector)
-                    else
-                      SizedBox(width: mobileSourceWidth, child: sourceSelector),
-                    if (sectionSelector != null) ...[
-                      const SizedBox(width: 8),
-                      Flexible(
-                        fit: FlexFit.loose,
-                        child: FittedBox(
-                          fit: BoxFit.scaleDown,
+            children: sectionSelector == null
+                ? [
+                    Expanded(
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: sourceSelector,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    manageMenu,
+                  ]
+                : [
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: Align(
                           alignment: Alignment.centerLeft,
-                          child: sectionSelector,
+                          child: sourceSelector,
                         ),
                       ),
-                    ],
+                    ),
+                    ConstrainedBox(
+                      constraints: BoxConstraints(maxWidth: maxSectionWidth),
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: sectionSelector,
+                      ),
+                    ),
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: 8),
+                        child: Align(
+                          alignment: Alignment.centerRight,
+                          child: manageMenu,
+                        ),
+                      ),
+                    ),
                   ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              manageMenu,
-            ],
           ),
         );
       },

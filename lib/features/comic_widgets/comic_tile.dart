@@ -175,6 +175,7 @@ class ComicTile extends StatelessWidget {
     this.onBlocked,
     this.heroID,
     this.displayMode,
+    this.hideFavoriteBadge = false,
   });
 
   final Comic comic;
@@ -194,6 +195,8 @@ class ComicTile extends StatelessWidget {
   final int? heroID;
 
   final ComicTileDisplayMode? displayMode;
+
+  final bool hideFavoriteBadge;
 
   void _onTap() {
     if (onTap != null) {
@@ -283,7 +286,7 @@ class ComicTile extends StatelessWidget {
     };
 
     final state = _tileState(comic);
-    final isFavorite = state.isFavorite;
+    final isFavorite = state.isFavorite && !hideFavoriteBadge;
     final historyPage = state.historyPage == 0 ? 1 : state.historyPage;
     final hasUpdate = state.hasNewUpdate;
 

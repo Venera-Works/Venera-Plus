@@ -196,30 +196,28 @@ void main() {
         final sourceSelector = find.byKey(
           const ValueKey('discovery_source_selector'),
         );
-        final sourceRect = tester.getRect(sourceSelector);
         final sectionSelector = find.byType(SegmentedButton<DiscoverySection>);
-        final sectionRect = tester.getRect(sectionSelector);
-        final manageRect = tester.getRect(find.byTooltip('Manage'));
-        expect(sourceRect.center.dy, closeTo(sectionRect.center.dy, 1));
-        expect(sectionRect.center.dy, closeTo(manageRect.center.dy, 1));
-        expect(manageRect.left, greaterThanOrEqualTo(sectionRect.right));
-        expect(manageRect.left, greaterThan(sourceRect.right));
-        if (App.isDesktop) {
-          for (final width in [390.0, 1280.0]) {
-            tester.view.physicalSize = Size(width, 844);
-            await tester.pumpAndSettle();
-            final menuRect = tester.getRect(
-              find.byType(PopupMenuButton<String>),
-            );
-            final contentRect = tester.getRect(find.byType(ExplorePage));
-            expect(
-              contentRect.right - menuRect.right,
-              lessThan(menuRect.width),
-            );
-          }
-          tester.view.physicalSize = const Size(390, 844);
+        final menuSelector = find.byType(PopupMenuButton<String>);
+        final longSourceWidths = <double>[];
+        for (final width in [320.0, 390.0, 1280.0]) {
+          tester.view.physicalSize = Size(width, 844);
           await tester.pumpAndSettle();
+          final sourceRect = tester.getRect(sourceSelector);
+          longSourceWidths.add(sourceRect.width);
+          final sectionRect = tester.getRect(sectionSelector);
+          final menuRect = tester.getRect(menuSelector);
+          final contentRect = tester.getRect(find.byType(ExplorePage));
+          expect(sourceRect.center.dy, closeTo(sectionRect.center.dy, 1));
+          expect(sectionRect.center.dy, closeTo(menuRect.center.dy, 1));
+          expect(sectionRect.center.dx, closeTo(contentRect.center.dx, 1));
+          expect(sourceRect.right + 8, lessThanOrEqualTo(sectionRect.left + 1));
+          expect(sectionRect.right + 8, lessThanOrEqualTo(menuRect.left + 1));
+          expect(contentRect.right - menuRect.right, closeTo(12, 1));
+          expect(tester.takeException(), isNull);
         }
+        expect(longSourceWidths.last, greaterThan(longSourceWidths[1]));
+        tester.view.physicalSize = const Size(390, 844);
+        await tester.pumpAndSettle();
 
         final browseContentBefore = tester.getRect(
           find.text('Empty Page').first,
@@ -282,6 +280,20 @@ void main() {
           'Single Browse 2',
         );
         expect(appdata.implicitData['discovery_section_$singleKey'], 'browse');
+        expect(find.byType(SegmentedButton<DiscoverySection>), findsNothing);
+        final singleSourceWidths = <double>[];
+        for (final width in [320.0, 1280.0]) {
+          tester.view.physicalSize = Size(width, 844);
+          await tester.pumpAndSettle();
+          final sourceRect = tester.getRect(sourceSelector);
+          final menuRect = tester.getRect(menuSelector);
+          final contentRect = tester.getRect(find.byType(ExplorePage));
+          singleSourceWidths.add(sourceRect.width);
+          expect(sourceRect.left, closeTo(contentRect.left + 12, 1));
+          expect(sourceRect.right + 8, lessThanOrEqualTo(menuRect.left + 1));
+          expect(contentRect.right - menuRect.right, closeTo(12, 1));
+        }
+        expect(singleSourceWidths.last, closeTo(singleSourceWidths.first, 1));
         expect(tester.takeException(), isNull);
       },
     );

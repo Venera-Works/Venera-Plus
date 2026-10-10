@@ -3,12 +3,42 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/settings/settings.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/appdata.dart';
+
+import '../../widget_test_io.dart';
+
+class _EmptyWebDavLibraryOps implements WebDavLibraryOps {
+  @override
+  Future<void> test(WebDavLibraryConfig config) async {}
+
+  @override
+  Future<List<WebDavLibraryEntry>> readDir(
+    WebDavLibraryConfig config,
+    String remotePath,
+  ) async => const [];
+
+  @override
+  Future<WebDavTextFile> readText(
+    WebDavLibraryConfig config,
+    String remotePath,
+  ) async => const WebDavTextFile(content: '');
+
+  @override
+  Future<WebDavWriteResult> writeText(
+    WebDavLibraryConfig config,
+    String remotePath,
+    String content, {
+    bool createOnly = false,
+    String? ifMatch,
+    int? ifUnmodifiedSince,
+  }) async => const WebDavWriteResult();
+}
 
 void _setupTestView(WidgetTester tester, Size size) {
   tester.view.physicalSize = size;
@@ -208,6 +238,146 @@ void main() {
       await tester.tap(settingsBackFinder);
       await tester.pumpAndSettle();
       expect(find.byType(NetworkSettings), findsNothing);
+    },
+  );
+  testWidgets(
+    'WebDAV library saves enable once, preserve ordering and visibility, then clear and re-enable',
+    (tester) async {
+      _setupTestView(tester, const Size(1000, 1600));
+      final manager = ComicSourceManager();
+      manager.remove(WebDavLibrarySource.sourceKey);
+      final fakeOps = _EmptyWebDavLibraryOps();
+      void restoreTestOpsAfterConfigurationChange() {
+        WebDavLibrarySource.contentVersion.removeListener(
+          restoreTestOpsAfterConfigurationChange,
+        );
+        WebDavLibrarySource.ops = fakeOps;
+      }
+
+      addTearDown(() {
+        WebDavLibrarySource.contentVersion.removeListener(
+          restoreTestOpsAfterConfigurationChange,
+        );
+        manager.remove(WebDavLibrarySource.sourceKey);
+        WebDavLibrarySource.resetCacheForTesting();
+        WebDavLibrarySource.resetOps();
+      });
+      appdata.settings['webdavComicLibrary'] = [];
+      appdata.settings['webdavComicLibraryPath'] = '/venera_comics/';
+      appdata.settings['explore_pages'] = [
+        'manual browse first',
+        'manual browse second',
+      ];
+      WebDavLibrarySource.ops = fakeOps;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          navigatorKey: App.rootNavigatorKey,
+          home: const Scaffold(body: SourcesAndServicesSettings()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      Future<void> openWebDavSettings() async {
+        await tester.tap(find.text('WebDAV Comic Library').first);
+        await tester.pumpAndSettle();
+      }
+
+      Future<void> tapSaveAndFinish() async {
+        final saveButton = find.text('Save and sync');
+        await tester.ensureVisible(saveButton);
+        await tester.tap(saveButton);
+        await runWidgetIo(tester, () async {
+          while (find.byType(PopUpWidgetScaffold).evaluate().isNotEmpty ||
+              find.text('Save and sync').evaluate().isNotEmpty) {
+            await Future<void>.delayed(const Duration(milliseconds: 10));
+          }
+        });
+        await runWidgetIo(tester, () async {
+          await WebDavLibrarySource.synchronize(force: true);
+          await appdata.saveData(false);
+        });
+        await tester.pumpAndSettle();
+        expect(find.text('Save and sync'), findsNothing);
+        expect(tester.takeException(), isNull);
+      }
+
+      Future<void> saveNewConfiguration(String url) async {
+        await openWebDavSettings();
+        final fields = find.byType(TextField);
+        await tester.enterText(fields.at(0), url);
+        await tester.enterText(fields.at(1), 'user');
+        await tester.enterText(fields.at(2), 'pass');
+        WebDavLibrarySource.ops = fakeOps;
+        WebDavLibrarySource.contentVersion.addListener(
+          restoreTestOpsAfterConfigurationChange,
+        );
+        await tapSaveAndFinish();
+      }
+
+      Future<void> saveCurrentConfiguration() async {
+        await openWebDavSettings();
+        await tapSaveAndFinish();
+      }
+
+      await saveNewConfiguration('https://example.com/dav');
+      expect(manager.find(WebDavLibrarySource.sourceKey), isNotNull);
+      expect(appdata.settings['explore_pages'], [
+        'manual browse first',
+        'manual browse second',
+        WebDavLibrarySource.explorePageTitle,
+      ]);
+
+      appdata.settings['explore_pages'] = [
+        'manual browse second',
+        WebDavLibrarySource.explorePageTitle,
+        'manual browse first',
+      ];
+      await saveCurrentConfiguration();
+      expect(manager.find(WebDavLibrarySource.sourceKey), isNotNull);
+      expect(appdata.settings['explore_pages'], [
+        'manual browse second',
+        WebDavLibrarySource.explorePageTitle,
+        'manual browse first',
+      ]);
+
+      appdata.settings['explore_pages'] = [
+        'manual browse second',
+        'manual browse first',
+      ];
+      await saveCurrentConfiguration();
+      expect(manager.find(WebDavLibrarySource.sourceKey), isNotNull);
+      expect(appdata.settings['explore_pages'], [
+        'manual browse second',
+        'manual browse first',
+      ]);
+
+      appdata.settings['explore_pages'] = [
+        'manual browse second',
+        WebDavLibrarySource.explorePageTitle,
+        'manual browse first',
+      ];
+      await openWebDavSettings();
+      final fields = find.byType(TextField);
+      await tester.enterText(fields.at(0), '');
+      await tester.enterText(fields.at(1), '');
+      await tester.enterText(fields.at(2), '');
+      await tapSaveAndFinish();
+
+      expect(manager.find(WebDavLibrarySource.sourceKey), isNull);
+      expect(appdata.settings['explore_pages'], [
+        'manual browse second',
+        'manual browse first',
+      ]);
+      expect(appdata.settings['webdavComicLibrary'], isEmpty);
+
+      await saveNewConfiguration('https://example.org/new');
+      expect(manager.find(WebDavLibrarySource.sourceKey), isNotNull);
+      expect(appdata.settings['explore_pages'], [
+        'manual browse second',
+        'manual browse first',
+        WebDavLibrarySource.explorePageTitle,
+      ]);
     },
   );
 }

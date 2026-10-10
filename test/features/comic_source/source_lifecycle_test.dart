@@ -429,6 +429,44 @@ void main() {
           ]);
         },
       );
+      test(
+        'ordinary source install appends browse and category pages after existing order',
+        () async {
+          appdata.settings['explore_pages'] = [
+            'manual browse second',
+            'manual browse first',
+          ];
+          appdata.settings['categories'] = [
+            'manual category second',
+            'manual category first',
+          ];
+
+          await manager.installScript(
+            js: script('transaction_a').replaceFirst('comic =', '''
+              explore = [
+                {title: "New Browse One", type: "multiPageComicList", load: async () => ({comics: [], maxPage: 1})},
+                {title: "New Browse Two", type: "multiPageComicList", load: async () => ({comics: [], maxPage: 1})}
+              ];
+              category = {title: "New Categories", parts: []};
+              comic ='''),
+            fileName: 'transaction_a.js',
+            origin: const SourceOrigin(kind: 'file'),
+            beforeInstall: () {},
+          );
+
+          expect(appdata.settings['explore_pages'], [
+            'manual browse second',
+            'manual browse first',
+            'New Browse One',
+            'New Browse Two',
+          ]);
+          expect(appdata.settings['categories'], [
+            'manual category second',
+            'manual category first',
+            'New Categories',
+          ]);
+        },
+      );
 
       test(
         'failed staged data write rolls back script, runtime and origin',
