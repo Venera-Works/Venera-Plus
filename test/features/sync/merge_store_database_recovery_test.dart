@@ -541,8 +541,9 @@ void main() {
         UPDATE merge_business_records SET value_json = ?
         WHERE kind = 'localEdits' AND record_key = ?;
         ''',
+          // Use a proven field of the same event; an unknown dot is corruption.
           [
-            canonicalSyncJson({'name': '$_actor:2'}),
+            canonicalSyncJson({'presence': '$_actor:1'}),
             _recordKey,
           ],
         );

@@ -365,21 +365,26 @@ void main() {
     late _VirtualDavClient client;
     late SyncRecords localRecords;
 
+    void installDataSyncTestHooks() {
+      DataSync.debugDisableWindowCloseHandler = true;
+      DataSync.debugClientFactory = (_) => client;
+      DataSync.debugExportRecords = () async => Map.from(localRecords);
+      DataSync.debugApplyRecords = (records, {beforeCommit}) async {
+        beforeCommit?.call();
+        localRecords = Map.from(records);
+      };
+    }
+
     setUp(() {
       transport = _VirtualWebDavTransport();
       client = _VirtualDavClient(transport);
-      DataSync.debugClientFactory = (_) => client;
 
       localRecords = {
         syncRecordKey('setting', ['theme']): {'value': 'dark'},
         syncRecordKey('search', ['manga']): {'order': 0},
       };
 
-      DataSync.debugExportRecords = () async => Map.from(localRecords);
-      DataSync.debugApplyRecords = (records, {beforeCommit}) async {
-        beforeCommit?.call();
-        localRecords = Map.from(records);
-      };
+      installDataSyncTestHooks();
     });
 
     test(
@@ -458,6 +463,7 @@ void main() {
           ),
         );
         DataSync.resetForTesting();
+        installDataSyncTestHooks();
         final restarted = DataSync();
         final next = await restarted.syncNow();
         expect(next.success, isTrue, reason: next.errorMessage);
@@ -1245,7 +1251,7 @@ void main() {
     );
 
     test(
-      'concurrent startup reloads a stale capture and preserves both devices intents across restart',
+      'concurrent startup reload preserves queued intent through first-sync download and restart',
       () async {
         const actor = 'recovery_writer';
         final stateDir = Directory('${tempDir.path}/recovery_writer');
@@ -1351,15 +1357,15 @@ void main() {
           isTrue,
         );
         expect(readerRecords[queuedKey], {'order': 0});
+        expect(readerRecords[themeKey], {'value': 'dark'});
+        expect(reader.conflicts, isEmpty);
+
         reader = makeReader();
         await reader.startupRecovery();
-        final themeConflict = reader.conflicts.firstWhere(
-          (conflict) => conflict.recordKey == themeKey,
-        );
-        expect(
-          themeConflict.candidates.map((candidate) => candidate.value),
-          containsAll(['dark', 'other device edit']),
-        );
+        expect(readerRecords[themeKey], {'value': 'dark'});
+        expect(reader.store.observed[themeKey], {'value': 'dark'});
+        expect(reader.store.observed[queuedKey], {'order': 0});
+        expect(reader.conflicts, isEmpty);
         expect(reader.store.document.dominates(priorIntent), isTrue);
       },
     );
