@@ -25,6 +25,7 @@ import 'merge_remote.dart';
 import 'merge_store_error.dart';
 import 'merge_store.dart';
 import 'merge_sync_coordinator.dart';
+import 'sync_initialization_diagnostics.dart';
 import 'sync_preferences_adapter.dart';
 import 'sync_device.dart';
 
@@ -167,8 +168,36 @@ class DataSync with ChangeNotifier {
   static const _minimumUploadInterval = Duration(seconds: 60);
   static const _maximumDirtyWait = Duration(minutes: 2);
   static const _remoteCheckInterval = Duration(minutes: 10);
-
   static const _importZoneKey = #_dataSyncImporting;
+
+  static final Map<String, Future<void>> _initializationLockTails = {};
+  static String _initializationLockKey(Directory directory, String actor) =>
+      '${p.normalize(p.absolute(directory.path))}\u0000$actor';
+
+  static Future<T> _withInitializationLock<T>(
+    Directory directory,
+    String actor,
+    Future<T> Function() action,
+  ) {
+    final key = _initializationLockKey(directory, actor);
+    final previous = _initializationLockTails[key];
+    final released = Completer<void>();
+    _initializationLockTails[key] = released.future;
+    return () async {
+      try {
+        if (previous != null) await previous;
+        return await action();
+      } finally {
+        released.complete();
+        if (identical(_initializationLockTails[key], released.future)) {
+          _initializationLockTails.remove(key);
+        }
+      }
+    }();
+  }
+
+  late final String _dataSyncInstanceId =
+      SyncInitializationDiagnostics.nextInstanceId('data-sync');
   static final _rawSqliteException = RegExp(
     r'\bsqliteexception\s*(?:\(|:)',
     caseSensitive: false,
@@ -240,6 +269,7 @@ class DataSync with ChangeNotifier {
   int _configurationGeneration = 0;
   Future<void>? _coordinatorLoadFlight;
   int? _coordinatorLoadFlightGeneration;
+  String? _pendingInitializationTrigger;
   final Map<String, _BlockedSyncState> _blockedStateByEndpoint = {};
   bool get isReady => _startupReady && !_coordinatorNeedsRecovery;
 
@@ -248,7 +278,7 @@ class DataSync with ChangeNotifier {
     try {
       if (hasConfiguration) {
         await runZoned(
-          _ensureCoordinatorLoaded,
+          () => _ensureCoordinatorLoaded(trigger: 'startup'),
           zoneValues: {_importZoneKey: true},
         );
       } else if (generation == _configurationGeneration) {
@@ -296,9 +326,23 @@ class DataSync with ChangeNotifier {
   /// The next task must reload durable state before capturing the restored data.
   void onLocalDataRestored() {
     if (_disposed) return;
-    _configurationGeneration++;
-    _coordinator?.store.invalidateForBusinessRestore();
+    final previousCoordinator = _coordinator;
+    final generation = ++_configurationGeneration;
+    _coordinator = null;
     _coordinatorNeedsRecovery = hasConfiguration;
+    _pendingInitializationTrigger = hasConfiguration ? 'restore' : null;
+    if (previousCoordinator != null) {
+      _initializationDiagnostics(
+        trigger: 'restore',
+        generation: generation,
+        endpointHash: previousCoordinator.endpointHash,
+        actor: previousCoordinator.actor,
+        directory: previousCoordinator.stateDirectory,
+      ).record(
+        'restore.invalidated',
+        values: {'coordinatorInstanceId': previousCoordinator.instanceId},
+      );
+    }
     Zone.root.run(() => onDataChanged());
   }
 
@@ -790,11 +834,9 @@ class DataSync with ChangeNotifier {
     }
     return _enqueue(_DataSyncTask.configure, () async {
       _configuring = true;
+      var configurationGeneration = _configurationGeneration;
       final oldConfig = appdata.settings['webdav'];
       final oldFields = appdata.settings['disableSyncFields'];
-      final oldCoordinator = _coordinator;
-      final oldNeedsRecovery = _coordinatorNeedsRecovery;
-      final oldReady = _startupReady;
       const configKeys = [
         'webdavSyncDirection',
         'webdavSyncTiming',
@@ -815,49 +857,21 @@ class DataSync with ChangeNotifier {
       var mutated = false;
       var committed = false;
       String? attemptedEndpointHash;
-      try {
-        MergeSyncCoordinator? prepared;
-        String? resolvedDeviceName;
-        if (draft.isNotEmpty) {
-          if (draft.length != 3) {
-            return const Res.error('Invalid WebDAV configuration format');
-          }
-          final endpoint = WebDavEndpoint(
-            url: draft[0],
-            user: draft[1],
-            password: draft[2],
-          );
-          if (!endpoint.isValid) {
-            return const Res.error('WebDAV URL cannot be empty');
-          }
-          final client = _client(endpoint);
-          resolvedDeviceName = await _resolveDeviceName(deviceName);
-          await client.ping();
-          final hash = MergeSyncCoordinator.computeEndpointHash(
-            endpoint.url,
-            endpoint.user,
-          );
-          attemptedEndpointHash = hash;
-          final actor = await MergeSyncCoordinator.getOrCreateActorId();
-          final directory =
-              debugStateDirFactory?.call(hash) ??
-              Directory(FilePath.join(App.dataPath, 'sync_state_$hash'));
-          prepared = _createCoordinator(
-            hash,
-            directory,
-            actor,
-            client,
-            resolvedDeviceName,
-          );
-          // Validation/reconciliation may touch only endpoint metadata. Pending
-          // business replay and legacy migration wait for the config commit.
-          await prepared.store.load();
-          await prepared.reconcileBackupRecoveryIfNeeded();
-        }
+      String? resolvedDeviceName;
+      MergeSyncCoordinator? prepared;
+      var preparedIsReady = false;
+      SyncInitializationDiagnostics? diagnostics;
 
+      Future<Res<bool>> commitConfiguration() async {
+        _requireInitializationCurrent(configurationGeneration);
+        diagnostics?.record('configuration.commit.begin');
         mutated = true;
+        configurationGeneration = ++_configurationGeneration;
+        _pendingInitializationTrigger = draft.isEmpty ? null : 'configure';
         appdata.settings['webdav'] = draft;
+        _requireInitializationCurrent(configurationGeneration);
         appdata.settings['disableSyncFields'] = excludedFields;
+        _requireInitializationCurrent(configurationGeneration);
         if (resolvedDeviceName != null) {
           appdata.implicitData['webdavSyncDeviceName'] = resolvedDeviceName;
         }
@@ -878,17 +892,40 @@ class DataSync with ChangeNotifier {
           ..remove('webdavSyncFailureCount')
           ..remove('webdavSyncRetryAfter')
           ..remove('webdavSyncAuthenticationBlocked');
-        prepared?.markDirty(null);
+        if (preparedIsReady) prepared?.markDirty(null);
         await appdata.saveData(false);
+        _requireInitializationCurrent(configurationGeneration);
         await appdata.writeImplicitData();
+        _requireInitializationCurrent(configurationGeneration);
         committed = true;
-        _configurationGeneration++;
-        _coordinator = prepared;
-        _coordinatorNeedsRecovery = prepared != null;
+        _coordinator = preparedIsReady ? prepared : null;
+        _coordinatorNeedsRecovery = prepared != null && !preparedIsReady;
         _startupReady = true;
         _startupError = _currentBlockedState?.cause;
         _lastError = _currentBlockedState?.diagnostic;
         _automaticAuthenticationBlocked = false;
+        diagnostics?.record(
+          'configuration.committed',
+          values: {
+            'committedGeneration': _configurationGeneration,
+            'coordinatorInstanceId': prepared?.instanceId,
+            'storeInstanceId': prepared?.store.instanceId,
+            'recoveryRequired': _coordinatorNeedsRecovery,
+          },
+        );
+        if (diagnostics == null) {
+          Log.info(
+            'Data Sync',
+            'Initialization phase=configuration.committed trigger=configure '
+                'dataSyncInstanceId=$_dataSyncInstanceId '
+                'generation=$_configurationGeneration',
+          );
+        }
+        if (_coordinatorNeedsRecovery) {
+          _pendingInitializationTrigger = 'configure';
+        } else {
+          _pendingInitializationTrigger = null;
+        }
         if (prepared != null && timing != SyncTiming.manual) {
           unawaited(
             _enqueue(
@@ -908,8 +945,25 @@ class DataSync with ChangeNotifier {
           );
         }
         return const Res(true);
-      } catch (error) {
-        if (error is MergeStoreStateException &&
+      }
+
+      Future<Res<bool>> handleConfigureFailure(Object error) async {
+        final superseded = error is SyncInitializationSupersededException;
+        if (superseded) {
+          diagnostics?.record(
+            'configuration.expired',
+            values: {'currentGeneration': _configurationGeneration},
+          );
+          if (diagnostics == null) {
+            Log.info(
+              'Data Sync',
+              'Initialization phase=configuration.expired '
+                  'trigger=configure dataSyncInstanceId=$_dataSyncInstanceId '
+                  'expectedGeneration=$configurationGeneration '
+                  'currentGeneration=$_configurationGeneration',
+            );
+          }
+        } else if (error is MergeStoreStateException &&
             attemptedEndpointHash != null &&
             attemptedEndpointHash == _currentEndpointHash) {
           _blockAutomaticStateIfNeeded(
@@ -917,9 +971,17 @@ class DataSync with ChangeNotifier {
             endpointHash: attemptedEndpointHash,
           );
         }
-        final diagnostic = _formatSyncError(error);
-        Log.error('Data Sync', 'Configure error: $diagnostic');
-        if (mutated && !committed) {
+        final diagnostic = superseded
+            ? 'Synchronization configuration was superseded; retry it.'
+            : _formatSyncError(error);
+        if (!superseded) {
+          Log.error('Data Sync', 'Configure error: $diagnostic');
+        }
+        if (mutated &&
+            !committed &&
+            _isInitializationCurrent(configurationGeneration)) {
+          // Roll back only our still-current configuration. A restore or a
+          // newer lifecycle owns its settings and must not be undone here.
           appdata.settings['webdav'] = oldConfig;
           appdata.settings['disableSyncFields'] = oldFields;
           for (final key in configKeys) {
@@ -929,9 +991,15 @@ class DataSync with ChangeNotifier {
               appdata.implicitData.remove(key);
             }
           }
-          _coordinator = oldCoordinator;
-          _coordinatorNeedsRecovery = oldNeedsRecovery;
-          _startupReady = oldReady;
+          configurationGeneration = ++_configurationGeneration;
+          if (!hasConfiguration) {
+            _coordinatorNeedsRecovery = false;
+            _startupReady = true;
+            _pendingInitializationTrigger = null;
+          } else if (_coordinator == null) {
+            _coordinatorNeedsRecovery = true;
+            _startupReady = false;
+          }
           try {
             await appdata.saveData(false);
             await appdata.writeImplicitData();
@@ -943,6 +1011,118 @@ class DataSync with ChangeNotifier {
           }
         }
         return Res.error(diagnostic);
+      }
+
+      try {
+        _requireInitializationCurrent(configurationGeneration);
+        if (draft.isEmpty) {
+          final previous = _coordinator;
+          if (previous != null) {
+            diagnostics = _initializationDiagnostics(
+              trigger: 'configure',
+              generation: configurationGeneration,
+              endpointHash: previous.endpointHash,
+              actor: previous.actor,
+              directory: previous.stateDirectory,
+            );
+          }
+          return await commitConfiguration();
+        }
+        if (draft.length != 3) {
+          return const Res.error('Invalid WebDAV configuration format');
+        }
+        final endpoint = WebDavEndpoint(
+          url: draft[0],
+          user: draft[1],
+          password: draft[2],
+        );
+        if (!endpoint.isValid) {
+          return const Res.error('WebDAV URL cannot be empty');
+        }
+        final client = _client(endpoint);
+        resolvedDeviceName = await _resolveDeviceName(deviceName);
+        _requireInitializationCurrent(configurationGeneration);
+        await client.ping();
+        _requireInitializationCurrent(configurationGeneration);
+        final hash = MergeSyncCoordinator.computeEndpointHash(
+          endpoint.url,
+          endpoint.user,
+        );
+        attemptedEndpointHash = hash;
+        final actor = await MergeSyncCoordinator.getOrCreateActorId();
+        _requireInitializationCurrent(configurationGeneration);
+        final directory = _stateDirectoryForHash(hash);
+        diagnostics = _initializationDiagnostics(
+          trigger: 'configure',
+          generation: configurationGeneration,
+          endpointHash: hash,
+          actor: actor,
+          directory: directory,
+        );
+        diagnostics.record('configuration.prepare.begin');
+        return await _withInitializationLock(directory, actor, () async {
+          try {
+            _requireInitializationCurrent(configurationGeneration);
+            final current = _coordinator;
+            var oldConfigMatches = false;
+            if (oldConfig is List && oldConfig.length == draft.length) {
+              oldConfigMatches = true;
+              for (var index = 0; index < draft.length; index++) {
+                if (oldConfig[index] != draft[index]) {
+                  oldConfigMatches = false;
+                  break;
+                }
+              }
+            }
+            if (oldConfigMatches &&
+                current != null &&
+                _sameCoordinatorTarget(
+                  current,
+                  endpointHash: hash,
+                  directory: directory,
+                  actor: actor,
+                ) &&
+                !_coordinatorNeedsRecovery &&
+                !current.store.needsRecovery &&
+                current.remote.deviceName == resolvedDeviceName) {
+              prepared = current;
+              preparedIsReady = true;
+              diagnostics!.record(
+                'configuration.reuse_ready',
+                values: {
+                  'coordinatorInstanceId': current.instanceId,
+                  'storeInstanceId': current.store.instanceId,
+                },
+              );
+            } else {
+              prepared = _createCoordinator(
+                hash,
+                directory,
+                actor,
+                client,
+                resolvedDeviceName!,
+              );
+              // Preparation validates endpoint metadata only; pending business
+              // replay waits until this configuration has committed.
+              await prepared!.store.load(diagnostics: diagnostics);
+              _requireInitializationCurrent(configurationGeneration);
+              await prepared!.reconcileBackupRecoveryIfNeeded();
+              _requireInitializationCurrent(configurationGeneration);
+              diagnostics!.record(
+                'configuration.prepared',
+                values: {
+                  'coordinatorInstanceId': prepared!.instanceId,
+                  'storeInstanceId': prepared!.store.instanceId,
+                },
+              );
+            }
+            return await commitConfiguration();
+          } catch (error) {
+            return handleConfigureFailure(error);
+          }
+        });
+      } catch (error) {
+        return await handleConfigureFailure(error);
       } finally {
         _configuring = false;
         if (!_disposed) notifyListeners();
@@ -1080,6 +1260,8 @@ class DataSync with ChangeNotifier {
 
   @override
   void dispose() {
+    _configurationGeneration++;
+    _coordinator = null;
     _disposed = true;
     _scheduleTimer?.cancel();
     _debounceTimer?.cancel();
@@ -1185,8 +1367,50 @@ class DataSync with ChangeNotifier {
     return normalizeSyncDeviceName(await readSyncDeviceName());
   }
 
-  Future<void> _ensureCoordinatorLoaded() async {
+  Directory _stateDirectoryForHash(String hash) =>
+      debugStateDirFactory?.call(hash) ??
+      Directory(FilePath.join(App.dataPath, 'sync_state_$hash'));
+
+  SyncInitializationDiagnostics _initializationDiagnostics({
+    required String trigger,
+    required int generation,
+    required String endpointHash,
+    required String actor,
+    required Directory directory,
+  }) => SyncInitializationDiagnostics(
+    trigger: trigger,
+    actor: actor,
+    stateDirectory: p.normalize(p.absolute(directory.path)),
+    endpointHash: endpointHash,
+    configurationGeneration: generation,
+    currentGeneration: () => _configurationGeneration,
+    dataSyncInstanceId: _dataSyncInstanceId,
+    logger: (message) => Log.info('Data Sync', 'Initialization: $message'),
+  );
+
+  bool _isInitializationCurrent(int generation) =>
+      !_disposed && generation == _configurationGeneration;
+
+  void _requireInitializationCurrent(int generation) {
+    if (!_isInitializationCurrent(generation)) {
+      throw const SyncInitializationSupersededException();
+    }
+  }
+
+  bool _sameCoordinatorTarget(
+    MergeSyncCoordinator coordinator, {
+    required String endpointHash,
+    required Directory directory,
+    required String actor,
+  }) =>
+      coordinator.endpointHash == endpointHash &&
+      coordinator.actor == actor &&
+      _initializationLockKey(coordinator.stateDirectory, coordinator.actor) ==
+          _initializationLockKey(directory, actor);
+
+  Future<void> _ensureCoordinatorLoaded({String trigger = 'manual'}) async {
     while (true) {
+      if (_disposed) return;
       final generation = _configurationGeneration;
       final flight = _coordinatorLoadFlight;
       if (flight != null) {
@@ -1194,11 +1418,14 @@ class DataSync with ChangeNotifier {
         try {
           await flight;
         } catch (error, stack) {
+          if (_disposed) return;
           if (generation == _configurationGeneration &&
-              flightGeneration == generation) {
+              flightGeneration == generation &&
+              error is! SyncInitializationSupersededException) {
             Error.throwWithStackTrace(error, stack);
           }
         }
+        if (_disposed) return;
         if (generation != _configurationGeneration ||
             flightGeneration != generation) {
           if (identical(_coordinatorLoadFlight, flight)) {
@@ -1210,20 +1437,26 @@ class DataSync with ChangeNotifier {
         return;
       }
 
-      final load = _loadCoordinatorForGeneration(generation);
+      final attemptTrigger = _pendingInitializationTrigger ?? trigger;
+      final load = _loadCoordinatorForGeneration(
+        generation,
+        trigger: attemptTrigger,
+      );
       _coordinatorLoadFlight = load;
       _coordinatorLoadFlightGeneration = generation;
       try {
         await load;
       } catch (error, stack) {
+        if (_disposed) return;
+        if (error is SyncInitializationSupersededException) {
+          if (generation != _configurationGeneration) continue;
+          return;
+        }
         if (generation != _configurationGeneration) continue;
         _startupError = error;
         _startupReady = false;
         _lastError = _formatSyncError(error);
-        _blockAutomaticStateIfNeeded(
-          error,
-          endpointHash: _coordinator?.endpointHash,
-        );
+        _blockAutomaticStateIfNeeded(error, endpointHash: _currentEndpointHash);
         if (!_disposed) notifyListeners();
         Error.throwWithStackTrace(error, stack);
       } finally {
@@ -1232,88 +1465,147 @@ class DataSync with ChangeNotifier {
           _coordinatorLoadFlightGeneration = null;
         }
       }
+      if (_disposed) return;
       if (generation == _configurationGeneration) return;
     }
   }
 
-  Future<void> _loadCoordinatorForGeneration(int generation) async {
-    if (generation != _configurationGeneration) return;
-    var coordinator = _coordinator;
-    if (coordinator == null) {
-      final endpoint = _validateConfig();
-      if (endpoint == null || !endpoint.isValid) {
-        if (generation == _configurationGeneration) {
-          _coordinatorNeedsRecovery = false;
-          _startupReady = true;
-        }
-        return;
+  Future<void> _loadCoordinatorForGeneration(
+    int generation, {
+    required String trigger,
+  }) async {
+    if (!_isInitializationCurrent(generation)) return;
+    final existing = _coordinator;
+    if (existing != null &&
+        !_coordinatorNeedsRecovery &&
+        !existing.store.needsRecovery) {
+      return;
+    }
+    final endpoint = _validateConfig();
+    if (endpoint == null || !endpoint.isValid) {
+      if (_isInitializationCurrent(generation)) {
+        _coordinator = null;
+        _coordinatorNeedsRecovery = false;
+        _startupReady = true;
+        _startupError = null;
+        _pendingInitializationTrigger = null;
       }
-      final hash = MergeSyncCoordinator.computeEndpointHash(
-        endpoint.url,
-        endpoint.user,
-      );
-      final actor = await MergeSyncCoordinator.getOrCreateActorId();
-      if (generation != _configurationGeneration) return;
-      final deviceName = await _resolveDeviceName();
-      if (generation != _configurationGeneration ||
-          _currentEndpointHash != hash) {
-        return;
-      }
-      appdata.implicitData['webdavSyncDeviceName'] = deviceName;
-      await appdata.writeImplicitData();
-      if (generation != _configurationGeneration ||
-          _currentEndpointHash != hash) {
-        return;
-      }
-      final directory =
-          debugStateDirFactory?.call(hash) ??
-          Directory(FilePath.join(App.dataPath, 'sync_state_$hash'));
-      coordinator = _createCoordinator(
+      return;
+    }
+
+    final hash = MergeSyncCoordinator.computeEndpointHash(
+      endpoint.url,
+      endpoint.user,
+    );
+    final actor = await MergeSyncCoordinator.getOrCreateActorId();
+    _requireInitializationCurrent(generation);
+    if (_currentEndpointHash != hash) {
+      throw const SyncInitializationSupersededException();
+    }
+    final deviceName = existing == null
+        ? await _resolveDeviceName()
+        : existing.remote.deviceName;
+    _requireInitializationCurrent(generation);
+    if (_currentEndpointHash != hash) {
+      throw const SyncInitializationSupersededException();
+    }
+    final directory = _stateDirectoryForHash(hash);
+    final diagnostics = _initializationDiagnostics(
+      trigger: trigger,
+      generation: generation,
+      endpointHash: hash,
+      actor: actor,
+      directory: directory,
+    );
+    MergeSyncCoordinator? candidate;
+    if (existing == null) {
+      candidate = _createCoordinator(
         hash,
         directory,
         actor,
         _client(endpoint),
         deviceName,
       );
-      _coordinator = coordinator;
-      _coordinatorNeedsRecovery = true;
     }
 
-    if (_coordinatorNeedsRecovery || coordinator.store.needsRecovery) {
-      try {
-        await coordinator.startupRecovery();
-      } catch (_) {
-        if (generation != _configurationGeneration &&
-            identical(coordinator, _coordinator) &&
-            _coordinatorNeedsRecovery) {
-          coordinator.store.invalidateForBusinessRestore();
+    try {
+      await _withInitializationLock(directory, actor, () async {
+        _requireInitializationCurrent(generation);
+        if (_currentEndpointHash != hash) {
+          throw const SyncInitializationSupersededException();
         }
-        rethrow;
-      }
-    }
-    if (generation != _configurationGeneration ||
-        !identical(coordinator, _coordinator)) {
-      if (generation != _configurationGeneration &&
-          identical(coordinator, _coordinator) &&
-          _coordinatorNeedsRecovery) {
-        // A restore can invalidate this store while recovery is in flight;
-        // repeat invalidation after the old flight has finished so its load
-        // cannot clear the restore's reload requirement.
-        coordinator.store.invalidateForBusinessRestore();
-      }
-      return;
-    }
-    _coordinatorNeedsRecovery = false;
-    _startupReady = true;
-    _startupError = null;
-    final blocked = _blockedStateByEndpoint.remove(coordinator.endpointHash);
-    if (blocked != null && _lastError == blocked.diagnostic) {
-      _lastError = null;
-    }
-    final dirtyDomains = _unattachedDirtyDomains;
-    if (dirtyDomains == null || dirtyDomains.isNotEmpty) {
-      coordinator.markDirty(dirtyDomains == null ? null : Set.of(dirtyDomains));
-      _unattachedDirtyDomains = <String>{};
+        final currentCoordinator = _coordinator;
+        if (currentCoordinator != null &&
+            !_sameCoordinatorTarget(
+              currentCoordinator,
+              endpointHash: hash,
+              directory: directory,
+              actor: actor,
+            )) {
+          throw const SyncInitializationSupersededException();
+        }
+        final coordinator = currentCoordinator ?? candidate;
+        if (coordinator == null) {
+          throw StateError('Sync coordinator could not be created');
+        }
+        bool isCurrent() =>
+            _isInitializationCurrent(generation) &&
+            _currentEndpointHash == hash &&
+            (_coordinator == null || identical(_coordinator, coordinator));
+        if (_coordinatorNeedsRecovery || coordinator.store.needsRecovery) {
+          diagnostics.record(
+            'initialization.begin',
+            values: {
+              'coordinatorInstanceId': coordinator.instanceId,
+              'storeInstanceId': coordinator.store.instanceId,
+            },
+          );
+          await coordinator.startupRecovery(
+            diagnostics: diagnostics,
+            isCurrent: isCurrent,
+          );
+          _requireInitializationCurrent(generation);
+        }
+        if (_currentEndpointHash != hash ||
+            (existing != null && !identical(coordinator, _coordinator))) {
+          throw const SyncInitializationSupersededException();
+        }
+        if (candidate != null) {
+          appdata.implicitData['webdavSyncDeviceName'] = deviceName;
+          await appdata.writeImplicitData();
+          _requireInitializationCurrent(generation);
+        }
+        if (!identical(coordinator, _coordinator)) {
+          _coordinator = coordinator;
+        }
+        _coordinatorNeedsRecovery = false;
+        _startupReady = true;
+        _startupError = null;
+        final blocked = _blockedStateByEndpoint.remove(
+          coordinator.endpointHash,
+        );
+        if (blocked != null && _lastError == blocked.diagnostic) {
+          _lastError = null;
+        }
+        final dirtyDomains = _unattachedDirtyDomains;
+        if (dirtyDomains == null || dirtyDomains.isNotEmpty) {
+          coordinator.markDirty(
+            dirtyDomains == null ? null : Set.of(dirtyDomains),
+          );
+          _unattachedDirtyDomains = <String>{};
+        }
+        _pendingInitializationTrigger = null;
+        diagnostics.record(
+          'initialization.ready',
+          values: {
+            'coordinatorInstanceId': coordinator.instanceId,
+            'storeInstanceId': coordinator.store.instanceId,
+          },
+        );
+      });
+    } on SyncInitializationSupersededException {
+      diagnostics.record('initialization.expired');
+      rethrow;
     }
   }
 
@@ -1958,7 +2250,9 @@ class DataSync with ChangeNotifier {
           await _startupCompleter.future;
           if (!isReady || (_coordinator?.store.needsRecovery ?? false)) {
             await runZoned(
-              _ensureCoordinatorLoaded,
+              () => _ensureCoordinatorLoaded(
+                trigger: request.automatic ? 'startup' : 'manual',
+              ),
               zoneValues: {_importZoneKey: true},
             );
           }

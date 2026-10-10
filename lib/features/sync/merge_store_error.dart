@@ -13,6 +13,30 @@ String mergeStoreErrorMessage(Object error) {
   return error.toString();
 }
 
+/// UI surfaces show a stable code and action, not instance/revision diagnostics.
+/// Keep the original message for logs and exception propagation.
+String? mergeStoreErrorSummary(String? message) {
+  if (message == null) return null;
+  final separator = message.indexOf(':');
+  if (separator < 0) return message;
+  final code = message.substring(0, separator);
+  return switch (code) {
+    'SYNC_STATE_CHANGED' =>
+      'SYNC_STATE_CHANGED: Synchronization state changed. Retry synchronization; details are in the log.',
+    'SYNC_STATE_DIVERGED' =>
+      'SYNC_STATE_DIVERGED: Keep both synchronization databases and inspect the log before repair.',
+    'SYNC_STATE_INVALID' =>
+      'SYNC_STATE_INVALID: Synchronization data was preserved. Inspect the log before repair.',
+    'SYNC_OUTBOX_COUNTER_CONFLICT' =>
+      'SYNC_OUTBOX_COUNTER_CONFLICT: Pending changes were preserved. Inspect the log before repair.',
+    'SYNC_RECOVERY_REMOTE_UNVERIFIED' =>
+      'SYNC_RECOVERY_REMOTE_UNVERIFIED: Check the connection and remote backup data, then retry synchronization.',
+    'SYNC_LOCAL_DATABASE_FAILURE' =>
+      'SYNC_LOCAL_DATABASE_FAILURE: Check local storage and retry synchronization; details are in the log.',
+    _ => message,
+  };
+}
+
 /// Local causal-state failures. Diagnostics contain identities and counters only,
 /// never business records, snapshot bodies, credentials, or source scripts.
 class MergeStoreStateException extends FormatException {

@@ -85,6 +85,14 @@ class _DataSyncStatusPanel extends StatelessWidget {
         children: [
           Text('Sync status'.tl, style: Theme.of(context).textTheme.titleSmall),
           const SizedBox(height: 8),
+          if (status.lastError != null) ...[
+            Text(
+              mergeStoreErrorSummary(status.lastError)!.tl,
+              key: const Key('data-sync-state-error'),
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+            const SizedBox(height: 8),
+          ],
           Text(
             'Last trigger: @trigger'.tlParams({
               'trigger': _dataSyncTriggerLabel(status.lastTrigger),
@@ -472,7 +480,8 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
       final result = await DataSync().importLegacyBackup(selected.name);
       if (!mounted) return;
       final message = result.error
-          ? result.errorMessage?.tl ?? "Root backup import failed".tl
+          ? mergeStoreErrorSummary(result.errorMessage)?.tl ??
+                "Root backup import failed".tl
           : !result.data
           ? "No new root backup data to import".tl
           : DataSync().statusSnapshot.isPartial
@@ -950,7 +959,11 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                     if (!mounted) return;
                     setState(() => isTesting = false);
                     if (testResult.error) {
-                      context.showMessage(message: testResult.errorMessage!.tl);
+                      context.showMessage(
+                        message: mergeStoreErrorSummary(
+                          testResult.errorMessage,
+                        )!.tl,
+                      );
                       context.showMessage(message: "Saved Failed".tl);
                     } else {
                       context.showMessage(message: "Saved".tl);
@@ -975,7 +988,8 @@ class _WebdavSettingState extends State<_WebdavSetting> {
       if (!mounted) return;
       context.showMessage(
         message: result.error
-            ? result.errorMessage?.tl ?? 'Sync failed'.tl
+            ? mergeStoreErrorSummary(result.errorMessage)?.tl ??
+                  'Sync failed'.tl
             : 'Sync completed'.tl,
       );
     } finally {

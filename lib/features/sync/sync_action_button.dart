@@ -4,6 +4,7 @@ import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/features/sync/data_sync.dart';
 import 'package:venera_plus/features/sync/sync_conflict_dialog.dart';
 import 'package:venera_plus/features/sync/sync_source_issues_dialog.dart';
+import 'package:venera_plus/features/sync/merge_store_error.dart';
 import 'package:venera_plus/foundation/translations.dart';
 
 enum _SyncConflictAction { resolve, sync }
@@ -39,6 +40,7 @@ String _syncActionStatusSummary(DataSyncStatusSnapshot status) {
       ? 'No captured record changes'.tl
       : counts.map((entry) => '${entry.key}: ${entry.value}').join(', ');
   return [
+    if (status.lastError != null) mergeStoreErrorSummary(status.lastError)!.tl,
     'Last trigger: @trigger'.tlParams({
       'trigger': _syncActionTriggerLabel(status.lastTrigger),
     }),
@@ -222,7 +224,7 @@ class _SyncActionButtonState extends State<SyncActionButton>
       } else {
         context.showMessage(
           message: result.error
-              ? '${"Sync failed".tl}: ${result.errorMessage?.tl ?? ""}'
+              ? '${"Sync failed".tl}: ${mergeStoreErrorSummary(result.errorMessage)?.tl ?? ""}'
               : 'Sync completed'.tl,
         );
       }
@@ -255,6 +257,10 @@ class _SyncActionButtonState extends State<SyncActionButton>
                   'count': status.conflictCount,
                 })
               : 'Sync Conflict'.tl;
+          iconColor = Theme.of(context).colorScheme.error;
+        } else if (status.lastError != null) {
+          iconData = Icons.sync_problem_outlined;
+          tooltip = mergeStoreErrorSummary(status.lastError)!.tl;
           iconColor = Theme.of(context).colorScheme.error;
         } else if (status.isPartial) {
           iconData = Icons.sync_problem_outlined;

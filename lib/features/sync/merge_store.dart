@@ -4,10 +4,10 @@ import 'dart:io';
 import 'dart:math';
 import '../../foundation/sync_records.dart';
 import 'merge_engine.dart';
+import 'merge_snapshot.dart';
 import 'merge_store_database.dart';
 import 'merge_store_error.dart';
-import 'merge_snapshot.dart';
-
+import 'sync_initialization_diagnostics.dart';
 export '../../foundation/sync_records.dart';
 export 'merge_engine.dart';
 
@@ -19,8 +19,10 @@ export 'merge_engine.dart';
 /// There is no separately deleted journal that can replay a completed operation.
 class MergeStore {
   final Directory directory;
+  final String instanceId = SyncInitializationDiagnostics.nextInstanceId(
+    'store',
+  );
   final String actor;
-
   MergeDocument _document = MergeDocument();
   MergeDocument _localObservation = MergeDocument();
   SyncRecords _observed = {};
@@ -96,8 +98,24 @@ class MergeStore {
   File get _backupFile => File('${_stateFile.path}.bak');
   File get _temporaryFile => File('${_stateFile.path}.tmp');
 
-  Future<void> load() async {
+  Future<void> load({SyncInitializationDiagnostics? diagnostics}) async {
     if (_saving) throw StateError('A state commit is in progress');
+    final context =
+        diagnostics ??
+        SyncInitializationDiagnostics(
+          trigger: 'merge_store.load',
+          actor: actor,
+          stateDirectory: directory.path,
+        );
+    if (context.logger != null) {
+      context.record(
+        'load.begin',
+        values: {
+          'storeInstanceId': instanceId,
+          'databaseInstanceId': _database.instanceId,
+        },
+      );
+    }
     _loaded = false;
     await directory.create(recursive: true);
 
@@ -116,7 +134,7 @@ class MergeStore {
       }
     }
 
-    final databaseState = await _database.load();
+    final databaseState = await _database.load(diagnostics: context);
     _StoreState? legacyState;
     var recovered = databaseState?.recoveredFromBackup ?? false;
     if (databaseState == null) {
@@ -242,7 +260,23 @@ class MergeStore {
     _counterReconciliationVerified = false;
     _counterFloorDirty = false;
     _loaded = true;
-    if (databaseState == null) await save();
+    if (databaseState == null && legacyState != null) await save();
+    if (context.logger != null) {
+      final phase = databaseState != null
+          ? 'load.existing'
+          : legacyState != null
+          ? 'load.legacy'
+          : 'load.empty';
+      context.record(
+        phase,
+        values: {
+          'storeInstanceId': instanceId,
+          'databaseInstanceId': _database.instanceId,
+          'ownCounter': _document.counterFor(actor),
+          'outboxCount': _outboxIds.length,
+        },
+      );
+    }
   }
 
   /// Captures local business differences. The first capture, including an empty

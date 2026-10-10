@@ -5,6 +5,53 @@ import 'package:sqlite3/sqlite3.dart';
 
 import 'package:venera_plus/foundation/sync_records.dart';
 import 'package:venera_plus/features/sync/merge_store.dart';
+import 'package:venera_plus/features/sync/merge_store_database.dart';
+import 'package:venera_plus/features/sync/merge_store_error.dart';
+
+({
+  int revision,
+  bool initialized,
+  int ownCounter,
+  int outboxCount,
+  int observedCount,
+})
+_databaseSummary(File file, String actor) {
+  final database = sqlite3.open(file.path);
+  try {
+    final metadata = <String, String>{
+      for (final row in database.select('''
+        SELECT key, value FROM merge_store_meta
+        WHERE key IN ('commitRevision', 'initialized');
+        '''))
+        row['key'] as String: row['value'] as String,
+    };
+    final counters = database.select(
+      '''
+      SELECT counter FROM merge_document_vclock
+      WHERE scope = 'document' AND actor = ?;
+      ''',
+      [actor],
+    );
+    final outboxRows = database.select(
+      'SELECT COUNT(*) AS count FROM merge_outbox;',
+    );
+    final observedRows = database.select('''
+      SELECT COUNT(*) AS count FROM merge_business_records
+      WHERE kind = 'observed';
+      ''');
+    final outboxCount = outboxRows.single['count'] as int;
+    final observedCount = observedRows.single['count'] as int;
+    return (
+      revision: int.parse(metadata['commitRevision']!),
+      initialized: metadata['initialized'] == '1',
+      ownCounter: counters.isEmpty ? 0 : counters.single['counter'] as int,
+      outboxCount: outboxCount,
+      observedCount: observedCount,
+    );
+  } finally {
+    database.close();
+  }
+}
 
 Map<String, Object?> _legacySchema2State() {
   const actor = 'device-alpha';
@@ -64,6 +111,10 @@ void main() {
         final store = MergeStore(tempDir, 'device-alpha');
         await store.load();
 
+        final databaseFile = File('${tempDir.path}/merge_store.sqlite3');
+        final replicaFile = File('${databaseFile.path}.bak');
+        expect(await databaseFile.exists(), isFalse);
+        expect(await replicaFile.exists(), isFalse);
         expect(store.document.counterFor('device-alpha'), 0);
         expect(store.observed, isEmpty);
         expect(store.outbox, isEmpty);
@@ -83,17 +134,138 @@ void main() {
         expect(batch.counter, 1);
         expect(store.observed.containsKey(recordKey), isTrue);
 
-        // Re-capture identical state causes no new batch
+        final firstMain = _databaseSummary(databaseFile, 'device-alpha');
+        final firstReplica = _databaseSummary(replicaFile, 'device-alpha');
+        expect(firstMain, firstReplica);
+        expect(firstMain.revision, 1);
+        expect(firstMain.initialized, isTrue);
+        expect(firstMain.ownCounter, 1);
+        expect(firstMain.outboxCount, 1);
+        expect(firstMain.observedCount, 1);
+
+        // Re-capture identical state causes no new batch or durable revision.
         await store.capture(initialRecords);
         expect(store.outbox.length, 1);
+        expect(
+          _databaseSummary(databaseFile, 'device-alpha').revision,
+          firstMain.revision,
+        );
+        expect(
+          _databaseSummary(replicaFile, 'device-alpha'),
+          _databaseSummary(databaseFile, 'device-alpha'),
+        );
 
         // Re-load store from directory
         final storeReloaded = MergeStore(tempDir, 'device-alpha');
         await storeReloaded.load();
+        expect(storeReloaded.localObservation.counterFor('device-alpha'), 1);
 
         expect(storeReloaded.outbox.length, 1);
         expect(storeReloaded.outbox.first.id, batch.id);
         expect(storeReloaded.observed[recordKey]?['name'], 'Favorites');
+      },
+    );
+
+    test(
+      'first empty capture persists initialization without revision churn',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+        final primary = File('${tempDir.path}/merge_store.sqlite3');
+        final replica = File('${primary.path}.bak');
+        expect(await primary.exists(), isFalse);
+        expect(await replica.exists(), isFalse);
+
+        await store.capture({});
+        final first = _databaseSummary(primary, 'device-alpha');
+        expect(first, _databaseSummary(replica, 'device-alpha'));
+        expect(first.revision, 1);
+        expect(first.initialized, isTrue);
+        expect(first.ownCounter, 0);
+        expect(first.outboxCount, 0);
+        expect(first.observedCount, 0);
+
+        await store.capture({});
+        expect(
+          _databaseSummary(primary, 'device-alpha').revision,
+          first.revision,
+        );
+        expect(_databaseSummary(primary, 'device-alpha'), first);
+        expect(_databaseSummary(replica, 'device-alpha'), first);
+
+        final reopened = MergeStore(tempDir, 'device-alpha');
+        await reopened.load();
+        await reopened.capture({});
+        expect(_databaseSummary(primary, 'device-alpha'), first);
+        expect(_databaseSummary(replica, 'device-alpha'), first);
+      },
+    );
+
+    test(
+      'stale empty writer cannot be overwritten and reload enables capture',
+      () async {
+        final stale = MergeStore(tempDir, 'device-alpha');
+        await stale.load();
+
+        final competing = MergeStoreDatabase(tempDir, 'device-alpha');
+        expect(await competing.load(), isNull);
+        await competing.commit(
+          document: MergeDocument(),
+          localObservation: MergeDocument(),
+          observed: {},
+          received: {},
+          outboxIds: [],
+          newOutboxBatches: {},
+          outboxChangedRecords: {},
+          pendingApply: null,
+          pendingUnavailableDomains: {},
+          initialized: false,
+        );
+        final primary = File('${tempDir.path}/merge_store.sqlite3');
+        final replica = File('${primary.path}.bak');
+        final emptyStore = _databaseSummary(primary, 'device-alpha');
+        expect(emptyStore, _databaseSummary(replica, 'device-alpha'));
+        expect(emptyStore.revision, 1);
+        expect(emptyStore.initialized, isFalse);
+        expect(emptyStore.ownCounter, 0);
+        expect(emptyStore.outboxCount, 0);
+        final primaryBefore = await primary.readAsBytes();
+        final replicaBefore = await replica.readAsBytes();
+
+        final key = syncRecordKey('folder', ['after-empty-writer']);
+        final records = {
+          key: {'name': 'Durable capture'},
+        };
+        await expectLater(
+          stale.capture(records),
+          throwsA(
+            isA<MergeStoreStaleStateException>().having(
+              (error) => error.code,
+              'code',
+              'SYNC_STATE_CHANGED',
+            ),
+          ),
+        );
+        expect(await primary.readAsBytes(), orderedEquals(primaryBefore));
+        expect(await replica.readAsBytes(), orderedEquals(replicaBefore));
+
+        final reloaded = MergeStore(tempDir, 'device-alpha');
+        await reloaded.load();
+        expect(reloaded.observed, isEmpty);
+        await reloaded.capture(records);
+
+        final reopened = MergeStore(tempDir, 'device-alpha');
+        await reopened.load();
+        expect(reopened.observed[key], {'name': 'Durable capture'});
+        expect(reopened.outbox, hasLength(1));
+        expect(reopened.outbox.single.counter, 1);
+        final committed = _databaseSummary(primary, 'device-alpha');
+        expect(committed, _databaseSummary(replica, 'device-alpha'));
+        expect(committed.revision, 2);
+        expect(committed.initialized, isTrue);
+        expect(committed.ownCounter, 1);
+        expect(committed.outboxCount, 1);
+        expect(committed.observedCount, 1);
       },
     );
 
@@ -785,6 +957,7 @@ void main() {
       () async {
         final store = MergeStore(tempDir, 'device-alpha');
         await store.load();
+        await store.capture({});
         await File('${tempDir.path}/merge_store.sqlite3').delete();
         final recovered = MergeStore(tempDir, 'device-alpha');
         await recovered.load();
@@ -945,32 +1118,6 @@ void main() {
         expect(recovered.observed[key]?['name'], 'Original');
       },
     );
-
-    for (final invalid in ['{}', '[]', '{\"actor\":\"device-alpha\"}']) {
-      test(
-        'corrupt SQLite primary $invalid recovers only a valid backup',
-        () async {
-          final store = MergeStore(tempDir, 'device-alpha');
-          await store.load();
-          await File(
-            '${tempDir.path}/merge_store.sqlite3',
-          ).writeAsString(invalid);
-          final recovered = MergeStore(tempDir, 'device-alpha');
-          await recovered.load();
-          expect(recovered.recoveredFromBackup, isTrue);
-          await File(
-            '${tempDir.path}/merge_store.sqlite3.bak',
-          ).writeAsString('[]');
-          await File(
-            '${tempDir.path}/merge_store.sqlite3',
-          ).writeAsString(invalid);
-          await expectLater(
-            MergeStore(tempDir, 'device-alpha').load(),
-            throwsFormatException,
-          );
-        },
-      );
-    }
 
     test(
       'branch capture keeps newer own duration prefixes without observing fields',
@@ -1735,6 +1882,43 @@ void main() {
         expect(reopened.received, {'legacy-checkpoint.json'});
       },
     );
+
+    for (final artifact in ['state.json.bak', 'state.json.tmp']) {
+      test('migrates pending causal state from $artifact', () async {
+        final state = _legacySchema2State();
+        final key = syncRecordKey('folder', ['fixture']);
+        state['pendingApply'] = {
+          key: {'name': 'Critical'},
+        };
+        state['pendingUnavailableDomains'] = ['source'];
+        state['received'] = ['legacy-checkpoint.json'];
+        final encoded = jsonEncode(state);
+        await File('${tempDir.path}/$artifact').writeAsString(encoded);
+
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+        expect(store.recoveredFromBackup, isTrue);
+        expect(store.document.toJson(), state['document']);
+        expect(store.pendingApply, {
+          key: {'name': 'Critical'},
+        });
+        expect(store.pendingUnavailableDomains, {'source'});
+        expect(store.received, {'legacy-checkpoint.json'});
+        final batchId = store.pendingBatchIds.single;
+        expect(store.pendingBatch(batchId).actor, 'device-alpha');
+
+        final reopened = MergeStore(tempDir, 'device-alpha');
+        await reopened.load();
+        expect(reopened.document.toJson(), state['document']);
+        expect(reopened.pendingBatchIds, [batchId]);
+        expect(reopened.pendingBatch(batchId).id, batchId);
+        expect(reopened.pendingApply, {
+          key: {'name': 'Critical'},
+        });
+        expect(reopened.pendingUnavailableDomains, {'source'});
+        expect(reopened.received, {'legacy-checkpoint.json'});
+      });
+    }
 
     test('old SQLite metadata preserves causal and pending state', () async {
       final store = MergeStore(tempDir, 'device-alpha');

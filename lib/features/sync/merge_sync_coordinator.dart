@@ -23,6 +23,7 @@ import 'merge_snapshot.dart';
 import 'merge_store.dart';
 import 'merge_store_error.dart';
 import 'sync_preferences_adapter.dart';
+import 'sync_initialization_diagnostics.dart';
 
 const bool _syncDiagnosticsEnabled =
     kDebugMode || bool.fromEnvironment('VENERA_SYNC_DIAGNOSTICS');
@@ -105,6 +106,9 @@ class MergeSyncCoordinator {
   final MergeStore store;
   final MergeRemote remote;
   final SyncPreferencesAdapter preferencesAdapter;
+  final String instanceId = SyncInitializationDiagnostics.nextInstanceId(
+    'coordinator',
+  );
 
   SyncRecords Function()? exportFavoritesOverride;
   void Function(SyncRecords)? applyFavoritesOverride;
@@ -119,6 +123,13 @@ class MergeSyncCoordinator {
   _SyncDiagnostics? _activeDiagnostics;
   bool _counterReconciliationComplete = false;
   Future<void>? _startupRecoveryFuture;
+  bool Function()? _initializationIsCurrent;
+
+  void _assertInitializationCurrent() {
+    if (_initializationIsCurrent?.call() == false) {
+      throw const SyncInitializationSupersededException();
+    }
+  }
 
   static const _favoriteDomains = {'folder', 'favorite', 'favoriteRole'};
   static const _historyDomains = {'history', 'historyChapter', 'imageFavorite'};
@@ -460,6 +471,7 @@ class MergeSyncCoordinator {
     Set<String> unavailableDomains = const {},
   }) async {
     void runSynchronousCommits() {
+      _assertInitializationCurrent();
       beforeCommit?.call();
       if (preferencesAdapter.isDomainEnabled('folder')) {
         if (applyFavoritesOverride != null) {
@@ -510,6 +522,7 @@ class MergeSyncCoordinator {
   /// generation stayed unchanged throughout, never adopt the ending generation.
   Future<({SyncLocalSnapshot snapshot, int generation})> _stableExport() async {
     for (var attempt = 0; attempt < 16; attempt++) {
+      _assertInitializationCurrent();
       if (_capturedGeneration != null &&
           _capturedGeneration != _getGeneration() &&
           _dirtyDomains.isEmpty) {
@@ -517,6 +530,7 @@ class MergeSyncCoordinator {
       }
       final generation = _getGeneration();
       final raw = await exportAllSnapshot(force: false);
+      _assertInitializationCurrent();
       if (_getGeneration() == generation) {
         final projected = SyncLocalSnapshot(
           records: _project(raw.records),
@@ -548,6 +562,7 @@ class MergeSyncCoordinator {
           await preferencesAdapter.recoverLocalSources(
             recoveryRecords: _approvedRecoveryRecords(),
             beforeCommit: () {
+              _assertInitializationCurrent();
               if (_getGeneration() != gen) throw ConcurrentEditException();
             },
           );
@@ -558,6 +573,7 @@ class MergeSyncCoordinator {
       }
     }
     final stable = await _stableExport();
+    _assertInitializationCurrent();
     _localSourceIssues = List<SyncSourceIssue>.from(
       stable.snapshot.sourceIssues,
     );
@@ -573,6 +589,7 @@ class MergeSyncCoordinator {
       sourceVariants: stable.snapshot.sourceVariants,
       unavailableDomains: unavailableDomains,
     );
+    _assertInitializationCurrent();
     return stable;
   }
 
@@ -628,6 +645,7 @@ class MergeSyncCoordinator {
       }
       void guard() {
         if (_getGeneration() != generation) throw ConcurrentEditException();
+        _assertInitializationCurrent();
       }
 
       try {
@@ -647,6 +665,7 @@ class MergeSyncCoordinator {
         markDirty();
         continue;
       }
+      _assertInitializationCurrent();
       await store.completeApply(
         _project(desired),
         observation: store.document.filterRecords(
@@ -666,6 +685,7 @@ class MergeSyncCoordinator {
     ({SyncLocalSnapshot snapshot, int generation}) staged,
   ) async {
     for (var attempt = 0; attempt < 16; attempt++) {
+      _assertInitializationCurrent();
       final current = attempt == 0 ? staged : await _captureStable();
       if (!current.snapshot.needsSourceNormalization ||
           current.snapshot.unavailableDomains.contains('source')) {
@@ -693,6 +713,7 @@ class MergeSyncCoordinator {
         await store.cancelApply();
         continue;
       }
+      _assertInitializationCurrent();
       await store.completeApply(
         _project(desired),
         observation: store.localObservation,
@@ -708,32 +729,121 @@ class MergeSyncCoordinator {
 
   /// A pending target may have been partly applied before a crash. Preserve the
   /// real profile as a concurrent branch before choosing any replacement target.
-  Future<void> startupRecovery() =>
-      _startupRecoveryFuture ??= _startupRecoveryWithReload().whenComplete(() {
+  Future<void> startupRecovery({
+    SyncInitializationDiagnostics? diagnostics,
+    bool Function()? isCurrent,
+  }) => _startupRecoveryFuture ??=
+      _startupRecoveryWithReload(
+        diagnostics ??
+            SyncInitializationDiagnostics(
+              trigger: 'startup',
+              actor: actor,
+              stateDirectory: stateDirectory.path,
+              endpointHash: endpointHash,
+              logger: (message) => Log.info('Sync Initialization', message),
+            ),
+        isCurrent,
+      ).whenComplete(() {
+        _initializationIsCurrent = null;
         _startupRecoveryFuture = null;
       });
 
-  Future<void> _startupRecoveryWithReload() async {
-    for (var attempt = 0; attempt < 2; attempt++) {
-      try {
-        await _startupRecoveryOnce();
-        return;
-      } on MergeStoreStaleStateException {
-        if (attempt == 1) rethrow;
-        // Discard the failed runtime attempt, load the committed state, and
-        // recapture actual business data with its validated allocation floor.
+  bool _canReloadAdvancedState(MergeStoreStaleStateException error) {
+    final metadata = error.metadata;
+    if (!const {
+      'durable_store_appeared',
+      'revision_changed',
+      'revision_changed_during_copy',
+    }.contains(metadata['reason'])) {
+      return false;
+    }
+    final loaded = metadata['loadedRevision'] ?? 0;
+    final main = metadata['mainRevision'];
+    final replica = metadata['replicaRevision'];
+    return loaded is int &&
+        ((main is int && main > loaded) ||
+            (replica is int && replica > loaded));
+  }
+
+  Future<void> _startupRecoveryWithReload(
+    SyncInitializationDiagnostics diagnostics,
+    bool Function()? isCurrent,
+  ) async {
+    _initializationIsCurrent = isCurrent;
+    final stopwatch = Stopwatch()..start();
+    var reloads = 0;
+    var completed = false;
+    try {
+      for (var attempt = 0; attempt < 2; attempt++) {
+        _assertInitializationCurrent();
+        try {
+          await _startupRecoveryOnce(diagnostics);
+          _assertInitializationCurrent();
+          if (reloads > 0) {
+            diagnostics.record(
+              'reload.success',
+              values: {
+                'coordinatorInstanceId': instanceId,
+                'retryCount': reloads,
+              },
+            );
+          }
+          completed = true;
+          return;
+        } on MergeStoreStaleStateException catch (error) {
+          if (attempt == 1 || !_canReloadAdvancedState(error)) rethrow;
+          _assertInitializationCurrent();
+          reloads++;
+          diagnostics.record(
+            'reload.begin',
+            values: {
+              'coordinatorInstanceId': instanceId,
+              'reason': error.metadata['reason'],
+              'loadedRevision': error.metadata['loadedRevision'] ?? 0,
+              'diskMainRevision': error.metadata['mainRevision'],
+              'diskReplicaRevision': error.metadata['replicaRevision'],
+              'retryCount': reloads,
+            },
+          );
+          // No generated batch, observation or physical snapshot survives a
+          // stale commit. The next attempt validates disk and exports afresh.
+          _cachedSnapshot = null;
+          _capturedGeneration = null;
+          _changedRecordKeys.clear();
+          _localSourceIssues = const [];
+          _localUnavailableDomains = const {};
+          _counterReconciliationComplete = false;
+          store.invalidateForBusinessRestore();
+          markDirty();
+        }
       }
+    } finally {
+      diagnostics.record(
+        completed ? 'initialization.success' : 'initialization.failed',
+        values: {
+          'coordinatorInstanceId': instanceId,
+          'durationMs': stopwatch.elapsedMilliseconds,
+          'retryCount': reloads,
+        },
+      );
     }
   }
 
-  Future<void> _startupRecoveryOnce() async {
+  Future<void> _startupRecoveryOnce(
+    SyncInitializationDiagnostics diagnostics,
+  ) async {
+    _assertInitializationCurrent();
     markDirty();
     await _loadLegacyIssuesIfNeeded();
+    _assertInitializationCurrent();
     _counterReconciliationComplete = false;
-    await store.load();
+    await store.load(diagnostics: diagnostics);
+    _assertInitializationCurrent();
     await reconcileBackupRecoveryIfNeeded();
+    _assertInitializationCurrent();
     if (store.pendingApply != null) {
       final stable = await _stableExport();
+      _assertInitializationCurrent();
       final pending = store.pendingApply!;
       _localSourceIssues = List<SyncSourceIssue>.from(
         stable.snapshot.sourceIssues,
@@ -751,10 +861,12 @@ class MergeSyncCoordinator {
         sourceVariants: stable.snapshot.sourceVariants,
         unavailableDomains: effectiveUnavailable,
       );
+      _assertInitializationCurrent();
       try {
         await applyAllRecords(
           desired,
           beforeCommit: () {
+            _assertInitializationCurrent();
             if (_getGeneration() != stable.generation) {
               throw ConcurrentEditException();
             }
@@ -768,6 +880,7 @@ class MergeSyncCoordinator {
         await _applyMerged(store.localObservation);
         return;
       }
+      _assertInitializationCurrent();
       await store.completeApply(
         _project(desired),
         observation: store.document.filterRecords(
@@ -983,12 +1096,14 @@ class MergeSyncCoordinator {
         'discover',
         () => remote.list(latestOnly: false),
       );
+      _assertInitializationCurrent();
       MergeDocument? verifiedDocument;
       final verifiedFilenames = <String>[];
       final publications = <int, String>{};
       var highest = 0;
       for (final entry in entries.where((entry) => entry.actor == actor)) {
         final batch = await _measure('download', () => remote.download(entry));
+        _assertInitializationCurrent();
         final priorId = publications[batch.counter];
         if (priorId != null && priorId != batch.id) {
           throw MergeOutboxCounterConflictException(
@@ -1024,6 +1139,7 @@ class MergeSyncCoordinator {
       }
       // No durable writes, acknowledgements, or allocation-floor changes until
       // every required own publication and its referenced Packs were verified.
+      _assertInitializationCurrent();
       if (verifiedDocument != null) {
         try {
           store.document.merge(verifiedDocument);
@@ -1045,6 +1161,8 @@ class MergeSyncCoordinator {
       await store.save();
       _counterReconciliationComplete = true;
     } on MergeStoreStateException {
+      rethrow;
+    } on SyncInitializationSupersededException {
       rethrow;
     } catch (error) {
       throw MergeStoreRemoteRecoveryException(

@@ -12,7 +12,8 @@ import 'package:webdav_client/webdav_client.dart' as dav;
 
 void main() {
   test(
-    'startup preserves divergent replicas, manual repair retains intent, and restore fences stale recovery',
+    'startup preserves divergent replicas, manual repair retains intent, '
+    'fences stale recovery, and serializes same-endpoint initialization',
     () async {
       final tempDir = Directory.systemTemp.createTempSync(
         'data-sync-startup-recovery-',
@@ -267,6 +268,105 @@ void main() {
           {'value': sameEndpointPayload},
         );
         expect(restoreSync.hasPendingChanges, isTrue);
+        // Startup export holds the endpoint initialization boundary. Reusing
+        // the same endpoint for configuration and a queued manual sync must
+        // not initialize a competing Store from the pre-recovery view.
+        DataSync.resetForTesting();
+        DataSync.debugDisableWindowCloseHandler = true;
+        appdata.settings['webdav'] = endpoint;
+        appdata.implicitData['webdavSyncDirection'] = 'downloadOnly';
+        appdata.implicitData['webdavSyncTiming'] = 'manual';
+        appdata.implicitData['webdavSyncDeviceName'] = 'Startup Test Device';
+        final serializedDirectory = Directory(
+          '${tempDir.path}/serialized_sync_state_$endpointHash',
+        );
+        final configureReachedDirectory = Completer<void>();
+        var stateDirectoryCalls = 0;
+        DataSync.debugStateDirFactory = (_) {
+          if (++stateDirectoryCalls == 2) {
+            configureReachedDirectory.complete();
+          }
+          return serializedDirectory;
+        };
+        final serializedExportStarted = Completer<void>();
+        final releaseSerializedExport = Completer<void>();
+        releaseGates.add(releaseSerializedExport);
+        var serializedExportCalls = 0;
+        DataSync.debugExportRecords = () async {
+          if (serializedExportCalls++ == 0) {
+            serializedExportStarted.complete();
+            await releaseSerializedExport.future;
+          }
+          return cloneSyncRecords(localRecords);
+        };
+        DataSync.debugApplyRecords = (records, {beforeCommit}) async {
+          beforeCommit?.call();
+          localRecords
+            ..clear()
+            ..addAll(cloneSyncRecords(records));
+        };
+        DataSync.debugClientFactory = (_) => _StartupRecoveryDavClient();
+        final serializedSync = DataSync();
+        await serializedExportStarted.future;
+        var configureFinished = false;
+        final configureFuture = serializedSync.configure(
+          config: endpoint,
+          excludedFields: '',
+          direction: SyncDirection.downloadOnly,
+          timing: SyncTiming.manual,
+          minutes: 30,
+        );
+        unawaited(
+          configureFuture.then((_) {
+            configureFinished = true;
+          }),
+        );
+        await configureReachedDirectory.future;
+        var manualSyncFinished = false;
+        final manualSyncFuture = serializedSync.syncNow();
+        unawaited(
+          manualSyncFuture.then((_) {
+            manualSyncFinished = true;
+          }),
+        );
+        expect(configureFinished, isFalse);
+        expect(manualSyncFinished, isFalse);
+        releaseSerializedExport.complete();
+
+        final serializedConfigured = await configureFuture;
+        expect(
+          serializedConfigured.success,
+          isTrue,
+          reason: serializedConfigured.errorMessage,
+        );
+        expect(appdata.settings['webdav'], endpoint);
+        final manualResult = await manualSyncFuture;
+        expect(manualResult.success, isTrue, reason: manualResult.errorMessage);
+        await serializedSync.waitForStartupMerge();
+        expect(serializedSync.isReady, isTrue);
+        final serializedCoordinator = serializedSync.coordinator!;
+        expect(serializedCoordinator.endpointHash, endpointHash);
+        expect(serializedCoordinator.actor, actor);
+        expect(
+          serializedCoordinator.stateDirectory.path,
+          serializedDirectory.path,
+        );
+        expect(
+          appdata.implicitData['syncDeviceId'],
+          serializedCoordinator.actor,
+        );
+        expect(serializedCoordinator.store.document.counterFor(actor), 1);
+        expect(serializedCoordinator.store.pendingBatchIds, hasLength(1));
+        final serializedBatch = serializedCoordinator.store.pendingBatch(
+          serializedCoordinator.store.pendingBatchIds.single,
+        );
+        expect(serializedBatch.document.counterFor(actor), 1);
+        expect(serializedBatch.document.materialize()[recordKey], {
+          'value': sameEndpointPayload,
+        });
+        expect(serializedCoordinator.store.observed[recordKey], {
+          'value': sameEndpointPayload,
+        });
       } finally {
         for (final gate in releaseGates) {
           if (!gate.isCompleted) gate.complete();

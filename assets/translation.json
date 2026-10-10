@@ -1,5 +1,11 @@
 {
   "zh_CN": {
+    "SYNC_STATE_CHANGED: Synchronization state changed. Retry synchronization; details are in the log.": "SYNC_STATE_CHANGED：同步状态已变化，请重试同步；详细诊断见日志。",
+    "SYNC_STATE_DIVERGED: Keep both synchronization databases and inspect the log before repair.": "SYNC_STATE_DIVERGED：请保留同步主库和备份库，先查看日志再修复。",
+    "SYNC_STATE_INVALID: Synchronization data was preserved. Inspect the log before repair.": "SYNC_STATE_INVALID：同步数据已保留，请先查看日志再修复。",
+    "SYNC_OUTBOX_COUNTER_CONFLICT: Pending changes were preserved. Inspect the log before repair.": "SYNC_OUTBOX_COUNTER_CONFLICT：待上传修改已保留，请先查看日志再修复。",
+    "SYNC_RECOVERY_REMOTE_UNVERIFIED: Check the connection and remote backup data, then retry synchronization.": "SYNC_RECOVERY_REMOTE_UNVERIFIED：请检查连接和远端备份数据，再重试同步。",
+    "SYNC_LOCAL_DATABASE_FAILURE: Check local storage and retry synchronization; details are in the log.": "SYNC_LOCAL_DATABASE_FAILURE：请检查本地存储后重试同步；详细诊断见日志。",
     "Device name": "设备名",
     "Enter a valid device name": "请输入有效的设备名",
     "Selected": "已选择",
@@ -1033,6 +1039,12 @@
     "Path copied to clipboard": "路径已复制到剪贴板"
   },
   "zh_TW": {
+    "SYNC_STATE_CHANGED: Synchronization state changed. Retry synchronization; details are in the log.": "SYNC_STATE_CHANGED：同步狀態已變更，請重試同步；詳細診斷見日誌。",
+    "SYNC_STATE_DIVERGED: Keep both synchronization databases and inspect the log before repair.": "SYNC_STATE_DIVERGED：請保留同步主資料庫和備份資料庫，先查看日誌再修復。",
+    "SYNC_STATE_INVALID: Synchronization data was preserved. Inspect the log before repair.": "SYNC_STATE_INVALID：同步資料已保留，請先查看日誌再修復。",
+    "SYNC_OUTBOX_COUNTER_CONFLICT: Pending changes were preserved. Inspect the log before repair.": "SYNC_OUTBOX_COUNTER_CONFLICT：待上傳變更已保留，請先查看日誌再修復。",
+    "SYNC_RECOVERY_REMOTE_UNVERIFIED: Check the connection and remote backup data, then retry synchronization.": "SYNC_RECOVERY_REMOTE_UNVERIFIED：請檢查連線和遠端備份資料，再重試同步。",
+    "SYNC_LOCAL_DATABASE_FAILURE: Check local storage and retry synchronization; details are in the log.": "SYNC_LOCAL_DATABASE_FAILURE：請檢查本機儲存後重試同步；詳細診斷見日誌。",
     "Device name": "裝置名稱",
     "Enter a valid device name": "請輸入有效的裝置名稱",
     "Selected": "已選擇",

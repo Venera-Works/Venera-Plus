@@ -14,6 +14,7 @@ import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/res.dart';
 import 'package:webdav_client/webdav_client.dart' as dav;
+import 'package:venera_plus/features/sync/merge_store_database.dart';
 
 void main() {
   late Directory tempDir;
@@ -1291,6 +1292,111 @@ void main() {
       },
     );
 
+    test(
+      'first startup reloads an empty competing commit and recaptures the current profile',
+      () async {
+        const actor = 'fresh_initialization_writer';
+        final stateDir = Directory('${tempDir.path}/fresh_initialization');
+        final key = syncRecordKey('setting', ['theme']);
+        var interrupted = false;
+        localRecords = {
+          key: {'value': 'obsolete snapshot'},
+        };
+        final coordinator = MergeSyncCoordinator(
+          endpointHash: 'fresh_initialization',
+          stateDirectory: stateDir,
+          actor: actor,
+          store: MergeStore(stateDir, actor),
+          remote: MergeRemote(client, deviceName: 'First Sync Device'),
+          exportFavoritesOverride: () => {},
+          exportHistoryOverride: () async => {},
+          exportPreferencesOverride: () async {
+            final snapshot = cloneSyncRecords(localRecords);
+            if (!interrupted) {
+              interrupted = true;
+              final writer = MergeStore(stateDir, actor);
+              await writer.load();
+              // Reproduce the older loader's committed revision=1/counter=0.
+              await writer.save();
+              localRecords = {
+                key: {'value': 'actual profile after competing commit'},
+              };
+            }
+            return snapshot;
+          },
+          getGenerationOverride: () => 0,
+        );
+        await coordinator.startupRecovery();
+
+        expect(coordinator.store.observed[key], {
+          'value': 'actual profile after competing commit',
+        });
+        expect(coordinator.store.document.counterFor(actor), 1);
+        final queuedId = coordinator.store.pendingBatchIds.single;
+        expect(coordinator.store.pendingBatch(queuedId).counter, 1);
+        expect(
+          coordinator.store.pendingBatch(queuedId).document.materialize()[key],
+          {'value': 'actual profile after competing commit'},
+        );
+        final reopened = MergeStore(stateDir, actor);
+        await reopened.load();
+        expect(reopened.pendingBatchIds, [queuedId]);
+        expect(reopened.observed, coordinator.store.observed);
+        final database = MergeStoreDatabase(stateDir, actor);
+        expect((await database.load())!.commitRevision, 2);
+        await coordinator.startupRecovery();
+        expect(coordinator.store.pendingBatchIds, [queuedId]);
+        expect((await database.load())!.commitRevision, 2);
+      },
+    );
+
+    test(
+      'startup reloads an advanced lazy outbox without allocating a duplicate counter',
+      () async {
+        const actor = 'lazy_outbox_writer';
+        final stateDir = Directory('${tempDir.path}/lazy_outbox');
+        final key = syncRecordKey('setting', ['theme']);
+        final writer = MergeStore(stateDir, actor);
+        await writer.load();
+        await writer.capture({
+          key: {'value': 'older durable profile'},
+        });
+        var interrupted = false;
+        final coordinator = MergeSyncCoordinator(
+          endpointHash: 'lazy_outbox',
+          stateDirectory: stateDir,
+          actor: actor,
+          store: MergeStore(stateDir, actor),
+          remote: MergeRemote(client, deviceName: 'Lazy Outbox Device'),
+          exportFavoritesOverride: () => {},
+          exportHistoryOverride: () async => {},
+          exportPreferencesOverride: () async {
+            localRecords = {
+              key: {'value': 'current durable profile'},
+            };
+            if (!interrupted) {
+              interrupted = true;
+              await writer.capture(localRecords);
+            }
+            return cloneSyncRecords(localRecords);
+          },
+          getGenerationOverride: () => 0,
+        );
+        await coordinator.startupRecovery();
+
+        expect(coordinator.store.document.counterFor(actor), 2);
+        expect(coordinator.store.observed, localRecords);
+        expect(coordinator.store.pendingBatchIds, writer.pendingBatchIds);
+        final reopened = MergeStore(stateDir, actor);
+        await reopened.load();
+        expect(reopened.document.counterFor(actor), 2);
+        expect(reopened.observed, localRecords);
+        expect(reopened.pendingBatchIds, writer.pendingBatchIds);
+        final database = MergeStoreDatabase(stateDir, actor);
+        expect((await database.load())!.commitRevision, 2);
+      },
+    );
+
     for (final failure in ['missing', 'corrupt', 'http']) {
       test(
         'backup recovery retains pending intent and verification obligation after $failure Pack and restart',
@@ -1512,6 +1618,58 @@ void main() {
         }
         expect(published.materialize(), localRecords);
         await expectLater(sync.waitForStartupMerge(), completes);
+      },
+    );
+
+    test(
+      'configuration superseded by a local restore preserves restored settings and intent',
+      () async {
+        final sync = DataSync();
+        await sync.waitForStartupMerge();
+        const draft = ['https://example.com/draft', 'user', 'pass'];
+        const restored = ['https://example.com/restored', 'user', 'pass'];
+        final restoredKey = syncRecordKey('search', ['restored input']);
+        var didRestore = false;
+        void restoreDuringCommit() {
+          if (didRestore || appdata.settings['webdav'][0] != draft[0]) return;
+          didRestore = true;
+          appdata.settings['webdav'] = restored;
+          appdata.settings['disableSyncFields'] = 'restored-field';
+          appdata.implicitData['webdavSyncDirection'] = 'downloadOnly';
+          localRecords[restoredKey] = {'order': 0};
+          sync.onLocalDataRestored();
+        }
+
+        appdata.settings.addListener(restoreDuringCommit);
+        try {
+          final configured = await sync.configure(
+            config: draft,
+            excludedFields: 'draft-field',
+            direction: SyncDirection.uploadOnly,
+            timing: SyncTiming.manual,
+            minutes: 30,
+          );
+          expect(didRestore, isTrue);
+          expect(configured.error, isTrue);
+          expect(appdata.settings['webdav'], restored);
+          expect(appdata.settings['disableSyncFields'], 'restored-field');
+          expect(DataSync.direction, SyncDirection.downloadOnly);
+          expect(appdata.implicitData['webdavSyncPending'], isTrue);
+
+          final result = await sync.syncNow();
+          expect(result.success, isTrue, reason: result.errorMessage);
+          expect(
+            sync.coordinator!.endpointHash,
+            MergeSyncCoordinator.computeEndpointHash(restored[0], restored[1]),
+          );
+          expect(sync.coordinator!.store.observed[restoredKey], {'order': 0});
+          expect(
+            sync.coordinator!.store.document.counterFor('test_device_1'),
+            1,
+          );
+        } finally {
+          appdata.settings.removeListener(restoreDuringCommit);
+        }
       },
     );
 

@@ -9,6 +9,7 @@ import '../../foundation/sync_records.dart';
 import 'merge_engine.dart';
 import 'merge_snapshot.dart';
 import 'merge_store_error.dart';
+import 'sync_initialization_diagnostics.dart';
 
 /// Normalized, close-after-use SQLite persistence backing [MergeStore].
 ///
@@ -19,6 +20,9 @@ class MergeStoreDatabase {
   final MergeSnapshotEncodingCache _snapshotEncodingCache =
       MergeSnapshotEncodingCache();
   final Directory directory;
+  final String instanceId = SyncInitializationDiagnostics.nextInstanceId(
+    'database',
+  );
   final String actor;
 
   static final RegExp _safeBatchIdPattern = RegExp(r'^[0-9a-f]{64}$');
@@ -35,6 +39,9 @@ class MergeStoreDatabase {
   bool _persistedFingerprintStored = false;
   bool _loaded = false;
   bool _databaseExists = false;
+  SyncInitializationDiagnostics? _diagnostics;
+  int? _lastDiskMainRevision;
+  int? _lastDiskReplicaRevision;
 
   MergeStoreDatabase(this.directory, this.actor);
 
@@ -55,7 +62,47 @@ class MergeStoreDatabase {
     }
   }
 
-  Future<MergeStoreDatabaseState?> load() async {
+  Future<MergeStoreDatabaseState?> load({
+    SyncInitializationDiagnostics? diagnostics,
+  }) async {
+    final context =
+        diagnostics ??
+        SyncInitializationDiagnostics(
+          trigger: 'merge_store_database.load',
+          actor: actor,
+          stateDirectory: directory.path,
+        );
+    _diagnostics = context;
+    _lastDiskMainRevision = null;
+    _lastDiskReplicaRevision = null;
+    if (context.logger != null) {
+      context.record('load.begin', values: _loadDiagnosticValues(null));
+    }
+    try {
+      final state = await _loadState();
+      if (context.logger != null) {
+        context.record(
+          state == null ? 'load.empty' : 'load.existing',
+          values: _loadDiagnosticValues(state),
+        );
+      }
+      return state;
+    } catch (error, stackTrace) {
+      if (context.logger != null) {
+        context.record(
+          'load.error',
+          values: {
+            ..._diagnosticIdentityMetadata(),
+            'errorType': error.runtimeType.toString(),
+            if (error is MergeStoreStateException) 'errorCode': error.code,
+          },
+        );
+      }
+      Error.throwWithStackTrace(_withDiagnosticMetadata(error), stackTrace);
+    }
+  }
+
+  Future<MergeStoreDatabaseState?> _loadState() async {
     _loaded = false;
     _databaseExists = false;
     _persistedRows.clear();
@@ -145,6 +192,8 @@ class MergeStoreDatabase {
         backupError = error;
       }
     }
+    _lastDiskMainRevision = primaryState?.commitRevision;
+    _lastDiskReplicaRevision = backupState?.commitRevision;
     var primaryUninitialized = !primaryExists;
     var backupUninitialized = !backupExists;
     if (primaryState == null && primaryExists) {
@@ -285,6 +334,8 @@ class MergeStoreDatabase {
         _backupFile,
         recoveredFromBackup: false,
       );
+      _lastDiskMainRevision = finalPrimaryState.commitRevision;
+      _lastDiskReplicaRevision = finalBackupState.commitRevision;
       if (finalPrimaryState.commitRevision != finalBackupState.commitRevision) {
         throw MergeStoreStaleStateException(
           metadata: _divergenceMetadata(
@@ -338,6 +389,72 @@ class MergeStoreDatabase {
         : selectedState;
     _activateState(state);
     return state;
+  }
+
+  Map<String, Object?> _loadDiagnosticValues(MergeStoreDatabaseState? state) =>
+      {
+        ..._diagnosticIdentityMetadata(),
+        'loadedRevision': state?.commitRevision,
+        'diskMainRevision': _lastDiskMainRevision,
+        'diskReplicaRevision': _lastDiskReplicaRevision,
+        'ownCounter': state?.document.counterFor(actor) ?? 0,
+        'outboxCount': state?.outboxIds.length ?? 0,
+      };
+
+  Map<String, Object?> _diagnosticIdentityMetadata() => {
+    'databaseInstanceId': instanceId,
+    if (_diagnostics != null) 'loadAttemptId': _diagnostics!.loadAttemptId,
+  };
+
+  Object _withDiagnosticMetadata(Object error) {
+    if (error is! MergeStoreStateException) return error;
+    final metadata = {...error.metadata, ..._diagnosticIdentityMetadata()};
+    if (error is MergeOutboxCounterConflictException) {
+      return MergeOutboxCounterConflictException(
+        actor: error.actor,
+        counter: error.counter,
+        existingBatchId: error.existingBatchId,
+        incomingBatchId: error.incomingBatchId,
+        metadata: metadata,
+      );
+    }
+    if (error is MergeStoreStaleStateException) {
+      return MergeStoreStaleStateException(metadata: metadata);
+    }
+    if (error is MergeStoreReplicaDivergenceException) {
+      return MergeStoreReplicaDivergenceException(metadata: metadata);
+    }
+    if (error is MergeStoreIntegrityException) {
+      return MergeStoreIntegrityException(metadata: metadata);
+    }
+    return MergeStoreStateException(
+      error.code,
+      error.message,
+      metadata: metadata,
+      recoverable: error.recoverable,
+    );
+  }
+
+  void _recordCommit(
+    String phase, {
+    required int loadedRevision,
+    required int? diskMainRevision,
+    required int? diskReplicaRevision,
+    required int ownCounter,
+    required int outboxCount,
+  }) {
+    if (_diagnostics?.logger == null) return;
+    _diagnostics?.record(
+      phase,
+      values: {
+        ..._diagnosticIdentityMetadata(),
+        'loadedRevision': loadedRevision,
+        'diskMainRevision': diskMainRevision,
+        'diskReplicaRevision': diskReplicaRevision,
+        'ownCounter': ownCounter,
+        'outboxCount': outboxCount,
+      },
+    );
   }
 
   bool _isUninitializedDatabase(File file) {
@@ -433,6 +550,8 @@ class MergeStoreDatabase {
     final database = sqlite3.open(_databaseFile.path);
     try {
       database.execute('PRAGMA busy_timeout = 5000;');
+      database.execute('BEGIN;');
+      _assertOutboxReadCurrent(database);
       final rows = database.select(
         'SELECT actor, counter, manifest FROM merge_outbox WHERE batch_id = ?;',
         [id],
@@ -481,6 +600,8 @@ class MergeStoreDatabase {
     final database = sqlite3.open(_databaseFile.path);
     try {
       database.execute('PRAGMA busy_timeout = 5000;');
+      database.execute('BEGIN;');
+      _assertOutboxReadCurrent(database);
       final rows = database.select(
         'SELECT actor, counter, manifest FROM merge_outbox WHERE batch_id = ?;',
         [id],
@@ -522,6 +643,32 @@ class MergeStoreDatabase {
     }
   }
 
+  void _assertOutboxReadCurrent(Database database) {
+    final revision = _committedRevisionIfPresent(database, schema: 'main');
+    if (revision == _persistedRevision) return;
+    final metadata = <String, Object?>{
+      'phase': 'outbox_read',
+      'reason': 'revision_changed',
+      'loadedRevision': _persistedRevision,
+      'mainRevision': revision,
+      'replicaRevision': null,
+      'ownCounter': _persistedOwnCounter,
+      'outboxCount': _persistedOutboxIds.length,
+      ..._diagnosticIdentityMetadata(),
+    };
+    if (_diagnostics?.logger != null) {
+      _diagnostics!.record(
+        'outbox.stale',
+        values: {
+          ...metadata,
+          'diskMainRevision': revision,
+          'diskReplicaRevision': null,
+        },
+      );
+    }
+    throw MergeStoreStaleStateException(metadata: metadata);
+  }
+
   Future<Map<String, MergeSnapshot>> commit({
     required MergeDocument document,
     required MergeDocument localObservation,
@@ -535,9 +682,16 @@ class MergeStoreDatabase {
     required bool initialized,
     bool? counterReconciliationRequired,
   }) async {
+    _diagnostics ??= SyncInitializationDiagnostics(
+      trigger: 'merge_store_database.commit',
+      actor: actor,
+      stateDirectory: directory.path,
+    );
     if (_loaded && !_databaseExists) {
       throw StateError('Invalid SQLite store lifecycle');
     }
+    final loadedRevision = _persistedRevision;
+    final firstCommit = !_databaseExists;
     if (counterReconciliationRequired == true) {
       await directory.create(recursive: true);
       await _writeCounterRecoveryMarker();
@@ -642,6 +796,22 @@ class MergeStoreDatabase {
         counterReconciliationRequired == false &&
         await _exists(_recoveryMarkerFile);
     if (!stateChanged && !clearRecoveryMarker) {
+      _recordCommit(
+        'commit.begin',
+        loadedRevision: loadedRevision,
+        diskMainRevision: _lastDiskMainRevision,
+        diskReplicaRevision: _lastDiskReplicaRevision,
+        ownCounter: document.counterFor(actor),
+        outboxCount: desiredOutbox.length,
+      );
+      _recordCommit(
+        'commit.success',
+        loadedRevision: loadedRevision,
+        diskMainRevision: _lastDiskMainRevision,
+        diskReplicaRevision: _lastDiskReplicaRevision,
+        ownCounter: document.counterFor(actor),
+        outboxCount: desiredOutbox.length,
+      );
       return const <String, MergeSnapshot>{};
     }
     final nextRowFingerprints = rowsAreUnchanged
@@ -675,6 +845,8 @@ class MergeStoreDatabase {
 
     final backupExistedBeforeAttach = await _exists(_backupFile);
     Database? database;
+    int? diskMainRevision;
+    int? diskReplicaRevision;
     try {
       database = sqlite3.open(_databaseFile.path);
       database.execute('PRAGMA busy_timeout = 5000;');
@@ -687,20 +859,28 @@ class MergeStoreDatabase {
       database.execute('BEGIN IMMEDIATE;');
       try {
         if (!_databaseExists) {
-          final mainRevision = _committedRevisionIfPresent(
+          diskMainRevision = _committedRevisionIfPresent(
             database,
             schema: 'main',
           );
-          final replicaRevision = _committedRevisionIfPresent(
+          diskReplicaRevision = _committedRevisionIfPresent(
             database,
             schema: 'replica',
           );
-          if (mainRevision != null || replicaRevision != null) {
+          if (diskMainRevision != null || diskReplicaRevision != null) {
+            _recordCommit(
+              'commit.begin',
+              loadedRevision: loadedRevision,
+              diskMainRevision: diskMainRevision,
+              diskReplicaRevision: diskReplicaRevision,
+              ownCounter: document.counterFor(actor),
+              outboxCount: desiredOutbox.length,
+            );
             throw MergeStoreStaleStateException(
               metadata: _freshInitializationMetadata(
                 database,
-                mainRevision: mainRevision,
-                replicaRevision: replicaRevision,
+                mainRevision: diskMainRevision,
+                replicaRevision: diskReplicaRevision,
                 desiredOutboxIds: desiredOutbox,
                 removedOutboxIds: removedOutbox,
                 addedOutboxIds: addedOutbox,
@@ -713,6 +893,16 @@ class MergeStoreDatabase {
         _ensureSchema(database, schema: 'replica');
         final mainView = _readCommitView(database, schema: 'main');
         final replicaView = _readCommitView(database, schema: 'replica');
+        diskMainRevision = mainView.revision;
+        diskReplicaRevision = replicaView.revision;
+        _recordCommit(
+          'commit.begin',
+          loadedRevision: loadedRevision,
+          diskMainRevision: diskMainRevision,
+          diskReplicaRevision: diskReplicaRevision,
+          ownCounter: document.counterFor(actor),
+          outboxCount: desiredOutbox.length,
+        );
         if (_databaseExists) {
           _assertCommitViews(
             database,
@@ -880,7 +1070,18 @@ class MergeStoreDatabase {
             // Preserve the transaction's original failure.
           }
         }
-        Error.throwWithStackTrace(error, stackTrace);
+        final enrichedError = _withDiagnosticMetadata(error);
+        if (error is MergeStoreStaleStateException) {
+          _recordCommit(
+            'commit.stale',
+            loadedRevision: loadedRevision,
+            diskMainRevision: diskMainRevision,
+            diskReplicaRevision: diskReplicaRevision,
+            ownCounter: document.counterFor(actor),
+            outboxCount: desiredOutbox.length,
+          );
+        }
+        Error.throwWithStackTrace(enrichedError, stackTrace);
       }
     } finally {
       database?.close();
@@ -894,7 +1095,17 @@ class MergeStoreDatabase {
         rethrow;
       }
     }
-    if (!stateChanged) return const <String, MergeSnapshot>{};
+    if (!stateChanged) {
+      _recordCommit(
+        'commit.success',
+        loadedRevision: loadedRevision,
+        diskMainRevision: diskMainRevision,
+        diskReplicaRevision: diskReplicaRevision,
+        ownCounter: document.counterFor(actor),
+        outboxCount: desiredOutbox.length,
+      );
+      return const <String, MergeSnapshot>{};
+    }
 
     _persistedRows = nextRowFingerprints;
     _persistedMeta
@@ -921,6 +1132,26 @@ class MergeStoreDatabase {
     _persistedFingerprintStored = true;
     _databaseExists = true;
     _loaded = true;
+    _lastDiskMainRevision = nextRevision;
+    _lastDiskReplicaRevision = nextRevision;
+    if (firstCommit) {
+      _recordCommit(
+        'commit.first',
+        loadedRevision: loadedRevision,
+        diskMainRevision: nextRevision,
+        diskReplicaRevision: nextRevision,
+        ownCounter: document.counterFor(actor),
+        outboxCount: desiredOutbox.length,
+      );
+    }
+    _recordCommit(
+      'commit.success',
+      loadedRevision: loadedRevision,
+      diskMainRevision: nextRevision,
+      diskReplicaRevision: nextRevision,
+      ownCounter: document.counterFor(actor),
+      outboxCount: desiredOutbox.length,
+    );
     return Map.unmodifiable(nextOutboxSnapshots);
   }
 
@@ -976,7 +1207,11 @@ class MergeStoreDatabase {
         throw const FormatException('Invalid merge SQLite metadata');
       }
       if (meta['actor'] != actor) {
-        throw _DatabaseActorMismatch(actor, meta['actor']!);
+        throw _DatabaseActorMismatch(
+          actor,
+          meta['actor']!,
+          metadata: _diagnosticIdentityMetadata(),
+        );
       }
       if (!{'0', '1'}.contains(meta['initialized']) ||
           !{'0', '1'}.contains(meta['hasPendingApply']) ||
@@ -1341,6 +1576,7 @@ class MergeStoreDatabase {
       throw _DatabaseActorMismatch(
         actor,
         storedActor.single['value'] as String,
+        metadata: _diagnosticIdentityMetadata(),
       );
     }
   }
@@ -1356,7 +1592,11 @@ class MergeStoreDatabase {
         row['key'] as String: row['value'] as String,
     };
     if (meta['actor'] != null && meta['actor'] != actor) {
-      throw _DatabaseActorMismatch(actor, meta['actor']!);
+      throw _DatabaseActorMismatch(
+        actor,
+        meta['actor']!,
+        metadata: _diagnosticIdentityMetadata(),
+      );
     }
     final rawRevision = meta['commitRevision'];
     final revision = int.tryParse(rawRevision ?? '');
@@ -1736,7 +1976,11 @@ class MergeStoreDatabase {
     };
     final storedActor = metadata['actor'];
     if (storedActor != null && storedActor != actor) {
-      throw _DatabaseActorMismatch(actor, storedActor);
+      throw _DatabaseActorMismatch(
+        actor,
+        storedActor,
+        metadata: _diagnosticIdentityMetadata(),
+      );
     }
     final rawRevision = metadata['commitRevision'];
     final revision = int.tryParse(rawRevision ?? '');
@@ -2005,10 +2249,13 @@ class MergeStoreDatabase {
     required String reason,
     int? ownCounter,
   }) => {
+    ..._diagnosticIdentityMetadata(),
     'phase': phase,
     'reason': reason,
     'actor': actor,
     'loadedRevision': ?loadedRevision,
+    'diskMainRevision': ?mainRevision,
+    'diskReplicaRevision': ?replicaRevision,
     'mainRevision': ?mainRevision,
     if (loadedRevision != null) 'loadedOwnCounter': _persistedOwnCounter,
     'ownCounter': ?ownCounter,
@@ -2560,17 +2807,21 @@ class _DatabaseCommitView {
 }
 
 class _DatabaseActorMismatch extends StateError {
-  _DatabaseActorMismatch(String expected, String actual)
-    : super(
-        MergeStoreIntegrityException(
-          metadata: {
-            'phase': 'load',
-            'reason': 'actor_mismatch',
-            'actor': expected,
-            'storedActor': actual,
-          },
-        ).toString(),
-      );
+  _DatabaseActorMismatch(
+    String expected,
+    String actual, {
+    Map<String, Object?> metadata = const {},
+  }) : super(
+         MergeStoreIntegrityException(
+           metadata: {
+             'phase': 'load',
+             'reason': 'actor_mismatch',
+             'actor': expected,
+             'storedActor': actual,
+             ...metadata,
+           },
+         ).toString(),
+       );
 
   @override
   String toString() => message;
