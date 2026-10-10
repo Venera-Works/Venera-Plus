@@ -68,6 +68,7 @@ Future<void> _commitFixture(
   _Fixture fixture, {
   Set<String> received = const {'known/commit.json'},
   Map<String, MergeBatch>? batches,
+  Map<String, Map<String, String>> localEdits = const {},
   bool? counterReconciliationRequired,
 }) async {
   await database.commit(
@@ -83,6 +84,7 @@ Future<void> _commitFixture(
     pendingApply: null,
     pendingUnavailableDomains: const {},
     initialized: true,
+    localEdits: localEdits,
     counterReconciliationRequired: counterReconciliationRequired,
   );
 }
@@ -104,6 +106,9 @@ void _stripOutboxAndFingerprint(Directory directory) {
       database.execute('DELETE FROM merge_snapshot_objects;');
       database.execute(
         "DELETE FROM merge_store_meta WHERE key = 'commitFingerprint';",
+      );
+      database.execute(
+        "DELETE FROM merge_store_meta WHERE key = 'hasCompletedSync';",
       );
       database.execute('COMMIT;');
     } finally {
@@ -270,6 +275,42 @@ void main() {
     });
     expect(durable.outboxIds, [fixture.batch.id]);
   });
+  test(
+    'legacy completion metadata uses received evidence without resetting counter',
+    () async {
+      final database = MergeStoreDatabase(directory, _actor);
+      expect(await database.load(), isNull);
+      final fixture = _Fixture.named('legacy checkpoint');
+      await _commitFixture(database, fixture);
+      _stripOutboxAndFingerprint(directory);
+
+      final legacyReader = MergeStoreDatabase(directory, _actor);
+      final legacyState = await legacyReader.load();
+      expect(legacyState!.hasCompletedSync, isTrue);
+      expect(legacyState.document.counterFor(_actor), 1);
+      await _commitFixture(legacyReader, fixture.next('after upgrade'));
+
+      final reopened = await _readState(directory);
+      expect(reopened.hasCompletedSync, isTrue);
+      expect(reopened.document.counterFor(_actor), 2);
+
+      final noEvidenceDirectory = Directory('${directory.path}/no-evidence')
+        ..createSync();
+      final noEvidenceWriter = MergeStoreDatabase(noEvidenceDirectory, _actor);
+      expect(await noEvidenceWriter.load(), isNull);
+      await _commitFixture(
+        noEvidenceWriter,
+        _Fixture.named('without received checkpoint'),
+        received: const {},
+      );
+      _stripOutboxAndFingerprint(noEvidenceDirectory);
+      final noEvidence = await MergeStoreDatabase(
+        noEvidenceDirectory,
+        _actor,
+      ).load();
+      expect(noEvidence!.hasCompletedSync, isFalse);
+    },
+  );
 
   test(
     'legacy loaded cache detects identical same-revision replacement',
@@ -489,16 +530,19 @@ void main() {
       final database = MergeStoreDatabase(directory, _actor);
       expect(await database.load(), isNull);
       final fixture = _Fixture.named('primary intent');
-      await _commitFixture(database, fixture);
+      final manualEdits = {
+        _recordKey: {'name': '$_actor:1'},
+      };
+      await _commitFixture(database, fixture, localEdits: manualEdits);
       final backup = sqlite3.open(_replica(directory).path);
       try {
         backup.execute(
           '''
         UPDATE merge_business_records SET value_json = ?
-        WHERE kind = 'observed' AND record_key = ?;
+        WHERE kind = 'localEdits' AND record_key = ?;
         ''',
           [
-            canonicalSyncJson({'name': 'replica intent'}),
+            canonicalSyncJson({'name': '$_actor:2'}),
             _recordKey,
           ],
         );

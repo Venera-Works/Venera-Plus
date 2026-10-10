@@ -395,8 +395,6 @@ class Appdata with Init {
 
       final archiveSyncEnabled =
           this.settings["backupWebdavSyncEnabled"] == true;
-      final comicLibrarySyncEnabled =
-          this.settings["webdavComicLibrarySyncEnabled"] == true;
 
       // A legacy snapshot has no role marker. Do not inherit this device's
       // binding when replacing its favorites database.
@@ -405,7 +403,10 @@ class Appdata with Init {
         this.settings._data.remove('readingFolder');
       }
       for (var key in settings.keys) {
-        if (key == appdataObsoleteSyncSetting) continue;
+        if (key == appdataObsoleteSyncSetting ||
+            key == appdataObsoleteComicLibrarySyncSetting) {
+          continue;
+        }
         if (appdataArchiveSyncFields.contains(key)) {
           if (archiveSyncEnabled) {
             this.settings[key] = settings[key];
@@ -413,7 +414,7 @@ class Appdata with Init {
           continue;
         }
         if (appdataComicLibrarySyncFields.contains(key)) {
-          if (comicLibrarySyncEnabled) {
+          if (isSettingSyncAllowed(key)) {
             this.settings[key] = settings[key];
           }
           continue;
@@ -551,7 +552,9 @@ class Appdata with Init {
     }
     final normalizedSettings = <String, dynamic>{};
     for (final entry in rawSettings.entries) {
-      if (entry.key is String && entry.key != appdataObsoleteSyncSetting) {
+      if (entry.key is String &&
+          entry.key != appdataObsoleteSyncSetting &&
+          entry.key != appdataObsoleteComicLibrarySyncSetting) {
         final value = entry.key == 'initialPage'
             ? normalizeStartupPage(entry.value)
             : entry.value;
@@ -731,7 +734,6 @@ class Settings with ChangeNotifier {
     'webdavComicLibraryPath': '/venera_comics/',
     'webdavComicLibraryAutoSync': true,
     'webdavComicLibrarySyncIntervalMinutes': 360,
-    'webdavComicLibrarySyncEnabled': false,
     "disableSyncFields": "", // "field1, field2, ..."
     'dataVersion': 0,
     'quickFavorite': null,

@@ -2,7 +2,7 @@
 
 中文版本：[data_sync.zh.md](data_sync.zh.md)
 
-Navigation: **Settings → Storage and Sync → Data Sync** (or click the top-bar sync button when not configured). Enter your WebDAV directory URL, username, password, and device name; directory letter case must match the server. The name defaults to the Android model, iOS device name, or desktop hostname and can be edited. Its configuration is local, but the remote directory and device metadata carry the name, so do not put sensitive information in it. Use **Test Connection** to check access first.
+Navigation: **Settings → Storage and Sync → Data Sync** (or click the top-bar sync button when not configured). Enter your WebDAV directory URL, username, password, and device name; directory letter case must match the server. The default name comes from hardware metadata: Android prefers the market model (such as `Xiaomi15Pro`), Windows uses the manufacturer brand (such as `Lenovo`), iOS/macOS use the hardware model, and Linux uses the hardware vendor/model. Hostnames and user-configured iOS device names are no longer used. Unavailable hardware metadata falls back to an OS label. Names remain editable; existing saved names are retained to avoid replacing custom names. The configuration is local, but remote directories and device metadata carry the name, so avoid sensitive information. Use **Test Connection** to check access first.
 
 ## Multi-Device Merge and Scope
 
@@ -11,9 +11,9 @@ The new protocol merges **business records and fields using causal relationships
 | Domain | Merge granularity and boundaries |
 |---|---|
 | Favorite folders and comics | Folders have stable identities that survive renaming. Favorites are identified by folder, comic, and source type; names, ordering, and comic metadata merge as separate fields. Independent folders with the same name are not forcibly combined; local display names can distinguish them. The role shared by Home and automatic update checks (`reading`) binds to a folder identity. It is unbound by default and can be assigned to any local favorites folder. |
-| Reading history | Identified by comic and source type. Metadata fields merge separately; **current progress**, including chapter, page, group, and time, is one indivisible candidate. Positions are not spliced together or resolved by taking the highest page. Candidates at the same position with otherwise identical contents and only different valid timestamps merge to the newer timestamp; actual position differences still require a choice. Reading an earlier chapter again is a valid edit. |
+| Reading history | Identified by comic and source type. Metadata fields merge separately; **current progress**, including chapter, page, group, and time, is one indivisible candidate. Positions are not spliced together or resolved by taking the highest page. Same-position candidates differing only in valid timestamps merge to the newer timestamp; different positions follow the automatic cloud/local policy below. Reading an earlier chapter again is a valid edit. |
 | Read chapters and favorite images | Each read chapter and each favorite image is an independent record. Concurrent additions of different chapters or images coexist rather than competing over one whole episode array. Field differences between images of the same comic are retained, rather than overwritten because local display data shares an aggregate row. |
-| Reading duration | A shared migrated legacy duration base is deduplicated, not added once per copy. New positive contributions from each device are then added; this is **not the maximum of total durations**. Resets, reductions, or incompatible legacy bases retain candidates requiring a choice instead of silently disappearing. |
+| Reading duration | A shared migrated legacy duration base is deduplicated, not added once per copy. New positive contributions from each device are added; this is **not the maximum of total durations**. Resets, reductions, and incompatible bases follow the policy below. A tracked manual local contribution can choose the accumulated total only when it matches the actual local duration. |
 | Settings | Allowed settings merge by key and nested object leaf; lists remain whole values. Concurrent edits to the same setting can still conflict. Filtering is described below. |
 | Search history | Membership and stable ordering are retained per keyword. Adding or searching a keyword again updates only that keyword, without renumbering untouched entries and creating false conflicts. Concurrent new keywords with equal order are displayed deterministically by keyword. The interface shows at most 50 entries; hidden overflow is not treated as deletion. |
 | Cookies | A complete cookie session merges atomically per normalized domain; cookies from separate logins are not mixed individually. |
@@ -24,7 +24,7 @@ Local comic image files, downloaded comic archives, and images in the online lib
 
 ### Category Scope
 
-Settings provides seven independently configurable groups, all enabled by default. Existing optional WebDAV-credential switches remain off by default:
+Settings provides seven independently configurable groups, all enabled by default. WebDAV comic library configuration always synchronizes within the Settings category; archive backup credentials remain opt-in:
 
 | Category | Contents |
 |---|---|
@@ -38,17 +38,24 @@ Settings provides seven independently configurable groups, all enabled by defaul
 
 Disabling a category stops new capture and remote application for that domain. It is **not a deletion instruction** and does not retract already captured pending content or erase old cloud candidates. Scope is device-local. The login-state group does not include settings such as the Bangumi Token; see the secrets section below.
 
-## Deletion and Batch Conflict Selection
+## Deletion and Automatic Conflict Handling
 
-Deletions carry causal information too. A later deletion can supersede values already observed by that device; **deletion concurrent with an unseen edit on another device** retains a conflict. Deleting a parent history record must not simply clear chapters or favorite images concurrently added elsewhere.
+Deletions carry causal information too. A later deletion can supersede observed values; **deletion concurrent with an unseen edit on another device** creates a conflict handled by the automatic policy below. Deleting a parent history record must not clear chapters or favorite images concurrently added elsewhere.
 
 Even explicitly choosing to delete a parent history record preserves read chapters added concurrently. Local metadata retained to display those chapters is not synchronized as a newly created history record; actually reading again creates a new reading edit.
 
-Compatible field values merge automatically. Incompatible concurrent values remain durable candidates, with an existing local active candidate preferred until explicitly handled. The dialog groups conflicts by category and supports search and an unselected-only filter. Bulk-select matching local values or a specified device's candidates within the current filter; items without a matching candidate are not guessed. Candidates show device names, available timestamps, and safe previews, distinguishing field deletion from whole-record deletion.
+Independent records and fields still merge causally. Conflicts in enabled, available domains are automatically resolved per field, **not by overwriting an entire database**. The policy covers settings, favorites, reading history, scripts, sessions, cookies, and deletions:
 
-**You do not need to select everything.** **Resolve Selected** submits only selected items and leaves the rest for later batches. Selection itself does not apply or upload anything; closing discards unsubmitted choices. Changed candidates require a new selection rather than silently acknowledging newly arrived edits. The selected batch is validated before one durable commit; subsequent application/publication failures report recovery status rather than claiming rollback. Unresolved conflicts do not block unrelated conflict-free records. **Successful transfer does not mean all conflicts are resolved.**
+- **First synchronization with an endpoint, or an empty local field:** select the latest cloud candidate. Missing values, `null`, whitespace-only strings, empty lists, and empty objects are empty; `0` and `false` are not. An explicitly tracked manual deletion is not an uninitialized empty value.
+- **Subsequent genuine manual local edits:** prefer the local candidate when its durable edit identity still matches both the active candidate and the actual value. Local record additions/edits can win against concurrent cloud deletion, and local deletion can win against cloud edits. Cloud imports and initial defaults are not marked manual. Provenance and completion state persist in the same local primary/replica transactions and survive restart.
+- **Edits during network waiting:** capture again before application. Even on first sync, new local edits made during download are retained rather than overwritten by a stale target.
+- **No matching manual local edit:** select the latest cloud candidate. Read each actor's highest valid causal checkpoint, then compare concurrent choices using the WebDAV server's commit modification time, never counters across different actors. Undated candidates do not outrank dated ones; equal or entirely missing times use stable actor/candidate identities. This is cloud publication time, not device edit time.
 
-After selecting a device in bulk, you may explicitly remember it as the preferred candidate for ordinary settings. This is off by default. The preference applies only when that device has a candidate for an ordinary setting; it does not automatically resolve secrets, deletions, scripts, sessions, or differing reading positions, and is not a universal latest-timestamp policy. Open conflict review from sync settings to clear the preference, even when no conflicts remain. Arbitrary concurrent settings, ordering, scripts, and sessions cannot always merge automatically without conflict.
+Automatic choices create causal edits and can be published bidirectionally; download-only never uploads them. Excluded or unavailable domains remain unapplied. A conflict without a usable cloud candidate or a provable manual local candidate stays pending. Pre-upgrade state has no manual provenance, so old candidates cannot be assumed manual; new genuine edits start tracking it.
+
+Pending conflicts can still be grouped, searched, and filtered to unselected items. Bulk-select matching local values or a specified device's candidates; missing matches are not guessed. Previews show device names, available times, and safe summaries, distinguishing field and record deletion. The old remembered ordinary-settings device preference has been removed so it cannot compete with the automatic policy.
+
+**You do not need to select everything.** **Resolve Selected** submits only selected items. Selection itself applies or uploads nothing; closing discards unsubmitted choices, and changed candidates require reselection. The batch is validated before durable commit; later application/publication failures report recovery state rather than claiming rollback. Pending conflicts do not block unrelated records. **Successful transfer does not mean all conflicts are resolved.**
 
 The conflict title, instructions, and candidate list scroll together. On narrow screens or with enlarged text, footer actions wrap while Close and Resolve remain accessible.
 
@@ -169,7 +176,7 @@ This is a functional smoke run on the Windows test host, not a timing benchmark 
 The following do not participate in ordinary data synchronization and cannot be overwritten by remote content:
 
 - Data-sync WebDAV URL, username, password, and connection preferences.
-- This device's direction, timing, interval, device-name configuration, category scope, excluded fields, remembered settings-conflict preference, device identity, pending markers, and merge/recovery metadata. Remote ownership and causal identity do not overwrite local configuration.
+- This device's direction, timing, interval, device-name configuration, category scope, excluded fields, device identity, pending markers, manual-edit provenance, and merge/recovery metadata. Remote ownership and causal identity do not overwrite local configuration.
 - Local comic storage path (`local_path`), device-specific settings, and filtered proxy/local security settings.
 - Bangumi pending progress submissions and retry queues.
 
@@ -177,7 +184,7 @@ Excluded settings and optional settings whose sync switches are off are **out of
 
 Bangumi Access Token, username, and bindings synchronize by default; corresponding settings can be disabled through the excluded-field configuration. **The Access Token is stored in remote checkpoints**, so only use a trusted WebDAV service. UI and CLI token candidates are masked; this does not encrypt cloud files.
 
-WebDAV comic library and comic archive backup configurations have independent sync switches, off by default. Endpoints and credentials transfer and apply only when both exporting and importing devices explicitly enable the corresponding switch; the switches themselves stay local. **These optional credentials, cookies, and source sessions can contain secrets and reside in cloud objects when synchronized.** Use a trusted, access-controlled service. Conflict UI and CLI show safe summaries, not raw cookie/session values, script bodies, or sensitive setting candidates. **Gzip is compression, not encryption.** Masked display and disabling a category do not erase secrets already stored remotely.
+The WebDAV comic library URL, username, password, path, and automatic-update preferences **always participate in settings synchronization**. There is no library configuration sync switch; legacy disabled values and exclusions for library fields no longer block synchronization. Disabling the entire Settings category still stops its capture and remote application. Comic archive backup configuration remains opt-in, off by default, requiring both exporting and importing devices to enable it. **Library credentials, enabled archive credentials, cookies, and source sessions can contain secrets and reside in cloud objects.** Use a trusted, access-controlled service. UI and CLI show safe summaries rather than secret bodies. **Gzip is compression, not encryption.** Masking and disabling categories do not erase already stored secrets.
 
 ## Saving Configuration and Switching Versions
 
@@ -198,7 +205,7 @@ Rollout order:
 
 ### Original Root Backup Seeds
 
-On first use of an endpoint, only numeric **`<day>-<dataVersion>.venera`** files in its root are recognized. They are verified in isolation. All archives with the highest numeric version are read; different files with that version remain seeds/candidates rather than arbitrarily choosing one. Archives are neither rewritten nor deleted. Available business domains complete seed import independently while affected source domains remain pending recovery. Failed reads or integrity checks do not mark completion. Later root writes from old clients do not automatically enter the protocol.
+On first use of an endpoint, only numeric **`<day>-<dataVersion>.venera`** files in its root are recognized and verified in isolation. All archives with the highest numeric version are read as causal seeds; conflicts follow the automatic cloud/local policy above. Archives are neither rewritten nor deleted. Available business domains complete seed import independently while affected source domains remain pending recovery. Failed reads or integrity checks do not mark completion. Later root writes from old clients do not automatically enter the protocol.
 
 To choose another backup, open the root backup list in Data Sync status, select a specific file, and confirm separately. The CLI equivalents are `webdav backups` and `webdav import-backup <name> --confirm`. This **causally merges** the selected backup instead of overwriting local data or reading an old live protocol. Archive SHA-256 and business-domain identity deduplicate seeds. Repeating a selection adds no duplicate seed. Upload-only does not import local business data; download-only does not publish; damaged source domains remain reported as partial synchronization. Repairing the selected archive only clears issues proven repaired, not pending issues belonging to other archives.
 

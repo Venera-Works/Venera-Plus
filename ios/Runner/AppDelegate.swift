@@ -2,6 +2,21 @@ import Flutter
 import UIKit
 import UniformTypeIdentifiers
 import Foundation // 添加此行
+import Darwin
+
+private func hardwareModelIdentifier() -> String? {
+  var size: size_t = 0
+  guard sysctlbyname("hw.machine", nil, &size, nil, 0) == 0, size > 1 else {
+    return nil
+  }
+
+  var identifier = [CChar](repeating: 0, count: Int(size))
+  guard sysctlbyname("hw.machine", &identifier, &size, nil, 0) == 0 else {
+    return nil
+  }
+  return String(cString: identifier)
+}
+
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, UIDocumentPickerDelegate {
@@ -24,8 +39,11 @@ import Foundation // 添加此行
     let methodChannel = FlutterMethodChannel(name: "venera/method_channel", binaryMessenger: controller.binaryMessenger)
     methodChannel.setMethodCallHandler { (call, result) in
       if call.method == "getSyncDeviceName" {
-        let name = UIDevice.current.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        result(name.isEmpty ? UIDevice.current.model : name)
+        let identifier = hardwareModelIdentifier()
+        let isDeviceModel = identifier.map {
+          $0.hasPrefix("iPhone") || $0.hasPrefix("iPad") || $0.hasPrefix("iPod")
+        } ?? false
+        result(isDeviceModel ? identifier : UIDevice.current.model)
       } else if call.method == "getProxy" {
         if let proxySettings = CFNetworkCopySystemProxySettings()?.takeUnretainedValue() as NSDictionary?,
           let dict = proxySettings.object(forKey: kCFNetworkProxiesHTTPProxy) as? NSDictionary,

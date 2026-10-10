@@ -401,6 +401,79 @@ void main() {
     );
 
     test(
+      'first sync uses latest cloud and persisted manual edits win later conflicts',
+      () async {
+        final key = syncRecordKey('setting', ['webdavComicLibrary']);
+        localRecords = {
+          key: {
+            'value': ['https://local/dav', 'local', 'local-secret'],
+          },
+        };
+        final remote = MergeRemote(client);
+        final newest = MergeDocument()
+          ..captureLocal('cloud-new', {}, {
+            key: {
+              'value': ['https://new/dav', 'new', 'new-secret'],
+            },
+          });
+        final older = MergeDocument()
+          ..captureLocal('cloud-old', {}, {
+            key: {
+              'value': ['https://old/dav', 'old', 'old-secret'],
+            },
+          });
+        older.setCounterFloor('cloud-old', 40);
+        final oldPath = await remote.upload(
+          MergeBatch.create(actor: 'cloud-old', counter: 40, document: older),
+        );
+        final newPath = await remote.upload(
+          MergeBatch.create(actor: 'cloud-new', counter: 1, document: newest),
+        );
+        transport.remoteModifiedAt[oldPath] = DateTime.utc(2026, 1, 1);
+        transport.remoteModifiedAt[newPath] = DateTime.utc(2026, 1, 2);
+
+        final sync = DataSync();
+        final first = await sync.syncNow();
+        expect(first.success, isTrue, reason: first.errorMessage);
+        expect(localRecords[key], newest.materialize()[key]);
+        expect(sync.conflicts, isEmpty);
+
+        final branch = sync.coordinator!.store.document.clone();
+        final baseline = branch.materialize();
+        localRecords[key] = {
+          'value': ['https://manual/dav', 'manual', 'manual-secret'],
+        };
+        sync.onDataChanged(domains: {'setting'});
+        await sync.coordinator!.captureLocalChanges();
+        branch.captureLocal('cloud-new', baseline, {
+          key: {
+            'value': ['https://changed/dav', 'changed', 'changed-secret'],
+          },
+        });
+        await remote.upload(
+          MergeBatch.create(
+            actor: 'cloud-new',
+            counter: branch.counterFor('cloud-new'),
+            document: branch,
+          ),
+        );
+        DataSync.resetForTesting();
+        final restarted = DataSync();
+        final next = await restarted.syncNow();
+        expect(next.success, isTrue, reason: next.errorMessage);
+        expect(localRecords[key], {
+          'value': ['https://manual/dav', 'manual', 'manual-secret'],
+        });
+        expect(restarted.conflicts, isEmpty);
+        final published = await remote.downloadLatestValid(
+          'test_device_1',
+          await remote.list(),
+        );
+        expect(published!.document.materialize()[key], localRecords[key]);
+      },
+    );
+
+    test(
       'sync retries a failed local transaction without restarting',
       () async {
         final sync = DataSync();
@@ -1003,7 +1076,7 @@ void main() {
     );
 
     test(
-      'concurrent local edit during download preserves both candidates and does not overwrite remote with LWW',
+      'concurrent local edit during download is automatically retained and published',
       () async {
         int generation = 0;
         final comicKey = syncRecordKey('favorite', [
@@ -1064,14 +1137,13 @@ void main() {
         );
         expect(syncResult.success, isTrue);
 
-        // Title conflict must contain BOTH candidates ('Alice' and 'Bob')
-        expect(coordinator.hasConflict, isTrue);
-        final conflict = coordinator.conflicts.firstWhere(
-          (c) => c.recordKey == comicKey && c.field == 'title',
+        expect(localRecords[comicKey], {'title': 'Alice'});
+        expect(coordinator.hasConflict, isFalse);
+        final published = await remote.downloadLatestValid(
+          'device_a',
+          await remote.list(),
         );
-        expect(conflict.candidates, hasLength(2));
-        final candidateValues = conflict.candidates.map((c) => c.value).toSet();
-        expect(candidateValues, containsAll(['Alice', 'Bob']));
+        expect(published!.document.materialize()[comicKey], {'title': 'Alice'});
       },
     );
     test(
@@ -2284,6 +2356,7 @@ class _VirtualDavClient extends dav.Client {
               isDir: false,
               size: entry.value.length,
               eTag: transport.remoteEtags[key] ?? '"${entry.value.length}"',
+              mTime: transport.remoteModifiedAt[key],
             ),
           );
         }
@@ -2296,6 +2369,7 @@ class _VirtualDavClient extends dav.Client {
 class _VirtualWebDavTransport implements HttpClientAdapter {
   final remoteFiles = <String, Uint8List>{};
   final remoteEtags = <String, String>{};
+  final remoteModifiedAt = <String, DateTime>{};
   final remoteDirs = <String>{};
   final simulateFailurePaths = <String>{};
   final downloadFailureStatuses = <String, int>{};

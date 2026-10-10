@@ -36,4 +36,24 @@ void main() {
       expect(normalizeSyncDeviceName('SYNC-V4'), '_SYNC-V4');
     });
   });
+
+  group('formatSyncDeviceHardwareName', () {
+    test('does not repeat a brand already in the market model', () {
+      expect(
+        formatSyncDeviceHardwareName(brand: 'Xiaomi', model: 'Xiaomi15Pro'),
+        'Xiaomi15Pro',
+      );
+    });
+
+    test('adds a missing brand to a hardware model', () {
+      expect(
+        formatSyncDeviceHardwareName(brand: 'samsung', model: 'SM-S928B'),
+        'Samsung SM-S928B',
+      );
+    });
+
+    test('normalizes an uppercase manufacturer', () {
+      expect(formatSyncDeviceHardwareName(brand: 'LENOVO'), 'Lenovo');
+    });
+  });
 }

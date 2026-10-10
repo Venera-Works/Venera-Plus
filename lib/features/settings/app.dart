@@ -797,7 +797,7 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                         Expanded(
                           child: Text(
                             syncDirection == SyncDirection.bidirectional
-                                ? 'Multi-device sync merges existing local and remote data losslessly rather than overwriting.'
+                                ? 'Sync merges independent changes. Conflicts use the latest cloud value on first sync or when empty, and prefer later manual local edits.'
                                       .tl
                                 : (syncDirection == SyncDirection.uploadOnly
                                       ? 'Upload-only mode will propagate local changes to remote without importing remote data.'
@@ -1229,7 +1229,6 @@ class _WebDavComicLibrarySettingState
   bool isSyncing = false;
   late bool autoSyncEnabled;
   late int syncIntervalMinutes;
-  late bool configSyncEnabled;
 
   @override
   void initState() {
@@ -1248,8 +1247,6 @@ class _WebDavComicLibrarySettingState
         (appdata.settings['webdavComicLibrarySyncIntervalMinutes'] as num?)
             ?.round() ??
         360;
-    configSyncEnabled =
-        appdata.settings['webdavComicLibrarySyncEnabled'] as bool? ?? false;
   }
 
   @override
@@ -1290,20 +1287,24 @@ class _WebDavComicLibrarySettingState
                 ],
               ),
             ),
-            SwitchListTile(
-              key: const Key('webdav-comic-library-config-sync-switch'),
-              contentPadding: EdgeInsets.zero,
-              title: Text('Sync comic library config'.tl),
-              subtitle: Text(
-                'Sync the WebDAV comic library URL, username, password, remote path, automatic updates and update interval. Credentials will be stored in remote sync storage.'
-                    .tl,
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.secondaryContainer,
+                borderRadius: BorderRadius.circular(8),
               ),
-              value: configSyncEnabled,
-              onChanged: (value) {
-                setState(() {
-                  configSyncEnabled = value;
-                });
-              },
+              child: Row(
+                children: [
+                  const Icon(Icons.cloud_upload_outlined, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Sync the WebDAV comic library URL, username, password, remote path, automatic updates and update interval. Credentials will be stored in remote sync storage.'
+                          .tl,
+                    ),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 16),
             SwitchListTile(
@@ -1492,7 +1493,6 @@ class _WebDavComicLibrarySettingState
       appdata.settings['webdavComicLibraryAutoSync'] = autoSyncEnabled;
       appdata.settings['webdavComicLibrarySyncIntervalMinutes'] =
           syncIntervalMinutes;
-      appdata.settings['webdavComicLibrarySyncEnabled'] = configSyncEnabled;
       await WebDavLibraryConfig.saveToSettings(config);
     }
 

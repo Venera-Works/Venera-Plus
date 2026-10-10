@@ -199,7 +199,7 @@ void main() {
     },
   );
 
-  test('sync snapshot always filters device-local WebDAV settings', () async {
+  test('sync snapshot filters sync and archive WebDAV settings', () async {
     final dataDir = Directory.systemTemp.createTempSync(
       'venera-appdata-sync-policy-',
     );
@@ -210,11 +210,7 @@ void main() {
       appdata.settings['backupWebdav'] = [];
       appdata.settings['backupWebdavPath'] = '/venera_backup/';
       appdata.settings['backupWebdavSyncEnabled'] = false;
-      appdata.settings['webdavComicLibrary'] = [];
-      appdata.settings['webdavComicLibraryPath'] = '/venera_comics/';
-      appdata.settings['webdavComicLibraryAutoSync'] = true;
-      appdata.settings['webdavComicLibrarySyncIntervalMinutes'] = 360;
-      appdata.settings['webdavComicLibrarySyncEnabled'] = false;
+      appdata.settings.remove('webdavComicLibrarySyncEnabled');
       if (dataDir.existsSync()) dataDir.deleteSync(recursive: true);
     });
 
@@ -232,15 +228,6 @@ void main() {
     ];
     appdata.settings['backupWebdavPath'] = '/backup/';
     appdata.settings['backupWebdavSyncEnabled'] = false;
-    appdata.settings['webdavComicLibrary'] = [
-      'https://library.example/dav',
-      'library-user',
-      'comic-secret',
-    ];
-    appdata.settings['webdavComicLibraryPath'] = '/library/';
-    appdata.settings['webdavComicLibraryAutoSync'] = false;
-    appdata.settings['webdavComicLibrarySyncIntervalMinutes'] = 15;
-    appdata.settings['webdavComicLibrarySyncEnabled'] = false;
 
     await appdata.saveData(false);
 
@@ -253,65 +240,68 @@ void main() {
     expect(syncSettings.containsKey('webdav'), isFalse);
     expect(syncSettings.containsKey('backupWebdav'), isFalse);
     expect(syncSettings.containsKey('backupWebdavPath'), isFalse);
-    expect(syncSettings.containsKey('webdavComicLibrary'), isFalse);
-    expect(syncSettings.containsKey('webdavComicLibraryPath'), isFalse);
-    expect(syncSettings.containsKey('webdavComicLibraryAutoSync'), isFalse);
-    expect(
-      syncSettings.containsKey('webdavComicLibrarySyncIntervalMinutes'),
-      isFalse,
-    );
-    expect(syncSettings.containsKey('webdavComicLibrarySyncEnabled'), isFalse);
     expect(syncContent, isNot(contains('main-secret')));
     expect(syncContent, isNot(contains('backup-secret')));
-    expect(syncContent, isNot(contains('comic-secret')));
-  });
-
-  test('sync snapshot includes opted-in comic library config', () async {
-    final dataDir = Directory.systemTemp.createTempSync(
-      'venera-appdata-library-sync-',
-    );
-    addTearDown(() {
-      App.dataPath = fallbackDataDir.path;
-      appdata.settings['disableSyncFields'] = '';
-      appdata.settings['webdavComicLibrary'] = [];
-      appdata.settings['webdavComicLibraryPath'] = '/venera_comics/';
-      appdata.settings['webdavComicLibraryAutoSync'] = true;
-      appdata.settings['webdavComicLibrarySyncIntervalMinutes'] = 360;
-      appdata.settings['webdavComicLibrarySyncEnabled'] = false;
-      if (dataDir.existsSync()) dataDir.deleteSync(recursive: true);
-    });
-
-    App.dataPath = dataDir.path;
-    appdata.settings['disableSyncFields'] = '';
-    appdata.settings['webdavComicLibrary'] = [
-      'https://library.example/dav',
-      'library-user',
-      'comic-secret',
-    ];
-    appdata.settings['webdavComicLibraryPath'] = '/library/';
-    appdata.settings['webdavComicLibraryAutoSync'] = false;
-    appdata.settings['webdavComicLibrarySyncIntervalMinutes'] = 15;
-    appdata.settings['webdavComicLibrarySyncEnabled'] = true;
-
-    await appdata.saveData(false);
-
-    final syncSettings =
-        (jsonDecode(File('${dataDir.path}/syncdata.json').readAsStringSync())
-                as Map<String, dynamic>)['settings']
-            as Map<String, dynamic>;
-    expect(syncSettings['webdavComicLibrary'], [
-      'https://library.example/dav',
-      'library-user',
-      'comic-secret',
-    ]);
-    expect(syncSettings['webdavComicLibraryPath'], '/library/');
-    expect(syncSettings['webdavComicLibraryAutoSync'], isFalse);
-    expect(syncSettings['webdavComicLibrarySyncIntervalMinutes'], 15);
-    expect(syncSettings.containsKey('webdavComicLibrarySyncEnabled'), isFalse);
   });
 
   test(
-    'remote data preserves the local sync endpoint and gated library config',
+    'comic library config sync ignores legacy opt-out and custom exclusions',
+    () async {
+      final dataDir = Directory.systemTemp.createTempSync(
+        'venera-appdata-library-sync-',
+      );
+      addTearDown(() {
+        App.dataPath = fallbackDataDir.path;
+        appdata.settings['disableSyncFields'] = '';
+        appdata.settings['webdavComicLibrary'] = [];
+        appdata.settings['webdavComicLibraryPath'] = '/venera_comics/';
+        appdata.settings['webdavComicLibraryAutoSync'] = true;
+        appdata.settings['webdavComicLibrarySyncIntervalMinutes'] = 360;
+        appdata.settings.remove('webdavComicLibrarySyncEnabled');
+        if (dataDir.existsSync()) dataDir.deleteSync(recursive: true);
+      });
+
+      App.dataPath = dataDir.path;
+      appdata.settings['disableSyncFields'] = [
+        'webdavComicLibrary',
+        'webdavComicLibraryPath',
+        'webdavComicLibraryAutoSync',
+        'webdavComicLibrarySyncIntervalMinutes',
+        'webdavComicLibrarySyncEnabled',
+      ].join(',');
+      appdata.settings['webdavComicLibrary'] = [
+        'https://library.example/dav',
+        'library-user',
+        'comic-secret',
+      ];
+      appdata.settings['webdavComicLibraryPath'] = '/library/';
+      appdata.settings['webdavComicLibraryAutoSync'] = false;
+      appdata.settings['webdavComicLibrarySyncIntervalMinutes'] = 15;
+      appdata.settings['webdavComicLibrarySyncEnabled'] = false;
+
+      await appdata.saveData(false);
+
+      final syncSettings =
+          (jsonDecode(File('${dataDir.path}/syncdata.json').readAsStringSync())
+                  as Map<String, dynamic>)['settings']
+              as Map<String, dynamic>;
+      expect(syncSettings['webdavComicLibrary'], [
+        'https://library.example/dav',
+        'library-user',
+        'comic-secret',
+      ]);
+      expect(syncSettings['webdavComicLibraryPath'], '/library/');
+      expect(syncSettings['webdavComicLibraryAutoSync'], isFalse);
+      expect(syncSettings['webdavComicLibrarySyncIntervalMinutes'], 15);
+      expect(
+        syncSettings.containsKey('webdavComicLibrarySyncEnabled'),
+        isFalse,
+      );
+    },
+  );
+
+  test(
+    'legacy syncData imports comic library config despite old opt-out and custom exclusions',
     () async {
       final dataDir = Directory.systemTemp.createTempSync(
         'venera-appdata-import-policy-',
@@ -324,7 +314,7 @@ void main() {
         appdata.settings['webdavComicLibraryPath'] = '/venera_comics/';
         appdata.settings['webdavComicLibraryAutoSync'] = true;
         appdata.settings['webdavComicLibrarySyncIntervalMinutes'] = 360;
-        appdata.settings['webdavComicLibrarySyncEnabled'] = false;
+        appdata.settings.remove('webdavComicLibrarySyncEnabled');
         appdata.implicitData.remove('webdavAutoSync');
         appdata.implicitData.remove('webdavSyncDirection');
         appdata.implicitData.remove('webdavSyncTiming');
@@ -332,7 +322,13 @@ void main() {
       });
 
       App.dataPath = dataDir.path;
-      appdata.settings['disableSyncFields'] = '';
+      appdata.settings['disableSyncFields'] = [
+        'webdavComicLibrary',
+        'webdavComicLibraryPath',
+        'webdavComicLibraryAutoSync',
+        'webdavComicLibrarySyncIntervalMinutes',
+        'webdavComicLibrarySyncEnabled',
+      ].join(',');
       appdata.settings['webdav'] = [
         'https://local-sync.example/dav',
         'local-user',
@@ -385,20 +381,6 @@ void main() {
       expect(appdata.implicitData['webdavSyncDirection'], 'uploadOnly');
       expect(appdata.implicitData['webdavSyncTiming'], 'manual');
       expect(appdata.settings['webdavComicLibrary'], [
-        'https://local-library.example/dav',
-        'local-user',
-        'local-secret',
-      ]);
-      expect(appdata.settings['webdavComicLibraryPath'], '/local/');
-      expect(appdata.settings['webdavComicLibrarySyncEnabled'], isFalse);
-
-      appdata.settings['webdavComicLibrarySyncEnabled'] = true;
-      await appdata.syncData({
-        'settings': remoteSettings,
-        'searchHistory': <String>[],
-      });
-
-      expect(appdata.settings['webdavComicLibrary'], [
         'https://remote-library.example/dav',
         'remote-user',
         'remote-secret',
@@ -406,6 +388,7 @@ void main() {
       expect(appdata.settings['webdavComicLibraryPath'], '/remote/');
       expect(appdata.settings['webdavComicLibraryAutoSync'], isFalse);
       expect(appdata.settings['webdavComicLibrarySyncIntervalMinutes'], 15);
+      expect(appdata.settings['webdavComicLibrarySyncEnabled'], isFalse);
     },
   );
 

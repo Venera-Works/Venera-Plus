@@ -8,43 +8,63 @@ export 'sync_device_name.dart';
 
 const _deviceNameChannel = MethodChannel('venera/method_channel');
 
-/// Reads a platform-provided device name and normalizes it for sync storage.
+/// Reads platform hardware metadata and normalizes it for sync storage.
 ///
-/// Mobile platforms use the application's native method channel. Desktop
-/// platforms use the local hostname. Unsupported or unavailable metadata falls
-/// back to a name based on the operating system.
+/// Hostnames and user-configurable device names are deliberately not used:
+/// unavailable hardware metadata falls back to a non-sensitive OS label.
 Future<String> readSyncDeviceName() async {
-  if (Platform.isAndroid || Platform.isIOS) {
+  String? name;
+  if (Platform.isLinux) {
+    name = await _readLinuxHardwareName();
+  } else {
     try {
-      final name = await _deviceNameChannel.invokeMethod<String>(
-        'getSyncDeviceName',
-      );
-      if (name != null && name.trim().isNotEmpty) {
-        try {
-          return normalizeSyncDeviceName(name);
-        } on FormatException {
-          // Try the host name if the platform returned an unusable value.
-        }
-      }
+      name = await _deviceNameChannel.invokeMethod<String>('getSyncDeviceName');
     } on MissingPluginException {
-      // Fall back to the runtime hostname when the native bridge is unavailable.
+      // Use the OS label when the platform bridge is unavailable.
     } on PlatformException {
-      // Fall back to the runtime hostname when native metadata is unavailable.
+      // Use the OS label when native metadata is unavailable.
     }
   }
 
-  try {
-    final hostname = Platform.localHostname.trim();
-    if (hostname.isNotEmpty && hostname.toLowerCase() != 'localhost') {
-      try {
-        return normalizeSyncDeviceName(hostname);
-      } on FormatException {
-        // Use the operating system name if the host name is unusable.
-      }
+  var hardwareName = name?.trim();
+  if (Platform.isWindows && hardwareName != null && hardwareName.isNotEmpty) {
+    hardwareName = formatSyncDeviceHardwareName(brand: hardwareName);
+  }
+  if (hardwareName != null && hardwareName.isNotEmpty) {
+    try {
+      return normalizeSyncDeviceName(hardwareName);
+    } on FormatException {
+      // Use the non-sensitive OS label if hardware metadata is unusable.
     }
-  } on UnsupportedError {
-    // Some runtimes do not expose a host name.
   }
 
-  return normalizeSyncDeviceName('${Platform.operatingSystem} Device');
+  return normalizeSyncDeviceName('${_syncDeviceOperatingSystemName()} Device');
 }
+
+Future<String?> _readLinuxHardwareName() async {
+  final brand = await _readLinuxDmiValue('sys_vendor');
+  final model = await _readLinuxDmiValue('product_name');
+  return formatSyncDeviceHardwareName(brand: brand, model: model);
+}
+
+Future<String?> _readLinuxDmiValue(String field) async {
+  try {
+    final value = (await File(
+      '/sys/class/dmi/id/$field',
+    ).readAsString()).trim();
+    return value.isEmpty ? null : value;
+  } on FileSystemException {
+    return null;
+  } on UnsupportedError {
+    return null;
+  }
+}
+
+String _syncDeviceOperatingSystemName() => switch (Platform.operatingSystem) {
+  'android' => 'Android',
+  'ios' => 'iOS',
+  'windows' => 'Windows',
+  'macos' => 'macOS',
+  'linux' => 'Linux',
+  final name => name,
+};

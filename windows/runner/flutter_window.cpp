@@ -12,6 +12,36 @@
 #include <flutter/standard_method_codec.h>
 #include "flutter/generated_plugin_registrant.h"
 #include <thread>
+#include <string>
+
+namespace {
+std::string getSystemManufacturer() {
+  wchar_t manufacturer[256] = {};
+  DWORD size = sizeof(manufacturer);
+  const LONG status = RegGetValueW(
+      HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\BIOS",
+      L"SystemManufacturer", RRF_RT_REG_SZ, nullptr, manufacturer, &size);
+  if (status != ERROR_SUCCESS || manufacturer[0] == L'\0') {
+    return {};
+  }
+
+  const int utf8Size = WideCharToMultiByte(
+      CP_UTF8, 0, manufacturer, -1, nullptr, 0, nullptr, nullptr);
+  if (utf8Size <= 1) {
+    return {};
+  }
+
+  std::string result(static_cast<size_t>(utf8Size), '\0');
+  if (WideCharToMultiByte(CP_UTF8, 0, manufacturer, -1, result.data(),
+                          utf8Size, nullptr, nullptr) != utf8Size) {
+    return {};
+  }
+  result.pop_back();
+  return result;
+}
+
+}  // namespace
+
 
 #define _CRT_SECURE_NO_WARNINGS
 
@@ -97,7 +127,12 @@ bool FlutterWindow::OnCreate() {
   );
   channel.SetMethodCallHandler(
     [](const flutter::MethodCall<>& call,const std::unique_ptr<flutter::MethodResult<>>& result) {
-      if(call.method_name() == "getProxy"){
+      if (call.method_name() == "getSyncDeviceName") {
+        result->Success(
+            flutter::EncodableValue(getSystemManufacturer()));
+        return;
+      }
+      else if (call.method_name() == "getProxy") {
         const auto res = getProxy();
         if (res != nullptr){
           std::string s = res;

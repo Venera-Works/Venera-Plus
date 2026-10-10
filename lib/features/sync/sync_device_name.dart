@@ -33,3 +33,73 @@ String normalizeSyncDeviceName(String name) {
   }
   return normalized;
 }
+
+/// Builds a device label from hardware metadata, without repeating the brand
+/// when the model already includes it.
+///
+/// Returns `null` when neither value contains usable hardware metadata.
+String? formatSyncDeviceHardwareName({String? brand, String? model}) {
+  final normalizedBrand = _canonicalSyncDeviceBrand(brand);
+  final normalizedModel = _usableSyncDeviceHardwareValue(model);
+
+  if (normalizedModel == null) return normalizedBrand;
+  if (normalizedBrand == null ||
+      normalizedModel.toLowerCase().startsWith(normalizedBrand.toLowerCase())) {
+    return normalizedModel;
+  }
+  return '$normalizedBrand $normalizedModel';
+}
+
+String? _canonicalSyncDeviceBrand(String? value) {
+  final brand = _usableSyncDeviceHardwareValue(value);
+  if (brand == null) return null;
+
+  final key = brand.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+  return switch (key) {
+    'lenovo' => 'Lenovo',
+    'dell' || 'dellinc' => 'Dell',
+    'hp' || 'hpinc' || 'hewlettpackard' => 'HP',
+    'asus' || 'asustek' || 'asustekcomputerinc' => 'ASUS',
+    'acer' || 'acerinc' => 'Acer',
+    'apple' || 'appleinc' => 'Apple',
+    'microsoft' || 'microsoftcorporation' => 'Microsoft',
+    'samsung' || 'samsungelectronics' => 'Samsung',
+    'google' || 'googleinc' => 'Google',
+    'xiaomi' => 'Xiaomi',
+    'huawei' || 'huaweitechnologiescoltd' => 'Huawei',
+    'motorola' => 'Motorola',
+    'oneplus' => 'OnePlus',
+    'redmi' => 'Redmi',
+    'poco' => 'POCO',
+    _ => _titleCaseSyncDeviceBrand(brand),
+  };
+}
+
+String _titleCaseSyncDeviceBrand(String brand) => brand
+    .split(RegExp(r'\s+'))
+    .map((word) {
+      final lower = word.toLowerCase();
+      return lower.isEmpty
+          ? lower
+          : '${lower[0].toUpperCase()}${lower.substring(1)}';
+    })
+    .join(' ');
+
+String? _usableSyncDeviceHardwareValue(String? value) {
+  final trimmed = value?.trim();
+  if (trimmed == null || trimmed.isEmpty) return null;
+
+  final key = trimmed.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+  if (const {
+    'unknown',
+    'none',
+    'notspecified',
+    'defaultstring',
+    'systemmanufacturer',
+    'systemproductname',
+    'tobefilledbyoem',
+  }.contains(key)) {
+    return null;
+  }
+  return trimmed;
+}

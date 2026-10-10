@@ -14,9 +14,10 @@ export 'merge_engine.dart';
 /// Endpoint-bound, pure Dart persistence for merge checkpoints and business apply.
 ///
 /// A single state commit contains the document, outbox, observed business baseline,
-/// initialization marker and pending apply. Stage/resolve commits precede business
-/// writes; only completeApply advances the baseline and retires the pending apply.
-/// There is no separately deleted journal that can replay a completed operation.
+/// per-field local edit candidates, sync-completion marker and pending apply.
+/// Stage/resolve commits precede business writes; only completeApply advances the
+/// baseline and retires the pending apply. There is no separately deleted journal
+/// that can replay a completed operation.
 class MergeStore {
   final Directory directory;
   final String instanceId = SyncInitializationDiagnostics.nextInstanceId(
@@ -25,6 +26,9 @@ class MergeStore {
   final String actor;
   MergeDocument _document = MergeDocument();
   MergeDocument _localObservation = MergeDocument();
+  final Map<String, Map<String, String>> _localEdits = {};
+  bool _hasCompletedSync = false;
+  bool _completionMarkerPersisted = false;
   SyncRecords _observed = {};
   final Set<String> _received = {};
   final List<String> _outboxIds = [];
@@ -51,6 +55,9 @@ class MergeStore {
   }
 
   MergeDocument get document => _document;
+  bool get hasCompletedSync => _hasCompletedSync;
+  String? manualCandidateId(String recordKey, String field) =>
+      _localEdits[recordKey]?[field];
   bool get needsRecovery => !_loaded;
 
   /// A business backup changes the physical baseline outside merge application.
@@ -253,6 +260,17 @@ class MergeStore {
           legacyState?.pendingUnavailableDomains ??
           const <String>{},
     );
+    _localEdits
+      ..clear()
+      ..addAll({
+        for (final entry
+            in databaseState?.localEdits.entries ??
+                const <MapEntry<String, Map<String, String>>>[])
+          entry.key: Map<String, String>.of(entry.value),
+      });
+    _hasCompletedSync = databaseState?.hasCompletedSync ?? _received.isNotEmpty;
+    _completionMarkerPersisted =
+        databaseState?.persistedMeta.containsKey('hasCompletedSync') ?? false;
     _initialized =
         databaseState?.initialized ?? legacyState?.initialized ?? false;
     _recoveredFromBackup = recovered;
@@ -368,6 +386,13 @@ class MergeStore {
         MergeBatch.create(actor: actor, counter: counter, document: _document),
         changedRecordKeys: {...changedRecordKeys, ...sourceVariantRecordKeys},
       );
+      if (_initialized) {
+        _recordCaptureManualChanges(
+          filteredBaseline,
+          filteredCurrent,
+          MergeDot(actor, counter).toKey(),
+        );
+      }
       if (unavailableDomains.isEmpty) {
         _localObservation = branch.clone();
       } else {
@@ -601,6 +626,11 @@ class MergeStore {
       filteredTarget,
       filteredActual,
     );
+    final confirmedManualChanges = _confirmedRecoveryManualChanges(
+      target: filteredTarget,
+      actual: filteredActual,
+      previous: _observed,
+    );
 
     final branch = MergeDocument();
     branch.setCounterFloor(actor, _document.counterFor(actor));
@@ -656,6 +686,12 @@ class MergeStore {
         MergeBatch.create(actor: actor, counter: counter, document: _document),
         changedRecordKeys: {...changedRecordKeys, ...sourceVariantRecordKeys},
       );
+      if (confirmedManualChanges.isNotEmpty) {
+        _recordManualChanges(
+          confirmedManualChanges,
+          MergeDot(actor, counter).toKey(),
+        );
+      }
     } else if (newVariantsAdded) {
       final checkpointCounter = _document.reserveCounter(actor);
       _addOutbox(
@@ -696,6 +732,13 @@ class MergeStore {
     await save();
   }
 
+  Future<void> completeSync() async {
+    _ensureLoaded();
+    if (_hasCompletedSync && _completionMarkerPersisted) return;
+    _hasCompletedSync = true;
+    await save();
+  }
+
   /// Acknowledging an old immutable checkpoint never clears newer publications.
   Future<void> acknowledge(String id) async {
     _ensureLoaded();
@@ -708,6 +751,7 @@ class MergeStore {
   Future<void> resolveAll(
     List<MergeConflictResolution> resolutions, {
     Set<String> unavailableDomains = const {},
+    bool manual = true,
   }) async {
     _ensureCanAllocate();
     _validateUnavailableDomains(unavailableDomains);
@@ -767,26 +811,52 @@ class MergeStore {
         );
       }
     }
+    final stagedManualCandidates = {
+      for (final entry in _localEdits.entries)
+        entry.key: Map<String, String>.of(entry.value),
+    };
+    void resolveAndTrack(MergeConflictResolution resolution) {
+      final previousManualId =
+          stagedManualCandidates[resolution.recordKey]?[resolution.field];
+      final preservesManualCandidate =
+          resolution.candidateId == previousManualId ||
+          (resolution.field == 'readDurationMs' &&
+              resolution.candidateId == 'accumulated_total' &&
+              previousManualId != null &&
+              stagedDocument.hasActiveDurationContribution(
+                resolution.recordKey,
+                previousManualId,
+              ));
+      stagedDocument.resolve(
+        actor,
+        resolution.recordKey,
+        resolution.field,
+        resolution.candidateId,
+      );
+      final fields = stagedManualCandidates.putIfAbsent(
+        resolution.recordKey,
+        () => <String, String>{},
+      );
+      if (manual || preservesManualCandidate) {
+        fields[resolution.field] = MergeDot(
+          actor,
+          stagedDocument.counterFor(actor),
+        ).toKey();
+      } else {
+        fields.remove(resolution.field);
+        if (fields.isEmpty) stagedManualCandidates.remove(resolution.recordKey);
+      }
+    }
 
     // Resolve ordinary cells before presence: a chosen deletion can make the
     // record inactive, but must not invalidate another selection from this batch.
     for (final resolution in resolutions) {
       if (resolution.field == 'presence') continue;
-      stagedDocument.resolve(
-        actor,
-        resolution.recordKey,
-        resolution.field,
-        resolution.candidateId,
-      );
+      resolveAndTrack(resolution);
     }
     for (final resolution in resolutions) {
       if (resolution.field != 'presence') continue;
-      stagedDocument.resolve(
-        actor,
-        resolution.recordKey,
-        resolution.field,
-        resolution.candidateId,
-      );
+      resolveAndTrack(resolution);
     }
 
     final checkpoint = MergeBatch.create(
@@ -805,6 +875,9 @@ class MergeStore {
         for (final resolution in resolutions) resolution.recordKey,
       },
     );
+    _localEdits
+      ..clear()
+      ..addAll(stagedManualCandidates);
     _pendingApply = pendingApply;
     _pendingUnavailableDomains = pendingUnavailableDomains;
     try {
@@ -832,6 +905,8 @@ class MergeStore {
         pendingApply: _pendingApply,
         pendingUnavailableDomains: _pendingUnavailableDomains,
         initialized: _initialized,
+        localEdits: _localEdits,
+        hasCompletedSync: _hasCompletedSync,
         counterReconciliationRequired: _needsCounterReconciliation
             ? true
             : _counterReconciliationVerified
@@ -840,6 +915,7 @@ class MergeStore {
       );
       _outboxSnapshotCache.addAll(newSnapshots);
       _outboxCache.clear();
+      _completionMarkerPersisted = true;
 
       _counterFloorDirty = false;
       _counterReconciliationVerified = false;
@@ -1169,6 +1245,84 @@ class MergeStore {
       }
     }
     return changed;
+  }
+
+  void _recordCaptureManualChanges(
+    SyncRecords previous,
+    SyncRecords current,
+    String dot,
+  ) {
+    final changed = <(String, String)>{};
+    for (final key in <String>{...previous.keys, ...current.keys}) {
+      final before = previous[key];
+      final after = current[key];
+      if (before == null || after == null) {
+        _localEdits.remove(key);
+        changed.add((key, 'presence'));
+        if (after != null) {
+          for (final field in after.keys) {
+            changed.add((key, field));
+          }
+        }
+        continue;
+      }
+      var recordChanged = false;
+      for (final field in <String>{...before.keys, ...after.keys}) {
+        if (!_sameFieldValue(before, after, field)) {
+          changed.add((key, field));
+          recordChanged = true;
+        }
+      }
+      if (recordChanged) {
+        changed.add((key, 'presence'));
+      }
+    }
+    _recordManualChanges(changed, dot);
+  }
+
+  void _recordManualChanges(Set<(String, String)> changes, String dot) {
+    for (final (recordKey, field) in changes) {
+      _localEdits.putIfAbsent(recordKey, () => <String, String>{})[field] = dot;
+    }
+  }
+
+  static Set<(String, String)> _confirmedRecoveryManualChanges({
+    required SyncRecords target,
+    required SyncRecords actual,
+    required SyncRecords previous,
+  }) {
+    final changes = <(String, String)>{};
+    for (final key in <String>{...target.keys, ...actual.keys}) {
+      final targetRecord = target[key];
+      final actualRecord = actual[key];
+      final previousRecord = previous[key];
+      if ((targetRecord != null) != (actualRecord != null) &&
+          (actualRecord != null) != (previousRecord != null)) {
+        changes.add((key, 'presence'));
+      }
+      if (actualRecord == null) continue;
+      for (final field in <String>{
+        ...?targetRecord?.keys,
+        ...actualRecord.keys,
+      }) {
+        if (!_sameFieldValue(targetRecord, actualRecord, field) &&
+            !_sameFieldValue(previousRecord, actualRecord, field)) {
+          changes.add((key, field));
+        }
+      }
+    }
+    return changes;
+  }
+
+  static bool _sameFieldValue(
+    Map<String, Object?>? left,
+    Map<String, Object?>? right,
+    String field,
+  ) {
+    final leftHas = left?.containsKey(field) ?? false;
+    final rightHas = right?.containsKey(field) ?? false;
+    return leftHas == rightHas &&
+        (!leftHas || syncValuesEqual(left![field], right![field]));
   }
 
   static void _validateJson(Object? value) {

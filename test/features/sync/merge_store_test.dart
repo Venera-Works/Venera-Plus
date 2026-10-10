@@ -201,7 +201,271 @@ void main() {
         expect(_databaseSummary(replica, 'device-alpha'), first);
       },
     );
+    test('tracks bootstrap, local fields, and sync completion durably', () async {
+      final store = MergeStore(tempDir, 'device-alpha');
+      await store.load();
+      await store.capture({});
+      expect(store.hasCompletedSync, isFalse);
 
+      final key = syncRecordKey('folder', ['manual-field']);
+      await store.capture({
+        key: {'name': 'Local'},
+      });
+      final manualId = store.manualCandidateId(key, 'name');
+      expect(manualId, 'device-alpha:1');
+      expect(store.manualCandidateId(key, 'presence'), 'device-alpha:1');
+
+      await store.completeSync();
+      final reopened = MergeStore(tempDir, 'device-alpha');
+      await reopened.load();
+      expect(reopened.hasCompletedSync, isTrue);
+      expect(reopened.manualCandidateId(key, 'name'), manualId);
+
+      String localEditsJson(File file) {
+        final database = sqlite3.open(file.path);
+        try {
+          return database
+                  .select(
+                    '''
+                SELECT value_json FROM merge_business_records
+                WHERE kind = 'localEdits' AND record_key = ?;
+                ''',
+                    [key],
+                  )
+                  .single['value_json']
+              as String;
+        } finally {
+          database.close();
+        }
+      }
+
+      String completedMarker(File file) {
+        final database = sqlite3.open(file.path);
+        try {
+          return database
+                  .select(
+                    "SELECT value FROM merge_store_meta WHERE key = 'hasCompletedSync';",
+                  )
+                  .single['value']
+              as String;
+        } finally {
+          database.close();
+        }
+      }
+
+      final primary = File('${tempDir.path}/merge_store.sqlite3');
+      final replica = File('${primary.path}.bak');
+      expect(localEditsJson(primary), localEditsJson(replica));
+      expect(completedMarker(primary), '1');
+      expect(completedMarker(replica), '1');
+    });
+
+    test(
+      'cloud apply is not manual and capture tracks record deletion',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+        final cloudKey = syncRecordKey('folder', ['cloud-import']);
+        final cloudRecords = {
+          cloudKey: {'name': 'Cloud'},
+        };
+        await store.stageApply(cloudRecords);
+        await store.completeApply(cloudRecords);
+        expect(store.manualCandidateId(cloudKey, 'name'), isNull);
+        expect(store.hasCompletedSync, isFalse);
+
+        final localKey = syncRecordKey('folder', ['deleted-locally']);
+        await store.capture({
+          ...cloudRecords,
+          localKey: {'name': 'Local'},
+        });
+        expect(store.manualCandidateId(localKey, 'name'), 'device-alpha:1');
+        await store.capture(cloudRecords);
+        expect(store.manualCandidateId(localKey, 'presence'), 'device-alpha:2');
+        expect(store.manualCandidateId(localKey, 'name'), isNull);
+        expect(store.manualCandidateId(cloudKey, 'name'), isNull);
+      },
+    );
+
+    test('manual record edits survive a concurrent cloud deletion', () async {
+      final key = syncRecordKey('favorite', ['folder', 'comic', 0]);
+      final base = {
+        key: <String, Object?>{'title': 'Original', 'order': 0},
+      };
+      var store = MergeStore(tempDir, 'device-alpha');
+      await store.load();
+      await store.capture(base);
+      final cloud = store.document.clone()..captureLocal('cloud', base, {});
+      await store.capture({
+        key: {'title': 'Manual title', 'order': 0},
+      });
+      final titleId = store.manualCandidateId(key, 'title');
+      await store.capture({
+        key: {'title': 'Manual title', 'order': 1},
+      });
+      store = MergeStore(tempDir, 'device-alpha');
+      await store.load();
+      store.document.merge(cloud);
+      final conflict = store.document.conflicts.singleWhere(
+        (item) => item.field == 'presence',
+      );
+      await store.resolveAll([
+        MergeConflictResolution(
+          recordKey: key,
+          field: 'presence',
+          candidateId: store.manualCandidateId(key, 'presence')!,
+          expectedCandidateIds: conflict.candidates
+              .map((item) => item.id)
+              .toSet(),
+        ),
+      ], manual: false);
+      expect(store.pendingApply![key], {'title': 'Manual title', 'order': 1});
+      expect(store.manualCandidateId(key, 'title'), titleId);
+      expect(store.document.conflicts, isEmpty);
+    });
+
+    test(
+      'automatic resolution inherits or clears a local manual field',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+        final key = syncRecordKey('folder', ['automatic-manual-choice']);
+        final base = {
+          key: {'name': 'Base'},
+        };
+        await store.capture(base);
+        await store.capture({
+          key: {'name': 'Local'},
+        });
+        final firstManualId = store.manualCandidateId(key, 'name')!;
+
+        final remoteA = MergeDocument()
+          ..captureLocal('remote-a', {}, base)
+          ..captureLocal('remote-a', base, {
+            key: {'name': 'Cloud A'},
+          });
+        store.document.merge(remoteA);
+        final firstConflict = store.document.conflicts.singleWhere(
+          (conflict) => conflict.field == 'name',
+        );
+        expect(
+          firstConflict.candidates.map((candidate) => candidate.id),
+          contains(firstManualId),
+        );
+        await store.resolveAll([
+          MergeConflictResolution(
+            recordKey: key,
+            field: 'name',
+            candidateId: firstManualId,
+          ),
+        ], manual: false);
+        final inheritedManualId = store.manualCandidateId(key, 'name');
+        expect(inheritedManualId, isNotNull);
+        expect(inheritedManualId, isNot(firstManualId));
+        await store.completeApply(store.pendingApply!);
+
+        await store.capture({
+          key: {'name': 'Local again'},
+        });
+        final secondManualId = store.manualCandidateId(key, 'name')!;
+        final remoteB = MergeDocument()
+          ..captureLocal('remote-b', {}, base)
+          ..captureLocal('remote-b', base, {
+            key: {'name': 'Cloud B'},
+          });
+        store.document.merge(remoteB);
+        final secondConflict = store.document.conflicts.singleWhere(
+          (conflict) => conflict.recordKey == key && conflict.field == 'name',
+        );
+        final cloudCandidate = secondConflict.candidates.singleWhere(
+          (candidate) =>
+              candidate.actor == 'remote-b' && candidate.value == 'Cloud B',
+        );
+        expect(
+          secondConflict.candidates.map((candidate) => candidate.id),
+          contains(secondManualId),
+        );
+        await store.resolveAll([
+          MergeConflictResolution(
+            recordKey: key,
+            field: 'name',
+            candidateId: cloudCandidate.id,
+          ),
+        ], manual: false);
+        expect(store.manualCandidateId(key, 'name'), isNull);
+      },
+    );
+
+    test(
+      'automatic duration total inherits a local contribution marker',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+        final key = syncRecordKey('history', ['manual-duration']);
+        final base = {
+          key: {'readDurationMs': 100},
+        };
+        await store.capture(base);
+        await store.capture({
+          key: {'readDurationMs': 120},
+        });
+        final manualId = store.manualCandidateId(key, 'readDurationMs')!;
+
+        final remote = MergeDocument()
+          ..captureLocal('remote-duration', {}, base, bootstrap: true)
+          ..captureLocal('remote-duration', base, {
+            key: {'readDurationMs': 50},
+          });
+        store.document.merge(remote);
+        final conflict = store.document.conflicts.singleWhere(
+          (candidate) => candidate.field == 'readDurationMs',
+        );
+        final accumulatedTotal = conflict.candidates.singleWhere(
+          (candidate) => candidate.id == 'accumulated_total',
+        );
+        expect(accumulatedTotal.value, 120);
+
+        await store.resolveAll([
+          MergeConflictResolution(
+            recordKey: key,
+            field: 'readDurationMs',
+            candidateId: accumulatedTotal.id,
+          ),
+        ], manual: false);
+        expect(
+          store.manualCandidateId(key, 'readDurationMs'),
+          'device-alpha:3',
+        );
+        expect(store.manualCandidateId(key, 'readDurationMs'), isNot(manualId));
+      },
+    );
+    test('pending recovery only marks proven edits as manual', () async {
+      final store = MergeStore(tempDir, 'device-alpha');
+      await store.load();
+      final key = syncRecordKey('folder', ['recovered-local-edit']);
+      await store.capture({
+        key: {'name': 'Original', 'order': 1},
+      });
+
+      final firstTarget = {
+        key: {'name': 'Cloud', 'order': 2},
+      };
+      await store.stageApply(firstTarget);
+      await store.recoverPendingApply({
+        key: {'name': 'Cloud', 'order': 1},
+      }, previous: firstTarget);
+      expect(store.manualCandidateId(key, 'order'), isNull);
+      await store.completeApply(store.pendingApply!);
+
+      final nextTarget = {
+        key: {'name': 'Next cloud', 'order': 3},
+      };
+      await store.stageApply(nextTarget);
+      await store.recoverPendingApply({
+        key: {'name': 'Next cloud', 'order': 4},
+      }, previous: nextTarget);
+      expect(store.manualCandidateId(key, 'order'), 'device-alpha:3');
+    });
     test('committed empty store captures inside overrideIO', () async {
       const actor = 'device-alpha';
       final primary = File('${tempDir.path}/merge_store.sqlite3');
@@ -652,6 +916,8 @@ void main() {
             candidateId: candRemote.id,
           ),
         ]);
+        final manualResolutionId = store.manualCandidateId(key, 'name');
+        expect(manualResolutionId, 'device-alpha:2');
 
         expect(store.document.conflicts, isEmpty);
         expect(store.observed[key]?['name'], 'Local');
@@ -663,6 +929,10 @@ void main() {
         await storeReloaded.load();
         expect(storeReloaded.document.conflicts, isEmpty);
         expect(storeReloaded.observed[key]?['name'], 'Local');
+        expect(
+          storeReloaded.manualCandidateId(key, 'name'),
+          manualResolutionId,
+        );
         expect(storeReloaded.outbox.length, 1);
         expect(storeReloaded.pendingApply![key]?['name'], 'Remote');
         expect(

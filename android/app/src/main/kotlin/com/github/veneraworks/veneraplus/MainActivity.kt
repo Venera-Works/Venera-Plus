@@ -30,7 +30,9 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugins.GeneratedPluginRegistrant
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.util.UUID
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 
 class MainActivity : FlutterFragmentActivity() {
@@ -103,6 +105,79 @@ class MainActivity : FlutterFragmentActivity() {
         launcher.launch(input)
     }
 
+    private fun getSyncDeviceName(): String? {
+        val model = readMarketName() ?: usableSyncMetadata(Build.MODEL)
+        val brand = usableSyncMetadata(Build.BRAND)
+            ?: usableSyncMetadata(Build.MANUFACTURER)
+        if (model == null) return brand?.let(::formatAndroidBrand)
+        if (brand == null || model.startsWith(brand, ignoreCase = true)) {
+            return model
+        }
+        return "${formatAndroidBrand(brand)} $model"
+    }
+
+    private fun readMarketName(): String? {
+        for (property in arrayOf(
+            "ro.product.marketname",
+            "ro.product.vendor.marketname",
+            "ro.product.odm.marketname",
+        )) {
+            readSyncSystemProperty(property)?.let { return it }
+        }
+        return null
+    }
+
+    private fun readSyncSystemProperty(property: String): String? {
+        val process = try {
+            ProcessBuilder("/system/bin/getprop", property).start()
+        } catch (_: IOException) {
+            return null
+        } catch (_: SecurityException) {
+            return null
+        }
+
+        return try {
+            val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+            if (process.waitFor() != 0 || output.startsWith("getprop:", ignoreCase = true)) {
+                null
+            } else {
+                usableSyncMetadata(output)
+            }
+        } catch (_: IOException) {
+            null
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            null
+        } finally {
+            process.destroy()
+        }
+    }
+
+    private fun usableSyncMetadata(value: String?): String? {
+        val trimmed = value?.trim() ?: return null
+        return trimmed.takeIf {
+            it.isNotEmpty() &&
+                !it.equals("unknown", ignoreCase = true) &&
+                !it.equals("android", ignoreCase = true)
+        }
+    }
+
+    private fun formatAndroidBrand(brand: String): String {
+        return when (brand.lowercase(Locale.ROOT)) {
+            "asus" -> "ASUS"
+            "google" -> "Google"
+            "lenovo" -> "Lenovo"
+            "oneplus" -> "OnePlus"
+            "poco" -> "POCO"
+            "redmi" -> "Redmi"
+            "samsung" -> "Samsung"
+            "xiaomi" -> "Xiaomi"
+            else -> brand.lowercase(Locale.ROOT).replaceFirstChar {
+                it.titlecase(Locale.ROOT)
+            }
+        }
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         GeneratedPluginRegistrant.registerWith(flutterEngine)
         MethodChannel(
@@ -110,11 +185,7 @@ class MainActivity : FlutterFragmentActivity() {
             "venera/method_channel"
         ).setMethodCallHandler { call, res ->
             when (call.method) {
-                "getSyncDeviceName" -> {
-                    val name = Build.MODEL.takeIf { it.isNotBlank() }
-                        ?: Build.DEVICE
-                    res.success(name)
-                }
+                "getSyncDeviceName" -> res.success(getSyncDeviceName())
                 "getProxy" -> res.success(getProxy())
                 "setScreenOn" -> {
                     val set = call.argument<Boolean>("set") ?: false

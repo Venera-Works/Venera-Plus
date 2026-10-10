@@ -1,5 +1,19 @@
 import Cocoa
 import FlutterMacOS
+import Darwin
+
+private func hardwareModelIdentifier() -> String? {
+  var size: size_t = 0
+  guard sysctlbyname("hw.model", nil, &size, nil, 0) == 0, size > 1 else {
+    return nil
+  }
+
+  var identifier = [CChar](repeating: 0, count: Int(size))
+  guard sysctlbyname("hw.model", &identifier, &size, nil, 0) == 0 else {
+    return nil
+  }
+  return String(cString: identifier)
+}
 
 @main
 class AppDelegate: FlutterAppDelegate {
@@ -12,6 +26,8 @@ class AppDelegate: FlutterAppDelegate {
 
       methodChannel.setMethodCallHandler { (call, result) in
         switch call.method {
+        case "getSyncDeviceName":
+          result(hardwareModelIdentifier())
         case "getProxy":
             if let proxySettings = CFNetworkCopySystemProxySettings()?.takeUnretainedValue() as NSDictionary? {
                 if let httpProxy = proxySettings[kCFNetworkProxiesHTTPProxy] as? String,

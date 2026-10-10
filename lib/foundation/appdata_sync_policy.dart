@@ -22,11 +22,6 @@ const appdataDefaultDisabledSyncFields = <String>{
   'backupWebdav',
   'backupWebdavPath',
   'backupWebdavSyncEnabled',
-  'webdavComicLibrary',
-  'webdavComicLibraryPath',
-  'webdavComicLibraryAutoSync',
-  'webdavComicLibrarySyncIntervalMinutes',
-  'webdavComicLibrarySyncEnabled',
   'disableSyncFields',
   'deviceId',
   'deviceSpecificSettings',
@@ -43,6 +38,7 @@ const appdataComicLibrarySyncFields = {
 };
 
 const appdataObsoleteSyncSetting = 'readLaterFolder';
+const appdataObsoleteComicLibrarySyncSetting = 'webdavComicLibrarySyncEnabled';
 
 /// The concrete record domains used by the sync document.
 ///
@@ -136,13 +132,11 @@ Set<String> getDisabledAppDataSyncFields(Map<String, dynamic> settings) {
   final disabled = <String>{
     ...appdataDefaultDisabledSyncFields,
     appdataObsoleteSyncSetting,
+    appdataObsoleteComicLibrarySyncSetting,
     'readingFolder',
   };
   if (settings['backupWebdavSyncEnabled'] == true) {
     disabled.removeAll(appdataArchiveSyncFields);
-  }
-  if (settings['webdavComicLibrarySyncEnabled'] == true) {
-    disabled.removeAll(appdataComicLibrarySyncFields);
   }
   final custom = settings['disableSyncFields'];
   if (custom is String) {
@@ -153,5 +147,8 @@ Set<String> getDisabledAppDataSyncFields(Map<String, dynamic> settings) {
           .where((field) => field.isNotEmpty),
     );
   }
+  // Comic library configuration isn't excluded by root-level policy, even by
+  // stale legacy toggles or custom field entries.
+  disabled.removeAll(appdataComicLibrarySyncFields);
   return disabled;
 }

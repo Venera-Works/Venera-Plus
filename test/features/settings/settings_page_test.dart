@@ -73,49 +73,13 @@ void main() {
       App.dataPath = originalDataPath;
       App.cachePath = originalCachePath;
     }
-    // These routes do not save on disposal, and the credential switch changes
-    // only dialog state. There are no queued writes or cache scans to drain;
-    // a cleanup-only save would introduce unnecessary asynchronous file I/O.
+    // These routes do not save on disposal. There are no queued writes or cache
+    // scans to drain; a cleanup-only save would introduce unnecessary file I/O.
     final root = testRoot;
     testRoot = null;
     if (root != null && await root.exists()) {
       await root.delete(recursive: true);
     }
-  });
-
-  testWidgets('comic library settings expose credential sync opt-in', (
-    tester,
-  ) async {
-    _setupTestView(tester, const Size(700, 1400));
-    appdata.settings['webdavComicLibrarySyncEnabled'] = false;
-
-    await tester.pumpWidget(
-      MaterialApp(
-        builder: (context, child) => MediaQuery(
-          data: MediaQuery.of(
-            context,
-          ).copyWith(textScaler: const TextScaler.linear(0.8)),
-          child: child!,
-        ),
-        home: const SettingsPage(),
-      ),
-    );
-    await tester.tap(find.text('Sources and Services'));
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('WebDAV Comic Library'));
-    await tester.tap(find.text('WebDAV Comic Library'));
-    await tester.pumpAndSettle();
-
-    final switchFinder = find.byKey(
-      const Key('webdav-comic-library-config-sync-switch'),
-    );
-    expect(switchFinder, findsOneWidget);
-    expect(tester.widget<SwitchListTile>(switchFinder).value, isFalse);
-
-    await tester.tap(switchFinder);
-    await tester.pump();
-
-    expect(tester.widget<SwitchListTile>(switchFinder).value, isTrue);
   });
 
   testWidgets(

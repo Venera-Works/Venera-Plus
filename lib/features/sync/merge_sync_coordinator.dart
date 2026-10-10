@@ -22,6 +22,7 @@ import 'merge_remote.dart';
 import 'merge_snapshot.dart';
 import 'merge_store.dart';
 import 'merge_store_error.dart';
+import 'sync_conflict_policy.dart';
 import 'sync_preferences_adapter.dart';
 import 'sync_initialization_diagnostics.dart';
 
@@ -144,6 +145,9 @@ class MergeSyncCoordinator {
   final Set<String> _changedRecordKeys = {};
   SyncLocalSnapshot? _cachedSnapshot;
   int? _capturedGeneration;
+  final Map<String, DateTime> _cloudActorModifiedAt = {};
+  final Map<String, int> _cloudActorCounters = {};
+  final Set<String> _directCloudActors = {};
   int _lastSyncDurationMs = 0;
   int get lastSyncDurationMs => _lastSyncDurationMs;
 
@@ -604,6 +608,8 @@ class MergeSyncCoordinator {
   Future<void> _applyMerged(
     MergeDocument observation, {
     int? stagedGeneration,
+    bool autoResolve = false,
+    int? initialSyncCounter,
   }) async {
     for (var attempt = 0; attempt < 16; attempt++) {
       final alreadyStaged = attempt == 0 && stagedGeneration != null;
@@ -616,7 +622,29 @@ class MergeSyncCoordinator {
       final unavailable = alreadyStaged
           ? store.pendingUnavailableDomains
           : unavailableDomains;
-      final desired = alreadyStaged
+      var hasStagedTarget = alreadyStaged;
+      if (autoResolve && !alreadyStaged) {
+        final resolutions = automaticConflictResolutions(
+          document: store.document,
+          localActor: actor,
+          localRecords: captured!.snapshot.records,
+          firstSync: !store.hasCompletedSync,
+          initialSyncCounter: initialSyncCounter,
+          manualCandidateId: store.manualCandidateId,
+          cloudActorModifiedAt: _cloudActorModifiedAt,
+          unavailableDomains: unavailable,
+          shouldObserveRecord: preferencesAdapter.shouldObserveRecord,
+        );
+        if (resolutions.isNotEmpty) {
+          await store.resolveAll(
+            resolutions,
+            unavailableDomains: unavailable,
+            manual: false,
+          );
+          hasStagedTarget = true;
+        }
+      }
+      final desired = hasStagedTarget
           ? store.pendingApply!
           : store.document.materialize(preferred: store.observed);
       final desiredRecords = _project(desired);
@@ -625,7 +653,7 @@ class MergeSyncCoordinator {
         desiredRecords,
       );
       final needsBusinessApply = appliedDomains.isNotEmpty;
-      if (!alreadyStaged &&
+      if (!hasStagedTarget &&
           !needsBusinessApply &&
           unavailable.isEmpty &&
           syncValuesEqual(
@@ -640,7 +668,7 @@ class MergeSyncCoordinator {
         }
         return;
       }
-      if (!alreadyStaged) {
+      if (!hasStagedTarget) {
         await store.stageApply(desired, unavailableDomains: unavailable);
       }
       void guard() {
@@ -923,6 +951,7 @@ class MergeSyncCoordinator {
     for (final entry in remoteEntries) {
       try {
         final batch = await _measure('download', () => remote.download(entry));
+        _recordCloudTime(entry, batch.document);
         remoteDocs.add(batch.document);
         if (!applyToLocal) {
           for (final value in batch.document.vclock.entries) {
@@ -1006,6 +1035,9 @@ class MergeSyncCoordinator {
           }
           for (final domain in domainsInSeed) {
             final domainActor = 'legacy_seed_${seed.id}_$domain';
+            if (seed.modifiedAt != null) {
+              _cloudActorModifiedAt[domainActor] = seed.modifiedAt!;
+            }
             if (isActorCovered(domainActor) ||
                 seed.unavailableDomains.contains(domain)) {
               continue;
@@ -1041,7 +1073,13 @@ class MergeSyncCoordinator {
         if (changed) {
           imported = true;
           await store.enqueueCheckpoint();
-          if (applyToLocal) await _applyMerged(store.localObservation);
+          if (applyToLocal) {
+            await _applyMerged(
+              store.localObservation,
+              autoResolve: true,
+              initialSyncCounter: store.document.counterFor(actor),
+            );
+          }
         }
         if (backupName != null && seeds.isNotEmpty) {
           await _reconcileExplicitLegacySourceHealth(
@@ -1201,6 +1239,26 @@ class MergeSyncCoordinator {
     legacyBackupName: backupName,
   );
 
+  void _recordCloudTime(MergeRemoteEntry entry, MergeDocument? document) {
+    final time = entry.modifiedAt;
+    if (time == null) return;
+    for (final id in document?.activeCandidateIds ?? const <String>[]) {
+      final candidateActor = MergeDot.parse(id).actor;
+      if (!_directCloudActors.contains(candidateActor)) {
+        final previous = _cloudActorModifiedAt[candidateActor];
+        if (previous == null || time.isAfter(previous)) {
+          _cloudActorModifiedAt[candidateActor] = time;
+        }
+      }
+    }
+    final previousCounter = _cloudActorCounters[entry.actor];
+    if (previousCounter == null || entry.counter >= previousCounter) {
+      _cloudActorCounters[entry.actor] = entry.counter;
+      _cloudActorModifiedAt[entry.actor] = time;
+      _directCloudActors.add(entry.actor);
+    }
+  }
+
   Future<bool> _mergeRemoteEntries(List<MergeRemoteEntry> entries) async {
     final byActor = <String, List<MergeRemoteEntry>>{};
     for (final entry in entries) {
@@ -1216,6 +1274,7 @@ class MergeSyncCoordinator {
           continue;
         }
         if (received.contains(entry.filename)) {
+          _recordCloudTime(entry, null);
           highestSucceeded = entry.counter;
           continue;
         }
@@ -1224,6 +1283,7 @@ class MergeSyncCoordinator {
             'download',
             () => remote.download(entry),
           );
+          _recordCloudTime(entry, batch.document);
           await _measure('merge', () async {
             store.document.merge(batch.document);
             await store.markReceived(entry.filename);
@@ -1252,6 +1312,9 @@ class MergeSyncCoordinator {
     final diagnostics = _SyncDiagnostics();
     final total = Stopwatch()..start();
     _activeDiagnostics = diagnostics;
+    _cloudActorModifiedAt.clear();
+    _cloudActorCounters.clear();
+    _directCloudActors.clear();
     if (forceCapture) {
       _changedRecordKeys.clear();
       markDirty();
@@ -1268,6 +1331,7 @@ class MergeSyncCoordinator {
           await _normalizeSourcesLocally(captured);
         }
       });
+      final initialSyncCounter = store.document.counterFor(actor);
       final observation = store.localObservation;
       final markerKey = 'legacyMigrationDone_$endpointHash';
       final shouldMigrateLegacy =
@@ -1294,35 +1358,15 @@ class MergeSyncCoordinator {
       }
       if (direction != SyncDirection.uploadOnly &&
           (needsRemoteCheck || importedLegacy)) {
-        // Capture edits that arrived while waiting for remote data before
-        // making a durable selection; the apply guard remains authoritative.
-        final stable = await _measure(
-          'capture',
-          () => _captureStable(observation: observation),
+        await _measure(
+          'apply',
+          () => _applyMerged(
+            observation,
+            autoResolve: true,
+            initialSyncCounter: initialSyncCounter,
+          ),
         );
-        final preference = appdata.implicitData['syncPreferredSettingActor'];
-        final resolutions = store.document
-            .preferredSettingResolutions(
-              preference is String ? preference : null,
-            )
-            .where(
-              (choice) =>
-                  preferencesAdapter.shouldObserveRecord(choice.recordKey),
-            )
-            .toList();
-        if (resolutions.isNotEmpty) {
-          await store.resolveAll(
-            resolutions,
-            unavailableDomains: unavailableDomains,
-          );
-          await _measure(
-            'apply',
-            () =>
-                _applyMerged(observation, stagedGeneration: stable.generation),
-          );
-        } else {
-          await _measure('apply', () => _applyMerged(observation));
-        }
+        await store.completeSync();
       }
 
       if (direction != SyncDirection.downloadOnly) {
@@ -1331,6 +1375,7 @@ class MergeSyncCoordinator {
           ensurePublished: needsRemoteCheck || forceCapture,
         );
       }
+      if (direction == SyncDirection.uploadOnly) await store.completeSync();
       return legacyBackupName == null ? const Res(true) : Res(importedLegacy);
     } catch (error) {
       Log.error(

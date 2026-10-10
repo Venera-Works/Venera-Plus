@@ -40,6 +40,7 @@ class LegacyMergeSeed {
   final List<SyncSourceIssue> sourceIssues;
   final Set<String> unavailableDomains;
   final Set<String> appliedOverrideFilenames;
+  final DateTime? modifiedAt;
 
   const LegacyMergeSeed(
     this.id,
@@ -48,6 +49,7 @@ class LegacyMergeSeed {
     this.sourceIssues = const [],
     this.unavailableDomains = const {},
     this.appliedOverrideFilenames = const {},
+    this.modifiedAt,
   });
 
   @override
@@ -1188,6 +1190,7 @@ class LegacySyncReader {
         sourceIssues: annotatedIssues,
         unavailableDomains: preferenceSnapshot.unavailableDomains,
         appliedOverrideFilenames: appliedOverrideFilenames,
+        modifiedAt: snapshot.file.mTime,
       );
     } finally {
       try {

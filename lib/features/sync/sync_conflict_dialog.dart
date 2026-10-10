@@ -4,14 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/features/sync/data_sync.dart';
 import 'package:venera_plus/features/sync/merge_engine.dart';
-import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/foundation/sync_candidate_preview.dart';
 import 'package:venera_plus/foundation/sync_records.dart';
 import 'package:venera_plus/foundation/translations.dart';
-
-const _preferredSettingActorKey = 'syncPreferredSettingActor';
 
 /// Safely formats a candidate value for preview in UI or tests, masking secrets.
 String _formatProgressTime(num timestamp) {
@@ -195,12 +192,8 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
   String _searchQuery = '';
   String? _groupFilter;
   String? _bulkActor;
-  String? _lastBulkSelectedActor;
-  final Set<(String, String)> _lastBulkSelectedKeys = {};
   bool _onlyUnselected = false;
-  bool _rememberSettingDevice = false;
   bool _isSubmitting = false;
-  bool _isClearingPreference = false;
 
   @override
   void initState() {
@@ -244,11 +237,6 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
 
   SyncRecords get _localCurrentRecords =>
       widget.localRecords ?? _sync.localObservedRecords;
-
-  String? get _savedPreferredSettingActor {
-    final actor = appdata.implicitData[_preferredSettingActorKey];
-    return actor is String && actor.isNotEmpty ? actor : null;
-  }
 
   String _deviceName(String actor) {
     final name = _sync.deviceNames[actor]?.trim();
@@ -320,40 +308,6 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
     return null;
   }
 
-  bool _isOrdinarySettingCandidate(
-    MergeConflict conflict,
-    MergeCandidate candidate,
-  ) =>
-      _domainOf(conflict) == 'setting' &&
-      conflict.field != 'presence' &&
-      !candidate.isDeleted &&
-      !syncCandidatePreviewIsProtected(
-        domain: 'setting',
-        field: conflict.field,
-        recordKey: conflict.recordKey,
-      );
-
-  bool get _canRememberSelectedDevice {
-    final actor = _lastBulkSelectedActor;
-    if (actor == null) return false;
-    for (final conflict in _activeConflicts) {
-      if (!_lastBulkSelectedKeys.contains((
-        conflict.recordKey,
-        conflict.field,
-      ))) {
-        continue;
-      }
-      if (!_selectionIsCurrent(conflict)) continue;
-      final candidate = _chosenCandidate(conflict);
-      if (candidate != null &&
-          candidate.actor == actor &&
-          _isOrdinarySettingCandidate(conflict, candidate)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   void _rememberCandidate(MergeConflict conflict, MergeCandidate candidate) {
     _selectedCandidates[(conflict.recordKey, conflict.field)] = (
       candidateId: candidate.id,
@@ -386,7 +340,6 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
     if (_isSubmitting) return;
     final visible = _visibleConflicts(_activeConflicts);
     setState(() {
-      _lastBulkSelectedKeys.clear();
       for (final conflict in visible) {
         final candidate = _newestCandidate(
           conflict.candidates.where(
@@ -395,11 +348,8 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
         );
         if (candidate == null) continue;
         _rememberCandidate(conflict, candidate);
-        _lastBulkSelectedKeys.add((conflict.recordKey, conflict.field));
       }
-      if (_lastBulkSelectedActor != actor) _rememberSettingDevice = false;
       _bulkActor = actor;
-      _lastBulkSelectedActor = actor;
     });
   }
 
@@ -430,43 +380,6 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
     });
   }
 
-  Future<void> _persistPreferredSettingActor(String actor) async {
-    const key = _preferredSettingActorKey;
-    final hadPrevious = appdata.implicitData.containsKey(key);
-    final previous = appdata.implicitData[key];
-    appdata.implicitData[key] = actor;
-    try {
-      await appdata.writeImplicitData();
-    } catch (_) {
-      if (hadPrevious) {
-        appdata.implicitData[key] = previous;
-      } else {
-        appdata.implicitData.remove(key);
-      }
-      if (mounted) {
-        context.showMessage(message: 'Could not save preferred device'.tl);
-      }
-    }
-  }
-
-  Future<void> _clearPreferredSettingActor() async {
-    if (_isSubmitting || _isClearingPreference) return;
-    const key = _preferredSettingActorKey;
-    final hadPrevious = appdata.implicitData.containsKey(key);
-    final previous = appdata.implicitData.remove(key);
-    setState(() => _isClearingPreference = true);
-    try {
-      await appdata.writeImplicitData();
-    } catch (_) {
-      if (hadPrevious) appdata.implicitData[key] = previous;
-      if (mounted) {
-        context.showMessage(message: 'Could not clear preferred device'.tl);
-      }
-    } finally {
-      if (mounted) setState(() => _isClearingPreference = false);
-    }
-  }
-
   Future<void> _submitSelections() async {
     if (_isSubmitting) return;
     final conflicts = _activeConflicts;
@@ -490,18 +403,6 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
                   .candidateFingerprint,
         ),
     ]);
-    String? actorToRemember;
-    if (_rememberSettingDevice && _lastBulkSelectedActor != null) {
-      for (final conflict in selected) {
-        final candidate = _chosenCandidate(conflict);
-        if (candidate != null &&
-            candidate.actor == _lastBulkSelectedActor &&
-            _isOrdinarySettingCandidate(conflict, candidate)) {
-          actorToRemember = _lastBulkSelectedActor;
-          break;
-        }
-      }
-    }
     setState(() => _isSubmitting = true);
     try {
       final res = widget.onResolve != null
@@ -526,9 +427,6 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
                 resolved.contains((conflict.recordKey, conflict.field)),
           );
         });
-        if (actorToRemember != null) {
-          await _persistPreferredSettingActor(actorToRemember);
-        }
       }
     } catch (error) {
       if (mounted) {
@@ -771,14 +669,7 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
                   ],
                   onChanged: _isSubmitting
                       ? null
-                      : (actor) => setState(() {
-                          _bulkActor = actor;
-                          if (actor != _lastBulkSelectedActor) {
-                            _lastBulkSelectedActor = null;
-                            _lastBulkSelectedKeys.clear();
-                            _rememberSettingDevice = false;
-                          }
-                        }),
+                      : (actor) => setState(() => _bulkActor = actor),
                 ),
               ),
             ),
@@ -805,44 +696,7 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
                 ),
             ],
           ),
-          if (_canRememberSelectedDevice)
-            CheckboxListTile(
-              key: const ValueKey('sync-conflict-remember-device'),
-              contentPadding: EdgeInsets.zero,
-              controlAffinity: ListTileControlAffinity.leading,
-              value: _rememberSettingDevice,
-              onChanged: _isSubmitting
-                  ? null
-                  : (value) =>
-                        setState(() => _rememberSettingDevice = value == true),
-              title: Text(
-                'Remember this device for ordinary settings after successful resolution'
-                    .tl,
-              ),
-            ),
-          if (_savedPreferredSettingActor != null)
-            _buildSavedPreferenceAction(),
         ],
-      ),
-    );
-  }
-
-  Widget _buildSavedPreferenceAction() {
-    final actor = _savedPreferredSettingActor;
-    if (actor == null) return const SizedBox.shrink();
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: TextButton.icon(
-        key: const ValueKey('sync-conflict-clear-preference'),
-        onPressed: _isSubmitting || _isClearingPreference
-            ? null
-            : _clearPreferredSettingActor,
-        icon: const Icon(Icons.delete_outline),
-        label: Text(
-          'Clear remembered device preference (@device)'.tlParams({
-            'device': _deviceName(actor),
-          }),
-        ),
       ),
     );
   }
@@ -966,10 +820,6 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
                       if (conflicts.isNotEmpty)
                         SliverToBoxAdapter(
                           child: _buildConflictTools(groupDomains, actors),
-                        )
-                      else if (_savedPreferredSettingActor != null)
-                        SliverToBoxAdapter(
-                          child: _buildSavedPreferenceAction(),
                         ),
                       if (conflicts.isEmpty)
                         SliverFillRemaining(

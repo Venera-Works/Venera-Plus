@@ -573,6 +573,30 @@ class MergeDocument {
   }
 
   Map<String, int> get vclock => Map.unmodifiable(_vclock);
+
+  /// Dot IDs that are currently active in any record cell.
+  Set<String> get activeCandidateIds => Set.unmodifiable(<String>{
+    for (final record in _records.values)
+      for (final cell in record.cells) ...cell.values.keys,
+  });
+
+  bool hasActiveCandidate(String recordKey, String field, String candidateId) {
+    final record = _records[recordKey];
+    if (record == null) return false;
+    if (field == 'presence') {
+      return record.presence.values.containsKey(candidateId);
+    }
+    if (field == 'readDurationMs') {
+      return record.bases.values.containsKey(candidateId) ||
+          record.contributions.values.containsKey(candidateId);
+    }
+    return record.fields[field]?.values.containsKey(candidateId) ?? false;
+  }
+
+  bool hasActiveDurationContribution(String recordKey, String candidateId) =>
+      _records[recordKey]?.contributions.values.containsKey(candidateId) ??
+      false;
+
   Iterable<String> get recordKeys => _records.keys;
 
   bool dominates(MergeDocument other) =>
@@ -1057,46 +1081,6 @@ class MergeDocument {
       }
     }
     return result;
-  }
-
-  List<MergeConflictResolution> preferredSettingResolutions(String? actor) {
-    if (actor == null || actor.isEmpty) return const [];
-    final resolutions = <MergeConflictResolution>[];
-    for (final conflict in conflicts) {
-      if (conflict.field == 'presence' ||
-          conflict.candidates.any((candidate) => candidate.isDeleted)) {
-        continue;
-      }
-      try {
-        if (syncRecordDomain(conflict.recordKey) != 'setting') continue;
-      } catch (_) {
-        continue;
-      }
-      final actorCandidates = conflict.candidates
-          .where((candidate) => candidate.actor == actor)
-          .toList(growable: false);
-      if (actorCandidates.length != 1) continue;
-      final candidate = actorCandidates.single;
-      if (syncCandidatePreviewIsProtected(
-        domain: 'setting',
-        field: conflict.field,
-        recordKey: conflict.recordKey,
-      )) {
-        continue;
-      }
-      resolutions.add(
-        MergeConflictResolution(
-          recordKey: conflict.recordKey,
-          field: conflict.field,
-          candidateId: candidate.id,
-          expectedCandidateIds: Set.unmodifiable(
-            conflict.candidates.map((item) => item.id),
-          ),
-          expectedCandidateFingerprint: conflict.candidateFingerprint,
-        ),
-      );
-    }
-    return List.unmodifiable(resolutions);
   }
 
   void resolve(

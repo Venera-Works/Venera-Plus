@@ -101,6 +101,9 @@ class MergeRemoteEntry {
   /// Optional remote HTTP ETag returned by directory listing or HEAD/GET.
   final String? eTag;
 
+  /// Server publication time, used only to order concurrent cloud choices.
+  final DateTime? modifiedAt;
+
   /// The only supported remote wire layout.
   final MergeRemoteLayout layout;
 
@@ -110,6 +113,7 @@ class MergeRemoteEntry {
     required this.counter,
     required this.digest,
     this.eTag,
+    this.modifiedAt,
     this.layout = MergeRemoteLayout.packCommit,
   });
 
@@ -124,6 +128,7 @@ class MergeRemoteEntry {
     String fullPath, {
     required String actor,
     String? eTag,
+    DateTime? modifiedAt,
   }) {
     final segments = fullPath.split('/');
     if (segments.length != 4 ||
@@ -144,6 +149,7 @@ class MergeRemoteEntry {
       counter: counter,
       digest: digest,
       eTag: eTag,
+      modifiedAt: modifiedAt,
       layout: MergeRemoteLayout.packCommit,
     );
   }
@@ -160,11 +166,12 @@ class MergeRemoteEntry {
           counter == other.counter &&
           digest == other.digest &&
           eTag == other.eTag &&
+          modifiedAt == other.modifiedAt &&
           layout == other.layout;
 
   @override
   int get hashCode =>
-      Object.hash(filename, actor, counter, digest, eTag, layout);
+      Object.hash(filename, actor, counter, digest, eTag, modifiedAt, layout);
 
   @override
   String toString() =>
@@ -611,6 +618,7 @@ class MergeRemote {
           '$_namespace/$directoryName/commits/${file.name}',
           actor: owner.actor,
           eTag: file.eTag,
+          modifiedAt: file.mTime,
         );
         if (entry != null) entries.add(entry);
       }

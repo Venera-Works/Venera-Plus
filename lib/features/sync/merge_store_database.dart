@@ -680,6 +680,8 @@ class MergeStoreDatabase {
     required SyncRecords? pendingApply,
     required Set<String> pendingUnavailableDomains,
     required bool initialized,
+    Map<String, Map<String, String>> localEdits = const {},
+    bool? hasCompletedSync,
     bool? counterReconciliationRequired,
   }) async {
     _diagnostics ??= SyncInitializationDiagnostics(
@@ -700,10 +702,19 @@ class MergeStoreDatabase {
       {'document': document, 'localObservation': localObservation},
       observed,
       pendingApply,
+      localEdits,
     );
+    final nextReceived = Set<String>.of(received);
+    final nextCompletedSync =
+        hasCompletedSync ??
+        (_persistedMeta['hasCompletedSync'] == '1' ||
+            (!_persistedMeta.containsKey('hasCompletedSync') &&
+                _databaseExists &&
+                nextReceived.isNotEmpty));
     final nextMeta = <String, String>{
       'actor': actor,
       'initialized': initialized ? '1' : '0',
+      'hasCompletedSync': nextCompletedSync ? '1' : '0',
       'hasPendingApply': pendingApply == null ? '0' : '1',
       'pendingUnavailableDomains': canonicalSyncJson(
         pendingUnavailableDomains.toList()..sort(),
@@ -712,7 +723,6 @@ class MergeStoreDatabase {
       'outboxDeltasVersion': '1',
       'commitRevision': '$_persistedRevision',
     };
-    final nextReceived = Set<String>.of(received);
     final nextOutboxIds = List<String>.of(outboxIds);
     if (nextOutboxIds.toSet().length != nextOutboxIds.length) {
       throw const FormatException('Duplicate pending outbox id');
@@ -1199,6 +1209,7 @@ class MergeStoreDatabase {
       };
       const allowedMeta = {
         ...requiredMeta,
+        'hasCompletedSync',
         'checkpointMigrationComplete',
         'commitFingerprint',
       };
@@ -1217,6 +1228,8 @@ class MergeStoreDatabase {
           !{'0', '1'}.contains(meta['hasPendingApply']) ||
           meta['legacyStateMigrated'] != '1' ||
           meta['outboxDeltasVersion'] != '1' ||
+          (meta.containsKey('hasCompletedSync') &&
+              !{'0', '1'}.contains(meta['hasCompletedSync'])) ||
           (meta.containsKey('checkpointMigrationComplete') &&
               !{'0', '1'}.contains(meta['checkpointMigrationComplete']))) {
         throw const FormatException('Invalid merge SQLite metadata values');
@@ -1296,18 +1309,45 @@ class MergeStoreDatabase {
         'observed': <String, Map<String, Object?>>{},
         'pendingApply': <String, Map<String, Object?>>{},
       };
+      final localEdits = <String, Map<String, String>>{};
+      final documentJson = document.toJson();
+      final documentEventDigests = (documentJson['eventDigests'] as Map)
+          .cast<String, String>();
       for (final row in database.select(
         'SELECT kind, record_key, value_json FROM merge_business_records;',
       )) {
         final kind = row['kind'] as String;
         final key = row['record_key'] as String;
         final encoded = row['value_json'] as String;
+        _validateRecordKey(key);
+        final value = _decodeCanonicalObject(encoded);
+        if (kind == 'localEdits') {
+          if (value.isEmpty || localEdits.containsKey(key)) {
+            throw const FormatException('Invalid local edit metadata row');
+          }
+          final fields = <String, String>{};
+          for (final entry in value.entries) {
+            if (entry.key.isEmpty || entry.value is! String) {
+              throw const FormatException('Invalid local edit metadata');
+            }
+            final id = entry.value as String;
+            final dot = MergeDot.parse(id);
+            if (dot.actor != actor ||
+                dot.counter > document.counterFor(actor) ||
+                !documentEventDigests.containsKey(id) ||
+                !_hasLocalEditCandidate(documentJson, key, entry.key, id)) {
+              throw const FormatException('Invalid local edit candidate');
+            }
+            fields[entry.key] = id;
+          }
+          localEdits[key] = fields;
+          rows[('localEdits', '', key)] = _rowFingerprint(encoded);
+          continue;
+        }
         final recordSet = recordsByKind[kind];
         if (recordSet == null || recordSet.containsKey(key)) {
           throw const FormatException('Invalid business record row');
         }
-        final value = _decodeCanonicalObject(encoded);
-        _validateRecordKey(key);
         _validateJson(value);
         recordSet[key] = value;
         rows[(kind, '', key)] = _rowFingerprint(encoded);
@@ -1463,6 +1503,10 @@ class MergeStoreDatabase {
         pendingApply: pendingApply,
         pendingUnavailableDomains: pendingUnavailableDomains,
         initialized: meta['initialized'] == '1',
+        hasCompletedSync:
+            meta['hasCompletedSync'] == '1' ||
+            (!meta.containsKey('hasCompletedSync') && received.isNotEmpty),
+        localEdits: localEdits,
         recoveredFromBackup: recoveredFromBackup,
         persistedRows: rows,
         persistedMeta: meta,
@@ -2274,10 +2318,13 @@ class MergeStoreDatabase {
     Map<String, MergeDocument> documents,
     SyncRecords observed,
     SyncRecords? pendingApply,
+    Map<String, Map<String, String>> localEdits,
   ) {
     final result = <(String, String, String), String>{};
+    final document = documents['document']!;
+    final docJson = document.toJson();
     for (final entry in documents.entries) {
-      final json = entry.value.toJson();
+      final json = entry.key == 'document' ? docJson : entry.value.toJson();
       final scope = entry.key;
       final vclock = (json['vclock'] as Map).cast<String, Object?>();
       for (final counter in vclock.entries) {
@@ -2292,6 +2339,30 @@ class MergeStoreDatabase {
       for (final record in records.entries) {
         result[('doc', scope, record.key)] = canonicalSyncJson(record.value);
       }
+    }
+    final eventDigests = (docJson['eventDigests'] as Map)
+        .cast<String, String>();
+    for (final entry in localEdits.entries) {
+      _validateRecordKey(entry.key);
+      if (entry.value.isEmpty) continue;
+      for (final fieldEntry in entry.value.entries) {
+        if (fieldEntry.key.isEmpty) {
+          throw const FormatException('Invalid local edit field');
+        }
+        final dot = MergeDot.parse(fieldEntry.value);
+        if (dot.actor != actor ||
+            dot.counter > document.counterFor(actor) ||
+            !eventDigests.containsKey(fieldEntry.value) ||
+            !_hasLocalEditCandidate(
+              docJson,
+              entry.key,
+              fieldEntry.key,
+              fieldEntry.value,
+            )) {
+          throw const FormatException('Invalid local edit candidate');
+        }
+      }
+      result[('localEdits', '', entry.key)] = canonicalSyncJson(entry.value);
     }
     for (final entry in observed.entries) {
       result[('observed', '', entry.key)] = canonicalSyncJson(entry.value);
@@ -2336,6 +2407,7 @@ class MergeStoreDatabase {
           break;
         case 'observed':
         case 'pendingApply':
+        case 'localEdits':
           database.execute(
             'DELETE FROM $schema.merge_business_records WHERE kind = ? AND record_key = ?;',
             [kind, key],
@@ -2376,6 +2448,7 @@ class MergeStoreDatabase {
           break;
         case 'observed':
         case 'pendingApply':
+        case 'localEdits':
           database.execute(
             '''
             INSERT OR REPLACE INTO $schema.merge_business_records(kind, record_key, value_json)
@@ -2538,6 +2611,33 @@ class MergeStoreDatabase {
       throw const FormatException('Noncanonical SQLite record row');
     }
     return result;
+  }
+
+  static bool _hasLocalEditCandidate(
+    Map<String, Object?> documentJson,
+    String recordKey,
+    String field,
+    String id,
+  ) {
+    final records = (documentJson['records'] as Map).cast<String, Object?>();
+    final rawRecord = records[recordKey];
+    if (rawRecord is! Map) return false;
+    final record = rawRecord.cast<String, Object?>();
+    if (field == 'presence') {
+      return _cellHasDot(record['presence'], id);
+    }
+    if (field == 'readDurationMs') {
+      return _cellHasDot(record['bases'], id) ||
+          _cellHasDot(record['contributions'], id);
+    }
+    final fields = (record['fields'] as Map).cast<String, Object?>();
+    return _cellHasDot(fields[field], id);
+  }
+
+  static bool _cellHasDot(Object? rawCell, String id) {
+    if (rawCell is! Map) return false;
+    final seen = rawCell['seen'];
+    return seen is Map && seen.containsKey(id);
   }
 
   static Set<String> _decodeDomains(String encoded) {
@@ -2743,6 +2843,8 @@ class MergeStoreDatabaseState {
   final Set<String> pendingUnavailableDomains;
   final Map<String, Set<String>> outboxChangedRecords;
   final bool initialized;
+  final bool hasCompletedSync;
+  final Map<String, Map<String, String>> localEdits;
   final bool recoveredFromBackup;
   final Map<(String, String, String), String> persistedRows;
   final Map<String, String> persistedMeta;
@@ -2762,6 +2864,8 @@ class MergeStoreDatabaseState {
     required this.outboxChangedRecords,
     required this.pendingUnavailableDomains,
     required this.initialized,
+    this.hasCompletedSync = false,
+    this.localEdits = const {},
     required this.recoveredFromBackup,
     required this.persistedRows,
     required this.persistedMeta,
@@ -2781,6 +2885,8 @@ class MergeStoreDatabaseState {
     outboxChangedRecords: outboxChangedRecords,
     pendingUnavailableDomains: pendingUnavailableDomains,
     initialized: initialized,
+    hasCompletedSync: hasCompletedSync,
+    localEdits: localEdits,
     recoveredFromBackup: value,
     persistedRows: persistedRows,
     persistedMeta: persistedMeta,
