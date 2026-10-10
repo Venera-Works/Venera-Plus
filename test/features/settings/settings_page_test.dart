@@ -1,15 +1,17 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/settings/settings.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library.dart';
 import 'package:venera_plus/foundation/app.dart';
-import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/cache_manager.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/translations.dart';
 
 import '../../widget_test_io.dart';
 
@@ -255,6 +257,7 @@ void main() {
       }
 
       addTearDown(() {
+        registerShowMessageHandler((context, message) {});
         WebDavLibrarySource.contentVersion.removeListener(
           restoreTestOpsAfterConfigurationChange,
         );
@@ -286,13 +289,15 @@ void main() {
       Future<void> tapSaveAndFinish() async {
         final saveButton = find.text('Save and sync');
         await tester.ensureVisible(saveButton);
-        await tester.tap(saveButton);
-        await runWidgetIo(tester, () async {
-          while (find.byType(PopUpWidgetScaffold).evaluate().isNotEmpty ||
-              find.text('Save and sync').evaluate().isNotEmpty) {
-            await Future<void>.delayed(const Duration(milliseconds: 10));
+        final saved = Completer<void>();
+        registerShowMessageHandler((context, message) {
+          if (message == 'Saved'.tl && !saved.isCompleted) {
+            saved.complete();
           }
         });
+        await tester.tap(saveButton);
+        await runWidgetIo(tester, () => saved.future);
+        await tester.pumpAndSettle();
         await runWidgetIo(tester, () async {
           await WebDavLibrarySource.synchronize(force: true);
           await appdata.saveData(false);

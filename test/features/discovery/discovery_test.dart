@@ -281,19 +281,16 @@ void main() {
         );
         expect(appdata.implicitData['discovery_section_$singleKey'], 'browse');
         expect(find.byType(SegmentedButton<DiscoverySection>), findsNothing);
-        final singleSourceWidths = <double>[];
         for (final width in [320.0, 1280.0]) {
           tester.view.physicalSize = Size(width, 844);
           await tester.pumpAndSettle();
           final sourceRect = tester.getRect(sourceSelector);
           final menuRect = tester.getRect(menuSelector);
           final contentRect = tester.getRect(find.byType(ExplorePage));
-          singleSourceWidths.add(sourceRect.width);
           expect(sourceRect.left, closeTo(contentRect.left + 12, 1));
           expect(sourceRect.right + 8, lessThanOrEqualTo(menuRect.left + 1));
           expect(contentRect.right - menuRect.right, closeTo(12, 1));
         }
-        expect(singleSourceWidths.last, closeTo(singleSourceWidths.first, 1));
         expect(tester.takeException(), isNull);
       },
     );

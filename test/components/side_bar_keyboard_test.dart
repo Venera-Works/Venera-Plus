@@ -123,7 +123,7 @@ void main() {
   );
 
   testWidgets(
-    'showPopUpWidget retains independent keyboard avoidance without regression',
+    'popup long title retains actions and independent keyboard avoidance',
     (tester) async {
       tester.view.physicalSize = const Size(800, 600);
       tester.view.devicePixelRatio = 1;
@@ -131,6 +131,7 @@ void main() {
       addTearDown(tester.view.resetDevicePixelRatio);
       addTearDown(tester.view.resetViewInsets);
       addTearDown(tester.view.resetPadding);
+      var actionTapped = false;
 
       await tester.pumpWidget(
         MaterialApp(
@@ -141,8 +142,15 @@ void main() {
                   showPopUpWidget(
                     context,
                     PopUpWidgetScaffold(
-                      title: 'Popup Dialog Test',
+                      title: 'WebDAV Comic Library',
                       body: Container(key: const Key('popup-body')),
+                      tailing: [
+                        IconButton(
+                          tooltip: 'Popup action',
+                          onPressed: () => actionTapped = true,
+                          icon: const Icon(Icons.more_vert),
+                        ),
+                      ],
                     ),
                   );
                 },
@@ -159,6 +167,12 @@ void main() {
       final bodyFinder = find.byKey(const Key('popup-body'));
       expect(bodyFinder, findsOneWidget);
 
+      final titleRect = tester.getRect(find.text('WebDAV Comic Library'));
+      final actionRect = tester.getRect(find.byTooltip('Popup action'));
+      expect(titleRect.right, lessThanOrEqualTo(actionRect.left));
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.byTooltip('Popup action'));
+      expect(actionTapped, isTrue);
       // Record initial body rect before keyboard appears.
       final initialBodyRect = tester.getRect(bodyFinder);
 
