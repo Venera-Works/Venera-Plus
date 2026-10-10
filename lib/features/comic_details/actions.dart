@@ -144,6 +144,13 @@ abstract mixin class ComicPageActions {
   ///
   /// [group] the chapter group number, start from 1
   void read([int? ep, int? page, int? group]) {
+    final currentHistory =
+        HistoryManager().find(comic.id, comic.comicType) ??
+        History.fromModel(model: comic, ep: 0, page: 0);
+    _readWithHistory(ep, page, group, currentHistory);
+  }
+
+  void _readWithHistory(int? ep, int? page, int? group, History readerHistory) {
     App.rootContext
         .to(
           () => Reader(
@@ -154,7 +161,7 @@ abstract mixin class ComicPageActions {
             initialChapter: ep,
             initialPage: page,
             initialChapterGroup: group,
-            history: history ?? History.fromModel(model: comic, ep: 0, page: 0),
+            history: readerHistory,
             author: comic.findAuthor() ?? '',
             tags: comic.plainTags,
           ),
@@ -165,10 +172,15 @@ abstract mixin class ComicPageActions {
   }
 
   void continueRead() {
-    var ep = history?.ep ?? 1;
-    var page = history?.page ?? 1;
-    var group = history?.group ?? 1;
-    read(ep, page, group);
+    final currentHistory =
+        HistoryManager().find(comic.id, comic.comicType) ??
+        History.fromModel(model: comic, ep: 0, page: 0);
+    _readWithHistory(
+      currentHistory.ep > 0 ? currentHistory.ep : 1,
+      currentHistory.page > 0 ? currentHistory.page : 1,
+      currentHistory.group,
+      currentHistory,
+    );
   }
 
   void onReadEnd();

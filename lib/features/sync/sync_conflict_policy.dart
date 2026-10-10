@@ -6,7 +6,7 @@ import 'merge_engine.dart';
 ///
 /// Local manual edits win only when their recorded dot still identifies the
 /// current local value. Otherwise, the latest eligible cloud candidate is
-/// selected; if none is available, the conflict remains unresolved.
+/// selected; unverified legacy manual choices remain unresolved.
 List<MergeConflictResolution> automaticConflictResolutions({
   required MergeDocument document,
   required String localActor,
@@ -15,6 +15,7 @@ List<MergeConflictResolution> automaticConflictResolutions({
   required String? Function(String recordKey, String field) manualCandidateId,
   required Map<String, DateTime> cloudActorModifiedAt,
   int? initialSyncCounter,
+  String? Function(String recordKey, String field)? unverifiedManualCandidateId,
   Set<String> unavailableDomains = const {},
   bool Function(String recordKey)? shouldObserveRecord,
 }) {
@@ -36,6 +37,11 @@ List<MergeConflictResolution> automaticConflictResolutions({
       initialSyncCounter: initialSyncCounter,
       manualCandidateId: manualCandidateId,
     );
+    if (manual != null &&
+        unverifiedManualCandidateId?.call(conflict.recordKey, conflict.field) ==
+            manual.id) {
+      continue;
+    }
     final chosen =
         manual ??
         _latestCloudCandidate(

@@ -593,6 +593,30 @@ class MergeDocument {
     return record.fields[field]?.values.containsKey(candidateId) ?? false;
   }
 
+  /// Compares one active history progress/presence candidate without
+  /// materializing the document or walking unrelated records.
+  bool hasActiveHistoryCandidateValue(
+    String recordKey,
+    String field,
+    String candidateId, {
+    required Object? value,
+    required bool present,
+  }) {
+    final record = _records[recordKey];
+    if (record == null || _domain(recordKey) != 'history') return false;
+    if (field == 'presence') {
+      final candidates = record.presence.values;
+      return candidates.containsKey(candidateId) &&
+          candidates[candidateId] == present;
+    }
+    if (field != 'progress') return false;
+    final raw = record.fields['progress']?.values[candidateId];
+    if (raw == null) return false;
+    final payload = raw as Map;
+    return payload['deleted'] == !present &&
+        (!present || syncValuesEqual(payload['value'], value));
+  }
+
   bool hasActiveDurationContribution(String recordKey, String candidateId) =>
       _records[recordKey]?.contributions.values.containsKey(candidateId) ??
       false;

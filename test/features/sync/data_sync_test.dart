@@ -406,6 +406,79 @@ void main() {
     );
 
     test(
+      'timestamp-only reopening adopts remote progress without rewinding either device',
+      () async {
+        final historyKey = syncRecordKey('history', ['resume-comic', 7]);
+        final recordsA = <String, Map<String, Object?>>{
+          historyKey: {
+            'title': 'Resume Comic',
+            'readDurationMs': 0,
+            'progress': {'ep': 1, 'page': 1, 'group': null, 'time': 1000},
+          },
+        };
+        final recordsB = <String, Map<String, Object?>>{};
+        appdata.implicitData['legacyMigrationDone_progress-resume'] = true;
+
+        MergeSyncCoordinator createDevice(String actor, SyncRecords records) {
+          final directory = Directory('${tempDir.path}/$actor');
+          return MergeSyncCoordinator(
+            endpointHash: 'progress-resume',
+            stateDirectory: directory,
+            actor: actor,
+            store: MergeStore(directory, actor),
+            remote: MergeRemote(client, deviceName: actor),
+            exportFavoritesOverride: () => {},
+            applyFavoritesOverride: (_) {},
+            exportHistoryOverride: () async => cloneSyncRecords(records),
+            applyHistoryOverride: (merged) {
+              records
+                ..clear()
+                ..addAll(cloneSyncRecords(merged));
+            },
+            exportPreferencesOverride: () async => {},
+            applyPreferencesOverride: (_, {beforeCommit}) async {
+              beforeCommit?.call();
+            },
+          );
+        }
+
+        final deviceA = createDevice('progress-device-a', recordsA);
+        final deviceB = createDevice('progress-device-b', recordsB);
+        await deviceA.store.load();
+        await deviceB.store.load();
+        Future<void> synchronize(MergeSyncCoordinator device) async {
+          final result = await device.performSync(
+            direction: SyncDirection.bidirectional,
+          );
+          expect(result.success, isTrue, reason: result.errorMessage);
+        }
+
+        await synchronize(deviceA);
+        await synchronize(deviceB);
+        recordsB[historyKey]!['progress'] = {
+          'ep': 1,
+          'page': 1,
+          'group': null,
+          'time': 2000,
+        };
+        final advancedProgress = {
+          'ep': 3,
+          'page': 20,
+          'group': null,
+          'time': 3000,
+        };
+        recordsA[historyKey]!['progress'] = advancedProgress;
+        await synchronize(deviceA);
+        await synchronize(deviceB);
+        expect(recordsB[historyKey]!['progress'], advancedProgress);
+        expect(deviceB.conflicts, isEmpty);
+        await synchronize(deviceA);
+        expect(recordsA[historyKey]!['progress'], advancedProgress);
+        expect(deviceA.conflicts, isEmpty);
+      },
+    );
+
+    test(
       'first sync uses latest cloud and persisted manual edits win later conflicts',
       () async {
         final key = syncRecordKey('setting', ['webdavComicLibrary']);

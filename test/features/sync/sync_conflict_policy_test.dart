@@ -58,6 +58,71 @@ void main() {
       },
     );
 
+    test(
+      'unverified legacy progress remains pending while unrelated settings merge',
+      () {
+        final historyKey = syncRecordKey('history', ['legacy-progress', 7]);
+        final settingKey = syncRecordKey('setting', ['readerMode']);
+        final baseline = <String, Map<String, Object?>>{
+          historyKey: {
+            'progress': {'ep': 1, 'page': 1, 'group': null, 'time': 1000},
+            'readDurationMs': 0,
+          },
+          settingKey: {'value': 'gallery'},
+        };
+        final seed = MergeDocument()..captureLocal('seed', {}, baseline);
+        final localRecords = cloneSyncRecords(baseline);
+        localRecords[historyKey]!['progress'] = {
+          'ep': 1,
+          'page': 1,
+          'group': null,
+          'time': 2000,
+        };
+        localRecords[settingKey]!['value'] = 'local-mode';
+        final local = seed.clone();
+        final localDot =
+            'device:${local.captureLocal('device', baseline, localRecords)}';
+        final cloudRecords = cloneSyncRecords(baseline);
+        cloudRecords[historyKey]!['progress'] = {
+          'ep': 3,
+          'page': 20,
+          'group': null,
+          'time': 3000,
+        };
+        cloudRecords[settingKey]!['value'] = 'cloud-mode';
+        final cloud = seed.clone()
+          ..captureLocal('cloud', baseline, cloudRecords);
+        final document = local.clone()..merge(cloud);
+        String? legacyMarker(String key, String field) =>
+            key == historyKey && field == 'progress' ? localDot : null;
+        final choices = automaticConflictResolutions(
+          document: document,
+          localActor: 'device',
+          localRecords: localRecords,
+          firstSync: false,
+          manualCandidateId: legacyMarker,
+          unverifiedManualCandidateId: legacyMarker,
+          cloudActorModifiedAt: {'cloud': DateTime.utc(2026, 10, 10)},
+        );
+        for (final choice in choices) {
+          document.resolve(
+            'device',
+            choice.recordKey,
+            choice.field,
+            choice.candidateId,
+          );
+        }
+        final merged = document.materialize(preferred: localRecords);
+        expect(merged[settingKey]!['value'], 'cloud-mode');
+        expect(
+          merged[historyKey]!['progress'],
+          localRecords[historyKey]!['progress'],
+        );
+        expect(document.conflicts.single.recordKey, historyKey);
+        expect(document.conflicts.single.field, 'progress');
+      },
+    );
+
     test('manual edits win for protected settings, sessions, and deletion', () {
       final secretKey = syncRecordKey('setting', ['account', 'token']);
       final sessionKey = syncRecordKey('cookies', ['example.test']);

@@ -9,6 +9,65 @@ import 'package:venera_plus/features/sync/merge_store.dart';
 import 'package:venera_plus/features/sync/merge_store_database.dart';
 import 'package:venera_plus/features/sync/merge_store_error.dart';
 
+import 'package:venera_plus/features/sync/sync_conflict_policy.dart';
+
+SyncRecords _historySnapshot(
+  String key,
+  int page,
+  int time, {
+  int duration = 100,
+}) => {
+  key: {
+    'readDurationMs': duration,
+    'progress': {'ep': 1, 'page': page, 'group': null, 'time': time},
+  },
+};
+
+Future<void> _applyCloudHistoryBaseline(
+  MergeStore store,
+  SyncRecords baseline,
+) async {
+  final cloud = MergeDocument()
+    ..captureLocal('history-cloud-seed', {}, baseline, bootstrap: true);
+  store.document.merge(cloud);
+  await store.stageApply(baseline);
+  await store.completeApply(baseline);
+}
+
+List<MergeConflictResolution> _automaticChoices(
+  MergeStore store, {
+  required String cloudActor,
+}) => automaticConflictResolutions(
+  document: store.document,
+  localActor: store.actor,
+  localRecords: store.observed,
+  firstSync: false,
+  manualCandidateId: store.manualCandidateId,
+  unverifiedManualCandidateId: store.unverifiedHistoryCandidateId,
+  cloudActorModifiedAt: {cloudActor: DateTime.utc(2026)},
+);
+
+Future<void> _writeLegacyUnverifiedHistoryMarker(Directory directory) async {
+  const actor = 'device-alpha';
+  final database = MergeStoreDatabase(directory, actor);
+  final state = (await database.load())!;
+  await database.commit(
+    document: state.document,
+    localObservation: state.localObservation,
+    observed: state.observed,
+    received: state.received,
+    outboxIds: state.outboxIds,
+    newOutboxBatches: const {},
+    outboxChangedRecords: state.outboxChangedRecords,
+    pendingApply: state.pendingApply,
+    pendingUnavailableDomains: state.pendingUnavailableDomains,
+    initialized: state.initialized,
+    localEdits: state.localEdits,
+    verifiedHistoryEdits: const {},
+    hasCompletedSync: state.hasCompletedSync,
+  );
+}
+
 ({
   int revision,
   bool initialized,
@@ -465,6 +524,489 @@ void main() {
         key: {'name': 'Next cloud', 'order': 4},
       }, previous: nextTarget);
       expect(store.manualCandidateId(key, 'order'), 'device-alpha:3');
+    });
+    test(
+      'history time refresh does not steal a cloud position choice',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+        final key = syncRecordKey('history', ['time-only']);
+        final baseline = _historySnapshot(key, 1, 100);
+        await _applyCloudHistoryBaseline(store, baseline);
+
+        await store.capture(_historySnapshot(key, 1, 200));
+        expect(store.manualCandidateId(key, 'progress'), isNull);
+        expect(store.manualCandidateId(key, 'presence'), isNull);
+
+        const cloudActor = 'history-cloud-time-only';
+        store.document.merge(
+          MergeDocument()
+            ..captureLocal(cloudActor, baseline, _historySnapshot(key, 2, 300)),
+        );
+        final choices = _automaticChoices(store, cloudActor: cloudActor);
+        final progressChoice = choices.singleWhere(
+          (choice) => choice.recordKey == key && choice.field == 'progress',
+        );
+        final progressConflict = store.document.conflicts.singleWhere(
+          (conflict) =>
+              conflict.recordKey == key && conflict.field == 'progress',
+        );
+        expect(
+          progressChoice.candidateId,
+          progressConflict.candidates
+              .singleWhere((candidate) => candidate.actor == cloudActor)
+              .id,
+        );
+
+        await store.resolveAll(choices, manual: false);
+        expect(
+          store.pendingApply![key]!['progress'],
+          _historySnapshot(key, 2, 300)[key]!['progress'],
+        );
+        await store.completeApply(store.pendingApply!);
+        expect(store.observed[key]!['progress'], {
+          'ep': 1,
+          'page': 2,
+          'group': null,
+          'time': 300,
+        });
+      },
+    );
+
+    test(
+      'time refresh with duration change does not prefer progress',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+        final key = syncRecordKey('history', ['time-and-duration']);
+        final baseline = _historySnapshot(key, 1, 100);
+        await _applyCloudHistoryBaseline(store, baseline);
+        await store.capture(_historySnapshot(key, 1, 200, duration: 130));
+
+        expect(store.manualCandidateId(key, 'progress'), isNull);
+        expect(store.manualCandidateId(key, 'readDurationMs'), isNotNull);
+        expect(store.manualCandidateId(key, 'presence'), isNotNull);
+        expect(store.unverifiedHistoryCandidateId(key, 'presence'), isNull);
+
+        const cloudActor = 'history-cloud-time-and-duration';
+        store.document.merge(
+          MergeDocument()..captureLocal(
+            cloudActor,
+            baseline,
+            _historySnapshot(key, 2, 300, duration: 130),
+          ),
+        );
+        final choices = _automaticChoices(store, cloudActor: cloudActor);
+        final progressChoice = choices.singleWhere(
+          (choice) => choice.recordKey == key && choice.field == 'progress',
+        );
+        final progressConflict = store.document.conflicts.singleWhere(
+          (conflict) =>
+              conflict.recordKey == key && conflict.field == 'progress',
+        );
+        expect(
+          progressChoice.candidateId,
+          progressConflict.candidates
+              .singleWhere((candidate) => candidate.actor == cloudActor)
+              .id,
+        );
+        await store.resolveAll(choices, manual: false);
+        await store.completeApply(store.pendingApply!);
+        expect(
+          store.observed[key]!['progress'],
+          _historySnapshot(key, 2, 300, duration: 130)[key]!['progress'],
+        );
+      },
+    );
+
+    test('verified reread survives a later time refresh and restart', () async {
+      final store = MergeStore(tempDir, 'device-alpha');
+      await store.load();
+      final key = syncRecordKey('history', ['verified-reread']);
+      final baseline = _historySnapshot(key, 1, 100);
+      await _applyCloudHistoryBaseline(store, baseline);
+
+      await store.capture(_historySnapshot(key, 2, 200, duration: 140));
+      await store.capture(_historySnapshot(key, 2, 300, duration: 140));
+      expect(store.unverifiedHistoryCandidateId(key, 'progress'), isNull);
+      expect(store.unverifiedHistoryCandidateId(key, 'presence'), isNull);
+
+      final reopened = MergeStore(tempDir, 'device-alpha');
+      await reopened.load();
+      expect(reopened.unverifiedHistoryCandidateId(key, 'progress'), isNull);
+      expect(reopened.unverifiedHistoryCandidateId(key, 'presence'), isNull);
+
+      const cloudActor = 'history-cloud-after-reread';
+      reopened.document.merge(
+        MergeDocument()..captureLocal(
+          cloudActor,
+          baseline,
+          _historySnapshot(key, 3, 400, duration: 140),
+        ),
+      );
+      final choices = _automaticChoices(reopened, cloudActor: cloudActor);
+      final choice = choices.singleWhere(
+        (resolution) =>
+            resolution.recordKey == key && resolution.field == 'progress',
+      );
+      expect(choice.candidateId, reopened.manualCandidateId(key, 'progress'));
+
+      await reopened.resolveAll(choices, manual: false);
+      expect(reopened.pendingApply![key]!['progress'], {
+        'ep': 1,
+        'page': 2,
+        'group': null,
+        'time': 300,
+      });
+      await reopened.completeApply(reopened.pendingApply!);
+      expect(reopened.observed[key]!['progress'], {
+        'ep': 1,
+        'page': 2,
+        'group': null,
+        'time': 300,
+      });
+    });
+
+    test(
+      'unverified legacy history marker waits for explicit confirmation',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+        final key = syncRecordKey('history', ['legacy-marker']);
+        final baseline = _historySnapshot(key, 1, 100);
+        await _applyCloudHistoryBaseline(store, baseline);
+        await store.capture(_historySnapshot(key, 2, 200));
+        final oldManualId = store.manualCandidateId(key, 'progress')!;
+
+        await _writeLegacyUnverifiedHistoryMarker(tempDir);
+        final reopened = MergeStore(tempDir, 'device-alpha');
+        await reopened.load();
+        await reopened.capture(_historySnapshot(key, 2, 250, duration: 130));
+        final inheritedManualId = reopened.manualCandidateId(key, 'progress')!;
+        expect(inheritedManualId, isNot(oldManualId));
+        expect(
+          reopened.unverifiedHistoryCandidateId(key, 'progress'),
+          inheritedManualId,
+        );
+        final inheritedPresenceId = reopened.manualCandidateId(
+          key,
+          'presence',
+        )!;
+        expect(
+          reopened.unverifiedHistoryCandidateId(key, 'presence'),
+          inheritedPresenceId,
+        );
+        final afterRefresh = MergeStore(tempDir, 'device-alpha');
+        await afterRefresh.load();
+        expect(
+          afterRefresh.manualCandidateId(key, 'progress'),
+          inheritedManualId,
+        );
+        expect(
+          afterRefresh.unverifiedHistoryCandidateId(key, 'progress'),
+          inheritedManualId,
+        );
+        expect(
+          afterRefresh.unverifiedHistoryCandidateId(key, 'presence'),
+          inheritedPresenceId,
+        );
+        const cloudActor = 'history-cloud-legacy-marker';
+        afterRefresh.document.merge(
+          MergeDocument()
+            ..captureLocal(cloudActor, baseline, _historySnapshot(key, 3, 300)),
+        );
+        expect(
+          _automaticChoices(afterRefresh, cloudActor: cloudActor),
+          isEmpty,
+        );
+        expect(
+          afterRefresh.document.conflicts.any(
+            (conflict) =>
+                conflict.recordKey == key && conflict.field == 'progress',
+          ),
+          isTrue,
+        );
+
+        final progressConflict = afterRefresh.document.conflicts.singleWhere(
+          (conflict) =>
+              conflict.recordKey == key && conflict.field == 'progress',
+        );
+        final cloudCandidate = progressConflict.candidates.singleWhere(
+          (candidate) => candidate.actor == cloudActor,
+        );
+        await afterRefresh.resolveAll([
+          MergeConflictResolution(
+            recordKey: key,
+            field: 'progress',
+            candidateId: cloudCandidate.id,
+          ),
+        ]);
+        expect(afterRefresh.pendingApply![key]!['progress'], {
+          'ep': 1,
+          'page': 3,
+          'group': null,
+          'time': 300,
+        });
+
+        final afterChoice = MergeStore(tempDir, 'device-alpha');
+        await afterChoice.load();
+        expect(afterChoice.document.conflicts, isEmpty);
+        expect(afterChoice.pendingApply![key]!['progress'], {
+          'ep': 1,
+          'page': 3,
+          'group': null,
+          'time': 300,
+        });
+        expect(
+          afterChoice.unverifiedHistoryCandidateId(key, 'progress'),
+          isNull,
+        );
+        await afterChoice.completeApply(afterChoice.pendingApply!);
+        final afterApply = MergeStore(tempDir, 'device-alpha');
+        await afterApply.load();
+        expect(afterApply.observed[key]!['progress'], {
+          'ep': 1,
+          'page': 3,
+          'group': null,
+          'time': 300,
+        });
+      },
+    );
+
+    test(
+      'pending recovery ignores old-position timestamp during cloud apply',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+        final key = syncRecordKey('history', ['recovery-old-position-time']);
+        final baseline = _historySnapshot(key, 1, 100);
+        await _applyCloudHistoryBaseline(store, baseline);
+        const cloudActor = 'history-cloud-recovery-old-position';
+        store.document.merge(
+          MergeDocument()..captureLocal(
+            cloudActor,
+            baseline,
+            _historySnapshot(key, 2, 200, duration: 110),
+          ),
+        );
+        final choices = _automaticChoices(store, cloudActor: cloudActor);
+        await store.resolveAll(choices, manual: false);
+        final target = store.pendingApply!;
+        expect(target[key]!['progress'], {
+          'ep': 1,
+          'page': 2,
+          'group': null,
+          'time': 200,
+        });
+
+        await store.recoverPendingApply(
+          _historySnapshot(key, 1, 101),
+          previous: target,
+        );
+        expect(store.manualCandidateId(key, 'progress'), isNull);
+        expect(store.manualCandidateId(key, 'presence'), isNull);
+
+        final reopened = MergeStore(tempDir, 'device-alpha');
+        await reopened.load();
+        expect(reopened.manualCandidateId(key, 'progress'), isNull);
+        expect(reopened.manualCandidateId(key, 'presence'), isNull);
+        await reopened.completeApply(reopened.pendingApply!);
+        const nextCloudActor = 'history-cloud-after-interrupted-apply';
+        reopened.document.merge(
+          MergeDocument()..captureLocal(
+            nextCloudActor,
+            baseline,
+            _historySnapshot(key, 3, 300, duration: 110),
+          ),
+        );
+        await reopened.resolveAll(
+          _automaticChoices(reopened, cloudActor: nextCloudActor),
+          manual: false,
+        );
+        await reopened.completeApply(reopened.pendingApply!);
+        expect(
+          reopened.observed[key]!['progress'],
+          _historySnapshot(key, 3, 300)[key]!['progress'],
+        );
+      },
+    );
+
+    test('recovery does not upgrade an unknown history source', () async {
+      final store = MergeStore(tempDir, 'device-alpha');
+      await store.load();
+      final key = syncRecordKey('history', ['recovery-unknown-source']);
+      final baseline = _historySnapshot(key, 1, 100);
+      await _applyCloudHistoryBaseline(store, baseline);
+      await store.capture(_historySnapshot(key, 2, 200));
+      final oldManualId = store.manualCandidateId(key, 'progress')!;
+      await _writeLegacyUnverifiedHistoryMarker(tempDir);
+
+      final reopened = MergeStore(tempDir, 'device-alpha');
+      await reopened.load();
+      const cloudActor = 'history-cloud-recovery-unknown';
+      final remote = MergeDocument()
+        ..captureLocal(cloudActor, baseline, _historySnapshot(key, 3, 300));
+      reopened.document.merge(remote);
+      final target = remote.materialize();
+      await reopened.stageApply(target);
+      await reopened.recoverPendingApply(
+        _historySnapshot(key, 2, 250),
+        previous: target,
+      );
+      final inheritedManualId = reopened.manualCandidateId(key, 'progress')!;
+      expect(inheritedManualId, isNot(oldManualId));
+      expect(
+        reopened.unverifiedHistoryCandidateId(key, 'progress'),
+        inheritedManualId,
+      );
+
+      final afterRecovery = MergeStore(tempDir, 'device-alpha');
+      await afterRecovery.load();
+      expect(
+        afterRecovery.manualCandidateId(key, 'progress'),
+        inheritedManualId,
+      );
+      expect(
+        afterRecovery.unverifiedHistoryCandidateId(key, 'progress'),
+        inheritedManualId,
+      );
+      expect(
+        _automaticChoices(afterRecovery, cloudActor: cloudActor).where(
+          (choice) => choice.recordKey == key && choice.field == 'progress',
+        ),
+        isEmpty,
+      );
+      expect(
+        afterRecovery.document.conflicts.any(
+          (conflict) =>
+              conflict.recordKey == key && conflict.field == 'progress',
+        ),
+        isTrue,
+      );
+      expect(
+        afterRecovery.pendingApply![key]!['progress'],
+        _historySnapshot(key, 2, 250)[key]!['progress'],
+      );
+    });
+
+    test(
+      'verified reread source survives interrupted recovery time refresh',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+        final key = syncRecordKey('history', ['recovery-verified-source']);
+        final baseline = _historySnapshot(key, 1, 100);
+        await _applyCloudHistoryBaseline(store, baseline);
+        await store.capture(_historySnapshot(key, 2, 200, duration: 140));
+
+        const cloudActor = 'history-cloud-recovery-verified';
+        store.document.merge(
+          MergeDocument()..captureLocal(
+            cloudActor,
+            baseline,
+            _historySnapshot(key, 3, 300, duration: 140),
+          ),
+        );
+        final choices = _automaticChoices(store, cloudActor: cloudActor);
+        final progressChoice = choices.singleWhere(
+          (choice) => choice.recordKey == key && choice.field == 'progress',
+        );
+        expect(
+          progressChoice.candidateId,
+          store.manualCandidateId(key, 'progress'),
+        );
+        await store.resolveAll(choices, manual: false);
+        final target = store.pendingApply!;
+        final resolvedId = store.manualCandidateId(key, 'progress')!;
+        expect(store.unverifiedHistoryCandidateId(key, 'progress'), isNull);
+
+        await store.recoverPendingApply(
+          _historySnapshot(key, 2, 250, duration: 140),
+          previous: target,
+        );
+        final recoveredId = store.manualCandidateId(key, 'progress')!;
+        expect(recoveredId, isNot(resolvedId));
+        expect(store.unverifiedHistoryCandidateId(key, 'progress'), isNull);
+
+        final afterRecovery = MergeStore(tempDir, 'device-alpha');
+        await afterRecovery.load();
+        expect(afterRecovery.manualCandidateId(key, 'progress'), recoveredId);
+        expect(
+          afterRecovery.unverifiedHistoryCandidateId(key, 'progress'),
+          isNull,
+        );
+        await afterRecovery.completeApply(afterRecovery.pendingApply!);
+
+        final afterApply = MergeStore(tempDir, 'device-alpha');
+        await afterApply.load();
+        const nextCloudActor = 'history-cloud-after-recovery-refresh';
+        afterApply.document.merge(
+          MergeDocument()..captureLocal(
+            nextCloudActor,
+            baseline,
+            _historySnapshot(key, 4, 400, duration: 140),
+          ),
+        );
+        final nextChoices = _automaticChoices(
+          afterApply,
+          cloudActor: nextCloudActor,
+        );
+        final nextChoice = nextChoices.singleWhere(
+          (choice) => choice.recordKey == key && choice.field == 'progress',
+        );
+        expect(nextChoice.candidateId, recoveredId);
+        await afterApply.resolveAll(nextChoices, manual: false);
+        await afterApply.completeApply(afterApply.pendingApply!);
+        expect(
+          afterApply.observed[key]!['progress'],
+          _historySnapshot(key, 2, 250)[key]!['progress'],
+        );
+      },
+    );
+
+    test('verified history edit tampering fails closed', () async {
+      final store = MergeStore(tempDir, 'device-alpha');
+      await store.load();
+      final key = syncRecordKey('history', ['tampered-source']);
+      await _applyCloudHistoryBaseline(store, _historySnapshot(key, 1, 100));
+      await store.capture(_historySnapshot(key, 2, 200));
+
+      for (final file in [
+        File('${tempDir.path}/merge_store.sqlite3'),
+        File('${tempDir.path}/merge_store.sqlite3.bak'),
+      ]) {
+        final database = sqlite3.open(file.path);
+        try {
+          final current =
+              jsonDecode(
+                    database
+                            .select(
+                              '''
+                  SELECT value_json FROM merge_business_records
+                  WHERE kind = 'verifiedHistoryEdits' AND record_key = ?;
+                  ''',
+                              [key],
+                            )
+                            .single['value_json']
+                        as String,
+                  )
+                  as Map<String, Object?>;
+          current['progress'] = 'device-alpha:999';
+          database.execute(
+            '''
+            UPDATE merge_business_records SET value_json = ?
+            WHERE kind = 'verifiedHistoryEdits' AND record_key = ?;
+            ''',
+            [canonicalSyncJson(current), key],
+          );
+        } finally {
+          database.close();
+        }
+      }
+      await expectLater(
+        MergeStore(tempDir, 'device-alpha').load(),
+        throwsA(isA<MergeStoreIntegrityException>()),
+      );
     });
     test('committed empty store captures inside overrideIO', () async {
       const actor = 'device-alpha';

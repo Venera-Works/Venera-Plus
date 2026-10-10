@@ -27,6 +27,9 @@ class MergeStore {
   MergeDocument _document = MergeDocument();
   MergeDocument _localObservation = MergeDocument();
   final Map<String, Map<String, String>> _localEdits = {};
+
+  // Missing entries intentionally leave older progress/presence markers untrusted.
+  final Map<String, Map<String, String>> _verifiedHistoryEdits = {};
   bool _hasCompletedSync = false;
   bool _completionMarkerPersisted = false;
   SyncRecords _observed = {};
@@ -58,6 +61,19 @@ class MergeStore {
   bool get hasCompletedSync => _hasCompletedSync;
   String? manualCandidateId(String recordKey, String field) =>
       _localEdits[recordKey]?[field];
+
+  /// Returns a history progress/presence marker without matching local proof.
+  String? unverifiedHistoryCandidateId(String recordKey, String field) {
+    if (!_isHistoryRecordKey(recordKey) ||
+        (field != 'progress' && field != 'presence')) {
+      return null;
+    }
+    final marker = _localEdits[recordKey]?[field];
+    return marker != null && _verifiedHistoryEdits[recordKey]?[field] != marker
+        ? marker
+        : null;
+  }
+
   bool get needsRecovery => !_loaded;
 
   /// A business backup changes the physical baseline outside merge application.
@@ -268,6 +284,14 @@ class MergeStore {
                 const <MapEntry<String, Map<String, String>>>[])
           entry.key: Map<String, String>.of(entry.value),
       });
+    _verifiedHistoryEdits
+      ..clear()
+      ..addAll({
+        for (final entry
+            in databaseState?.verifiedHistoryEdits.entries ??
+                const <MapEntry<String, Map<String, String>>>[])
+          entry.key: Map<String, String>.of(entry.value),
+      });
     _hasCompletedSync = databaseState?.hasCompletedSync ?? _received.isNotEmpty;
     _completionMarkerPersisted =
         databaseState?.persistedMeta.containsKey('hasCompletedSync') ?? false;
@@ -335,6 +359,10 @@ class MergeStore {
       filteredBaseline,
       filteredCurrent,
     );
+    final historyTimeRefreshSources = _historyTimeRefreshSources(
+      filteredBaseline,
+      filteredCurrent,
+    );
     if (!_initialized) changedRecordKeys.addAll(filteredCurrent.keys);
 
     final branch = observation?.clone() ?? _localObservation.clone();
@@ -391,6 +419,7 @@ class MergeStore {
           filteredBaseline,
           filteredCurrent,
           MergeDot(actor, counter).toKey(),
+          historyTimeRefreshSources: historyTimeRefreshSources,
         );
       }
       if (unavailableDomains.isEmpty) {
@@ -622,6 +651,10 @@ class MergeStore {
               (e) => !effectiveUnavailable.contains(syncRecordDomain(e.key)),
             ),
           );
+    final recoveryTimeRefreshSources = _historyTimeRefreshSources(
+      _observed,
+      filteredActual,
+    );
     final changedRecordKeys = _changedRecordKeys(
       filteredTarget,
       filteredActual,
@@ -631,6 +664,38 @@ class MergeStore {
       actual: filteredActual,
       previous: _observed,
     );
+    final confirmedVerifiedHistoryChanges = {
+      for (final change in confirmedManualChanges)
+        if (syncRecordDomain(change.$1) == 'history' &&
+            (change.$2 == 'progress' || change.$2 == 'presence'))
+          change,
+    };
+    final recoveryManualChanges = <(String, String)>{...confirmedManualChanges};
+    final recoveryVerifiedHistoryChanges = <(String, String)>{
+      ...confirmedVerifiedHistoryChanges,
+    };
+    for (final entry in recoveryTimeRefreshSources.entries) {
+      final key = entry.key;
+      final targetRecord = filteredTarget[key];
+      final actualRecord = filteredActual[key];
+      for (final source in entry.value.entries) {
+        final candidateWillBeWritten = source.key == 'progress'
+            ? actualRecord != null &&
+                  !_sameFieldValue(targetRecord, actualRecord, 'progress')
+            : (targetRecord == null) != (actualRecord == null) ||
+                  (targetRecord != null &&
+                      actualRecord != null &&
+                      !syncValuesEqual(targetRecord, actualRecord));
+        if (!candidateWillBeWritten) continue;
+        final change = (key, source.key);
+        recoveryManualChanges.add(change);
+        if (source.value) {
+          recoveryVerifiedHistoryChanges.add(change);
+        } else {
+          recoveryVerifiedHistoryChanges.remove(change);
+        }
+      }
+    }
 
     final branch = MergeDocument();
     branch.setCounterFloor(actor, _document.counterFor(actor));
@@ -686,10 +751,11 @@ class MergeStore {
         MergeBatch.create(actor: actor, counter: counter, document: _document),
         changedRecordKeys: {...changedRecordKeys, ...sourceVariantRecordKeys},
       );
-      if (confirmedManualChanges.isNotEmpty) {
+      if (recoveryManualChanges.isNotEmpty) {
         _recordManualChanges(
-          confirmedManualChanges,
+          recoveryManualChanges,
           MergeDot(actor, counter).toKey(),
+          verifiedHistoryChanges: recoveryVerifiedHistoryChanges,
         );
       }
     } else if (newVariantsAdded) {
@@ -815,9 +881,17 @@ class MergeStore {
       for (final entry in _localEdits.entries)
         entry.key: Map<String, String>.of(entry.value),
     };
+    final stagedVerifiedHistoryEdits = {
+      for (final entry in _verifiedHistoryEdits.entries)
+        entry.key: Map<String, String>.of(entry.value),
+    };
     void resolveAndTrack(MergeConflictResolution resolution) {
       final previousManualId =
           stagedManualCandidates[resolution.recordKey]?[resolution.field];
+      final previousHistorySourceVerified =
+          previousManualId != null &&
+          stagedVerifiedHistoryEdits[resolution.recordKey]?[resolution.field] ==
+              previousManualId;
       final preservesManualCandidate =
           resolution.candidateId == previousManualId ||
           (resolution.field == 'readDurationMs' &&
@@ -837,14 +911,31 @@ class MergeStore {
         resolution.recordKey,
         () => <String, String>{},
       );
+      final resolvedDot = MergeDot(
+        actor,
+        stagedDocument.counterFor(actor),
+      ).toKey();
       if (manual || preservesManualCandidate) {
-        fields[resolution.field] = MergeDot(
-          actor,
-          stagedDocument.counterFor(actor),
-        ).toKey();
+        fields[resolution.field] = resolvedDot;
       } else {
         fields.remove(resolution.field);
         if (fields.isEmpty) stagedManualCandidates.remove(resolution.recordKey);
+      }
+      if (syncRecordDomain(resolution.recordKey) == 'history' &&
+          (resolution.field == 'progress' || resolution.field == 'presence')) {
+        final verifiedFields = stagedVerifiedHistoryEdits.putIfAbsent(
+          resolution.recordKey,
+          () => <String, String>{},
+        );
+        if (manual ||
+            (preservesManualCandidate && previousHistorySourceVerified)) {
+          verifiedFields[resolution.field] = resolvedDot;
+        } else {
+          verifiedFields.remove(resolution.field);
+          if (verifiedFields.isEmpty) {
+            stagedVerifiedHistoryEdits.remove(resolution.recordKey);
+          }
+        }
       }
     }
 
@@ -878,6 +969,9 @@ class MergeStore {
     _localEdits
       ..clear()
       ..addAll(stagedManualCandidates);
+    _verifiedHistoryEdits
+      ..clear()
+      ..addAll(stagedVerifiedHistoryEdits);
     _pendingApply = pendingApply;
     _pendingUnavailableDomains = pendingUnavailableDomains;
     try {
@@ -906,6 +1000,7 @@ class MergeStore {
         pendingUnavailableDomains: _pendingUnavailableDomains,
         initialized: _initialized,
         localEdits: _localEdits,
+        verifiedHistoryEdits: _verifiedHistoryEdits,
         hasCompletedSync: _hasCompletedSync,
         counterReconciliationRequired: _needsCounterReconciliation
             ? true
@@ -1247,43 +1342,211 @@ class MergeStore {
     return changed;
   }
 
-  void _recordCaptureManualChanges(
+  Map<String, Map<String, bool>> _historyTimeRefreshSources(
     SyncRecords previous,
     SyncRecords current,
-    String dot,
   ) {
-    final changed = <(String, String)>{};
+    final sources = <String, Map<String, bool>>{};
     for (final key in <String>{...previous.keys, ...current.keys}) {
       final before = previous[key];
       final after = current[key];
+      if (!_isHistoryRecordKey(key) ||
+          !_isHistoryTimeOnlyChange(before, after)) {
+        continue;
+      }
+      final inherited = <String, bool>{};
+      for (final field in const ['progress', 'presence']) {
+        final id = _localEdits[key]?[field];
+        if (id == null ||
+            !_document.hasActiveHistoryCandidateValue(
+              key,
+              field,
+              id,
+              value: field == 'progress' ? before!['progress'] : null,
+              present: field == 'presence'
+                  ? true
+                  : before!.containsKey('progress'),
+            )) {
+          continue;
+        }
+        inherited[field] = _verifiedHistoryEdits[key]?[field] == id;
+      }
+      if (inherited.isNotEmpty) sources[key] = inherited;
+    }
+    return sources;
+  }
+
+  void _recordCaptureManualChanges(
+    SyncRecords previous,
+    SyncRecords current,
+    String dot, {
+    required Map<String, Map<String, bool>> historyTimeRefreshSources,
+  }) {
+    final changed = <(String, String)>{};
+    final verifiedHistoryChanges = <(String, String)>{};
+    for (final key in <String>{...previous.keys, ...current.keys}) {
+      final before = previous[key];
+      final after = current[key];
+      final history = _isHistoryRecordKey(key);
       if (before == null || after == null) {
         _localEdits.remove(key);
+        _verifiedHistoryEdits.remove(key);
         changed.add((key, 'presence'));
+        if (history) verifiedHistoryChanges.add((key, 'presence'));
         if (after != null) {
           for (final field in after.keys) {
             changed.add((key, field));
+            if (history && field == 'progress') {
+              verifiedHistoryChanges.add((key, field));
+            }
           }
         }
         continue;
       }
+      final progressTimeOnly =
+          history && _isHistoryTimeOnlyChange(before, after);
       var recordChanged = false;
       for (final field in <String>{...before.keys, ...after.keys}) {
-        if (!_sameFieldValue(before, after, field)) {
-          changed.add((key, field));
-          recordChanged = true;
+        if (_sameFieldValue(before, after, field) ||
+            (progressTimeOnly && field == 'progress')) {
+          continue;
+        }
+        changed.add((key, field));
+        recordChanged = true;
+        if (history && field == 'progress') {
+          verifiedHistoryChanges.add((key, field));
         }
       }
       if (recordChanged) {
         changed.add((key, 'presence'));
+        if (history) verifiedHistoryChanges.add((key, 'presence'));
+      }
+      if (progressTimeOnly) {
+        for (final entry
+            in historyTimeRefreshSources[key]?.entries ??
+                const <MapEntry<String, bool>>[]) {
+          changed.add((key, entry.key));
+          if (entry.value) {
+            verifiedHistoryChanges.add((key, entry.key));
+          } else {
+            verifiedHistoryChanges.remove((key, entry.key));
+          }
+        }
       }
     }
-    _recordManualChanges(changed, dot);
+    _recordManualChanges(
+      changed,
+      dot,
+      verifiedHistoryChanges: verifiedHistoryChanges,
+    );
   }
 
-  void _recordManualChanges(Set<(String, String)> changes, String dot) {
+  void _recordManualChanges(
+    Set<(String, String)> changes,
+    String dot, {
+    Set<(String, String)> verifiedHistoryChanges = const {},
+  }) {
     for (final (recordKey, field) in changes) {
+      if (_isHistoryRecordKey(recordKey) &&
+          (field == 'progress' || field == 'presence')) {
+        _removeVerifiedHistoryEdit(recordKey, field);
+      }
       _localEdits.putIfAbsent(recordKey, () => <String, String>{})[field] = dot;
     }
+    for (final (recordKey, field) in verifiedHistoryChanges) {
+      if (_localEdits[recordKey]?[field] == dot) {
+        _verifiedHistoryEdits.putIfAbsent(
+          recordKey,
+          () => <String, String>{},
+        )[field] = dot;
+      }
+    }
+  }
+
+  void _removeVerifiedHistoryEdit(String recordKey, String field) {
+    final fields = _verifiedHistoryEdits[recordKey];
+    fields?.remove(field);
+    if (fields?.isEmpty ?? false) _verifiedHistoryEdits.remove(recordKey);
+  }
+
+  static bool _isHistoryRecordKey(String recordKey) {
+    try {
+      return syncRecordDomain(recordKey) == 'history';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static bool _isHistoryTimeOnlyChange(
+    Map<String, Object?>? before,
+    Map<String, Object?>? after,
+  ) {
+    if (before == null || after == null) return false;
+    final oldProgress = before['progress'];
+    final newProgress = after['progress'];
+    if (!_isValidHistoryProgress(oldProgress) ||
+        !_isValidHistoryProgress(newProgress)) {
+      return false;
+    }
+    final oldValues = (oldProgress as Map).cast<String, Object?>();
+    final newValues = (newProgress as Map).cast<String, Object?>();
+    if (syncValuesEqual(oldValues['time'], newValues['time']) ||
+        !_sameMapExcept(oldValues, newValues, 'time')) {
+      return false;
+    }
+    return true;
+  }
+
+  static bool _isValidHistoryProgress(Object? value) {
+    if (value is! Map ||
+        !value.containsKey('ep') ||
+        !value.containsKey('page') ||
+        !value.containsKey('group') ||
+        !value.containsKey('time')) {
+      return false;
+    }
+    final episode = value['ep'];
+    final page = value['page'];
+    final time = value['time'];
+    final group = value['group'];
+    if (!_isProgressInteger(episode) ||
+        !_isProgressInteger(page) ||
+        !_isProgressInteger(time) ||
+        (group != null && !_isProgressInteger(group))) {
+      return false;
+    }
+    final timestamp = time as num;
+    return timestamp >= 0 && timestamp <= 8640000000000000;
+  }
+
+  static bool _isProgressInteger(Object? value) =>
+      value is num && value.isFinite && value == value.toInt();
+
+  static bool _sameHistoryProgressPosition(
+    Map<String, Object?>? left,
+    Map<String, Object?>? right,
+  ) {
+    if (_sameFieldValue(left, right, 'progress')) return true;
+    final leftProgress = left?['progress'];
+    final rightProgress = right?['progress'];
+    if (!_isValidHistoryProgress(leftProgress) ||
+        !_isValidHistoryProgress(rightProgress)) {
+      return false;
+    }
+    return _sameMapExcept(leftProgress as Map, rightProgress as Map, 'time');
+  }
+
+  static bool _sameMapExcept(Map left, Map right, String excludedField) {
+    for (final key in left.keys) {
+      if (key == excludedField) continue;
+      if (!right.containsKey(key) || !syncValuesEqual(left[key], right[key])) {
+        return false;
+      }
+    }
+    for (final key in right.keys) {
+      if (key != excludedField && !left.containsKey(key)) return false;
+    }
+    return true;
   }
 
   static Set<(String, String)> _confirmedRecoveryManualChanges({
@@ -1301,15 +1564,26 @@ class MergeStore {
         changes.add((key, 'presence'));
       }
       if (actualRecord == null) continue;
+      var historyContentChanged = false;
       for (final field in <String>{
         ...?targetRecord?.keys,
         ...actualRecord.keys,
       }) {
+        if (_isHistoryRecordKey(key) && field == 'progress') {
+          if (!_sameHistoryProgressPosition(targetRecord, actualRecord) &&
+              !_sameHistoryProgressPosition(previousRecord, actualRecord)) {
+            changes.add((key, field));
+            historyContentChanged = true;
+          }
+          continue;
+        }
         if (!_sameFieldValue(targetRecord, actualRecord, field) &&
             !_sameFieldValue(previousRecord, actualRecord, field)) {
           changes.add((key, field));
+          if (_isHistoryRecordKey(key)) historyContentChanged = true;
         }
       }
+      if (historyContentChanged) changes.add((key, 'presence'));
     }
     return changes;
   }

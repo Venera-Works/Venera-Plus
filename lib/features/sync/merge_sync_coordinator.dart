@@ -631,6 +631,7 @@ class MergeSyncCoordinator {
           firstSync: !store.hasCompletedSync,
           initialSyncCounter: initialSyncCounter,
           manualCandidateId: store.manualCandidateId,
+          unverifiedManualCandidateId: store.unverifiedHistoryCandidateId,
           cloudActorModifiedAt: _cloudActorModifiedAt,
           unavailableDomains: unavailable,
           shouldObserveRecord: preferencesAdapter.shouldObserveRecord,

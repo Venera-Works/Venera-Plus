@@ -90,6 +90,9 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
   @override
   History? history;
 
+  late HistoryManager _historyManager;
+  _HistoryProgress? _historyProgress;
+
   bool showAppbarTitle = false;
 
   var scrollController = ScrollController();
@@ -98,11 +101,32 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
 
   @override
   void onReadEnd() {
-    history ??= HistoryManager().find(
-      widget.id,
-      ComicType(widget.sourceKey.hashCode),
-    );
-    update();
+    if (_refreshHistory()) {
+      if (mounted) update();
+    }
+  }
+
+  ComicType get _historyType => ComicType.fromKey(widget.sourceKey);
+
+  bool _refreshHistory() {
+    final current = _historyManager.find(widget.id, _historyType);
+    final changed = !(_historyProgress?.matches(current) ?? current == null);
+    history = current;
+    if (changed) {
+      _historyProgress = current == null ? null : _HistoryProgress(current);
+    }
+    return changed;
+  }
+
+  void _onHistoryChanged() {
+    if (_refreshHistory() && mounted) {
+      update();
+    }
+  }
+
+  void _rememberHistory(History? current) {
+    history = current;
+    _historyProgress = current == null ? null : _HistoryProgress(current);
   }
 
   @override
@@ -144,12 +168,15 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
 
   @override
   void initState() {
+    _historyManager = HistoryManager();
+    _historyManager.addListener(_onHistoryChanged);
     scrollController.addListener(onScroll);
     super.initState();
   }
 
   @override
   void dispose() {
+    _historyManager.removeListener(_onHistoryChanged);
     scrollController.removeListener(onScroll);
     super.dispose();
   }
@@ -225,27 +252,30 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
     );
   }
 
-  @override
   Future<Res<ComicDetails>> loadData() async {
     if (widget.sourceKey == 'local') {
       var localComic = LocalManager().find(widget.id, ComicType.local);
       if (localComic == null) {
         return const Res.error('Local comic not found');
       }
-      var history = HistoryManager().find(widget.id, ComicType.local);
+      _rememberHistory(_historyManager.find(widget.id, ComicType.local));
       if (isFirst) {
         Future.microtask(() {
           App.rootContext.to(() {
+            final latestHistory = _historyManager.find(
+              widget.id,
+              ComicType.local,
+            );
             return Reader(
               type: ComicType.local,
               cid: widget.id,
               name: localComic.title,
               chapters: localComic.chapters,
-              initialPage: history?.page,
-              initialChapter: history?.ep,
-              initialChapterGroup: history?.group,
+              initialPage: latestHistory?.page,
+              initialChapter: latestHistory?.ep,
+              initialChapterGroup: latestHistory?.group,
               history:
-                  history ??
+                  latestHistory ??
                   History.fromModel(model: localComic, ep: 0, page: 0),
               author: localComic.subTitle ?? '',
               tags: localComic.tags,
@@ -262,14 +292,8 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
     if (comicSource == null) {
       return const Res.error('Comic source not found');
     }
-    isAddToLocalFav = LocalFavoritesManager().isExist(
-      widget.id,
-      ComicType(widget.sourceKey.hashCode),
-    );
-    history = HistoryManager().find(
-      widget.id,
-      ComicType(widget.sourceKey.hashCode),
-    );
+    isAddToLocalFav = LocalFavoritesManager().isExist(widget.id, _historyType);
+    _rememberHistory(_historyManager.find(widget.id, _historyType));
     return comicSource.loadComicInfo!(widget.id);
   }
 
@@ -891,6 +915,27 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
     }
     return cover;
   }
+}
+
+class _HistoryProgress {
+  _HistoryProgress(History history)
+    : ep = history.ep,
+      page = history.page,
+      group = history.group,
+      readEpisode = Set<String>.of(history.readEpisode);
+
+  final int ep;
+  final int page;
+  final int? group;
+  final Set<String> readEpisode;
+
+  bool matches(History? history) =>
+      history != null &&
+      history.ep == ep &&
+      history.page == page &&
+      history.group == group &&
+      history.readEpisode.length == readEpisode.length &&
+      history.readEpisode.containsAll(readEpisode);
 }
 
 class _StatusPill extends StatelessWidget {

@@ -681,6 +681,7 @@ class MergeStoreDatabase {
     required Set<String> pendingUnavailableDomains,
     required bool initialized,
     Map<String, Map<String, String>> localEdits = const {},
+    Map<String, Map<String, String>> verifiedHistoryEdits = const {},
     bool? hasCompletedSync,
     bool? counterReconciliationRequired,
   }) async {
@@ -703,6 +704,7 @@ class MergeStoreDatabase {
       observed,
       pendingApply,
       localEdits,
+      verifiedHistoryEdits,
     );
     final nextReceived = Set<String>.of(received);
     final nextCompletedSync =
@@ -1310,6 +1312,8 @@ class MergeStoreDatabase {
         'pendingApply': <String, Map<String, Object?>>{},
       };
       final localEdits = <String, Map<String, String>>{};
+      final verifiedHistoryEdits = <String, Map<String, String>>{};
+      final verifiedRowKeys = <String>{};
       final documentJson = document.toJson();
       final documentEventDigests = (documentJson['eventDigests'] as Map)
           .cast<String, String>();
@@ -1344,6 +1348,26 @@ class MergeStoreDatabase {
           rows[('localEdits', '', key)] = _rowFingerprint(encoded);
           continue;
         }
+        if (kind == 'verifiedHistoryEdits') {
+          if (value.isEmpty || !verifiedRowKeys.add(key)) {
+            throw const FormatException(
+              'Invalid verified history edit metadata row',
+            );
+          }
+          final fields = <String, String>{};
+          for (final entry in value.entries) {
+            if ((entry.key != 'progress' && entry.key != 'presence') ||
+                entry.value is! String) {
+              throw const FormatException(
+                'Invalid verified history edit metadata',
+              );
+            }
+            fields[entry.key] = entry.value as String;
+          }
+          verifiedHistoryEdits[key] = fields;
+          rows[('verifiedHistoryEdits', '', key)] = _rowFingerprint(encoded);
+          continue;
+        }
         final recordSet = recordsByKind[kind];
         if (recordSet == null || recordSet.containsKey(key)) {
           throw const FormatException('Invalid business record row');
@@ -1352,6 +1376,12 @@ class MergeStoreDatabase {
         recordSet[key] = value;
         rows[(kind, '', key)] = _rowFingerprint(encoded);
       }
+      _validateVerifiedHistoryEdits(
+        verifiedHistoryEdits,
+        localEdits,
+        documentJson,
+        documentEventDigests,
+      );
       final observed = recordsByKind['observed']!;
       final pendingRecords = recordsByKind['pendingApply']!;
       final pendingApply = meta['hasPendingApply'] == '1'
@@ -1507,6 +1537,7 @@ class MergeStoreDatabase {
             meta['hasCompletedSync'] == '1' ||
             (!meta.containsKey('hasCompletedSync') && received.isNotEmpty),
         localEdits: localEdits,
+        verifiedHistoryEdits: verifiedHistoryEdits,
         recoveredFromBackup: recoveredFromBackup,
         persistedRows: rows,
         persistedMeta: meta,
@@ -2319,6 +2350,7 @@ class MergeStoreDatabase {
     SyncRecords observed,
     SyncRecords? pendingApply,
     Map<String, Map<String, String>> localEdits,
+    Map<String, Map<String, String>> verifiedHistoryEdits,
   ) {
     final result = <(String, String, String), String>{};
     final document = documents['document']!;
@@ -2364,6 +2396,19 @@ class MergeStoreDatabase {
       }
       result[('localEdits', '', entry.key)] = canonicalSyncJson(entry.value);
     }
+    _validateVerifiedHistoryEdits(
+      verifiedHistoryEdits,
+      localEdits,
+      docJson,
+      eventDigests,
+    );
+    for (final entry in verifiedHistoryEdits.entries) {
+      if (entry.value.isNotEmpty) {
+        result[('verifiedHistoryEdits', '', entry.key)] = canonicalSyncJson(
+          entry.value,
+        );
+      }
+    }
     for (final entry in observed.entries) {
       result[('observed', '', entry.key)] = canonicalSyncJson(entry.value);
     }
@@ -2408,6 +2453,7 @@ class MergeStoreDatabase {
         case 'observed':
         case 'pendingApply':
         case 'localEdits':
+        case 'verifiedHistoryEdits':
           database.execute(
             'DELETE FROM $schema.merge_business_records WHERE kind = ? AND record_key = ?;',
             [kind, key],
@@ -2449,6 +2495,7 @@ class MergeStoreDatabase {
         case 'observed':
         case 'pendingApply':
         case 'localEdits':
+        case 'verifiedHistoryEdits':
           database.execute(
             '''
             INSERT OR REPLACE INTO $schema.merge_business_records(kind, record_key, value_json)
@@ -2632,6 +2679,43 @@ class MergeStoreDatabase {
     }
     final fields = (record['fields'] as Map).cast<String, Object?>();
     return _cellHasDot(fields[field], id);
+  }
+
+  void _validateVerifiedHistoryEdits(
+    Map<String, Map<String, String>> verifiedHistoryEdits,
+    Map<String, Map<String, String>> localEdits,
+    Map<String, Object?> documentJson,
+    Map<String, String> eventDigests,
+  ) {
+    final ownCounter =
+        ((documentJson['vclock'] as Map).cast<String, Object?>())[actor]
+            as int? ??
+        0;
+    for (final entry in verifiedHistoryEdits.entries) {
+      _validateRecordKey(entry.key);
+      if (syncRecordDomain(entry.key) != 'history' || entry.value.isEmpty) {
+        throw const FormatException('Invalid verified history edit row');
+      }
+      for (final fieldEntry in entry.value.entries) {
+        final id = fieldEntry.value;
+        final dot = MergeDot.parse(id);
+        if ((fieldEntry.key != 'progress' && fieldEntry.key != 'presence') ||
+            localEdits[entry.key]?[fieldEntry.key] != id ||
+            dot.actor != actor ||
+            dot.counter > ownCounter ||
+            !eventDigests.containsKey(id) ||
+            !_hasLocalEditCandidate(
+              documentJson,
+              entry.key,
+              fieldEntry.key,
+              id,
+            )) {
+          throw const FormatException(
+            'Invalid verified history edit candidate',
+          );
+        }
+      }
+    }
   }
 
   static bool _cellHasDot(Object? rawCell, String id) {
@@ -2845,6 +2929,7 @@ class MergeStoreDatabaseState {
   final bool initialized;
   final bool hasCompletedSync;
   final Map<String, Map<String, String>> localEdits;
+  final Map<String, Map<String, String>> verifiedHistoryEdits;
   final bool recoveredFromBackup;
   final Map<(String, String, String), String> persistedRows;
   final Map<String, String> persistedMeta;
@@ -2866,6 +2951,7 @@ class MergeStoreDatabaseState {
     required this.initialized,
     this.hasCompletedSync = false,
     this.localEdits = const {},
+    this.verifiedHistoryEdits = const {},
     required this.recoveredFromBackup,
     required this.persistedRows,
     required this.persistedMeta,
@@ -2887,6 +2973,7 @@ class MergeStoreDatabaseState {
     initialized: initialized,
     hasCompletedSync: hasCompletedSync,
     localEdits: localEdits,
+    verifiedHistoryEdits: verifiedHistoryEdits,
     recoveredFromBackup: value,
     persistedRows: persistedRows,
     persistedMeta: persistedMeta,
