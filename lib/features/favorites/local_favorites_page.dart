@@ -857,6 +857,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
             comics: searchMode ? searchResults : filterComics(comics),
             selections: selectedComics,
             useFavoriteDisplaySettings: true,
+            hideFavoriteBadge: true,
             menuBuilder: (c) {
               final item = c as FavoriteItem;
               return [

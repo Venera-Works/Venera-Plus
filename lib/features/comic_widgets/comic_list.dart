@@ -292,6 +292,7 @@ class ComicList extends StatefulWidget {
     this.reloadHandlerCallback,
     this.enablePageStorage = false,
     this.useFavoriteDisplaySettings = false,
+    this.hideFavoriteBadge = false,
     this.badgeBuilder,
   });
 
@@ -316,6 +317,8 @@ class ComicList extends StatefulWidget {
   final bool enablePageStorage;
 
   final bool useFavoriteDisplaySettings;
+
+  final bool hideFavoriteBadge;
   final String? Function(Comic)? badgeBuilder;
 
   @override
@@ -997,6 +1000,7 @@ class ComicListState extends State<ComicList> {
           menuBuilder: widget.menuBuilder,
           badgeBuilder: widget.badgeBuilder,
           useFavoriteDisplaySettings: widget.useFavoriteDisplaySettings,
+          hideFavoriteBadge: widget.hideFavoriteBadge,
         ),
         if (_data[_page]!.length > 6 && _maxPage != 1)
           _buildSliverPageSelector(),
@@ -1052,6 +1056,7 @@ class ComicListState extends State<ComicList> {
           menuBuilder: widget.menuBuilder,
           badgeBuilder: widget.badgeBuilder,
           useFavoriteDisplaySettings: widget.useFavoriteDisplaySettings,
+          hideFavoriteBadge: widget.hideFavoriteBadge,
           onLastItemBuild: () {
             if (_error == null &&
                 (_maxPage == null || _data.length < _maxPage!)) {

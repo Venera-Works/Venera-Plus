@@ -66,4 +66,77 @@ void main() {
     await tester.pump();
     expect(find.text('Cat Eye'), findsNothing);
   });
+
+  for (final mode in ['paging', 'Continuous']) {
+    testWidgets('favorite badge suppression preserves other badges in $mode', (
+      tester,
+    ) async {
+      final previousSettings = Map<String, dynamic>.from(
+        appdata.toJson()['settings'] as Map,
+      );
+      var gallery = false;
+      configureComicWidgets(
+        tileStateResolver: (_) => const ComicTileState(
+          isFavorite: true,
+          historyPage: 2,
+          historyMaxPage: 10,
+          hasNewUpdate: true,
+        ),
+        favoriteDisplayStateResolver: () =>
+            ComicFavoriteDisplayState(isGallery: gallery),
+      );
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        configureComicWidgets();
+        appdata.settings.replaceAll(previousSettings);
+      });
+      appdata.settings['comicListDisplayMode'] = mode;
+      appdata.settings['blockedWords'] = <String>[];
+      appdata.settings['showFavoriteStatusOnTile'] = true;
+      appdata.settings['showHistoryStatusOnTile'] = true;
+      appdata.settings['showUpdateStatusOnTile'] = true;
+      const comic = Comic(
+        'Favorite status comic',
+        '',
+        'badge-comic',
+        null,
+        null,
+        '',
+        'test-source',
+        null,
+        null,
+      );
+      Future<Res<List<Comic>>> loadPage(int _) async =>
+          Res<List<Comic>>(const [comic], subData: 1);
+      Widget page({bool hideFavoriteBadge = false}) => MaterialApp(
+        home: Scaffold(
+          body: ComicList(
+            loadPage: loadPage,
+            useFavoriteDisplaySettings: true,
+            hideFavoriteBadge: hideFavoriteBadge,
+          ),
+        ),
+      );
+
+      await tester.pumpWidget(page());
+      await tester.pumpAndSettle();
+      expect(find.byIcon(Icons.bookmark_rounded), findsOneWidget);
+      for (final isGallery in [false, true]) {
+        gallery = isGallery;
+        await tester.pumpWidget(page(hideFavoriteBadge: true));
+        await tester.pumpAndSettle();
+        final tile = find.byType(ComicTile);
+        expect(find.text('Favorite status comic'), findsOneWidget);
+        expect(find.byIcon(Icons.bookmark_rounded), findsNothing);
+        expect(
+          find.descendant(of: tile, matching: find.byType(CustomPaint)),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(of: tile, matching: find.byIcon(Icons.update)),
+          findsOneWidget,
+        );
+      }
+    });
+  }
 }

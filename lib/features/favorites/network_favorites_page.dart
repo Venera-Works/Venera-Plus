@@ -416,6 +416,7 @@ class _NormalFavoritePageState extends State<_NormalFavoritePage> {
       onRefresh: _refreshScope,
       child: ComicList(
         key: comicListKey,
+        hideFavoriteBadge: true,
         badgeBuilder: (comic) => _buildComicBadge(_baselines, comic),
         leadingSliver: SliverAppbar(
           style: context.width < changePoint
@@ -1050,6 +1051,7 @@ class _FavoriteFolderState extends State<_FavoriteFolder> {
       onRefresh: _refreshScope,
       child: ComicList(
         key: comicListKey,
+        hideFavoriteBadge: true,
         badgeBuilder: (comic) => _buildComicBadge(_baselines, comic),
         enablePageStorage: true,
         leadingSliver: SliverAppbar(

@@ -209,8 +209,14 @@ void main() {
       final firstHomeTile = find.byWidgetPredicate(
         (widget) => widget is ComicTile && widget.comic.id == 'home-0',
       );
-      void expectHomeStatusBadges() {
-        expect(find.byIcon(Icons.bookmark_rounded), findsNothing);
+      void expectReadingAndUpdateBadges() {
+        expect(
+          find.descendant(
+            of: firstHomeTile,
+            matching: find.byIcon(Icons.bookmark_rounded),
+          ),
+          findsNothing,
+        );
         expect(
           find.descendant(
             of: firstHomeTile,
@@ -227,7 +233,7 @@ void main() {
         );
       }
 
-      expectHomeStatusBadges();
+      expectReadingAndUpdateBadges();
 
       final controlComic = manager.getFolderComics('Home reorder').first;
       await tester.pumpWidget(
@@ -244,11 +250,30 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byIcon(Icons.bookmark_rounded), findsOneWidget);
 
+      appdata.implicitData['favoriteFolder'] = {
+        'name': 'Home reorder',
+        'isNetwork': false,
+      };
+      appdata.implicitData['local_favorites_read_filter'] = 'All';
+      await tester.pumpWidget(
+        MaterialApp(
+          navigatorKey: App.rootNavigatorKey,
+          home: const Scaffold(body: FavoritesPage()),
+        ),
+      );
+      await runWidgetIo(tester, () => manager.waitForPendingReads());
+      for (final mode in [favoriteDisplayList, favoriteDisplayGallery]) {
+        appdata.settings[favoriteDisplayModeKey] = mode;
+        await tester.pumpAndSettle();
+        expectReadingAndUpdateBadges();
+      }
+      appdata.settings[favoriteDisplayModeKey] = favoriteDisplayList;
+
       await tester.pumpWidget(homePage());
       await tester.pumpAndSettle();
       appdata.settings[favoriteDisplayModeKey] = favoriteDisplayGallery;
       await tester.pumpAndSettle();
-      expectHomeStatusBadges();
+      expectReadingAndUpdateBadges();
       appdata.settings[favoriteDisplayModeKey] = favoriteDisplayList;
       await tester.pumpAndSettle();
       await _openReorder(tester);
