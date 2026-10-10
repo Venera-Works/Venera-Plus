@@ -207,50 +207,48 @@ void main() {
     'save and edit validate first and persist the loaded catalog address',
     (tester) async {
       await pumpPage(tester);
-      SourceRepository? saved;
-      final save = SourceRepositories.instance
-          .save(name: 'Repo', url: '  https://example.test/repo/index.json  ')
-          .then((value) => saved = value);
-      await _pumpUntil(tester, () => requests.items.length == 1);
-      expect(SourceRepositories.instance.all, isEmpty);
-      requests.items.single.reply(catalog());
-      await _pumpUntil(tester, () => saved != null);
-      await save;
-      expect(saved!.url, repository.url);
-      final persisted = jsonDecode(
-        File('${dataDir.path}/appdata.json').readAsStringSync(),
-      );
-      expect(
-        persisted['settings']['comicSourceRepositories'].single['url'],
-        repository.url,
-      );
-      final edit = SourceRepositories.instance.save(
-        id: saved!.id,
-        name: 'New',
-        url: 'https://new.test/index.json',
-      );
-      final failed = expectLater(edit, throwsA(isA<DioException>()));
-      await _pumpUntil(tester, () => requests.items.length == 2);
-      requests.items.last.reply('', status: 503);
-      await _pumpUntil(tester, () => requests.closedClients >= 2);
-      await failed;
-      expect(SourceRepositories.instance.find(saved!.id)!.url, repository.url);
-      final changed = SourceRepositories.instance.save(
-        id: saved!.id,
-        name: 'New',
-        url: 'https://new.test/index.json',
-      );
-      await _pumpUntil(tester, () => requests.items.length == 3);
-      requests.items.last.reply(catalog());
-      var finished = false;
-      final done = changed.then((_) => finished = true);
-      await _pumpUntil(tester, () => finished);
-      await done;
-      expect(
-        SourceRepositories.instance.find(saved!.id)!.url,
-        'https://new.test/index.json',
-      );
-      expect(messages, isEmpty);
+      // Repository persistence uses real file I/O, not the widget-test clock.
+      await tester.runAsync(() async {
+        final save = SourceRepositories.instance.save(
+          name: 'Repo',
+          url: '  https://example.test/repo/index.json  ',
+        );
+        final request = await requests.requestAt(0);
+        expect(SourceRepositories.instance.all, isEmpty);
+        request.reply(catalog());
+        final saved = await save;
+        expect(saved.url, repository.url);
+        final persisted = jsonDecode(
+          File('${dataDir.path}/appdata.json').readAsStringSync(),
+        );
+        expect(
+          persisted['settings']['comicSourceRepositories'].single['url'],
+          repository.url,
+        );
+
+        final edit = SourceRepositories.instance.save(
+          id: saved.id,
+          name: 'New',
+          url: 'https://new.test/index.json',
+        );
+        final failed = expectLater(edit, throwsA(isA<DioException>()));
+        (await requests.requestAt(1)).reply('', status: 503);
+        await failed;
+        expect(SourceRepositories.instance.find(saved.id)!.url, repository.url);
+
+        final changed = SourceRepositories.instance.save(
+          id: saved.id,
+          name: 'New',
+          url: 'https://new.test/index.json',
+        );
+        (await requests.requestAt(2)).reply(catalog());
+        await changed;
+        expect(
+          SourceRepositories.instance.find(saved.id)!.url,
+          'https://new.test/index.json',
+        );
+        expect(messages, isEmpty);
+      });
     },
   );
 
@@ -383,6 +381,12 @@ class _PendingRequest {
 class _SourceRequests implements HttpClientAdapter {
   final items = <_PendingRequest>[];
   int closedClients = 0;
+  final _waitingRequests = <int, Completer<_PendingRequest>>{};
+
+  Future<_PendingRequest> requestAt(int index) {
+    if (index < items.length) return Future.value(items[index]);
+    return (_waitingRequests[index] ??= Completer<_PendingRequest>()).future;
+  }
 
   @override
   Future<ResponseBody> fetch(
@@ -392,6 +396,7 @@ class _SourceRequests implements HttpClientAdapter {
   ) {
     final request = _PendingRequest(options, cancelFuture);
     items.add(request);
+    _waitingRequests.remove(items.length - 1)?.complete(request);
     return request.response.future;
   }
 

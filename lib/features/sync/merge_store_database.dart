@@ -2601,6 +2601,7 @@ class MergeStoreDatabase {
     }
   }
 
+
   static Map<String, Object?> _decodeCanonicalObject(String encoded) {
     final value = jsonDecode(encoded);
     if (value is! Map || value.keys.any((key) => key is! String)) {
