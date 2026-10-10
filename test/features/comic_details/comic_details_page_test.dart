@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:photo_view/photo_view.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:image/image.dart' as img;
 import 'package:venera_plus/components/gesture.dart';
@@ -15,7 +16,6 @@ import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/reader/reader_page.dart';
-import 'package:venera_plus/features/reader/comic_image.dart';
 import 'package:venera_plus/foundation/image_provider/reader_image.dart';
 import 'package:venera_plus/features/sync/data_sync.dart';
 import 'package:venera_plus/foundation/app.dart';
@@ -66,8 +66,7 @@ void main() {
         expect(find.text('Continue'), findsOneWidget);
 
         await tester.tap(find.text('Continue'));
-        await tester.pump();
-        final reader = tester.state<ReaderState>(find.byType(Reader));
+        final reader = await _waitForReaderRoute(tester);
         final expectedChapter = grouped ? 3 : 2;
         expect(reader.chapter, expectedChapter);
         expect(reader.pageValue, 3);
@@ -81,12 +80,13 @@ void main() {
         expect(fixture.requestedChapterIds.last, grouped ? 'g2a' : 'c2');
 
         await tester.pump(const Duration(seconds: 2));
-        await tester.runAsync(() => fixture.histories.waitForAsyncWrites());
-        final persistedRecords = await tester.runAsync(
-          () => fixture.histories.exportSyncRecords(),
+        await _pumpAsyncWork(tester, fixture.histories.waitForAsyncWrites());
+        final persistedRecords = await _pumpAsyncWork(
+          tester,
+          fixture.histories.exportSyncRecords(),
         );
         final persistedProgress =
-            persistedRecords![syncRecordKey('history', [
+            persistedRecords[syncRecordKey('history', [
                   fixture.comicId,
                   fixture.type.value,
                 ])]!['progress']
@@ -122,10 +122,7 @@ void main() {
       final chapter = find.text('Group One Chapter B');
       await _scrollUntilVisible(tester, chapter);
       await tester.tap(chapter);
-      await tester.pump();
-      final selectedChapterReader = tester.state<ReaderState>(
-        find.byType(Reader),
-      );
+      final selectedChapterReader = await _waitForReaderRoute(tester);
       expect(selectedChapterReader.chapter, 2);
       expect(selectedChapterReader.pageValue, 1);
       await _waitForReader(tester, selectedChapterReader, 1);
@@ -143,8 +140,7 @@ void main() {
           .at(1);
       await tester.ensureVisible(secondThumbnail);
       await tester.tap(secondThumbnail);
-      await tester.pump();
-      final selectedPageReader = tester.state<ReaderState>(find.byType(Reader));
+      final selectedPageReader = await _waitForReaderRoute(tester);
       expect(selectedPageReader.chapter, 1);
       expect(selectedPageReader.pageValue, 2);
       await _waitForReader(tester, selectedPageReader, 2);
@@ -162,8 +158,7 @@ void main() {
       expect(find.text('Continue'), findsNothing);
 
       await tester.tap(find.text('Read'));
-      await tester.pump();
-      final reader = tester.state<ReaderState>(find.byType(Reader));
+      final reader = await _waitForReaderRoute(tester);
       expect(reader.chapter, 1);
       expect(reader.pageValue, 1);
       await _waitForReader(tester, reader, 1);
@@ -205,9 +200,13 @@ Future<_ComicDetailsFixture> _createFixture(
   final sourceKey =
       'comic_details_history_${DateTime.now().microsecondsSinceEpoch}';
   final comicId = grouped ? 'grouped-comic' : 'flat-comic';
-  final imageFile = File('${temporary.path}/page.png')
-    ..writeAsBytesSync(img.encodePng(img.Image(width: 100, height: 160)));
-  final imageUrls = List<String>.filled(4, Uri.file(imageFile.path).toString());
+  final imageBytes = img.encodePng(img.Image(width: 100, height: 160));
+  final imageUrls = <String>[];
+  for (var page = 1; page <= 4; page++) {
+    final imageFile = File('${temporary.path}/page-$page.png')
+      ..writeAsBytesSync(imageBytes);
+    imageUrls.add('file://${imageFile.path}');
+  }
   final chapterData = grouped
       ? <String, dynamic>{
           'Group One': {
@@ -286,6 +285,13 @@ Future<_ComicDetailsFixture> _createFixture(
     const MethodChannel('flutter_memory_info'),
     (call) async => 1 << 30,
   );
+  tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+    const MethodChannel('window_manager'),
+    (call) async {
+      if (call.method == 'isMaximized') return false;
+      throw MissingPluginException('Unexpected window call: ${call.method}');
+    },
+  );
 
   final fixture = _ComicDetailsFixture(
     sourceKey: sourceKey,
@@ -299,15 +305,19 @@ Future<_ComicDetailsFixture> _createFixture(
     try {
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();
-      await tester.runAsync(() async {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-        await histories.waitForAsyncWrites();
-        await DataSync.instance?.flushPendingChanges();
-      });
+      await _pumpAsyncWork(tester, histories.waitForAsyncWrites());
+      final sync = DataSync.instance;
+      if (sync != null) {
+        await _pumpAsyncWork(tester, sync.flushPendingChanges());
+      }
     } finally {
       ComicSourceManager().remove(sourceKey);
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
         const MethodChannel('flutter_memory_info'),
+        null,
+      );
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('window_manager'),
         null,
       );
       LocalManager.resetForTesting();
@@ -469,6 +479,52 @@ Future<void> _waitForText(WidgetTester tester, String text) async {
   expect(target, findsOneWidget);
 }
 
+// Isolate writes complete through fake-zone callbacks. Drive those callbacks
+// with frames; use runAsync only to let the real I/O make progress.
+Future<T> _pumpAsyncWork<T>(WidgetTester tester, Future<T> work) async {
+  late T result;
+  var completed = false;
+  Object? error;
+  StackTrace? errorStack;
+  work.then<void>(
+    (value) {
+      result = value;
+      completed = true;
+    },
+    onError: (Object failure, StackTrace stack) {
+      error = failure;
+      errorStack = stack;
+      completed = true;
+    },
+  );
+  final clock = Stopwatch()..start();
+  while (!completed && clock.elapsed < const Duration(seconds: 10)) {
+    await tester.pump();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 5)),
+    );
+  }
+  clock.stop();
+  expect(completed, isTrue, reason: 'Timed out waiting for async history work');
+  if (error != null) {
+    Error.throwWithStackTrace(error!, errorStack!);
+  }
+  return result;
+}
+
+Future<ReaderState> _waitForReaderRoute(WidgetTester tester) async {
+  final reader = find.byType(Reader);
+  for (var i = 0; i < 100; i++) {
+    await tester.pump(const Duration(milliseconds: 20));
+    if (reader.evaluate().isNotEmpty &&
+        ModalRoute.of(tester.element(reader))?.animation?.isCompleted == true) {
+      return tester.state<ReaderState>(reader);
+    }
+  }
+  expect(reader, findsOneWidget);
+  fail('Reader navigation did not finish');
+}
+
 Future<void> _waitForReader(
   WidgetTester tester,
   ReaderState reader,
@@ -486,16 +542,19 @@ Future<void> _waitForReader(
   expect(visiblePage, findsWidgets);
 }
 
-Finder _visibleReaderPage(int page) => find.byWidgetPredicate((widget) {
-  if (widget is! ComicImage) return false;
-  final image = widget.image;
-  if (image is ReaderImageProvider) return image.page == page;
-  if (image is ResizeImage) {
-    final nested = image.imageProvider;
-    return nested is ReaderImageProvider && nested.page == page;
-  }
-  return false;
-});
+Finder _visibleReaderPage(int page) {
+  final galleryPage = find.byWidgetPredicate((widget) {
+    if (widget is! PhotoView) return false;
+    final provider = widget.imageProvider;
+    return provider is ReaderImageProvider && provider.page == page;
+  });
+  return find.descendant(
+    of: galleryPage,
+    matching: find.byWidgetPredicate(
+      (widget) => widget is RawImage && widget.image != null,
+    ),
+  );
+}
 
 Future<void> _scrollUntilVisible(WidgetTester tester, Finder target) async {
   final scrollable = find
@@ -513,10 +572,7 @@ Future<void> _popReader(
 ) async {
   App.rootNavigatorKey.currentState!.pop();
   await tester.pumpAndSettle();
-  await tester.runAsync(() async {
-    await Future<void>.delayed(const Duration(milliseconds: 20));
-    await fixture.histories.waitForAsyncWrites();
-  });
+  await _pumpAsyncWork(tester, fixture.histories.waitForAsyncWrites());
   await tester.pump();
 }
 
