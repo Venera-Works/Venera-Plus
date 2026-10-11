@@ -2,11 +2,8 @@ import '../../foundation/sync_records.dart';
 import 'merge_engine.dart';
 
 /// Selects safe, field-level resolutions for conflicts that can be decided
-/// without a user prompt.
-///
-/// Local manual edits win only when their recorded dot still identifies the
-/// current local value. Otherwise, the latest eligible cloud candidate is
-/// selected; unverified legacy manual choices remain unresolved.
+/// without a user prompt. Reading-progress order conflicts always require an
+/// explicit choice; they are never decided by local actor or cloud time.
 List<MergeConflictResolution> automaticConflictResolutions({
   required MergeDocument document,
   required String localActor,
@@ -25,6 +22,10 @@ List<MergeConflictResolution> automaticConflictResolutions({
     if (unavailableDomains.contains(domain) ||
         (shouldObserveRecord != null &&
             !shouldObserveRecord(conflict.recordKey))) {
+      continue;
+    }
+    if (domain == 'history' &&
+        (conflict.field == 'progress' || conflict.field == 'readingProgress')) {
       continue;
     }
 

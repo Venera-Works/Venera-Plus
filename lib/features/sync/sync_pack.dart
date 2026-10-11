@@ -189,6 +189,10 @@ final class SyncPack {
       throw FormatException('Invalid sync pack index: $error');
     }
     final rawIndex = _asMap(decoded, 'sync pack index');
+    final indexVersion = rawIndex['schema'];
+    if (indexVersion is int && indexVersion != 1) {
+      throw UnsupportedSyncProtocolException('pack index', indexVersion);
+    }
     _requireKeys(rawIndex, const {'schema', 'objectCount', 'objects'});
     if (rawIndex['schema'] is! int || rawIndex['schema'] != 1) {
       throw const FormatException('Unsupported sync pack index schema');
@@ -343,6 +347,14 @@ final class SyncPackManifest {
       throw FormatException('Invalid sync pack manifest: $error');
     }
     final manifest = _asMap(decoded, 'sync pack manifest');
+    final manifestVersion = manifest['schema'];
+    final documentVersion = manifest['documentSchema'];
+    if (manifestVersion is int && manifestVersion != 2) {
+      throw UnsupportedSyncProtocolException('pack manifest', manifestVersion);
+    }
+    if (documentVersion is int && documentVersion != 3) {
+      throw UnsupportedSyncProtocolException('merge document', documentVersion);
+    }
     _requireKeys(manifest, const {
       'schema',
       'actor',
@@ -353,11 +365,8 @@ final class SyncPackManifest {
       'packs',
       'objects',
     });
-    if (manifest['schema'] is! int ||
-        manifest['schema'] != 2 ||
-        manifest['documentSchema'] is! int ||
-        manifest['documentSchema'] != 3) {
-      throw const FormatException('Unsupported sync pack manifest schema');
+    if (manifestVersion is! int || documentVersion is! int) {
+      throw const FormatException('Invalid sync pack manifest schema types');
     }
     final actor = manifest['actor'];
     final counter = manifest['counter'];

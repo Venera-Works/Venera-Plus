@@ -1,10 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/sync/sync.dart';
-import 'package:venera_plus/foundation/sync_records.dart';
 
 void main() {
   test(
@@ -78,6 +78,70 @@ void main() {
         isNull,
       );
       expect(malformedCache.invalidations, 1);
+    },
+  );
+  test(
+    'preserves cached content with unsupported pack and manifest versions',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'sync-pack-cache-future-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      const key = 'https://sync.example/future-version';
+      final snapshot = _snapshotFor('future cache version');
+      final originalPack = snapshot.packs.values.single;
+      final parsedPack = _readPack(originalPack.bytes);
+      final futureIndex = Map<String, Object?>.of(parsedPack.index)
+        ..['schema'] = 2;
+      final futurePackBytes = _assemblePack(futureIndex, parsedPack.payload);
+      final futurePackDigest = sha256.convert(futurePackBytes).toString();
+      final packFile = File('${root.path}/packs/$futurePackDigest.pack');
+      await packFile.parent.create(recursive: true);
+      await packFile.writeAsBytes(futurePackBytes, flush: true);
+      final cache = SyncPackCache(root);
+
+      await expectLater(
+        cache.read(futurePackDigest, expectedSize: futurePackBytes.length),
+        throwsA(
+          isA<UnsupportedSyncProtocolException>()
+              .having((error) => error.format, 'format', 'pack index')
+              .having((error) => error.version, 'version', 2),
+        ),
+      );
+      expect(await packFile.readAsBytes(), orderedEquals(futurePackBytes));
+
+      await cache.writeManifest(key, snapshot.manifest);
+      final keyDigest = sha256.convert(utf8.encode(key)).toString();
+      final manifestFile = File('${root.path}/manifests/$keyDigest.json');
+      final envelope = (jsonDecode(await manifestFile.readAsString()) as Map)
+          .cast<String, Object?>();
+      final manifest =
+          (jsonDecode(
+                    utf8.decode(base64Decode(envelope['manifest']! as String)),
+                  )
+                  as Map)
+              .cast<String, Object?>()
+            ..['schema'] = 3;
+      final manifestBytes = utf8.encode(canonicalSyncJson(manifest));
+      envelope['sha256'] = sha256.convert(manifestBytes).toString();
+      envelope['manifest'] = base64Encode(manifestBytes);
+      final futureManifestEntry = utf8.encode(jsonEncode(envelope));
+      await manifestFile.writeAsBytes(futureManifestEntry, flush: true);
+
+      await expectLater(
+        cache.readManifest(key),
+        throwsA(
+          isA<UnsupportedSyncProtocolException>()
+              .having((error) => error.format, 'format', 'pack manifest')
+              .having((error) => error.version, 'version', 3),
+        ),
+      );
+      expect(
+        await manifestFile.readAsBytes(),
+        orderedEquals(futureManifestEntry),
+      );
+      expect(cache.invalidations, 0);
+      expect(cache.misses, 0);
     },
   );
 
@@ -154,6 +218,42 @@ void main() {
       expect(restarted.usedBytes, lessThanOrEqualTo(budget));
     },
   );
+}
+
+({Map<String, Object?> index, Uint8List payload}) _readPack(Uint8List bytes) {
+  final indexLength = ByteData.sublistView(bytes).getUint32(8, Endian.big);
+  final payloadStart = SyncPack.headerBytes + indexLength;
+  return (
+    index:
+        (jsonDecode(
+                  utf8.decode(
+                    bytes.sublist(SyncPack.headerBytes, payloadStart),
+                  ),
+                )
+                as Map)
+            .cast<String, Object?>(),
+    payload: Uint8List.fromList(bytes.sublist(payloadStart)),
+  );
+}
+
+Uint8List _assemblePack(Map<String, Object?> index, Uint8List payload) {
+  final indexBytes = utf8.encode(canonicalSyncJson(index));
+  final result = Uint8List(
+    SyncPack.headerBytes + indexBytes.length + payload.length,
+  );
+  result.setRange(0, 8, const [0x56, 0x4e, 0x53, 0x50, 0x4b, 0x30, 0x30, 0x31]);
+  ByteData.sublistView(result).setUint32(8, indexBytes.length, Endian.big);
+  result.setRange(
+    SyncPack.headerBytes,
+    SyncPack.headerBytes + indexBytes.length,
+    indexBytes,
+  );
+  result.setRange(
+    SyncPack.headerBytes + indexBytes.length,
+    result.length,
+    payload,
+  );
+  return result;
 }
 
 SyncPackSnapshot _snapshotFor(String value) {

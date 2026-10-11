@@ -21,6 +21,7 @@ import 'package:venera_plus/features/reader/comic_image.dart';
 import 'package:venera_plus/features/reader/gallery_page_plan.dart';
 import 'package:venera_plus/features/reader/gallery_coordinator.dart';
 import 'package:venera_plus/features/reader/reader_page.dart';
+import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/reader/waterfall_flow.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
@@ -98,8 +99,24 @@ class ReaderImagesState extends State<ReaderImages> {
         final history = reader.history;
         if (history != null) {
           final previousPage = history.page;
+          final savedPosition = history.resumePosition;
+          final currentChapter = reader.readingChapter;
           final isSameChapter =
-              (reader.widget.initialChapter ?? reader.chapter) == history.ep;
+              currentChapter != null &&
+              (savedPosition?.chapterId != null
+                  ? savedPosition!.chapterId == currentChapter.id
+                  : savedPosition != null
+                  ? savedPosition.ep == currentChapter.ep &&
+                        savedPosition.group == currentChapter.group
+                  : history.ep == currentChapter.ep &&
+                        history.group == currentChapter.group);
+          final currentSourcePage = sourceImagePageForReaderPage(
+            readerPage: reader.pageValue,
+            imageCount: images.length,
+            imagesPerPage: reader.imagesPerPage,
+            showSingleImageOnFirstPage: reader.showSingleImageOnFirstPage(),
+          );
+          final savedSourcePage = savedPosition?.page ?? previousPage;
           final isLocalOrDownloaded =
               !fellBackOnline &&
               (reader.type == ComicType.local ||
@@ -116,14 +133,14 @@ class ReaderImagesState extends State<ReaderImages> {
             try {
               await LocalManager().migrateLegacyPageOrder(history, images);
               if (!mounted) return;
-              if ((reader.widget.initialChapter ?? 1) == history.ep &&
-                  reader.widget.initialPage == previousPage) {
-                final imagePage = history.page;
-                reader.pageValue = reader.imagesPerPage == 1
-                    ? imagePage
-                    : reader.showSingleImageOnFirstPage()
-                    ? ((imagePage - 1) / reader.imagesPerPage).ceil() + 1
-                    : (imagePage / reader.imagesPerPage).ceil();
+              if (isSameChapter && currentSourcePage == savedSourcePage) {
+                reader.pageValue = readerPageForSourceImagePage(
+                  sourceImagePage: history.page,
+                  imageCount: images.length,
+                  imagesPerPage: reader.imagesPerPage,
+                  showSingleImageOnFirstPage: reader
+                      .showSingleImageOnFirstPage(),
+                );
               }
             } catch (e, s) {
               Log.error(
@@ -217,7 +234,7 @@ class ReaderImagesState extends State<ReaderImages> {
             true;
         return _GalleryMode(
           key: Key(
-            '${reader.mode.key}_${reader.imagesPerPage}_${showComments}_${showCommentsAtEnd}_${splitDualPage}_${splitDualPageInvert}_${reader.chapter}',
+            '${reader.mode.key}_${reader.imagesPerPage}_${reader.showSingleImageOnFirstPage()}_${showComments}_${showCommentsAtEnd}_${splitDualPage}_${splitDualPageInvert}_${reader.chapter}',
           ),
         );
       } else {
@@ -291,6 +308,8 @@ class GalleryModeState extends State<_GalleryMode>
 
   GalleryPagePlan? _pagePlan;
   int _currentControllerIndex = 1;
+  bool _isUserPaging = false;
+  String? _userPagingCommandId;
   int? _attachedChapter;
   final Set<int> _resolvedSourceIndices = <int>{};
   final _coalescer = GallerySizeUpdateCoalescer();
@@ -519,6 +538,8 @@ class GalleryModeState extends State<_GalleryMode>
     if (reader.imageViewController == this) {
       reader.imageViewController = null;
     }
+    final commandId = _userPagingCommandId;
+    if (commandId != null) reader.finishNavigationCommand(commandId);
     _coalescer.reset();
     controller.dispose();
     if (_isAnimatingVisualPage) {
@@ -792,171 +813,224 @@ class GalleryModeState extends State<_GalleryMode>
           }
         }
       },
-      child: PhotoViewGallery.builder(
-        backgroundDecoration: BoxDecoration(color: context.colorScheme.surface),
-        reverse: reader.mode == ReaderMode.galleryRightToLeft,
-        scrollDirection: reader.mode == ReaderMode.galleryTopToBottom
-            ? Axis.vertical
-            : Axis.horizontal,
-        itemCount: totalVisualPages + 2,
-        builder: (BuildContext context, int index) {
-          if (index == 0 || index == totalVisualPages + 1) {
-            return PhotoViewGalleryPageOptions.customChild(
-              child: const SizedBox(),
+      child: NotificationListener<ScrollNotification>(
+        onNotification: (notification) {
+          if (notification is ScrollStartNotification &&
+              notification.dragDetails != null) {
+            _isUserPaging = true;
+            _userPagingCommandId ??= reader.createNavigationCommandId(
+              retainObservedProgress: true,
             );
-          } else if (isChapterCommentsPage(index)) {
-            return PhotoViewGalleryPageOptions.customChild(
-              child: _buildChapterCommentsPage(),
-            );
-          } else {
-            cache(index);
-            final key = _controllerKeyForIndex(index);
-            final photoViewController = _pool.getOrCreate(key);
-
-            if (isSplitEnabled && _pagePlan != null) {
-              final visualIndex = index - 1;
-              final displayPage = _pagePlan![visualIndex];
-              final sourceIndex = displayPage.sourceIndex;
-              final part = displayPage.part;
-              final imageKey = reader.images![sourceIndex];
-              final provider = _createImageProviderFromKey(
-                imageKey,
-                context,
-                sourceIndex + 1,
+          } else if (notification is ScrollEndNotification) {
+            final commandId = _userPagingCommandId;
+            if (commandId != null) reader.finishNavigationCommand(commandId);
+            _isUserPaging = false;
+            _userPagingCommandId = null;
+          }
+          return false;
+        },
+        child: PhotoViewGallery.builder(
+          backgroundDecoration: BoxDecoration(
+            color: context.colorScheme.surface,
+          ),
+          reverse: reader.mode == ReaderMode.galleryRightToLeft,
+          scrollDirection: reader.mode == ReaderMode.galleryTopToBottom
+              ? Axis.vertical
+              : Axis.horizontal,
+          itemCount: totalVisualPages + 2,
+          builder: (BuildContext context, int index) {
+            if (index == 0 || index == totalVisualPages + 1) {
+              return PhotoViewGalleryPageOptions.customChild(
+                child: const SizedBox(),
               );
+            } else if (isChapterCommentsPage(index)) {
+              return PhotoViewGalleryPageOptions.customChild(
+                child: _buildChapterCommentsPage(),
+              );
+            } else {
+              cache(index);
+              final key = _controllerKeyForIndex(index);
+              final photoViewController = _pool.getOrCreate(key);
+
+              if (isSplitEnabled && _pagePlan != null) {
+                final visualIndex = index - 1;
+                final displayPage = _pagePlan![visualIndex];
+                final sourceIndex = displayPage.sourceIndex;
+                final part = displayPage.part;
+                final imageKey = reader.images![sourceIndex];
+                final provider = _createImageProviderFromKey(
+                  imageKey,
+                  context,
+                  sourceIndex + 1,
+                );
+                final viewportSize = MediaQuery.of(context).size;
+                return PhotoViewGalleryPageOptions.customChild(
+                  childSize: viewportSize,
+                  controller: photoViewController,
+                  minScale: PhotoViewComputedScale.contained * 1.0,
+                  maxScale: PhotoViewComputedScale.covered * 10.0,
+                  child: SizedBox.fromSize(
+                    size: viewportSize,
+                    child: ComicImage(
+                      image: provider,
+                      wideImagePart: part,
+                      onImageSize: (size) =>
+                          _onSourceImageSize(sourceIndex, size),
+                      fit: BoxFit.contain,
+                      width: double.infinity,
+                      height: double.infinity,
+                      onInit: (state) => imageStates.add(state),
+                      onDispose: (state) => imageStates.remove(state),
+                    ),
+                  ),
+                );
+              }
+              var (startIndex, endIndex) = getPageImagesRange(index);
+              List<String> pageImages = reader.images!.sublist(
+                startIndex,
+                endIndex,
+              );
+
+              if (reader.imagesPerPage == 1 || pageImages.length == 1) {
+                return PhotoViewGalleryPageOptions(
+                  filterQuality: FilterQuality.medium,
+                  controller: photoViewController,
+                  imageProvider: _createImageProviderFromKey(
+                    pageImages[0],
+                    context,
+                    startIndex + 1,
+                  ),
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, error, s, retry) {
+                    return NetworkError(
+                      message: error.toString(),
+                      retry: retry,
+                    );
+                  },
+                );
+              }
+
               final viewportSize = MediaQuery.of(context).size;
               return PhotoViewGalleryPageOptions.customChild(
                 childSize: viewportSize,
                 controller: photoViewController,
                 minScale: PhotoViewComputedScale.contained * 1.0,
                 maxScale: PhotoViewComputedScale.covered * 10.0,
-                child: SizedBox.fromSize(
-                  size: viewportSize,
-                  child: ComicImage(
-                    image: provider,
-                    wideImagePart: part,
-                    onImageSize: (size) =>
-                        _onSourceImageSize(sourceIndex, size),
-                    fit: BoxFit.contain,
-                    width: double.infinity,
-                    height: double.infinity,
-                    onInit: (state) => imageStates.add(state),
-                    onDispose: (state) => imageStates.remove(state),
-                  ),
-                ),
+                child: buildPageImages(pageImages, startIndex),
               );
             }
-            var (startIndex, endIndex) = getPageImagesRange(index);
-            List<String> pageImages = reader.images!.sublist(
-              startIndex,
-              endIndex,
-            );
-
-            if (reader.imagesPerPage == 1 || pageImages.length == 1) {
-              return PhotoViewGalleryPageOptions(
-                filterQuality: FilterQuality.medium,
-                controller: photoViewController,
-                imageProvider: _createImageProviderFromKey(
-                  pageImages[0],
-                  context,
-                  startIndex + 1,
-                ),
-                fit: BoxFit.contain,
-                errorBuilder: (_, error, s, retry) {
-                  return NetworkError(message: error.toString(), retry: retry);
-                },
-              );
-            }
-
-            final viewportSize = MediaQuery.of(context).size;
-            return PhotoViewGalleryPageOptions.customChild(
-              childSize: viewportSize,
-              controller: photoViewController,
+          },
+          pageController: controller,
+          loadingBuilder: (context, event) {
+            return PhotoView.customChild(
+              childSize: MediaQuery.of(context).size,
+              initialScale: PhotoViewComputedScale.contained,
               minScale: PhotoViewComputedScale.contained * 1.0,
               maxScale: PhotoViewComputedScale.covered * 10.0,
-              child: buildPageImages(pageImages, startIndex),
-            );
-          }
-        },
-        pageController: controller,
-        loadingBuilder: (context, event) {
-          return PhotoView.customChild(
-            childSize: MediaQuery.of(context).size,
-            initialScale: PhotoViewComputedScale.contained,
-            minScale: PhotoViewComputedScale.contained * 1.0,
-            maxScale: PhotoViewComputedScale.covered * 10.0,
-            backgroundDecoration: BoxDecoration(
-              color: context.colorScheme.surface,
-            ),
-            child: Center(
-              child: SizedBox(
-                width: 20.0,
-                height: 20.0,
-                child: CircularProgressIndicator(
-                  backgroundColor: context.colorScheme.surfaceContainerHigh,
-                  value: event == null || event.expectedTotalBytes == null
-                      ? null
-                      : event.cumulativeBytesLoaded / event.expectedTotalBytes!,
+              backgroundDecoration: BoxDecoration(
+                color: context.colorScheme.surface,
+              ),
+              child: Center(
+                child: SizedBox(
+                  width: 20.0,
+                  height: 20.0,
+                  child: CircularProgressIndicator(
+                    backgroundColor: context.colorScheme.surfaceContainerHigh,
+                    value: event == null || event.expectedTotalBytes == null
+                        ? null
+                        : event.cumulativeBytesLoaded /
+                              event.expectedTotalBytes!,
+                  ),
                 ),
               ),
-            ),
-          );
-        },
-        onPageChanged: (i) {
-          _currentControllerIndex = i;
-          var shouldRefresh = false;
-          if (i == 0) {
-            _lastVisibleStableIdentity = null;
-            if (reader.isFirstChapterOfGroup ||
-                !reader.toPrevChapter(toLastPage: true)) {
-              controller.jumpToPage(1);
-            } else {
-              shouldRefresh = true;
-            }
-          } else if (i == totalVisualPages + 1) {
-            _lastVisibleStableIdentity = null;
-            if (reader.isLastChapterOfGroup || !reader.toNextChapter()) {
-              controller.jumpToPage(totalVisualPages);
-            } else {
-              shouldRefresh = true;
-            }
-          } else {
-            final targetSourcePage = controllerIndexToSourcePage(i);
-            if (reader.page != targetSourcePage) {
-              if (targetSourcePage < reader.maxPage) {
-                reader.targetLastVisualPage = false;
-              }
-              reader.setPage(targetSourcePage);
-            } else {
-              reader.notifyChapterCompletedIfNeeded();
-            }
-            context.readerScaffold.update();
-
-            final currentIdentity = _visibleStableIdentityForIndex(i);
-            shouldRefresh = shouldRefreshEInk(
-              previousIdentity: _lastVisibleStableIdentity,
-              currentIdentity: currentIdentity,
-              isCommentsPage: isChapterCommentsPage(i),
             );
-            if (currentIdentity != null) {
-              _lastVisibleStableIdentity = currentIdentity;
+          },
+          onPageChanged: (i) {
+            final previousIndex = _currentControllerIndex;
+            final navigationSource = _isUserPaging
+                ? i < previousIndex
+                      ? ReadingNavigationSource.userBackward
+                      : ReadingNavigationSource.userForward
+                : reader.pendingNavigationSource ??
+                      ReadingNavigationSource.passive;
+            var commandId = _isUserPaging
+                ? (_userPagingCommandId ??= reader.createNavigationCommandId(
+                    retainObservedProgress: true,
+                  ))
+                : null;
+            if (commandId != null &&
+                navigationSource == ReadingNavigationSource.userBackward &&
+                commandId == reader.sessionRoundId) {
+              commandId = reader.renewNavigationCommand(commandId);
+              _userPagingCommandId = commandId;
             }
+            _currentControllerIndex = i;
+            var shouldRefresh = false;
+            if (i == 0) {
+              _lastVisibleStableIdentity = null;
+              if (reader.isFirstChapterOfGroup ||
+                  !reader.toPrevChapter(
+                    toLastPage: true,
+                    source: navigationSource,
+                  )) {
+                reader.cancelPendingNavigation();
+                controller.jumpToPage(1);
+              } else {
+                shouldRefresh = true;
+              }
+            } else if (i == totalVisualPages + 1) {
+              _lastVisibleStableIdentity = null;
+              if (reader.isLastChapterOfGroup ||
+                  !reader.toNextChapter(source: navigationSource)) {
+                reader.cancelPendingNavigation();
+                controller.jumpToPage(totalVisualPages);
+              } else {
+                shouldRefresh = true;
+              }
+            } else {
+              final targetSourcePage = controllerIndexToSourcePage(i);
+              if (reader.page != targetSourcePage ||
+                  _isUserPaging ||
+                  reader.pendingNavigationSource != null) {
+                if (targetSourcePage < reader.maxPage) {
+                  reader.targetLastVisualPage = false;
+                }
+                reader.setPage(
+                  targetSourcePage,
+                  source: navigationSource,
+                  commandId: commandId,
+                );
+              } else {
+                reader.notifyChapterCompletedIfNeeded();
+              }
+              context.readerScaffold.update();
 
-            // Auto close toolbar when entering chapter comments page
-            if (isChapterCommentsPage(i) && context.readerScaffold.isOpen) {
-              context.readerScaffold.openOrClose();
+              final currentIdentity = _visibleStableIdentityForIndex(i);
+              shouldRefresh = shouldRefreshEInk(
+                previousIdentity: _lastVisibleStableIdentity,
+                currentIdentity: currentIdentity,
+                isCommentsPage: isChapterCommentsPage(i),
+              );
+              if (currentIdentity != null) {
+                _lastVisibleStableIdentity = currentIdentity;
+              }
+
+              // Auto close toolbar when entering chapter comments page
+              if (isChapterCommentsPage(i) && context.readerScaffold.isOpen) {
+                context.readerScaffold.openOrClose();
+              }
             }
-          }
-          if (shouldRefresh) {
-            context.readerScaffold.requestEInkRefresh();
-          }
-          final keepKeys = resolveKeepControllerKeys(
-            currentIndex: i,
-            totalVisualPages: totalVisualPages,
-            resolveKeyForIndex: _controllerKeyForIndex,
-          );
-          _pool.pruneExcept(keepKeys);
-        },
+            if (shouldRefresh) {
+              context.readerScaffold.requestEInkRefresh();
+            }
+            final keepKeys = resolveKeepControllerKeys(
+              currentIndex: i,
+              totalVisualPages: totalVisualPages,
+              resolveKeyForIndex: _controllerKeyForIndex,
+            );
+            _pool.pruneExcept(keepKeys);
+          },
+        ),
       ),
     );
   }
@@ -1242,9 +1316,9 @@ class GalleryModeState extends State<_GalleryMode>
         keyRepeatTimer = null;
       }
       if (forward == true) {
-        reader.toNextPage();
+        reader.toNextPage(source: ReadingNavigationSource.userForward);
       } else if (forward == false) {
-        reader.toPrevPage();
+        reader.toPrevPage(source: ReadingNavigationSource.userBackward);
       }
     }
     if (event is KeyRepeatEvent && keyRepeatTimer == null) {
@@ -1257,9 +1331,9 @@ class GalleryModeState extends State<_GalleryMode>
             timer.cancel();
             return;
           } else if (forward == true) {
-            reader.toNextPage();
+            reader.toNextPage(source: ReadingNavigationSource.userForward);
           } else if (forward == false) {
-            reader.toPrevPage();
+            reader.toPrevPage(source: ReadingNavigationSource.userBackward);
           }
         },
       );
@@ -1409,6 +1483,9 @@ class _ContinuousMode extends StatefulWidget {
 
 class ContinuousModeState extends State<_ContinuousMode>
     implements ReaderImageViewController, AutoReadingViewport {
+  bool _isUserScrolling = false;
+  String? _userScrollCommandId;
+  Timer? _userScrollEndTimer;
   late ReaderState reader;
 
   var itemScrollController = ItemScrollController();
@@ -1451,6 +1528,42 @@ class ContinuousModeState extends State<_ContinuousMode>
       const Duration(milliseconds: 300),
       () => delayedIsScrolling = value,
     );
+  }
+
+  void _beginUserScroll({bool endWhenIdle = false}) {
+    _isUserScrolling = true;
+    _userScrollCommandId ??= reader.createNavigationCommandId(
+      retainObservedProgress: true,
+    );
+    _userScrollEndTimer?.cancel();
+    _userScrollEndTimer = endWhenIdle
+        ? Timer(const Duration(milliseconds: 250), _endUserScroll)
+        : null;
+  }
+
+  void _finishUserScrollAfterLayout() {
+    if (!_isUserScrolling) return;
+    final commandId = _userScrollCommandId;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _userScrollCommandId != commandId) return;
+      if (_scrollController?.hasClients == true &&
+          scrollController.position.isScrollingNotifier.value) {
+        return;
+      }
+      // Item positions are delivered after layout, including the final drag
+      // position. Keep the input observation until that position is recorded.
+      if (reader.pendingNavigationSource == null) onPositionChanged();
+      _endUserScroll();
+    });
+  }
+
+  void _endUserScroll() {
+    _userScrollEndTimer?.cancel();
+    _userScrollEndTimer = null;
+    final commandId = _userScrollCommandId;
+    if (commandId != null) reader.finishNavigationCommand(commandId);
+    _isUserScrolling = false;
+    _userScrollCommandId = null;
   }
 
   bool prepareToPrevChapter = false;
@@ -1622,7 +1735,12 @@ class ContinuousModeState extends State<_ContinuousMode>
     }
   }
 
-  void _setReaderLocation(WaterfallImageRef imageRef) {
+  void _setReaderLocation(
+    WaterfallImageRef imageRef, {
+    required ReadingNavigationSource source,
+    String? commandId,
+    bool navigationCompleted = false,
+  }) {
     var segment = _segmentOfChapter(imageRef.chapter);
     var chapterChanged = reader.chapter != imageRef.chapter;
     if (segment != null && chapterChanged) {
@@ -1630,8 +1748,13 @@ class ContinuousModeState extends State<_ContinuousMode>
       reader.chapter = imageRef.chapter;
       reader.images = segment.images;
     }
-    if (chapterChanged || reader.page != imageRef.page) {
-      reader.setPage(imageRef.page);
+    if (chapterChanged || reader.page != imageRef.page || navigationCompleted) {
+      reader.setPage(
+        imageRef.page,
+        source: source,
+        commandId: commandId,
+        navigationCompleted: navigationCompleted,
+      );
     }
   }
 
@@ -1694,7 +1817,9 @@ class ContinuousModeState extends State<_ContinuousMode>
     if (imageRef == null) return;
     _isNavigatingWaterfallLocation = true;
     setState(() {
-      _setReaderLocation(imageRef);
+      reader.chapter = chapter;
+      reader.images = segment.images;
+      reader.pageValue = page;
       reader.jumpToLastPageOnLoad = false;
     });
     context.readerScaffold.update();
@@ -1704,9 +1829,26 @@ class ContinuousModeState extends State<_ContinuousMode>
       _futurePosition = null;
       cacheImages(index);
       SchedulerBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          _isNavigatingWaterfallLocation = false;
+        if (!mounted) return;
+        final positions = itemPositionsListener.itemPositions.value;
+        if (positions.isNotEmpty) {
+          final actualIndex = resolveFlowCurrentImageIndex(
+            visibleIndex: positions.first.index,
+            imageCount: _flowImageCount,
+            isTopToBottom: reader.mode.isTopToBottom,
+            isAtScrollEnd: _isAtScrollEnd,
+          );
+          final actualRef = _imageRefAt(actualIndex);
+          if (actualRef?.chapter == chapter) {
+            _setReaderLocation(
+              actualRef!,
+              source:
+                  reader.pendingNavigationSource ??
+                  ReadingNavigationSource.passive,
+            );
+          }
         }
+        _isNavigatingWaterfallLocation = false;
       });
     });
   }
@@ -1732,6 +1874,7 @@ class ContinuousModeState extends State<_ContinuousMode>
       reader.imageViewController = null;
     }
     itemPositionsListener.itemPositions.removeListener(onPositionChanged);
+    _endUserScroll();
     super.dispose();
   }
 
@@ -1747,15 +1890,62 @@ class ContinuousModeState extends State<_ContinuousMode>
     );
     var imageRef = _imageRefAt(page);
     if (imageRef == null) return;
+    // A scroll target near the tail can be visible even though the flow's
+    // current image resolves to the last image. Acknowledge only that
+    // rendered target, not an intermediate animation position.
+    final pendingPage = reader.pendingNavigationPage;
+    final pendingChapter = reader.pendingNavigationChapter ?? reader.chapter;
+    final targetIndex = pendingPage == null
+        ? null
+        : _waterfallIndexOfChapterPage(pendingChapter, pendingPage);
+    final navigationCompleted =
+        targetIndex != null &&
+        imageRef.chapter == pendingChapter &&
+        _isAtScrollEnd &&
+        itemPositionsListener.itemPositions.value.any(
+          (position) =>
+              position.index == targetIndex &&
+              position.itemLeadingEdge < 1 &&
+              position.itemTrailingEdge > 0,
+        );
+    final movedBackward =
+        imageRef.chapter < reader.chapter ||
+        (imageRef.chapter == reader.chapter && imageRef.page < reader.page);
+    final source = _isUserScrolling
+        ? movedBackward
+              ? ReadingNavigationSource.userBackward
+              : ReadingNavigationSource.userForward
+        : reader.pendingNavigationSource ?? ReadingNavigationSource.passive;
+    var commandId = _isUserScrolling
+        ? (_userScrollCommandId ??= reader.createNavigationCommandId(
+            retainObservedProgress: true,
+          ))
+        : null;
+    if (commandId != null &&
+        source == ReadingNavigationSource.userBackward &&
+        commandId == reader.sessionRoundId) {
+      commandId = reader.renewNavigationCommand(commandId);
+      _userScrollCommandId = commandId;
+    }
     if (crossChapter) {
       if (_isRestoringPrependedSegmentPosition ||
           _isNavigatingWaterfallLocation) {
         return;
       }
-      _setReaderLocation(imageRef);
+      _setReaderLocation(
+        imageRef,
+        source: source,
+        commandId: commandId,
+        navigationCompleted: navigationCompleted,
+      );
       context.readerScaffold.update();
-    } else if (page != reader.page) {
-      reader.setPage(page);
+    } else if (page != reader.page || navigationCompleted) {
+      reader.setPage(
+        page,
+        source: source,
+        commandId: commandId,
+        navigationCompleted: navigationCompleted,
+      );
       context.readerScaffold.update();
     }
     cacheImages(page);
@@ -1828,6 +2018,7 @@ class ContinuousModeState extends State<_ContinuousMode>
       if (isCTRLPressed) {
         return;
       }
+      _beginUserScroll(endWhenIdle: true);
       smoothTo(event.scrollDelta.dy);
     }
   }
@@ -2080,10 +2271,13 @@ class ContinuousModeState extends State<_ContinuousMode>
         if (fingers == 0) {
           if (jumpToPrevChapter) {
             context.readerScaffold.setFloatingButton(0);
-            reader.toPrevChapter(toLastPage: true);
+            reader.toPrevChapter(
+              toLastPage: true,
+              source: ReadingNavigationSource.userBackward,
+            );
           } else if (jumpToNextChapter) {
             context.readerScaffold.setFloatingButton(0);
-            reader.toNextChapter();
+            reader.toNextChapter(source: ReadingNavigationSource.userForward);
           }
         }
       },
@@ -2097,6 +2291,7 @@ class ContinuousModeState extends State<_ContinuousMode>
       },
       onPointerPanZoomUpdate: (event) {
         if (event.scale == 1.0) {
+          _beginUserScroll(endWhenIdle: true);
           smoothTo(0 - event.panDelta.dy);
         }
       },
@@ -2132,11 +2327,21 @@ class ContinuousModeState extends State<_ContinuousMode>
       onNotification: (notification) {
         if (notification is ScrollStartNotification) {
           delayedSetIsScrolling(true);
+          if (notification.dragDetails != null) {
+            _beginUserScroll();
+          }
         } else if (notification is ScrollEndNotification) {
           delayedSetIsScrolling(false);
+          if (_userScrollEndTimer == null) {
+            _finishUserScrollAfterLayout();
+          }
         }
-
         var scale = photoViewController.scale ?? 1.0;
+        if (notification is ScrollUpdateNotification &&
+            notification.dragDetails != null &&
+            (scale - 1).abs() < 0.05) {
+          _beginUserScroll();
+        }
 
         if (notification is ScrollUpdateNotification &&
             (scale - 1).abs() < 0.05) {
@@ -2383,7 +2588,7 @@ class ContinuousModeState extends State<_ContinuousMode>
         if (!crossChapter &&
             acrossChapters &&
             reader.chapter < reader.maxChapter) {
-          reader.toNextChapter();
+          reader.toNextChapter(source: ReadingNavigationSource.automatic);
           return AutoReadingStep.waiting;
         }
         return AutoReadingStep.finished;
@@ -2391,6 +2596,10 @@ class ContinuousModeState extends State<_ContinuousMode>
     }
     if (available <= 0) return AutoReadingStep.waiting;
     _futurePosition = null;
+    reader.beginNavigationCommand(
+      ReadingNavigationSource.automatic,
+      chapter: reader.chapter,
+    );
     scrollController.jumpTo(position.pixels + math.min(distance, available));
     return AutoReadingStep.advanced;
   }

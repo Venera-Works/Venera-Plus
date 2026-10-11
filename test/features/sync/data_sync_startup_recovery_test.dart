@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite3/sqlite3.dart';
@@ -11,6 +13,242 @@ import 'package:venera_plus/foundation/log.dart';
 import 'package:webdav_client/webdav_client.dart' as dav;
 
 void main() {
+  test(
+    'backup recovery verifies own publications in both namespaces until migration completes',
+    () async {
+      final tempDir = Directory.systemTemp.createTempSync(
+        'data-sync-namespace-recovery-',
+      );
+      var oldDataPath = Directory.systemTemp.path;
+      var oldCachePath = Directory.systemTemp.path;
+      try {
+        oldDataPath = App.dataPath;
+      } catch (_) {}
+      try {
+        oldCachePath = App.cachePath;
+      } catch (_) {}
+      final previousSettings = Map<String, dynamic>.from(
+        appdata.toJson()['settings'],
+      );
+      final previousImplicit = Map<String, dynamic>.from(appdata.implicitData);
+      final oldMuted = Log.isMuted;
+      const actor = 'namespace_recovery_device';
+      final key = syncRecordKey('setting', ['namespace-recovery']);
+      final transport = _StartupRecoveryTransport();
+      final client = _StartupRecoveryDavClient(transport);
+
+      void mirrorCurrentNamespaceIntoLegacy() {
+        final currentPrefix = '${MergeRemote.currentNamespace}/';
+        final legacyPrefix = '${MergeRemote.legacyNamespace}/';
+        for (final directory in transport.remoteDirs.toList()) {
+          if (directory.startsWith(currentPrefix)) {
+            transport.remoteDirs.add(
+              '$legacyPrefix${directory.substring(currentPrefix.length)}',
+            );
+          }
+        }
+        for (final entry in transport.remoteFiles.entries.toList()) {
+          if (!entry.key.startsWith(currentPrefix)) continue;
+          final path =
+              '$legacyPrefix${entry.key.substring(currentPrefix.length)}';
+          transport.remoteFiles[path] = Uint8List.fromList(entry.value);
+          final etag = transport.remoteEtags[entry.key];
+          if (etag != null) transport.remoteEtags[path] = etag;
+        }
+      }
+
+      Future<MergeStore> loadRecoveredStore(
+        String name, {
+        required bool migrationComplete,
+      }) async {
+        final directory = Directory('${tempDir.path}/$name');
+        final original = MergeStore(directory, actor);
+        await original.load();
+        await original.capture({
+          key: {'value': 'own publication'},
+        });
+        await original.save();
+        if (migrationComplete) {
+          await original.completeProgressProtocolMigration();
+          await original.save();
+        }
+        final primaryDatabase = File('${directory.path}/merge_store.sqlite3');
+        await primaryDatabase.copy('${directory.path}/merge_store.sqlite3.bak');
+        await primaryDatabase.writeAsString('CORRUPT_PRIMARY_FOR_RECOVERY');
+
+        final recovered = MergeStore(directory, actor);
+        await recovered.load();
+        expect(recovered.recoveredFromBackup, isTrue);
+        expect(recovered.hasProgressProtocolMigration, migrationComplete);
+        return recovered;
+      }
+
+      MergeSyncCoordinator coordinatorFor(
+        MergeStore store,
+        String directoryName,
+      ) => MergeSyncCoordinator(
+        endpointHash: directoryName,
+        stateDirectory: store.directory,
+        actor: actor,
+        store: store,
+        remote: MergeRemote(client, deviceName: 'Startup Recovery Device'),
+        exportFavoritesOverride: () => {},
+        applyFavoritesOverride: (_) {},
+        exportHistoryOverride: () async => {},
+        applyHistoryOverride: (_) {},
+        exportPreferencesOverride: () async => {},
+        applyPreferencesOverride: (_, {beforeCommit}) async {
+          beforeCommit?.call();
+        },
+      );
+
+      try {
+        DataSync.resetForTesting();
+        App.dataPath = tempDir.path;
+        App.cachePath = tempDir.path;
+        Log.isMuted = true;
+        appdata.settings['webdav'] = [
+          'https://example.com/dav',
+          'user',
+          'password',
+        ];
+
+        final publisherDirectory = Directory(
+          '${tempDir.path}/publication-source',
+        );
+        final publisher = MergeStore(publisherDirectory, actor);
+        await publisher.load();
+        await publisher.capture({
+          key: {'value': 'own publication'},
+        });
+        await MergeRemote(
+          client,
+          deviceName: 'Startup Recovery Device',
+        ).upload(publisher.outbox.single);
+        mirrorCurrentNamespaceIntoLegacy();
+
+        final legacyPrefix = '${MergeRemote.legacyNamespace}/';
+        final legacyFilesBefore = {
+          for (final entry in transport.remoteFiles.entries)
+            if (entry.key.startsWith(legacyPrefix))
+              entry.key: Uint8List.fromList(entry.value),
+        };
+        final legacyDirectoriesBefore = transport.remoteDirs
+            .where((path) => path.startsWith(legacyPrefix))
+            .toSet();
+
+        final pendingMigrationStore = await loadRecoveredStore(
+          'migration-pending',
+          migrationComplete: false,
+        );
+        final pendingCoordinator = coordinatorFor(
+          pendingMigrationStore,
+          'migration-pending',
+        );
+        transport.requests.clear();
+        client.directoryReads.clear();
+        await pendingCoordinator.reconcileBackupRecoveryIfNeeded();
+        expect(pendingMigrationStore.document.counterFor(actor), 1);
+        expect(pendingMigrationStore.hasProgressProtocolMigration, isFalse);
+        expect(
+          transport.requests.any(
+            (request) =>
+                request.method == 'GET' &&
+                request.uri.path.contains('/$legacyPrefix'),
+          ),
+          isTrue,
+        );
+        expect(
+          transport.requests.any(
+            (request) =>
+                request.method == 'GET' &&
+                request.uri.path.contains('/${MergeRemote.currentNamespace}/'),
+          ),
+          isTrue,
+        );
+        expect(
+          client.directoryReads,
+          containsAll([
+            MergeRemote.currentNamespace,
+            MergeRemote.legacyNamespace,
+          ]),
+        );
+
+        final migratedStore = await loadRecoveredStore(
+          'migration-complete',
+          migrationComplete: true,
+        );
+        final migratedCoordinator = coordinatorFor(
+          migratedStore,
+          'migration-complete',
+        );
+        transport.requests.clear();
+        client.directoryReads.clear();
+        await migratedCoordinator.reconcileBackupRecoveryIfNeeded();
+        expect(migratedStore.document.counterFor(actor), 1);
+        expect(migratedStore.hasProgressProtocolMigration, isTrue);
+        expect(
+          transport.requests.any(
+            (request) =>
+                request.method == 'GET' &&
+                request.uri.path.contains('/$legacyPrefix'),
+          ),
+          isFalse,
+        );
+        expect(
+          transport.requests.any(
+            (request) =>
+                request.method == 'GET' &&
+                request.uri.path.contains('/${MergeRemote.currentNamespace}/'),
+          ),
+          isTrue,
+        );
+        expect(client.directoryReads, contains(MergeRemote.currentNamespace));
+        expect(
+          client.directoryReads,
+          isNot(contains(MergeRemote.legacyNamespace)),
+        );
+        expect(
+          transport.remoteFiles.keys
+              .where((path) => path.startsWith(legacyPrefix))
+              .toSet(),
+          unorderedEquals(legacyFilesBefore.keys),
+        );
+        for (final entry in legacyFilesBefore.entries) {
+          expect(transport.remoteFiles[entry.key], orderedEquals(entry.value));
+        }
+        expect(
+          transport.remoteDirs
+              .where((path) => path.startsWith(legacyPrefix))
+              .toSet(),
+          unorderedEquals(legacyDirectoriesBefore),
+        );
+        expect(
+          transport.requests.where(
+            (request) =>
+                {'PUT', 'DELETE'}.contains(request.method) &&
+                request.uri.path.contains('/$legacyPrefix'),
+          ),
+          isEmpty,
+        );
+      } finally {
+        DataSync.resetForTesting();
+        await appdata.writeImplicitData();
+        appdata.implicitData
+          ..clear()
+          ..addAll(previousImplicit);
+        (appdata.toJson()['settings'] as Map)
+          ..clear()
+          ..addAll(previousSettings);
+        App.dataPath = oldDataPath;
+        App.cachePath = oldCachePath;
+        Log.clear();
+        Log.isMuted = oldMuted;
+        if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+      }
+    },
+  );
+
   test(
     'startup preserves divergent replicas, manual repair retains intent, '
     'fences stale recovery, and serializes same-endpoint initialization',
@@ -394,12 +632,18 @@ void main() {
 }
 
 class _StartupRecoveryDavClient extends dav.Client {
-  _StartupRecoveryDavClient()
+  _StartupRecoveryDavClient([_StartupRecoveryTransport? transport])
+    : this._(transport ?? _StartupRecoveryTransport());
+
+  _StartupRecoveryDavClient._(this.transport)
     : super(
         uri: 'https://example.com/dav/',
-        c: dav.WdDio(),
+        c: dav.WdDio(httpAdapter: transport),
         auth: dav.Auth(user: 'user', pwd: 'password'),
       );
+
+  final _StartupRecoveryTransport transport;
+  final directoryReads = <String>[];
 
   @override
   Future<void> ping([CancelToken? cancelToken]) async {}
@@ -408,5 +652,133 @@ class _StartupRecoveryDavClient extends dav.Client {
   Future<List<dav.File>> readDir(
     String path, [
     CancelToken? cancelToken,
-  ]) async => const [];
+  ]) async {
+    final cleanPath = path.trim().replaceAll('\\', '/');
+    directoryReads.add(cleanPath);
+    final prefix = cleanPath.isEmpty || cleanPath == '/' ? '' : '$cleanPath/';
+    final childDirectories = <String>{};
+    final files = <dav.File>[];
+    for (final key in {
+      ...transport.remoteDirs,
+      ...transport.remoteFiles.keys,
+    }) {
+      if (!key.startsWith(prefix)) continue;
+      final relative = key.substring(prefix.length);
+      final separator = relative.indexOf('/');
+      if (separator > 0) {
+        childDirectories.add(relative.substring(0, separator));
+      } else if (relative.isNotEmpty && transport.remoteDirs.contains(key)) {
+        childDirectories.add(relative);
+      }
+    }
+    for (final name in childDirectories) {
+      files.add(dav.File(name: name, path: '/$prefix$name', isDir: true));
+    }
+    for (final entry in transport.remoteFiles.entries) {
+      if (!entry.key.startsWith(prefix)) continue;
+      final name = entry.key.substring(prefix.length);
+      if (name.contains('/')) continue;
+      files.add(
+        dav.File(
+          name: name,
+          path: '/${entry.key}',
+          isDir: false,
+          size: entry.value.length,
+          eTag: transport.remoteEtags[entry.key],
+        ),
+      );
+    }
+    return files;
+  }
+}
+
+class _StartupRecoveryTransport implements HttpClientAdapter {
+  final remoteFiles = <String, Uint8List>{};
+  final remoteEtags = <String, String>{};
+  final remoteDirs = <String>{};
+  final requests = <RequestOptions>[];
+
+  String _path(RequestOptions options) => Uri.decodeComponent(
+    options.uri.path,
+  ).replaceFirst(RegExp(r'^/dav/?'), '');
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    requests.add(options);
+    final path = _path(options);
+    if (options.method == 'OPTIONS') {
+      return ResponseBody.fromString('', 200);
+    }
+    if (options.method == 'MKCOL') {
+      remoteDirs.add(path);
+      return ResponseBody.fromString('', 201);
+    }
+    if (options.method == 'HEAD') {
+      final bytes = remoteFiles[path];
+      if (bytes == null) return ResponseBody.fromString('', 404);
+      return ResponseBody.fromString(
+        '',
+        200,
+        headers: {
+          'etag': [remoteEtags[path] ?? '"${bytes.length}"'],
+          'content-length': ['${bytes.length}'],
+        },
+      );
+    }
+    if (options.method == 'PUT') {
+      if (remoteFiles.containsKey(path) &&
+          options.headers['If-None-Match'] == '*') {
+        await requestStream?.drain<void>();
+        return ResponseBody.fromString('', 412);
+      }
+      final bytesBuilder = BytesBuilder();
+      if (requestStream != null) {
+        await for (final chunk in requestStream) {
+          bytesBuilder.add(chunk);
+        }
+      } else if (options.data is List<int>) {
+        bytesBuilder.add(options.data as List<int>);
+      } else if (options.data is Stream<List<int>>) {
+        await for (final chunk in options.data as Stream<List<int>>) {
+          bytesBuilder.add(chunk);
+        }
+      }
+      final bytes = bytesBuilder.takeBytes();
+      final etag = '"${sha256.convert(bytes)}"';
+      remoteFiles[path] = bytes;
+      remoteEtags[path] = etag;
+      return ResponseBody.fromString(
+        '',
+        201,
+        headers: {
+          'etag': [etag],
+        },
+      );
+    }
+    if (options.method == 'GET') {
+      final bytes = remoteFiles[path];
+      if (bytes == null) return ResponseBody.fromString('', 404);
+      return ResponseBody.fromBytes(
+        bytes,
+        200,
+        headers: {
+          'etag': [remoteEtags[path] ?? '"${bytes.length}"'],
+          'content-length': ['${bytes.length}'],
+        },
+      );
+    }
+    if (options.method == 'DELETE') {
+      remoteFiles.remove(path);
+      remoteEtags.remove(path);
+      return ResponseBody.fromString('', 204);
+    }
+    return ResponseBody.fromString('', 200);
+  }
+
+  @override
+  void close({bool force = false}) {}
 }

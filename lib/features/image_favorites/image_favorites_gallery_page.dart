@@ -100,6 +100,7 @@ class _ImageFavoritesGalleryPageState extends State<ImageFavoritesGalleryPage> {
         sourceKey: image.sourceKey,
         initialEp: image.ep,
         initialPage: image.page,
+        initialNavigationSource: ReadingNavigationSource.userSeek,
       ),
     );
   }

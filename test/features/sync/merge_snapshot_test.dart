@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -201,6 +202,101 @@ void main() {
       throwsFormatException,
     );
   });
+  test(
+    'distinguishes unsupported snapshot and document versions from bad types',
+    () {
+      const actor = 'snapshot_version_actor';
+      final document = MergeDocument()
+        ..captureLocal(actor, const {}, {
+          syncRecordKey('setting', ['themeMode']): {'value': 'dark'},
+        });
+      final batch = MergeBatch.create(
+        actor: actor,
+        counter: document.counterFor(actor),
+        document: document,
+      );
+      final snapshot = MergeSnapshot.fromBatch(batch);
+
+      Map<String, Object?> manifestWith(String field, Object value) {
+        final manifest =
+            (jsonDecode(utf8.decode(snapshot.serializeManifest())) as Map)
+                .cast<String, Object?>();
+        manifest[field] = value;
+        return manifest;
+      }
+
+      Uint8List serializeManifest(Map<String, Object?> manifest) =>
+          Uint8List.fromList(utf8.encode(canonicalSyncJson(manifest)));
+      void expectUnsupported(
+        void Function() decode, {
+        required String format,
+        required int version,
+      }) {
+        expect(
+          decode,
+          throwsA(
+            isA<UnsupportedSyncProtocolException>()
+                .having((error) => error.format, 'format', format)
+                .having((error) => error.version, 'version', version),
+          ),
+        );
+      }
+
+      void expectMalformedNotUnsupported(void Function() decode) {
+        expect(
+          decode,
+          throwsA(
+            allOf(
+              isA<FormatException>(),
+              isNot(isA<UnsupportedSyncProtocolException>()),
+            ),
+          ),
+        );
+      }
+
+      expectUnsupported(
+        () => MergeSnapshot.decode(
+          serializeManifest(manifestWith('schema', 2)),
+          snapshot.objects,
+        ),
+        format: 'snapshot',
+        version: 2,
+      );
+      expectUnsupported(
+        () => MergeSnapshot.decode(
+          serializeManifest(manifestWith('documentSchema', 4)),
+          snapshot.objects,
+        ),
+        format: 'merge document',
+        version: 4,
+      );
+      final futureDocument = Map<String, Object?>.of(document.toJson())
+        ..['schema'] = 4;
+      expectUnsupported(
+        () => MergeDocument.fromJson(futureDocument),
+        format: 'merge document',
+        version: 4,
+      );
+
+      expectMalformedNotUnsupported(
+        () => MergeSnapshot.decode(
+          serializeManifest(manifestWith('schema', '1')),
+          snapshot.objects,
+        ),
+      );
+      expectMalformedNotUnsupported(
+        () => MergeSnapshot.decode(
+          serializeManifest(manifestWith('documentSchema', '3')),
+          snapshot.objects,
+        ),
+      );
+      final malformedDocument = Map<String, Object?>.of(document.toJson())
+        ..['schema'] = '3';
+      expectMalformedNotUnsupported(
+        () => MergeDocument.fromJson(malformedDocument),
+      );
+    },
+  );
   test(
     'encoding cache preserves v4 bytes and fingerprints causal event digests',
     () {

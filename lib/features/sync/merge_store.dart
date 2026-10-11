@@ -32,6 +32,7 @@ class MergeStore {
   final Map<String, Map<String, String>> _verifiedHistoryEdits = {};
   bool _hasCompletedSync = false;
   bool _completionMarkerPersisted = false;
+  bool _hasProgressProtocolMigration = false;
   SyncRecords _observed = {};
   final Set<String> _received = {};
   final List<String> _outboxIds = [];
@@ -59,13 +60,16 @@ class MergeStore {
 
   MergeDocument get document => _document;
   bool get hasCompletedSync => _hasCompletedSync;
+  bool get hasProgressProtocolMigration => _hasProgressProtocolMigration;
   String? manualCandidateId(String recordKey, String field) =>
       _localEdits[recordKey]?[field];
 
   /// Returns a history progress/presence marker without matching local proof.
   String? unverifiedHistoryCandidateId(String recordKey, String field) {
     if (!_isHistoryRecordKey(recordKey) ||
-        (field != 'progress' && field != 'presence')) {
+        (field != 'progress' &&
+            field != 'readingProgress' &&
+            field != 'presence')) {
       return null;
     }
     final marker = _localEdits[recordKey]?[field];
@@ -167,6 +171,8 @@ class MergeStore {
           legacyState = await _readState(_stateFile);
         } on _StoreActorMismatch {
           rethrow; // A valid state belonging to another actor is not corruption.
+        } on UnsupportedSyncProtocolException {
+          rethrow;
         } catch (error) {
           primaryError = error;
         }
@@ -176,6 +182,8 @@ class MergeStore {
           legacyState = await _readState(_backupFile);
           recovered = true;
         } on _StoreActorMismatch {
+          rethrow;
+        } on UnsupportedSyncProtocolException {
           rethrow;
         } catch (error) {
           throw MergeStoreIntegrityException(
@@ -203,6 +211,8 @@ class MergeStore {
               legacyState = await _readState(_temporaryFile);
               recovered = true;
             } on _StoreActorMismatch {
+              rethrow;
+            } on UnsupportedSyncProtocolException {
               rethrow;
             } catch (error) {
               throw MergeStoreIntegrityException(
@@ -293,6 +303,8 @@ class MergeStore {
           entry.key: Map<String, String>.of(entry.value),
       });
     _hasCompletedSync = databaseState?.hasCompletedSync ?? _received.isNotEmpty;
+    _hasProgressProtocolMigration =
+        databaseState?.hasProgressProtocolMigration ?? false;
     _completionMarkerPersisted =
         databaseState?.persistedMeta.containsKey('hasCompletedSync') ?? false;
     _initialized =
@@ -805,6 +817,15 @@ class MergeStore {
     await save();
   }
 
+  /// Commits the one-time reading-progress protocol marker with the complete
+  /// durable store state in the same main/backup transaction.
+  Future<void> completeProgressProtocolMigration() async {
+    _ensureLoaded();
+    if (_hasProgressProtocolMigration) return;
+    _hasProgressProtocolMigration = true;
+    await save();
+  }
+
   /// Acknowledging an old immutable checkpoint never clears newer publications.
   Future<void> acknowledge(String id) async {
     _ensureLoaded();
@@ -922,7 +943,9 @@ class MergeStore {
         if (fields.isEmpty) stagedManualCandidates.remove(resolution.recordKey);
       }
       if (syncRecordDomain(resolution.recordKey) == 'history' &&
-          (resolution.field == 'progress' || resolution.field == 'presence')) {
+          (resolution.field == 'progress' ||
+              resolution.field == 'readingProgress' ||
+              resolution.field == 'presence')) {
         final verifiedFields = stagedVerifiedHistoryEdits.putIfAbsent(
           resolution.recordKey,
           () => <String, String>{},
@@ -1002,6 +1025,7 @@ class MergeStore {
         localEdits: _localEdits,
         verifiedHistoryEdits: _verifiedHistoryEdits,
         hasCompletedSync: _hasCompletedSync,
+        hasProgressProtocolMigration: _hasProgressProtocolMigration,
         counterReconciliationRequired: _needsCounterReconciliation
             ? true
             : _counterReconciliationVerified
@@ -1150,6 +1174,9 @@ class MergeStore {
       );
     }
     final schema = decoded['schemaVersion'] as int;
+    if (schema > 2) {
+      throw UnsupportedSyncProtocolException('local merge state', schema);
+    }
     if (schema != 1 && schema != 2) {
       throw FormatException(
         'Unsupported merge schema version: $schema in ${file.path}',
@@ -1350,22 +1377,20 @@ class MergeStore {
     for (final key in <String>{...previous.keys, ...current.keys}) {
       final before = previous[key];
       final after = current[key];
-      if (!_isHistoryRecordKey(key) ||
-          !_isHistoryTimeOnlyChange(before, after)) {
+      final timeOnlyField = _historyTimeOnlyField(before, after);
+      if (!_isHistoryRecordKey(key) || timeOnlyField == null) {
         continue;
       }
       final inherited = <String, bool>{};
-      for (final field in const ['progress', 'presence']) {
+      for (final field in [timeOnlyField, 'presence']) {
         final id = _localEdits[key]?[field];
         if (id == null ||
             !_document.hasActiveHistoryCandidateValue(
               key,
               field,
               id,
-              value: field == 'progress' ? before!['progress'] : null,
-              present: field == 'presence'
-                  ? true
-                  : before!.containsKey('progress'),
+              value: field == 'presence' ? null : before![field],
+              present: field == 'presence' ? true : before!.containsKey(field),
             )) {
           continue;
         }
@@ -1396,24 +1421,27 @@ class MergeStore {
         if (after != null) {
           for (final field in after.keys) {
             changed.add((key, field));
-            if (history && field == 'progress') {
+            if (history &&
+                (field == 'progress' || field == 'readingProgress')) {
               verifiedHistoryChanges.add((key, field));
             }
           }
         }
         continue;
       }
-      final progressTimeOnly =
-          history && _isHistoryTimeOnlyChange(before, after);
+      final timeOnlyField = history
+          ? _historyTimeOnlyField(before, after)
+          : null;
+      final progressTimeOnly = timeOnlyField != null;
       var recordChanged = false;
       for (final field in <String>{...before.keys, ...after.keys}) {
         if (_sameFieldValue(before, after, field) ||
-            (progressTimeOnly && field == 'progress')) {
+            (progressTimeOnly && field == timeOnlyField)) {
           continue;
         }
         changed.add((key, field));
         recordChanged = true;
-        if (history && field == 'progress') {
+        if (history && (field == 'progress' || field == 'readingProgress')) {
           verifiedHistoryChanges.add((key, field));
         }
       }
@@ -1448,7 +1476,9 @@ class MergeStore {
   }) {
     for (final (recordKey, field) in changes) {
       if (_isHistoryRecordKey(recordKey) &&
-          (field == 'progress' || field == 'presence')) {
+          (field == 'progress' ||
+              field == 'readingProgress' ||
+              field == 'presence')) {
         _removeVerifiedHistoryEdit(recordKey, field);
       }
       _localEdits.putIfAbsent(recordKey, () => <String, String>{})[field] = dot;
@@ -1477,46 +1507,54 @@ class MergeStore {
     }
   }
 
-  static bool _isHistoryTimeOnlyChange(
+  static String? _historyTimeOnlyField(
     Map<String, Object?>? before,
     Map<String, Object?>? after,
   ) {
-    if (before == null || after == null) return false;
-    final oldProgress = before['progress'];
-    final newProgress = after['progress'];
-    if (!_isValidHistoryProgress(oldProgress) ||
-        !_isValidHistoryProgress(newProgress)) {
-      return false;
+    if (before == null || after == null) return null;
+    for (final field in const ['readingProgress', 'progress']) {
+      final oldProgress = before[field];
+      final newProgress = after[field];
+      if (!_isValidHistoryProgress(oldProgress) ||
+          !_isValidHistoryProgress(newProgress)) {
+        continue;
+      }
+      final oldValues = (oldProgress as Map).cast<String, Object?>();
+      final newValues = (newProgress as Map).cast<String, Object?>();
+      if (!syncValuesEqual(oldValues['time'], newValues['time']) &&
+          _sameMapExcept(oldValues, newValues, 'time')) {
+        return field;
+      }
     }
-    final oldValues = (oldProgress as Map).cast<String, Object?>();
-    final newValues = (newProgress as Map).cast<String, Object?>();
-    if (syncValuesEqual(oldValues['time'], newValues['time']) ||
-        !_sameMapExcept(oldValues, newValues, 'time')) {
-      return false;
-    }
-    return true;
+    return null;
   }
 
   static bool _isValidHistoryProgress(Object? value) {
-    if (value is! Map ||
-        !value.containsKey('ep') ||
+    if (value is! Map || !value.containsKey('time')) return false;
+    final time = value['time'];
+    if (!_isProgressInteger(time) ||
+        (time as num) < 0 ||
+        time > 8640000000000000) {
+      return false;
+    }
+    if (value['version'] != null) {
+      return value['version'] == 1 &&
+          value['maximum'] is List &&
+          value['rounds'] is Map &&
+          value['retired'] is List &&
+          value['ended'] is List;
+    }
+    if (!value.containsKey('ep') ||
         !value.containsKey('page') ||
-        !value.containsKey('group') ||
-        !value.containsKey('time')) {
+        !value.containsKey('group')) {
       return false;
     }
     final episode = value['ep'];
     final page = value['page'];
-    final time = value['time'];
     final group = value['group'];
-    if (!_isProgressInteger(episode) ||
-        !_isProgressInteger(page) ||
-        !_isProgressInteger(time) ||
-        (group != null && !_isProgressInteger(group))) {
-      return false;
-    }
-    final timestamp = time as num;
-    return timestamp >= 0 && timestamp <= 8640000000000000;
+    return _isProgressInteger(episode) &&
+        _isProgressInteger(page) &&
+        (group == null || _isProgressInteger(group));
   }
 
   static bool _isProgressInteger(Object? value) =>
@@ -1526,9 +1564,14 @@ class MergeStore {
     Map<String, Object?>? left,
     Map<String, Object?>? right,
   ) {
-    if (_sameFieldValue(left, right, 'progress')) return true;
-    final leftProgress = left?['progress'];
-    final rightProgress = right?['progress'];
+    final field =
+        left?.containsKey('readingProgress') == true ||
+            right?.containsKey('readingProgress') == true
+        ? 'readingProgress'
+        : 'progress';
+    if (_sameFieldValue(left, right, field)) return true;
+    final leftProgress = left?[field];
+    final rightProgress = right?[field];
     if (!_isValidHistoryProgress(leftProgress) ||
         !_isValidHistoryProgress(rightProgress)) {
       return false;
@@ -1569,7 +1612,8 @@ class MergeStore {
         ...?targetRecord?.keys,
         ...actualRecord.keys,
       }) {
-        if (_isHistoryRecordKey(key) && field == 'progress') {
+        if (_isHistoryRecordKey(key) &&
+            (field == 'progress' || field == 'readingProgress')) {
           if (!_sameHistoryProgressPosition(targetRecord, actualRecord) &&
               !_sameHistoryProgressPosition(previousRecord, actualRecord)) {
             changes.add((key, field));

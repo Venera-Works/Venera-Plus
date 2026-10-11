@@ -5,7 +5,6 @@ import 'dart:io';
 import 'package:flutter/foundation.dart' show kDebugMode;
 
 import 'package:crypto/crypto.dart';
-import 'package:uuid/uuid.dart';
 
 import '../../foundation/app.dart';
 import '../../foundation/appdata.dart';
@@ -387,17 +386,6 @@ class MergeSyncCoordinator {
   static String computeEndpointHash(String url, String username) {
     final normalized = '${normalizeWebDavEndpointUrl(url)}#$username';
     return sha256.convert(utf8.encode(normalized)).toString().substring(0, 16);
-  }
-
-  static Future<String> getOrCreateActorId() async {
-    var id = appdata.implicitData['syncDeviceId'] as String?;
-    if (id == null || id.isEmpty) {
-      id = 'device_${const Uuid().v4()}';
-      appdata.implicitData['syncDeviceId'] = id;
-    }
-    // Also flush a previously assigned in-memory ID after a failed write.
-    await appdata.writeImplicitData();
-    return id;
   }
 
   /// Exports a complete snapshot, reusing domains not invalidated by a business
@@ -1125,23 +1113,35 @@ class MergeSyncCoordinator {
     return imported;
   }
 
-  /// Restored local backups may have rolled back actor counters. Reconcile only
-  /// against this device's commits in the current Pack namespace.
+  /// Restored local backups may have rolled back actor counters. During the
+  /// protocol cutover, verify own commits in both namespaces before allocation.
   Future<void> reconcileBackupRecoveryIfNeeded() async {
     if (!store.recoveredFromBackup || _counterReconciliationComplete) return;
 
     try {
-      final entries = await _measure(
-        'discover',
-        () => remote.list(latestOnly: false),
-      );
+      final readers = [
+        remote,
+        if (!store.hasProgressProtocolMigration) remote.legacyReader(),
+      ];
+      final publicationsToVerify = <(MergeRemote, MergeRemoteEntry)>[];
+      for (final reader in readers) {
+        final entries = await _measure(
+          'discover',
+          () => reader.list(latestOnly: false),
+        );
+        publicationsToVerify.addAll(
+          entries
+              .where((entry) => entry.actor == actor)
+              .map((entry) => (reader, entry)),
+        );
+      }
       _assertInitializationCurrent();
       MergeDocument? verifiedDocument;
       final verifiedFilenames = <String>[];
       final publications = <int, String>{};
       var highest = 0;
-      for (final entry in entries.where((entry) => entry.actor == actor)) {
-        final batch = await _measure('download', () => remote.download(entry));
+      for (final (reader, entry) in publicationsToVerify) {
+        final batch = await _measure('download', () => reader.download(entry));
         _assertInitializationCurrent();
         final priorId = publications[batch.counter];
         if (priorId != null && priorId != batch.id) {
@@ -1200,6 +1200,8 @@ class MergeSyncCoordinator {
       await store.save();
       _counterReconciliationComplete = true;
     } on MergeStoreStateException {
+      rethrow;
+    } on UnsupportedSyncProtocolException {
       rethrow;
     } on SyncInitializationSupersededException {
       rethrow;
@@ -1260,7 +1262,32 @@ class MergeSyncCoordinator {
     }
   }
 
-  Future<bool> _mergeRemoteEntries(List<MergeRemoteEntry> entries) async {
+  /// Verifies the old namespace once without changing its immutable bytes.
+  /// Persist the marker only after every actor has a usable checkpoint and the
+  /// current local snapshot (including queued reading writes) is durable.
+  Future<bool> migrateProgressProtocolIfNeeded() async {
+    if (store.hasProgressProtocolMigration) return false;
+    final legacy = remote.legacyReader();
+    final entries = await _measure(
+      'discover',
+      () => legacy.list(latestOnly: false),
+    );
+    final changed = await _mergeRemoteEntries(
+      entries,
+      source: legacy,
+      requireVerifiedActors: true,
+    );
+    _assertInitializationCurrent();
+    await _captureStable();
+    await store.completeProgressProtocolMigration();
+    return changed;
+  }
+
+  Future<bool> _mergeRemoteEntries(
+    List<MergeRemoteEntry> entries, {
+    MergeRemote? source,
+    bool requireVerifiedActors = false,
+  }) async {
     final byActor = <String, List<MergeRemoteEntry>>{};
     for (final entry in entries) {
       byActor.putIfAbsent(entry.actor, () => []).add(entry);
@@ -1282,7 +1309,7 @@ class MergeSyncCoordinator {
         try {
           final batch = await _measure(
             'download',
-            () => remote.download(entry),
+            () => (source ?? remote).download(entry),
           );
           _recordCloudTime(entry, batch.document);
           await _measure('merge', () async {
@@ -1297,6 +1324,11 @@ class MergeSyncCoordinator {
             'An incomplete checkpoint candidate was skipped.',
           );
         }
+      }
+      if (requireVerifiedActors && highestSucceeded == null) {
+        throw const MergeRemoteCorruptException(
+          'Legacy actor has no complete, verifiable checkpoint.',
+        );
       }
     }
     return changed;
@@ -1320,6 +1352,7 @@ class MergeSyncCoordinator {
       _changedRecordKeys.clear();
       markDirty();
     }
+    var importedProgress = false;
     try {
       await _measure('capture', () async {
         if (store.needsRecovery || store.pendingApply != null) {
@@ -1327,6 +1360,10 @@ class MergeSyncCoordinator {
         } else {
           await reconcileBackupRecoveryIfNeeded();
         }
+        importedProgress = await _measure(
+          'progressMigration',
+          migrateProgressProtocolIfNeeded,
+        );
         final captured = await _captureStable();
         if (captured.snapshot.needsSourceNormalization) {
           await _normalizeSourcesLocally(captured);
@@ -1358,7 +1395,7 @@ class MergeSyncCoordinator {
         await _mergeRemoteEntries(discovered);
       }
       if (direction != SyncDirection.uploadOnly &&
-          (needsRemoteCheck || importedLegacy)) {
+          (needsRemoteCheck || importedLegacy || importedProgress)) {
         await _measure(
           'apply',
           () => _applyMerged(

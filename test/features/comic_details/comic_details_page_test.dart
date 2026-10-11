@@ -25,6 +25,8 @@ import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/foundation/sync_records.dart';
 
+const _testRoundId = '00000000-0000-4000-8000-000000000001';
+
 void main() {
   test(
     'read-only comic info namespaces exclude searchable author and tag fields',
@@ -50,33 +52,51 @@ void main() {
           : 'details page continues to imported flat history',
       (tester) async {
         final fixture = await _createFixture(tester, grouped: grouped);
-        fixture.histories.addHistory(
-          fixture.makeHistory(ep: 1, page: 1, group: grouped ? 1 : null),
-        );
+        if (!grouped) {
+          fixture.histories.addHistory(
+            fixture.makeHistory(ep: 1, page: 1, group: null),
+          );
+        }
         await tester.pumpWidget(fixture.page);
-        await _waitForText(tester, 'P1');
+        await _waitForText(tester, grouped ? 'Read' : 'P1');
+        if (grouped) {
+          expect(find.text('Continue'), findsNothing);
+        }
 
         final targetEp = grouped ? 1 : 2;
+        final targetPage = grouped ? 1 : 3;
         final targetGroup = grouped ? 2 : null;
         fixture.histories.applySyncRecords(
-          _syncRecords(fixture, ep: targetEp, page: 3, group: targetGroup),
+          _syncRecords(
+            fixture,
+            ep: targetEp,
+            page: targetPage,
+            group: targetGroup,
+            reread: grouped,
+          ),
         );
         await tester.pump();
-        expect(find.textContaining('P3'), findsOneWidget);
+        expect(find.textContaining('P$targetPage'), findsOneWidget);
+        if (grouped) {
+          expect(find.textContaining('Group Two Chapter A'), findsOneWidget);
+        }
         expect(find.text('Continue'), findsOneWidget);
 
         await tester.tap(find.text('Continue'));
         final reader = await _waitForReaderRoute(tester);
         final expectedChapter = grouped ? 3 : 2;
         expect(reader.chapter, expectedChapter);
-        expect(reader.pageValue, 3);
+        expect(reader.pageValue, targetPage);
         expect(reader.history!.ep, targetEp);
-        expect(reader.history!.page, 3);
+        expect(reader.history!.page, targetPage);
         expect(reader.history!.group, targetGroup);
+        expect(reader.history!.resumePosition?.ep, targetEp);
+        expect(reader.history!.resumePosition?.page, targetPage);
+        expect(reader.history!.resumePosition?.group, targetGroup);
 
-        await _waitForReader(tester, reader, 3);
+        await _waitForReader(tester, reader, targetPage);
         expect(reader.images, fixture.imageUrls);
-        expect(_visibleReaderPage(3), findsWidgets);
+        expect(_visibleReaderPage(targetPage), findsWidgets);
         expect(fixture.requestedChapterIds.last, grouped ? 'g2a' : 'c2');
 
         await tester.pump(const Duration(seconds: 2));
@@ -85,15 +105,22 @@ void main() {
           tester,
           fixture.histories.exportSyncRecords(),
         );
-        final persistedProgress =
+        final persistedHistoryRecord =
             persistedRecords[syncRecordKey('history', [
-                  fixture.comicId,
-                  fixture.type.value,
-                ])]!['progress']
-                as Map;
-        expect(persistedProgress['ep'], targetEp);
-        expect(persistedProgress['page'], 3);
-        expect(persistedProgress['group'], targetGroup);
+              fixture.comicId,
+              fixture.type.value,
+            ])]!;
+        expect(persistedHistoryRecord.containsKey('progress'), isFalse);
+        final persistedProgress = ReadingProgress.fromJson(
+          persistedHistoryRecord['readingProgress'],
+        );
+        expect(persistedProgress.resumePosition?.ep, targetEp);
+        expect(persistedProgress.resumePosition?.page, targetPage);
+        expect(persistedProgress.resumePosition?.group, targetGroup);
+        if (grouped) {
+          expect(persistedProgress.activeRoundId, _testRoundId);
+          expect(persistedProgress.maximumPositions.single.page, 3);
+        }
       },
       skip: !_sqliteAvailable(),
     );
@@ -130,6 +157,21 @@ void main() {
       expect(_visibleReaderPage(1), findsWidgets);
 
       await _popReader(tester, fixture);
+      final groupTwoTab = find.text('Group Two').first;
+      await _scrollUntilVisible(tester, groupTwoTab);
+      await tester.tap(groupTwoTab);
+      await tester.pumpAndSettle();
+      final groupTwoChapter = find.text('Group Two Chapter B');
+      await _scrollUntilVisible(tester, groupTwoChapter);
+      await tester.tap(groupTwoChapter);
+      final selectedGroupTwoReader = await _waitForReaderRoute(tester);
+      expect(selectedGroupTwoReader.chapter, 4);
+      expect(selectedGroupTwoReader.pageValue, 1);
+      await _waitForReader(tester, selectedGroupTwoReader, 1);
+      expect(fixture.requestedChapterIds.last, 'g2b');
+      expect(_visibleReaderPage(1), findsWidgets);
+
+      await _popReader(tester, fixture);
       importCurrentPosition();
       await tester.pump();
 
@@ -146,6 +188,7 @@ void main() {
       await _waitForReader(tester, selectedPageReader, 2);
       expect(fixture.requestedChapterIds.last, 'g1a');
       expect(_visibleReaderPage(2), findsWidgets);
+      await _popReader(tester, fixture);
     },
     skip: !_sqliteAvailable(),
   );
@@ -164,6 +207,97 @@ void main() {
       await _waitForReader(tester, reader, 1);
       expect(fixture.requestedChapterIds.last, 'c1');
       expect(_visibleReaderPage(1), findsWidgets);
+      await _popReader(tester, fixture);
+    },
+    skip: !_sqliteAvailable(),
+  );
+
+  testWidgets(
+    'layout changes retain the visible source image without rereading',
+    (tester) async {
+      final fixture = await _createFixture(tester, grouped: false);
+      fixture.histories.applySyncRecords(
+        _syncRecords(fixture, ep: 2, page: 2, group: null),
+      );
+      await tester.pumpWidget(fixture.page);
+      await _waitForText(tester, 'Continue');
+      await tester.tap(find.text('Continue'));
+      final reader = await _waitForReaderRoute(tester);
+      await _waitForReader(tester, reader, 2);
+      expect(_visibleReaderPage(2), findsWidgets);
+
+      appdata.settings['showSingleImageOnFirstPage'] = false;
+      appdata.settings['readerScreenPicNumberForPortrait'] = 2;
+      appdata.settings['readerScreenPicNumberForLandscape'] = 2;
+      reader.update();
+      await tester.pumpAndSettle();
+      appdata.settings['showSingleImageOnFirstPage'] = true;
+      reader.update();
+      await tester.pumpAndSettle();
+      appdata.settings['readerScreenPicNumberForPortrait'] = 1;
+      appdata.settings['readerScreenPicNumberForLandscape'] = 1;
+      reader.update();
+      await tester.pumpAndSettle();
+      await _waitForReader(tester, reader, 2);
+      expect(_visibleReaderPage(2), findsWidgets);
+      final records = await _pumpAsyncWork(
+        tester,
+        fixture.histories.exportSyncRecords(),
+      );
+      final state = ReadingProgress.fromJson(
+        records[syncRecordKey('history', [
+          fixture.comicId,
+          fixture.type.value,
+        ])]!['readingProgress'],
+      );
+      expect(state.maximumPositions.single.page, 2);
+      expect(state.resumePosition?.page, 2);
+      expect(state.activeRoundId, isNull);
+      await _popReader(tester, fixture);
+    },
+    skip: !_sqliteAvailable(),
+  );
+
+  testWidgets(
+    'unmapped progress prompts for a real chapter selection before reading',
+    (tester) async {
+      final fixture = await _createFixture(tester, grouped: false);
+      final records = _syncRecords(fixture, ep: 2, page: 2, group: null);
+      final key = syncRecordKey('history', [
+        fixture.comicId,
+        fixture.type.value,
+      ]);
+      final known = ReadingProgress.fromJson(records[key]!['readingProgress']);
+      final unresolved = known.merge(
+        ReadingProgress.seed(
+          const ReadingPosition(ep: 2, page: 4, chapterId: 'removed-chapter'),
+        ),
+      );
+      expect(unresolved.hasOrderConflict, isTrue);
+      records[key]!['readingProgress'] = unresolved.toJson();
+      fixture.histories.applySyncRecords(records);
+      await tester.pumpWidget(fixture.page);
+      await _waitForText(tester, 'Continue');
+      await tester.tap(find.text('Continue'));
+      final reader = await _waitForReaderRoute(tester);
+      await _waitForText(
+        tester,
+        'Saved reading position is ambiguous. Select a chapter to continue.',
+      );
+      expect(fixture.requestedChapterIds, isEmpty);
+      await tester.tap(find.text(fixture.details.chapters!.allChapters['c2']!));
+      await _waitForReader(tester, reader, 1);
+      expect(fixture.requestedChapterIds.last, 'c2');
+      expect(_visibleReaderPage(1), findsWidgets);
+      expect(
+        fixture.histories
+            .find(fixture.comicId, fixture.type)!
+            .readingProgress!
+            .maximumPositions
+            .any((position) => position.chapterId == 'removed-chapter'),
+        isTrue,
+      );
+      await _popReader(tester, fixture);
     },
     skip: !_sqliteAvailable(),
   );
@@ -305,7 +439,7 @@ Future<_ComicDetailsFixture> _createFixture(
     try {
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();
-      await _pumpAsyncWork(tester, histories.waitForAsyncWrites());
+      await _pumpAsyncWork(tester, histories.flushReadingProgress());
       final sync = DataSync.instance;
       if (sync != null) {
         await _pumpAsyncWork(tester, sync.flushPendingChanges());
@@ -425,6 +559,34 @@ class _ComicDetailsFixture {
         readChapters: <String>{},
       );
 
+  ReadingCatalog get readingCatalog {
+    final chapters = details.chapters!;
+    final entries = <ReadingChapter>[];
+    if (chapters.isGrouped) {
+      for (var groupIndex = 0; groupIndex < chapters.groupCount; groupIndex++) {
+        final group = chapters.getGroupByIndex(groupIndex);
+        final groupId = chapters.groups.elementAt(groupIndex);
+        var ep = 1;
+        for (final id in group.keys) {
+          entries.add(
+            ReadingChapter(
+              id: id,
+              ep: ep++,
+              group: groupIndex + 1,
+              groupId: groupId,
+            ),
+          );
+        }
+      }
+    } else {
+      var ep = 1;
+      for (final id in chapters.allChapters.keys) {
+        entries.add(ReadingChapter(id: id, ep: ep++));
+      }
+    }
+    return ReadingCatalog(entries);
+  }
+
   Widget get page => MaterialApp(
     navigatorKey: App.rootNavigatorKey,
     builder: (context, child) => WindowFrame(child!),
@@ -437,9 +599,24 @@ SyncRecords _syncRecords(
   required int ep,
   required int page,
   required int? group,
+  bool reread = false,
 }) {
   final typeValue = fixture.type.value;
   final chapterKey = group == null ? '$ep' : '$group-$ep';
+  final catalog = fixture.readingCatalog;
+  var readingProgress = ReadingProgress.seed(
+    ReadingPosition(ep: ep, page: reread ? 3 : page, group: group),
+    time: 1700000000000,
+    catalog: catalog,
+  );
+  if (reread) {
+    readingProgress = readingProgress.record(
+      ReadingPosition(ep: ep, page: page, group: group),
+      source: ReadingNavigationSource.userBackward,
+      newRoundId: _testRoundId,
+      catalog: catalog,
+    );
+  }
   final metadata = <String, Object?>{
     'title': fixture.details.title,
     'subtitle': fixture.details.subTitle ?? '',
@@ -450,12 +627,7 @@ SyncRecords _syncRecords(
   final records = <String, Map<String, Object?>>{
     syncRecordKey('history', [fixture.comicId, typeValue]): {
       ...metadata,
-      'progress': {
-        'ep': ep,
-        'page': page,
-        'group': group,
-        'time': 1700000000000,
-      },
+      'readingProgress': readingProgress.toJson(),
     },
     syncRecordKey('historyChapter', [fixture.comicId, typeValue, chapterKey]): {
       'comicId': fixture.comicId,
@@ -564,6 +736,8 @@ Future<void> _scrollUntilVisible(WidgetTester tester, Finder target) async {
       )
       .first;
   await tester.scrollUntilVisible(target, 300, scrollable: scrollable);
+  await Scrollable.ensureVisible(tester.element(target), alignment: 0.5);
+  await tester.pumpAndSettle();
 }
 
 Future<void> _popReader(
@@ -572,7 +746,7 @@ Future<void> _popReader(
 ) async {
   App.rootNavigatorKey.currentState!.pop();
   await tester.pumpAndSettle();
-  await _pumpAsyncWork(tester, fixture.histories.waitForAsyncWrites());
+  await _pumpAsyncWork(tester, fixture.histories.flushReadingProgress());
   await tester.pump();
 }
 

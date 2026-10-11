@@ -271,9 +271,6 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
               cid: widget.id,
               name: localComic.title,
               chapters: localComic.chapters,
-              initialPage: latestHistory?.page,
-              initialChapter: latestHistory?.ep,
-              initialChapterGroup: latestHistory?.group,
               history:
                   latestHistory ??
                   History.fromModel(model: localComic, ep: 0, page: 0),
@@ -395,7 +392,7 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
   }
 
   Widget buildActions() {
-    bool hasHistory = history != null && (history!.ep > 1 || history!.page > 1);
+    bool hasHistory = history?.hasReadingProgress ?? false;
     bool hasUpdate = LocalFavoritesManager().hasNewUpdate(
       comic.id,
       comic.comicType,
@@ -811,7 +808,7 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
     return ComicChaptersView(
       chapters: comic.chapters!,
       history: history,
-      readChapter: (chapter) => read(chapter),
+      readChapter: (chapter, group) => read(chapter, null, group),
     );
   }
 

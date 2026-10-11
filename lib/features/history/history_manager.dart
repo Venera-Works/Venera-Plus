@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:isolate';
 
 import 'package:flutter/foundation.dart';
@@ -16,6 +17,7 @@ import 'package:venera_plus/foundation/throttled_task_runner.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/sync_records.dart';
 import 'package:venera_plus/features/history/history_sync_data.dart';
+import 'package:venera_plus/features/history/reading_progress.dart';
 
 class History implements Comic {
   HistoryType type;
@@ -56,6 +58,8 @@ class History implements Comic {
   /// Cumulative foreground reading time for this comic.
   int readDurationMs;
 
+  ReadingProgress? readingProgress;
+
   History.fromModel({
     required HistoryMixin model,
     required this.ep,
@@ -64,6 +68,7 @@ class History implements Comic {
     Set<String>? readChapters,
     DateTime? time,
     this.readDurationMs = 0,
+    this.readingProgress,
   }) : type = model.historyType,
        title = model.title,
        subtitle = model.subTitle ?? '',
@@ -75,17 +80,19 @@ class History implements Comic {
   History.fromMap(Map<String, dynamic> map)
     : type = HistoryType(map["type"]),
       time = DateTime.fromMillisecondsSinceEpoch(map["time"]),
-      title = map["title"],
-      subtitle = map["subtitle"],
-      cover = map["cover"],
-      ep = map["ep"],
-      page = map["page"],
+      title = map["title"] ?? '',
+      subtitle = map["subtitle"] ?? '',
+      cover = map["cover"] ?? '',
+      ep = (map["ep"] as num?)?.toInt() ?? 0,
+      page = (map["page"] as num?)?.toInt() ?? 0,
       id = map["id"],
-      readEpisode = Set<String>.from(
-        (map["readEpisode"] as List<dynamic>?)?.toSet() ?? const <String>{},
-      ),
-      maxPage = map["max_page"],
-      readDurationMs = (map["read_duration_ms"] as num?)?.round() ?? 0;
+      readEpisode = _readEpisodeSet(map["readEpisode"]),
+      maxPage = (map["max_page"] ?? map["maxPage"]) as int?,
+      group = (map["chapter_group"] ?? map["group"]) as int?,
+      readDurationMs = (map["read_duration_ms"] as num?)?.round() ?? 0,
+      readingProgress = _readReadingProgress(
+        map["readingProgress"] ?? map["reading_progress"],
+      );
 
   @override
   String toString() {
@@ -108,7 +115,22 @@ class History implements Comic {
       ),
       maxPage = row["max_page"],
       group = row["chapter_group"],
-      readDurationMs = ((row["read_duration_ms"] as num?) ?? 0).round();
+      readDurationMs = ((row["read_duration_ms"] as num?) ?? 0).round(),
+      readingProgress = _readReadingProgress(row["reading_progress"]);
+
+  ReadingPosition? get resumePosition {
+    final progress = readingProgress;
+    if (progress != null) return progress.resumePosition;
+    final position = ReadingPosition(ep: ep, page: page, group: group);
+    return position.isValid ? position : null;
+  }
+
+  bool get hasReadingProgress =>
+      readingProgress?.hasProgress ?? (resumePosition != null);
+
+  bool get hasOrderConflict => readingProgress?.hasOrderConflict ?? false;
+
+  String? get activeRereadId => readingProgress?.activeRoundId;
   @override
   bool operator ==(Object other) {
     return other is History && type == other.type && id == other.id;
@@ -158,6 +180,21 @@ class History implements Comic {
   }
 }
 
+Set<String> _readEpisodeSet(Object? value) {
+  if (value is String) {
+    return value.split(',').where((element) => element.isNotEmpty).toSet();
+  }
+  if (value is Iterable) {
+    return value.map((element) => element.toString()).toSet();
+  }
+  return <String>{};
+}
+
+ReadingProgress? _readReadingProgress(Object? value) {
+  if (value == null) return null;
+  return ReadingProgress.fromJson(value is String ? jsonDecode(value) : value);
+}
+
 class HistoryManager with ChangeNotifier {
   static HistoryManager? cache;
 
@@ -181,6 +218,11 @@ class HistoryManager with ChangeNotifier {
 
   /// Cache records recently modified by the app. Improve the performance of listeners.
   final cachedHistories = <String, History>{};
+  final Map<String, History> _pendingReadingProgress = {};
+  final Map<String, History> _queuedHistories = {};
+  Timer? _readingProgressTimer;
+  final Map<String, int> _historyDeletionGeneration = {};
+  final Map<String, int> _historyOperationRevision = {};
 
   bool isInitialized = false;
 
@@ -200,50 +242,26 @@ class HistoryManager with ChangeNotifier {
     isInitialized = true;
   }
 
-  static const _insertHistorySql = """
-        insert or replace into history (id, title, subtitle, cover, time, type, ep, page, readEpisode, max_page, chapter_group, read_duration_ms)
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-      """;
+  static ReadingProgress _progressForHistory(History item) {
+    final progress = item.readingProgress;
+    if (progress != null) return progress;
+    final position = item.resumePosition;
+    return position == null
+        ? ReadingProgress.fromJson(null)
+        : ReadingProgress.seed(
+            position,
+            time: item.time.millisecondsSinceEpoch,
+          );
+  }
 
-  static const _updateHistorySql = """
-        update history set
-          title = ?,
-          subtitle = ?,
-          cover = ?,
-          time = ?,
-          ep = ?,
-          page = ?,
-          readEpisode = ?,
-          max_page = ?,
-          chapter_group = ?
-        where id = ? and type = ?;
-      """;
+  static int _maxInt(int left, int right) => left > right ? left : right;
 
-  static const _insertReadDurationSql = """
-        insert or replace into history (id, title, subtitle, cover, time, type, ep, page, readEpisode, max_page, chapter_group, read_duration_ms)
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-      """;
-
-  static const _incrementReadDurationSql = """
-        update history
-        set read_duration_ms = read_duration_ms + ?
-        where id = ? and type = ?;
-      """;
-
-  static List<Object?> _historyValues(History item) {
-    return [
+  static History? _readPersistedHistory(Database db, History item) {
+    final rows = db.select('SELECT * FROM history WHERE id = ? AND type = ?;', [
       item.id,
-      item.title,
-      item.subtitle,
-      item.cover,
-      item.time.millisecondsSinceEpoch,
       item.type.value,
-      item.ep,
-      item.page,
-      item.readEpisode.join(','),
-      item.maxPage,
-      item.group,
-    ];
+    ]);
+    return rows.isEmpty ? null : History.fromRow(rows.first);
   }
 
   static void _runWriteTransaction(Database db, void Function() write) {
@@ -257,52 +275,119 @@ class HistoryManager with ChangeNotifier {
     }
   }
 
-  // Legacy databases do not consistently expose a single-column UNIQUE(id).
-  static void _writeHistory(Database db, History item) {
+  static History _writeHistory(Database db, History item) {
     _runWriteTransaction(db, () {
-      db.execute(_updateHistorySql, [
-        item.title,
-        item.subtitle,
-        item.cover,
-        item.time.millisecondsSinceEpoch,
-        item.ep,
-        item.page,
-        item.readEpisode.join(','),
-        item.maxPage,
-        item.group,
-        item.id,
-        item.type.value,
-      ]);
-      if (db.updatedRows == 0) {
-        db.execute(_insertHistorySql, [
-          ..._historyValues(item),
-          item.readDurationMs,
-        ]);
-      }
+      final rows = db.select(
+        'SELECT * FROM history WHERE id = ? AND type = ?;',
+        [item.id, item.type.value],
+      );
+      final existing = rows.isEmpty ? null : History.fromRow(rows.first);
+      final progress = _progressForHistory(item).merge(
+        existing == null
+            ? ReadingProgress.fromJson(null)
+            : _progressForHistory(existing),
+      );
+      final position = progress.resumePosition;
+      final ep = position?.ep ?? (existing?.ep ?? item.ep);
+      final page = position?.page ?? (existing?.page ?? item.page);
+      final group = position != null
+          ? position.group
+          : existing != null
+          ? existing.group
+          : item.group;
+      final visitedChapters = {
+        ...?existing?.readEpisode,
+        ...item.readEpisode,
+      }.toList()..sort();
+      final time = _maxInt(
+        _maxInt(
+          item.time.millisecondsSinceEpoch,
+          existing?.time.millisecondsSinceEpoch ?? 0,
+        ),
+        progress.time,
+      );
+      db.execute(
+        '''
+        INSERT OR REPLACE INTO history (
+          id, title, subtitle, cover, time, type, ep, page, readEpisode,
+          max_page, chapter_group, read_duration_ms, reading_progress,
+          sync_projection
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL);
+        ''',
+        [
+          item.id,
+          item.title,
+          item.subtitle,
+          item.cover,
+          time,
+          item.type.value,
+          ep,
+          page,
+          visitedChapters.join(','),
+          item.maxPage ?? existing?.maxPage,
+          group,
+          _maxInt(item.readDurationMs, existing?.readDurationMs ?? 0),
+          jsonEncode(progress.toJson()),
+        ],
+      );
     });
+    return _readPersistedHistory(db, item)!;
   }
 
-  static void _writeReadDuration(Database db, History item, int durationMs) {
+  static History _writeReadDuration(Database db, History item, int durationMs) {
     _runWriteTransaction(db, () {
-      db.execute(_incrementReadDurationSql, [
-        durationMs,
-        item.id,
-        item.type.value,
-      ]);
-      if (db.updatedRows == 0) {
-        db.execute(_insertReadDurationSql, [
-          ..._historyValues(item),
-          durationMs,
-        ]);
+      final existing = _readPersistedHistory(db, item);
+      if (existing != null) {
+        db.execute(
+          '''
+          UPDATE history
+          SET read_duration_ms = COALESCE(read_duration_ms, 0) + ?,
+              sync_projection = NULL
+          WHERE id = ? AND type = ?;
+          ''',
+          [durationMs, item.id, item.type.value],
+        );
+        return;
       }
+
+      final progress = _progressForHistory(item);
+      final position = progress.resumePosition;
+      final time = _maxInt(item.time.millisecondsSinceEpoch, progress.time);
+      final visitedChapters = item.readEpisode.toList()..sort();
+      db.execute(
+        '''
+        INSERT OR REPLACE INTO history (
+          id, title, subtitle, cover, time, type, ep, page, readEpisode,
+          max_page, chapter_group, read_duration_ms, reading_progress,
+          sync_projection
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL);
+        ''',
+        [
+          item.id,
+          item.title,
+          item.subtitle,
+          item.cover,
+          time,
+          item.type.value,
+          position?.ep ?? item.ep,
+          position?.page ?? item.page,
+          visitedChapters.join(','),
+          item.maxPage,
+          position != null ? position.group : item.group,
+          item.readDurationMs + durationMs,
+          jsonEncode(progress.toJson()),
+        ],
+      );
     });
+    return _readPersistedHistory(db, item)!;
   }
 
   static Future<void> _addHistoryAsync(String dbPath, History newItem) {
     return Isolate.run(() {
-      var db = openSqliteDatabase(dbPath);
+      final db = openSqliteDatabase(dbPath);
       try {
         db.execute('PRAGMA busy_timeout = 5000;');
+        HistorySyncData.ensureSchema(db);
         _writeHistory(db, newItem);
       } finally {
         db.dispose();
@@ -316,9 +401,10 @@ class HistoryManager with ChangeNotifier {
     int durationMs,
   ) {
     return Isolate.run(() {
-      var db = openSqliteDatabase(dbPath);
+      final db = openSqliteDatabase(dbPath);
       try {
         db.execute('PRAGMA busy_timeout = 5000;');
+        HistorySyncData.ensureSchema(db);
         _writeReadDuration(db, item, durationMs);
       } finally {
         db.dispose();
@@ -328,9 +414,102 @@ class HistoryManager with ChangeNotifier {
 
   Future<void> _asyncHistoryQueue = Future.value();
 
-  /// Create a isolate to add history to prevent blocking the UI thread.
+  History _copyHistory(History item) => History.fromMap({
+    'type': item.type.value,
+    'time': item.time.millisecondsSinceEpoch,
+    'title': item.title,
+    'subtitle': item.subtitle,
+    'cover': item.cover,
+    'ep': item.ep,
+    'page': item.page,
+    'id': item.id,
+    'readEpisode': item.readEpisode.toList(),
+    'max_page': item.maxPage,
+    'chapter_group': item.group,
+    'read_duration_ms': item.readDurationMs,
+    if (item.readingProgress != null)
+      'readingProgress': item.readingProgress!.toJson(),
+  });
+
+  void _mergeHistorySnapshot(History target, History other) {
+    target.readingProgress = _progressForHistory(
+      target,
+    ).merge(_progressForHistory(other));
+    target.readDurationMs = _maxInt(
+      target.readDurationMs,
+      other.readDurationMs,
+    );
+    target.maxPage ??= other.maxPage;
+    if (other.time.isAfter(target.time)) target.time = other.time;
+    target.readEpisode.addAll(other.readEpisode);
+    final resume = target.readingProgress!.resumePosition;
+    if (resume != null) {
+      target
+        ..ep = resume.ep
+        ..page = resume.page
+        ..group = resume.group;
+    }
+  }
+
+  History _historySnapshotForWrite(History item) {
+    final snapshot = _copyHistory(item);
+    final key = _historyKey(item.id, item.type);
+    for (final candidate in [
+      _pendingReadingProgress[key],
+      _queuedHistories[key],
+      cachedHistories[key],
+    ]) {
+      if (candidate != null && !identical(candidate, item)) {
+        _mergeHistorySnapshot(snapshot, candidate);
+      }
+    }
+    return snapshot;
+  }
+
+  int _writeGeneration(String key) => _historyDeletionGeneration[key] ?? 0;
+
+  int _advanceHistoryRevision(String key) {
+    final next = (_historyOperationRevision[key] ?? 0) + 1;
+    _historyOperationRevision[key] = next;
+    return next;
+  }
+
+  int _invalidateHistory(String key) {
+    _historyDeletionGeneration[key] = _writeGeneration(key) + 1;
+    final revision = _advanceHistoryRevision(key);
+    _pendingReadingProgress.remove(key);
+    _queuedHistories.remove(key);
+    cachedHistories.remove(key);
+    if (_pendingReadingProgress.isEmpty) {
+      _readingProgressTimer?.cancel();
+      _readingProgressTimer = null;
+    } else {
+      _scheduleReadingProgressFlush();
+    }
+    return revision;
+  }
+
+  void _queueDelete(String key, int revision, {int? beforeTime}) {
+    final (id, typeValue) = _historyIdentity(key);
+    _enqueueAsyncWrite(() async {
+      if (_historyOperationRevision[key] != revision) return;
+      final cutoffClause = beforeTime == null ? '' : ' AND time < ?';
+      _db.execute(
+        'DELETE FROM history WHERE id = ? AND type = ?$cutoffClause;',
+        beforeTime == null ? [id, typeValue] : [id, typeValue, beforeTime],
+      );
+      updateCache();
+      notifyListeners();
+    });
+  }
+
   Future<void> addHistoryAsync(History newItem) {
-    return _enqueueAsyncWrite(() => _writeHistoryAsync(newItem));
+    final snapshot = _historySnapshotForWrite(newItem);
+    final key = _historyKey(snapshot.id, snapshot.type);
+    _advanceHistoryRevision(key);
+    final generation = _writeGeneration(key);
+    _queuedHistories[key] = snapshot;
+    return _enqueueAsyncWrite(() => _writeHistoryAsync(snapshot, generation));
   }
 
   Future<void> _enqueueAsyncWrite(Future<void> Function() write) {
@@ -344,9 +523,17 @@ class HistoryManager with ChangeNotifier {
     return next;
   }
 
-  Future<void> _writeHistoryAsync(History newItem) async {
+  Future<void> _writeHistoryAsync(History newItem, int generation) async {
+    final key = _historyKey(newItem.id, newItem.type);
+    if (_writeGeneration(key) != generation) return;
     await _addHistoryAsync(_dbPath, newItem);
-    _cacheHistory(newItem);
+    if (_writeGeneration(key) != generation || !isInitialized) return;
+    final actual = _readPersistedHistory(_db, newItem);
+    if (actual == null) return;
+    if (identical(_queuedHistories[key], newItem)) {
+      _queuedHistories.remove(key);
+    }
+    _cacheHistory(actual);
     notifyListeners();
   }
 
@@ -354,10 +541,22 @@ class HistoryManager with ChangeNotifier {
   Future<void> addReadDuration(History item, Duration duration) {
     final durationMs = duration.inMilliseconds;
     if (durationMs <= 0) return Future.value();
+    final snapshot = _historySnapshotForWrite(item);
+    final key = _historyKey(snapshot.id, snapshot.type);
+    _advanceHistoryRevision(key);
+    final generation = _writeGeneration(key);
+    _queuedHistories[key] = snapshot;
     return _enqueueAsyncWrite(() async {
-      await _addReadDurationAsync(_dbPath, item, durationMs);
-      item.readDurationMs += durationMs;
-      _cacheHistory(item);
+      if (_writeGeneration(key) != generation) return;
+      await _addReadDurationAsync(_dbPath, snapshot, durationMs);
+      if (_writeGeneration(key) != generation || !isInitialized) return;
+      final actual = _readPersistedHistory(_db, snapshot);
+      if (actual == null) return;
+      if (identical(_queuedHistories[key], snapshot)) {
+        _queuedHistories.remove(key);
+      }
+      item.readDurationMs = actual.readDurationMs;
+      _cacheHistory(actual);
       notifyListeners();
     });
   }
@@ -366,8 +565,148 @@ class HistoryManager with ChangeNotifier {
     return _asyncHistoryQueue;
   }
 
+  ReadingProgress recordReadingProgress(
+    History item, {
+    required ReadingPosition position,
+    required ReadingNavigationSource source,
+    String? sessionRoundId,
+    String? commandId,
+    ReadingCatalog? catalog,
+    ReadingProgress? observedProgress,
+    void Function(String commandId, ReadingProgress progress)?
+    onLocalProgressRecorded,
+  }) {
+    final key = _historyKey(item.id, item.type);
+    _advanceHistoryRevision(key);
+    final cached = cachedHistories[key] ?? find(item.id, item.type);
+    final pending = _pendingReadingProgress[key];
+    final queued = _queuedHistories[key];
+    var latestProgress = _progressForHistory(item);
+    for (final current in [pending, queued, cached]) {
+      if (current != null && !identical(current, item)) {
+        latestProgress = latestProgress.merge(_progressForHistory(current));
+      }
+    }
+    final actionSnapshot = observedProgress ?? latestProgress;
+    if (catalog != null) {
+      latestProgress = latestProgress.rebaseCatalog(catalog);
+    }
+    var progress = catalog == null
+        ? actionSnapshot
+        : actionSnapshot.rebaseCatalog(catalog);
+    final observedRoundIds =
+        source == ReadingNavigationSource.userBackward ||
+            source == ReadingNavigationSource.userSeek ||
+            source == ReadingNavigationSource.userConfirm
+        ? actionSnapshot.activeRoundIds.toList(growable: false)
+        : null;
+    final now = DateTime.now();
+    progress = progress.record(
+      position,
+      source: source,
+      sessionRoundId: sessionRoundId,
+      newRoundId: commandId,
+      catalog: catalog,
+      time: now.millisecondsSinceEpoch,
+      observedRoundIds: observedRoundIds,
+    );
+    if (commandId != null) {
+      // Retained gestures observe their own validated writes, not roots that
+      // arrived remotely after the gesture started.
+      onLocalProgressRecorded?.call(commandId, progress);
+    }
+    if (observedProgress != null) {
+      progress = progress.merge(latestProgress);
+    }
+    item
+      ..readingProgress = progress
+      ..time = now;
+    if (position.isValid) {
+      final visiblePosition = catalog?.rebasePosition(position) ?? position;
+      item
+        ..ep = visiblePosition.ep
+        ..page = visiblePosition.page
+        ..group = visiblePosition.group;
+    }
+    _pendingReadingProgress[key] = _copyHistory(item);
+    _scheduleReadingProgressFlush();
+    _cacheHistory(item);
+    notifyListeners();
+    return progress;
+  }
+
+  void _scheduleReadingProgressFlush() {
+    _readingProgressTimer?.cancel();
+    if (_pendingReadingProgress.isEmpty) {
+      _readingProgressTimer = null;
+      return;
+    }
+    _readingProgressTimer = Timer(const Duration(seconds: 1), () {
+      _readingProgressTimer = null;
+      unawaited(
+        flushReadingProgress().catchError((
+          Object error,
+          StackTrace stackTrace,
+        ) {
+          Log.error("History", error, stackTrace);
+        }),
+      );
+    });
+  }
+
+  Future<void> flushReadingProgress({String? id, ComicType? type}) async {
+    bool matches(String key, History item) =>
+        (id == null || item.id == id) && (type == null || item.type == type);
+
+    while (true) {
+      final batch = _pendingReadingProgress.entries
+          .where((entry) => matches(entry.key, entry.value))
+          .map((entry) => MapEntry(entry.key, _copyHistory(entry.value)))
+          .toList(growable: false);
+      if (batch.isEmpty) break;
+      _readingProgressTimer?.cancel();
+      _readingProgressTimer = null;
+      for (final entry in batch) {
+        _pendingReadingProgress.remove(entry.key);
+      }
+      final writes = <Future<void>>[];
+      for (final entry in batch) {
+        final generation = _writeGeneration(entry.key);
+        _queuedHistories[entry.key] = entry.value;
+        writes.add(
+          _enqueueAsyncWrite(() => _writeHistoryAsync(entry.value, generation)),
+        );
+      }
+      try {
+        await Future.wait(writes);
+      } catch (_) {
+        for (final entry in batch) {
+          final latest = _pendingReadingProgress[entry.key];
+          if (latest == null) {
+            _pendingReadingProgress[entry.key] = entry.value;
+          } else {
+            _mergeHistorySnapshot(latest, entry.value);
+          }
+        }
+        _scheduleReadingProgressFlush();
+        rethrow;
+      }
+    }
+    if (_pendingReadingProgress.isEmpty) {
+      _readingProgressTimer?.cancel();
+      _readingProgressTimer = null;
+    } else {
+      _scheduleReadingProgressFlush();
+    }
+    await waitForAsyncWrites();
+  }
+
   void _cacheHistory(History newItem) {
     final key = _historyKey(newItem.id, newItem.type);
+    final pending = _pendingReadingProgress[key];
+    if (pending != null && !identical(pending, newItem)) {
+      _mergeHistorySnapshot(newItem, pending);
+    }
     if (_cachedHistoryKeys == null) {
       updateCache();
     } else {
@@ -383,15 +722,47 @@ class HistoryManager with ChangeNotifier {
   ///
   /// This function would be called when user start reading.
   void addHistory(History newItem) {
-    _writeHistory(_db, newItem);
-    _cacheHistory(newItem);
+    final snapshot = _historySnapshotForWrite(newItem);
+    final key = _historyKey(snapshot.id, snapshot.type);
+    _advanceHistoryRevision(key);
+    _queuedHistories[key] = snapshot;
+    final actual = _writeHistory(_db, snapshot);
+    if (identical(_queuedHistories[key], snapshot)) {
+      _queuedHistories.remove(key);
+    }
+    _cacheHistory(actual);
     notifyListeners();
   }
 
+  Set<String> _knownHistoryKeys() {
+    final keys = <String>{
+      ..._pendingReadingProgress.keys,
+      ..._queuedHistories.keys,
+      ...cachedHistories.keys,
+    };
+    for (final row in _db.select('SELECT id, type FROM history;')) {
+      keys.add(_historyKey(row['id'] as String, ComicType(row['type'] as int)));
+    }
+    return keys;
+  }
+
+  (String, int) _historyIdentity(String key) {
+    final separator = key.indexOf(':');
+    return (
+      key.substring(separator + 1),
+      int.parse(key.substring(0, separator)),
+    );
+  }
+
   void clearHistory() {
-    _db.execute("delete from history;");
+    final keys = _knownHistoryKeys();
+    final revisions = {for (final key in keys) key: _invalidateHistory(key)};
+    _db.execute('DELETE FROM history;');
     updateCache();
     notifyListeners();
+    for (final entry in revisions.entries) {
+      _queueDelete(entry.key, entry.value);
+    }
   }
 
   void clearExpiredHistory(int retentionDays) {
@@ -399,55 +770,98 @@ class HistoryManager with ChangeNotifier {
     final cutoff = DateTime.now()
         .subtract(Duration(days: retentionDays))
         .millisecondsSinceEpoch;
-    _db.execute(
-      """
-      delete from history
-      where time < ?;
-    """,
-      [cutoff],
-    );
+    final rowTimes = <String, int>{};
+    final keysToDelete = <String>{};
+    for (final row in _db.select('SELECT id, type, time FROM history;')) {
+      final key = _historyKey(
+        row['id'] as String,
+        ComicType((row['type'] as num).toInt()),
+      );
+      final time = (row['time'] as num?)?.toInt() ?? 0;
+      rowTimes[key] = time;
+      final pending = _pendingReadingProgress[key] ?? _queuedHistories[key];
+      if (time < cutoff &&
+          (pending == null || pending.time.millisecondsSinceEpoch < cutoff)) {
+        keysToDelete.add(key);
+      }
+    }
+    for (final entry in {
+      ..._pendingReadingProgress.entries,
+      ..._queuedHistories.entries,
+    }) {
+      final rowTime = rowTimes[entry.key];
+      if ((rowTime == null || rowTime < cutoff) &&
+          entry.value.time.millisecondsSinceEpoch < cutoff) {
+        keysToDelete.add(entry.key);
+      }
+    }
+    final revisions = {
+      for (final key in keysToDelete) key: _invalidateHistory(key),
+    };
+    for (final entry in revisions.entries) {
+      final (id, typeValue) = _historyIdentity(entry.key);
+      _db.execute(
+        'DELETE FROM history WHERE id = ? AND type = ? AND time < ?;',
+        [id, typeValue, cutoff],
+      );
+    }
     updateCache();
     notifyListeners();
+    for (final entry in revisions.entries) {
+      _queueDelete(entry.key, entry.value, beforeTime: cutoff);
+    }
   }
 
   void clearUnfavoritedHistory() {
+    final favorites = LocalFavoritesManager();
+    final keysToDelete = <String>{};
+    for (final row in _db.select('SELECT id, type FROM history;')) {
+      final id = row['id'] as String;
+      final type = ComicType((row['type'] as num).toInt());
+      if (!favorites.isExist(id, type)) keysToDelete.add(_historyKey(id, type));
+    }
+    for (final item in [
+      ..._pendingReadingProgress.values,
+      ..._queuedHistories.values,
+    ]) {
+      if (!favorites.isExist(item.id, item.type)) {
+        keysToDelete.add(_historyKey(item.id, item.type));
+      }
+    }
+    final revisions = {
+      for (final key in keysToDelete) key: _invalidateHistory(key),
+    };
     _db.execute('BEGIN TRANSACTION;');
     try {
-      final idAndTypes = _db.select("""
-      select id, type from history;
-    """);
-      for (var element in idAndTypes) {
-        final id = element["id"] as String;
-        final type = ComicType(element["type"] as int);
-        if (!LocalFavoritesManager().isExist(id, type)) {
-          _db.execute(
-            """
-          delete from history
-          where id == ? and type == ?;
-        """,
-            [id, type.value],
-          );
-        }
+      for (final key in keysToDelete) {
+        final (id, typeValue) = _historyIdentity(key);
+        _db.execute('DELETE FROM history WHERE id = ? AND type = ?;', [
+          id,
+          typeValue,
+        ]);
       }
       _db.execute('COMMIT;');
-    } catch (e) {
+    } catch (_) {
       _db.execute('ROLLBACK;');
       rethrow;
     }
     updateCache();
     notifyListeners();
+    for (final entry in revisions.entries) {
+      _queueDelete(entry.key, entry.value);
+    }
   }
 
   void remove(String id, ComicType type) async {
-    _db.execute(
-      """
-      delete from history
-      where id == ? and type == ?;
-    """,
-      [id, type.value],
-    );
+    final key = _historyKey(id, type);
+    final revision = _invalidateHistory(key);
+    _db.execute('DELETE FROM history WHERE id = ? AND type = ?;', [
+      id,
+      type.value,
+    ]);
     updateCache();
     notifyListeners();
+    _queueDelete(key, revision);
   }
 
   void updateCache() {
@@ -498,9 +912,9 @@ class HistoryManager with ChangeNotifier {
 
   /// Exports sync records for history, historyChapter, and imageFavorite domains.
   ///
-  /// Awaits all pending asynchronous history writes before reading.
+  /// Flushes coalesced reading progress and queued writes before sync capture.
   Future<SyncRecords> exportSyncRecords() async {
-    await waitForAsyncWrites();
+    await flushReadingProgress();
     return HistorySyncData.readSyncRecords(_db);
   }
 
@@ -515,15 +929,28 @@ class HistoryManager with ChangeNotifier {
     bool applyImageFavorites = true,
   }) {
     if (!applyHistory && !applyImageFavorites) return;
+    final previousHistoryKeys = applyHistory ? _knownHistoryKeys() : <String>{};
     final result = HistorySyncData.applySyncRecords(
       _db,
       records,
       applyHistory: applyHistory,
       applyImageFavorites: applyImageFavorites,
     );
-    if (!result.hasChanges) {
-      return;
+    if (applyHistory) {
+      final remainingKeys = <String>{
+        for (final row in _db.select('SELECT id, type FROM history;'))
+          _historyKey(
+            row['id'] as String,
+            ComicType((row['type'] as num).toInt()),
+          ),
+      };
+      for (final key in previousHistoryKeys) {
+        if (remainingKeys.contains(key)) continue;
+        final revision = _invalidateHistory(key);
+        _queueDelete(key, revision);
+      }
     }
+    if (!result.hasChanges) return;
     if (result.historyChanged) {
       cachedHistories.clear();
       updateCache();
@@ -584,6 +1011,13 @@ class HistoryManager with ChangeNotifier {
   }
 
   void close() {
+    _readingProgressTimer?.cancel();
+    _readingProgressTimer = null;
+    final pending = _pendingReadingProgress.values.toList(growable: false);
+    _pendingReadingProgress.clear();
+    for (final item in pending) {
+      _writeHistory(_db, item);
+    }
     isInitialized = false;
     _db.dispose();
   }
@@ -595,24 +1029,28 @@ class HistoryManager with ChangeNotifier {
 
   void batchDeleteHistories(List<ComicID> histories) {
     if (histories.isEmpty) return;
+    final keys = histories
+        .map((history) => _historyKey(history.id, history.type))
+        .toSet();
+    final revisions = {for (final key in keys) key: _invalidateHistory(key)};
     _db.execute('BEGIN TRANSACTION;');
     try {
-      for (var history in histories) {
-        _db.execute(
-          """
-          delete from history
-          where id == ? and type == ?;
-        """,
-          [history.id, history.type.value],
-        );
+      for (final history in histories) {
+        _db.execute('DELETE FROM history WHERE id = ? AND type = ?;', [
+          history.id,
+          history.type.value,
+        ]);
       }
       _db.execute('COMMIT;');
-    } catch (e) {
+    } catch (_) {
       _db.execute('ROLLBACK;');
       rethrow;
     }
     updateCache();
     notifyListeners();
+    for (final entry in revisions.entries) {
+      _queueDelete(entry.key, entry.value);
+    }
   }
 
   /// Refresh history info from comic source.

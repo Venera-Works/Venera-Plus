@@ -74,6 +74,43 @@ String formatCandidateSafePreview({
     }
     if (parts.isNotEmpty) return parts.join(' · ');
   }
+  if (domain == 'history' && field == 'readingProgress' && value is Map) {
+    final parts = <String>[];
+    final maximum = value['maximum'];
+    if (maximum is List) {
+      for (final rawPosition in maximum.take(3)) {
+        if (rawPosition is! Map) continue;
+        final ep = rawPosition['ep'];
+        final page = rawPosition['page'];
+        if (ep != null && page != null) {
+          parts.add(
+            'Episode @ep, Page @page'.tlParams({
+              'ep': ep.toString(),
+              'page': page.toString(),
+            }),
+          );
+        } else if (ep != null) {
+          parts.add('Episode @ep'.tlParams({'ep': ep.toString()}));
+        }
+        final group = rawPosition['group'];
+        if (group != null) {
+          parts.add('Group @group'.tlParams({'group': group.toString()}));
+        }
+      }
+      if (maximum.length > 3) {
+        parts.add('+${maximum.length - 3}');
+      }
+    }
+    final rounds = value['rounds'];
+    if (rounds is Map && rounds.isNotEmpty) {
+      parts.add('Reread rounds (@count)'.tlParams({'count': rounds.length}));
+    }
+    final time = value['time'];
+    if (time is num) {
+      parts.add('Time @time'.tlParams({'time': _formatProgressTime(time)}));
+    }
+    return parts.isEmpty ? 'Reading Progress'.tl : parts.join(' · ');
+  }
 
   if (domain == 'cookies') {
     if (value is List) {
@@ -505,6 +542,7 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
       case 'presence':
         return 'Record existence'.tl;
       case 'progress':
+      case 'readingProgress':
         return 'Reading Progress'.tl;
       case 'value':
         return 'Value'.tl;

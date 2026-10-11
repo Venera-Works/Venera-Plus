@@ -5,11 +5,11 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/sync/sync.dart';
-import 'package:venera_plus/foundation/sync_records.dart';
 
 void main() {
-  test('packs are deterministic, compact, and preserve exact v4 batches', () {
+  test('packs preserve immutable schema-3 batch IDs and v4 object bytes', () {
     final batch = _makeBatch();
+    expect(batch.document.toJson()['schema'], 3);
     final v4Snapshot = MergeSnapshot.fromBatch(batch);
     final first = SyncPackSnapshot.fromSnapshot(v4Snapshot);
     final repeated = SyncPackSnapshot.fromSnapshot(v4Snapshot);
@@ -62,10 +62,82 @@ void main() {
       v4Snapshot.objects,
     );
     expect(legacyDecoded.toJson(), batch.toJson());
+    expect(first.manifest.manifest['documentSchema'], 3);
+    expect(first.manifest.manifest['batchId'], batch.id);
     final parsed = SyncPackManifest.parse(first.serializeManifest());
     expect(parsed.digest, first.manifest.digest);
-    expect(parsed.decode(first.packs).toJson(), batch.toJson());
+    final decodedBatch = parsed.decode(first.packs);
+    expect(decodedBatch.toJson(), batch.toJson());
+    expect(decodedBatch.id, batch.id);
+    expect(
+      decodedBatch.serializeBytes(),
+      orderedEquals(batch.serializeBytes()),
+    );
   });
+
+  test(
+    'distinguishes unsupported typed versions from malformed schema types',
+    () {
+      final snapshot = SyncPackSnapshot.fromSnapshot(
+        MergeSnapshot.fromBatch(_makeBatch()),
+      );
+      final pack = snapshot.packs.values.first;
+      final parsedPack = _readPack(pack.bytes);
+
+      final futureIndex = Map<String, Object?>.of(parsedPack.index)
+        ..['schema'] = 2;
+      final futureIndexBytes = _assemblePack(futureIndex, parsedPack.payload);
+      _expectUnsupportedProtocol(
+        () => SyncPack.decode(
+          futureIndexBytes,
+          expectedDigest: sha256.convert(futureIndexBytes).toString(),
+        ),
+        'pack index',
+        2,
+      );
+      final malformedIndex = Map<String, Object?>.of(parsedPack.index)
+        ..['schema'] = '1';
+      _expectMalformedNotUnsupported(
+        () =>
+            SyncPack.decode(_assemblePack(malformedIndex, parsedPack.payload)),
+      );
+
+      final futureManifest = Map<String, Object?>.of(snapshot.manifest.manifest)
+        ..['schema'] = 3;
+      _expectUnsupportedProtocol(
+        () => SyncPackManifest.parse(
+          Uint8List.fromList(utf8.encode(canonicalSyncJson(futureManifest))),
+        ),
+        'pack manifest',
+        3,
+      );
+      final futureDocument = Map<String, Object?>.of(snapshot.manifest.manifest)
+        ..['documentSchema'] = 4;
+      _expectUnsupportedProtocol(
+        () => SyncPackManifest.parse(
+          Uint8List.fromList(utf8.encode(canonicalSyncJson(futureDocument))),
+        ),
+        'merge document',
+        4,
+      );
+      final malformedManifest = Map<String, Object?>.of(
+        snapshot.manifest.manifest,
+      )..['schema'] = '2';
+      _expectMalformedNotUnsupported(
+        () => SyncPackManifest.parse(
+          Uint8List.fromList(utf8.encode(canonicalSyncJson(malformedManifest))),
+        ),
+      );
+      final malformedDocument = Map<String, Object?>.of(
+        snapshot.manifest.manifest,
+      )..['documentSchema'] = '3';
+      _expectMalformedNotUnsupported(
+        () => SyncPackManifest.parse(
+          Uint8List.fromList(utf8.encode(canonicalSyncJson(malformedDocument))),
+        ),
+      );
+    },
+  );
 
   test(
     'setting-only checkpoint reuses historical packs and encodes one new object',
@@ -251,7 +323,7 @@ void main() {
       final pack = snapshot.packs.values.single;
       final parsed = _readPack(pack.bytes);
 
-      final badSchema = Map<String, Object?>.of(parsed.index)..['schema'] = 2;
+      final badSchema = Map<String, Object?>.of(parsed.index)..['schema'] = '1';
       _expectInvalidPack(_assemblePack(badSchema, parsed.payload));
 
       final badOffset = _copyEntries(parsed.index);
@@ -418,5 +490,32 @@ void _expectInvalidPack(Uint8List bytes) {
   expect(
     () => SyncPack.decode(bytes, expectedDigest: digest),
     throwsFormatException,
+  );
+}
+
+void _expectUnsupportedProtocol(
+  void Function() decode,
+  String format,
+  int version,
+) {
+  expect(
+    decode,
+    throwsA(
+      isA<UnsupportedSyncProtocolException>()
+          .having((error) => error.format, 'format', format)
+          .having((error) => error.version, 'version', version),
+    ),
+  );
+}
+
+void _expectMalformedNotUnsupported(void Function() decode) {
+  expect(
+    decode,
+    throwsA(
+      allOf(
+        isA<FormatException>(),
+        isNot(isA<UnsupportedSyncProtocolException>()),
+      ),
+    ),
   );
 }

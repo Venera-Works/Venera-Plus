@@ -30,7 +30,7 @@ Future<void> notifyAppDataSettingsChanged() async {
 }
 
 Future<File> exportAppData([bool sync = true]) async {
-  await HistoryManager().waitForAsyncWrites();
+  await HistoryManager().flushReadingProgress();
   var time = DateTime.now().millisecondsSinceEpoch ~/ 1000;
   var cacheFilePath = FilePath.join(App.cachePath, '$time.venera');
   var cacheFile = File(cacheFilePath);
@@ -92,7 +92,7 @@ Future<void> importAppData(File file, {bool checkVersion = false}) async {
       if (await historyFile.exists()) {
         final historyManager = HistoryManager.cache;
         if (historyManager != null) {
-          await historyManager.waitForAsyncWrites();
+          await historyManager.flushReadingProgress();
           if (historyManager.isInitialized) {
             historyManager.close();
           }

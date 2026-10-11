@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -7,6 +8,7 @@ import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/foundation/res.dart';
+import 'package:venera_plus/foundation/sync_records.dart';
 
 History _history(String id) {
   return History.fromMap({
@@ -294,6 +296,11 @@ void main() {
       expect(saved, isNotNull);
       expect(saved!.readDurationMs, 0);
       expect(manager.getTotalReadDurationMs(), 0);
+      expect(saved.readingProgress!.maximumPositions, const [
+        ReadingPosition(ep: 1, page: 2),
+      ]);
+      expect(saved.activeRereadId, isNull);
+      expect(saved.readingProgress!.activeRoundIds, isEmpty);
     },
     skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );
@@ -462,6 +469,155 @@ void main() {
         'comic-first',
         'comic-second',
       ]);
+    },
+    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+  );
+  test(
+    'sync capture flushes the last page without adopting a remote reread',
+    () async {
+      final dataDir = Directory.systemTemp.createTempSync(
+        'venera-history-progress-data-',
+      );
+      final cacheDir = Directory.systemTemp.createTempSync(
+        'venera-history-progress-cache-',
+      );
+      addTearDown(() {
+        try {
+          HistoryManager().close();
+        } catch (_) {}
+        HistoryManager.cache = null;
+        if (dataDir.existsSync()) dataDir.deleteSync(recursive: true);
+        if (cacheDir.existsSync()) cacheDir.deleteSync(recursive: true);
+      });
+
+      App.dataPath = dataDir.path;
+      App.cachePath = cacheDir.path;
+      HistoryManager.cache = null;
+      final manager = HistoryManager();
+      await manager.init();
+
+      final item = _history('progress-sync');
+      manager.addHistory(item);
+      manager.recordReadingProgress(
+        item,
+        position: const ReadingPosition(ep: 1, page: 9),
+        source: ReadingNavigationSource.automatic,
+      );
+      final observedAtCommand = item.readingProgress!;
+      final remoteProgress =
+          ReadingProgress.seed(
+            const ReadingPosition(ep: 10, page: 1),
+            time: 2000,
+          ).record(
+            const ReadingPosition(ep: 2, page: 4),
+            source: ReadingNavigationSource.userBackward,
+            newRoundId: 'remote-reread',
+            time: 3000,
+          );
+      manager.applySyncRecords({
+        syncRecordKey('history', ['progress-sync', ComicType.local.value]): {
+          'title': 'Progress Comic',
+          'subtitle': 'Author',
+          'cover': 'cover.jpg',
+          'maxPage': 10,
+          'readDurationMs': 0,
+          'readingProgress': remoteProgress.toJson(),
+        },
+      });
+      manager.recordReadingProgress(
+        item,
+        position: const ReadingPosition(ep: 1, page: 8),
+        source: ReadingNavigationSource.userBackward,
+        commandId: 'local-reread',
+        observedProgress: observedAtCommand,
+      );
+
+      final exported = await manager.exportSyncRecords();
+      final key = syncRecordKey('history', [
+        'progress-sync',
+        ComicType.local.value,
+      ]);
+      final progress = ReadingProgress.fromJson(
+        exported[key]!['readingProgress'],
+      );
+      expect(progress.maximumPositions, const [
+        ReadingPosition(ep: 10, page: 1),
+      ]);
+      expect(progress.activeRoundIds.toSet(), {
+        'local-reread',
+        'remote-reread',
+      });
+      expect(item.ep, 1);
+      expect(item.page, 8);
+      final persisted = manager.find('progress-sync', ComicType.local)!;
+      expect(persisted.activeRereadId, 'local-reread');
+      expect(persisted.ep, 1);
+      expect(persisted.page, 8);
+    },
+    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+  );
+
+  test(
+    'clear and close consume pending progress without resurrection or loss',
+    () async {
+      final dataDir = Directory.systemTemp.createTempSync(
+        'venera-history-progress-close-data-',
+      );
+      final cacheDir = Directory.systemTemp.createTempSync(
+        'venera-history-progress-close-cache-',
+      );
+      addTearDown(() {
+        try {
+          HistoryManager().close();
+        } catch (_) {}
+        HistoryManager.cache = null;
+        if (dataDir.existsSync()) dataDir.deleteSync(recursive: true);
+        if (cacheDir.existsSync()) cacheDir.deleteSync(recursive: true);
+      });
+
+      App.dataPath = dataDir.path;
+      App.cachePath = cacheDir.path;
+      HistoryManager.cache = null;
+      final manager = HistoryManager();
+      await manager.init();
+
+      final deleted = _history('deleted-pending');
+      manager.addHistory(deleted);
+      manager.recordReadingProgress(
+        deleted,
+        position: const ReadingPosition(ep: 2, page: 9),
+        source: ReadingNavigationSource.automatic,
+      );
+      manager.clearHistory();
+      await manager.waitForAsyncWrites();
+      await manager.flushReadingProgress();
+      expect(manager.count(), 0);
+
+      final closing = _history('closing-pending');
+      manager.addHistory(closing);
+      manager.recordReadingProgress(
+        closing,
+        position: const ReadingPosition(ep: 1, page: 8),
+        source: ReadingNavigationSource.automatic,
+      );
+      manager.close();
+      HistoryManager.cache = null;
+
+      final db = sqlite3.open('${dataDir.path}/history.db');
+      try {
+        final row = db.select(
+          'SELECT reading_progress FROM history WHERE id = ?;',
+          ['closing-pending'],
+        ).single;
+        final progress = ReadingProgress.fromJson(
+          jsonDecode(row['reading_progress'] as String),
+        );
+        expect(progress.maximumPositions, const [
+          ReadingPosition(ep: 1, page: 8),
+        ]);
+      } finally {
+        db.dispose();
+      }
     },
     skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );

@@ -8,13 +8,15 @@ import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite3/sqlite3.dart';
+import 'package:venera_plus/features/history/reading_progress.dart';
+import 'package:venera_plus/features/sync/merge_store_database.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/res.dart';
+import 'package:venera_plus/foundation/sync_records.dart';
 import 'package:webdav_client/webdav_client.dart' as dav;
-import 'package:venera_plus/features/sync/merge_store_database.dart';
 
 void main() {
   late Directory tempDir;
@@ -375,6 +377,88 @@ void main() {
       };
     }
 
+    Map<String, Uint8List> mirrorCurrentNamespaceIntoLegacy() {
+      final currentPrefix = '${MergeRemote.currentNamespace}/';
+      final legacyPrefix = '${MergeRemote.legacyNamespace}/';
+      final legacyFiles = <String, Uint8List>{};
+      for (final directory in transport.remoteDirs.toList()) {
+        if (directory.startsWith(currentPrefix)) {
+          transport.remoteDirs.add(
+            '$legacyPrefix${directory.substring(currentPrefix.length)}',
+          );
+        }
+      }
+      for (final entry in transport.remoteFiles.entries.toList()) {
+        if (!entry.key.startsWith(currentPrefix)) continue;
+        final path =
+            '$legacyPrefix${entry.key.substring(currentPrefix.length)}';
+        final bytes = Uint8List.fromList(entry.value);
+        legacyFiles[path] = bytes;
+        transport.remoteFiles[path] = bytes;
+        final etag = transport.remoteEtags[entry.key];
+        if (etag != null) transport.remoteEtags[path] = etag;
+        final modifiedAt = transport.remoteModifiedAt[entry.key];
+        if (modifiedAt != null) transport.remoteModifiedAt[path] = modifiedAt;
+      }
+      return legacyFiles;
+    }
+
+    Future<String> publishLegacyCheckpoint(
+      String actor,
+      SyncRecords records,
+    ) async {
+      final document = MergeDocument()..captureLocal(actor, {}, records);
+      final batch = MergeBatch.create(
+        actor: actor,
+        counter: document.counterFor(actor),
+        document: document,
+      );
+      final path = await MergeRemote(client, deviceName: actor).upload(batch);
+      mirrorCurrentNamespaceIntoLegacy();
+      return path.replaceFirst(
+        '${MergeRemote.currentNamespace}/',
+        '${MergeRemote.legacyNamespace}/',
+      );
+    }
+
+    MergeSyncCoordinator createMigrationCoordinator({
+      required String actor,
+      required Directory directory,
+      required MergeStore store,
+      required SyncRecords history,
+      SyncRecords preferences = const {},
+    }) => MergeSyncCoordinator(
+      endpointHash: 'progress-migration',
+      stateDirectory: directory,
+      actor: actor,
+      store: store,
+      remote: MergeRemote(client, deviceName: actor),
+      exportFavoritesOverride: () => {},
+      applyFavoritesOverride: (_) {},
+      exportHistoryOverride: () async => cloneSyncRecords(history),
+      applyHistoryOverride: (_) {},
+      exportPreferencesOverride: () async => cloneSyncRecords(preferences),
+      applyPreferencesOverride: (_, {beforeCommit}) async {
+        beforeCommit?.call();
+      },
+    );
+
+    Map<String, Uint8List> snapshotLegacyFiles() => {
+      for (final entry in transport.remoteFiles.entries)
+        if (entry.key.startsWith('${MergeRemote.legacyNamespace}/'))
+          entry.key: Uint8List.fromList(entry.value),
+    };
+
+    void expectLegacyFilesUnchanged(Map<String, Uint8List> before) {
+      final after = transport.remoteFiles.keys
+          .where((path) => path.startsWith('${MergeRemote.legacyNamespace}/'))
+          .toSet();
+      expect(after, unorderedEquals(before.keys));
+      for (final entry in before.entries) {
+        expect(transport.remoteFiles[entry.key], orderedEquals(entry.value));
+      }
+    }
+
     setUp(() {
       transport = _VirtualWebDavTransport();
       client = _VirtualDavClient(transport);
@@ -406,18 +490,23 @@ void main() {
     );
 
     test(
-      'timestamp-only reopening adopts remote progress without rewinding either device',
+      'reading progress keeps the farthest page and shares explicit rereads',
       () async {
         final historyKey = syncRecordKey('history', ['resume-comic', 7]);
         final recordsA = <String, Map<String, Object?>>{
           historyKey: {
             'title': 'Resume Comic',
             'readDurationMs': 0,
-            'progress': {'ep': 1, 'page': 1, 'group': null, 'time': 1000},
+            'readingProgress': ReadingProgress.seed(
+              const ReadingPosition(ep: 1, page: 1),
+              time: 1000,
+            ).toJson(),
           },
         };
         final recordsB = <String, Map<String, Object?>>{};
-        appdata.implicitData['legacyMigrationDone_progress-resume'] = true;
+
+        ReadingProgress progressIn(SyncRecords records) =>
+            ReadingProgress.fromJson(records[historyKey]?['readingProgress']);
 
         MergeSyncCoordinator createDevice(String actor, SyncRecords records) {
           final directory = Directory('${tempDir.path}/$actor');
@@ -455,26 +544,60 @@ void main() {
 
         await synchronize(deviceA);
         await synchronize(deviceB);
-        recordsB[historyKey]!['progress'] = {
-          'ep': 1,
-          'page': 1,
-          'group': null,
-          'time': 2000,
-        };
-        final advancedProgress = {
-          'ep': 3,
-          'page': 20,
-          'group': null,
-          'time': 3000,
-        };
-        recordsA[historyKey]!['progress'] = advancedProgress;
+        final advanced = progressIn(recordsA).record(
+          const ReadingPosition(ep: 3, page: 20),
+          source: ReadingNavigationSource.userForward,
+          time: 3000,
+        );
+        recordsA[historyKey]!['readingProgress'] = advanced.toJson();
         await synchronize(deviceA);
         await synchronize(deviceB);
-        expect(recordsB[historyKey]!['progress'], advancedProgress);
-        expect(deviceB.conflicts, isEmpty);
+        expect(
+          progressIn(recordsB).resumePosition,
+          const ReadingPosition(ep: 3, page: 20),
+        );
+
+        // A delayed old session can save a later timestamp without lowering
+        // the maximum position already observed by either device.
+        recordsB[historyKey]!['readingProgress'] = ReadingProgress.seed(
+          const ReadingPosition(ep: 1, page: 1),
+          time: 4000,
+        ).toJson();
+        await synchronize(deviceB);
         await synchronize(deviceA);
-        expect(recordsA[historyKey]!['progress'], advancedProgress);
+        expect(progressIn(recordsB).maximumPositions, [
+          const ReadingPosition(ep: 3, page: 20),
+        ]);
+        expect(
+          progressIn(recordsA).resumePosition,
+          const ReadingPosition(ep: 3, page: 20),
+        );
+        expect(progressIn(recordsB).time, 4000);
         expect(deviceA.conflicts, isEmpty);
+        expect(deviceB.conflicts, isEmpty);
+
+        const rereadRoundId = '00000000-0000-4000-8000-000000000001';
+        recordsB[historyKey]!['readingProgress'] = progressIn(recordsB)
+            .record(
+              const ReadingPosition(ep: 1, page: 5),
+              source: ReadingNavigationSource.userSeek,
+              newRoundId: rereadRoundId,
+              time: 5000,
+            )
+            .toJson();
+        await synchronize(deviceB);
+        await synchronize(deviceA);
+
+        for (final records in [recordsA, recordsB]) {
+          final reread = progressIn(records);
+          expect(reread.resumePosition, const ReadingPosition(ep: 1, page: 5));
+          expect(reread.maximumPositions, [
+            const ReadingPosition(ep: 3, page: 20),
+          ]);
+          expect(reread.activeRoundId, rereadRoundId);
+        }
+        expect(deviceA.conflicts, isEmpty);
+        expect(deviceB.conflicts, isEmpty);
       },
     );
 
@@ -590,12 +713,10 @@ void main() {
           localRecords[syncRecordKey('history', ['comic-$index', 1])] = {
             'title': 'Comic $index',
             'readDurationMs': 0,
-            'progress': {
-              'ep': 2,
-              'page': index + 1,
-              'group': null,
-              'time': 1000,
-            },
+            'readingProgress': ReadingProgress.seed(
+              ReadingPosition(ep: 2, page: index + 1),
+              time: 1000,
+            ).toJson(),
           };
         }
         final expectedRecords = cloneSyncRecords(localRecords);
@@ -672,95 +793,301 @@ void main() {
       },
     );
 
-    test(
-      'startup publishes full causal history without probing obsolete directories',
-      () async {
-        final hash = MergeSyncCoordinator.computeEndpointHash(
-          'https://example.com/dav',
-          'user',
-        );
-        final stateDirectory = Directory('${tempDir.path}/sync_state_$hash');
-        final store = MergeStore(stateDirectory, 'test_device_1');
-        await store.load();
-        await store.capture(localRecords);
-        final oldBatch = store.outbox.single;
-        await store.acknowledge(oldBatch.id);
+    test('startup publishes full causal history in the new namespace and '
+        'migrates without probing obsolete directories', () async {
+      final hash = MergeSyncCoordinator.computeEndpointHash(
+        'https://example.com/dav',
+        'user',
+      );
+      final stateDirectory = Directory('${tempDir.path}/sync_state_$hash');
+      final store = MergeStore(stateDirectory, 'test_device_1');
+      await store.load();
+      await store.capture(localRecords);
+      final oldBatch = store.outbox.single;
+      await store.acknowledge(oldBatch.id);
 
-        final oldFiles = <String, Uint8List>{
-          'VeneraPlus/sync-v4/Older Device/commits/1-obsolete.json':
-              Uint8List.fromList(utf8.encode('old v4 state')),
-          'VeneraPlus/sync-v5/Older Device/commits/1-obsolete.json':
-              Uint8List.fromList(utf8.encode('old v5 state')),
-        };
-        transport.remoteDirs.addAll({
-          'VeneraPlus',
-          'VeneraPlus/sync-v4',
-          'VeneraPlus/sync-v4/Older Device',
-          'VeneraPlus/sync-v4/Older Device/commits',
-          'VeneraPlus/sync-v5',
-          'VeneraPlus/sync-v5/Older Device',
-          'VeneraPlus/sync-v5/Older Device/commits',
-        });
-        transport.remoteFiles.addAll(oldFiles);
-        appdata.implicitData
-          ..['webdavSyncDeviceName'] = 'Test 東京 Device'
-          ..['webdavSyncDirection'] = 'uploadOnly'
-          ..['webdavSyncTiming'] = 'realtime';
-        client.directoryReads.clear();
+      final oldFiles = <String, Uint8List>{
+        'VeneraPlus/sync-v4/Older Device/commits/1-obsolete.json':
+            Uint8List.fromList(utf8.encode('old v4 state')),
+        'VeneraPlus/sync-v5/Older Device/commits/1-obsolete.json':
+            Uint8List.fromList(utf8.encode('old v5 state')),
+      };
+      transport.remoteDirs.addAll({
+        'VeneraPlus',
+        'VeneraPlus/sync-v4',
+        'VeneraPlus/sync-v4/Older Device',
+        'VeneraPlus/sync-v4/Older Device/commits',
+        'VeneraPlus/sync-v5',
+        'VeneraPlus/sync-v5/Older Device',
+        'VeneraPlus/sync-v5/Older Device/commits',
+      });
+      transport.remoteFiles.addAll(oldFiles);
+      appdata.implicitData
+        ..['webdavSyncDeviceName'] = 'Test 東京 Device'
+        ..['webdavSyncDirection'] = 'uploadOnly'
+        ..['webdavSyncTiming'] = 'realtime';
+      client.directoryReads.clear();
 
-        final sync = DataSync();
-        await sync.waitForStartupMerge();
-        await sync.waitForSync();
+      final sync = DataSync();
+      await sync.waitForStartupMerge();
+      await sync.waitForSync();
 
-        expect(sync.coordinator!.store.outbox, isEmpty);
-        final remote = sync.coordinator!.remote;
-        final ownEntries = (await remote.list())
-            .where((entry) => entry.actor == 'test_device_1')
-            .toList();
-        expect(ownEntries, hasLength(1));
-        expect(
-          ownEntries.single.filename,
-          startsWith('VeneraPlus/Test 東京 Device/commits/'),
-        );
-        expect(
-          (await remote.download(ownEntries.single)).document.materialize(),
-          localRecords,
-        );
-        for (final entry in oldFiles.entries) {
-          expect(transport.remoteFiles[entry.key], entry.value);
-        }
-        expect(
-          client.directoryReads.any(
-            (path) =>
-                path.toLowerCase().contains('sync-v4') ||
-                path.toLowerCase().contains('sync-v5'),
-          ),
-          isFalse,
-        );
-        expect(
-          transport.requests.any(
-            (request) =>
-                request.uri.path.contains('/sync-v4/') ||
-                request.uri.path.contains('/sync-v5/'),
-          ),
-          isFalse,
-        );
+      expect(sync.coordinator!.store.hasProgressProtocolMigration, isTrue);
+      expect(sync.coordinator!.store.outbox, isEmpty);
+      final remote = sync.coordinator!.remote;
+      final ownEntries = (await remote.list())
+          .where((entry) => entry.actor == 'test_device_1')
+          .toList();
+      expect(ownEntries, hasLength(1));
+      expect(
+        ownEntries.single.filename,
+        startsWith('VeneraPlus-v2/Test 東京 Device/commits/'),
+      );
+      expect(
+        (await remote.download(ownEntries.single)).document.materialize(),
+        localRecords,
+      );
+      for (final entry in oldFiles.entries) {
+        expect(transport.remoteFiles[entry.key], entry.value);
+      }
+      expect(client.directoryReads, contains(MergeRemote.legacyNamespace));
+      expect(
+        transport.requests.where(
+          (request) =>
+              {'PUT', 'DELETE'}.contains(request.method) &&
+              request.uri.path.contains('/${MergeRemote.legacyNamespace}/'),
+        ),
+        isEmpty,
+      );
+      expect(
+        client.directoryReads.any(
+          (path) =>
+              path.toLowerCase().contains('sync-v4') ||
+              path.toLowerCase().contains('sync-v5'),
+        ),
+        isFalse,
+      );
+      expect(
+        transport.requests.any(
+          (request) =>
+              request.uri.path.contains('/sync-v4/') ||
+              request.uri.path.contains('/sync-v5/'),
+        ),
+        isFalse,
+      );
 
-        final publishedCommits = transport.remoteFiles.keys
+      final publishedCommits = transport.remoteFiles.keys
+          .where((path) => path.contains('/commits/'))
+          .toSet();
+      transport.requests.clear();
+      expect((await sync.syncNow()).success, isTrue);
+      expect(
+        transport.remoteFiles.keys
             .where((path) => path.contains('/commits/'))
+            .toSet(),
+        publishedCommits,
+      );
+      expect(
+        transport.requests.where((request) => request.method == 'PUT'),
+        isEmpty,
+      );
+    });
+
+    test(
+      'old-root progress migration preserves local intent and leaves legacy bytes read-only',
+      () async {
+        final historyKey = syncRecordKey('history', ['legacy-resume', 1]);
+        final oldCommitPath = await publishLegacyCheckpoint(
+          'legacy_progress_device',
+          {
+            historyKey: {
+              'title': 'Legacy Resume',
+              'readDurationMs': 0,
+              'progress': {'ep': 3, 'page': 20, 'group': null, 'time': 4000},
+            },
+          },
+        );
+        final legacyFilesBefore = snapshotLegacyFiles();
+        final legacyDirsBefore = transport.remoteDirs
+            .where((path) => path.startsWith('${MergeRemote.legacyNamespace}/'))
             .toSet();
-        transport.requests.clear();
-        expect((await sync.syncNow()).success, isTrue);
+        expect(legacyFilesBefore, contains(oldCommitPath));
+
+        const actor = 'progress_migrator';
+        final localHistory = <String, Map<String, Object?>>{
+          historyKey: {
+            'title': 'Local Resume',
+            'readDurationMs': 0,
+            'readingProgress': ReadingProgress.seed(
+              const ReadingPosition(ep: 1, page: 1),
+              time: 1000,
+            ).toJson(),
+          },
+        };
+        final localPreferences = <String, Map<String, Object?>>{
+          syncRecordKey('setting', ['theme']): {'value': 'dark'},
+        };
+        final directory = Directory('${tempDir.path}/progress_migration');
+        final store = MergeStore(directory, actor);
+        await store.load();
+        await store.capture({...localHistory, ...localPreferences});
+        final outboxIdsBefore = store.pendingBatchIds;
+        final localBatchBefore = store
+            .pendingBatch(outboxIdsBefore.single)
+            .document
+            .toJson();
+        final actorCounterBefore = store.document.counterFor(actor);
+        final coordinator = createMigrationCoordinator(
+          actor: actor,
+          directory: directory,
+          store: store,
+          history: localHistory,
+          preferences: localPreferences,
+        );
+
+        expect(await coordinator.migrateProgressProtocolIfNeeded(), isTrue);
+        expect(store.hasProgressProtocolMigration, isTrue);
+        expect(store.document.counterFor(actor), actorCounterBefore);
+        expect(store.pendingBatchIds, outboxIdsBefore);
         expect(
-          transport.remoteFiles.keys
-              .where((path) => path.contains('/commits/'))
-              .toSet(),
-          publishedCommits,
+          store.pendingBatch(outboxIdsBefore.single).document.toJson(),
+          localBatchBefore,
         );
         expect(
-          transport.requests.where((request) => request.method == 'PUT'),
+          store.document.counterFor('legacy_progress_device'),
+          greaterThan(0),
+        );
+        final migratedHistory = store.document.materialize()[historyKey]!;
+        final migratedProgress = ReadingProgress.fromJson(
+          migratedHistory['readingProgress'],
+        );
+        expect(migratedProgress.maximumPositions, [
+          const ReadingPosition(ep: 3, page: 20),
+        ]);
+        expect(
+          migratedProgress.resumePosition,
+          const ReadingPosition(ep: 3, page: 20),
+        );
+        expect(migratedHistory, isNot(contains('progress')));
+        expectLegacyFilesUnchanged(legacyFilesBefore);
+        expect(
+          transport.remoteDirs
+              .where(
+                (path) => path.startsWith('${MergeRemote.legacyNamespace}/'),
+              )
+              .toSet(),
+          unorderedEquals(legacyDirsBefore),
+        );
+        expect(
+          transport.requests.where(
+            (request) =>
+                {'PUT', 'DELETE'}.contains(request.method) &&
+                request.uri.path.contains('/${MergeRemote.legacyNamespace}/'),
+          ),
           isEmpty,
         );
+      },
+    );
+
+    test(
+      'unverified old-root checkpoints do not complete migration or mutate legacy objects',
+      () async {
+        for (final failure in ['missing', 'corrupt', 'unsupported']) {
+          transport = _VirtualWebDavTransport();
+          client = _VirtualDavClient(transport);
+          final actor = 'legacy_failure_$failure';
+          final key = syncRecordKey('setting', ['legacy-$failure']);
+          final oldCommitPath = await publishLegacyCheckpoint(actor, {
+            key: {'value': 'legacy'},
+          });
+          final manifestBytes = transport.remoteFiles[oldCommitPath]!;
+          final manifest = SyncPackManifest.parse(manifestBytes);
+          final packDigest = manifest.packs.keys.single;
+          final packPath =
+              '${oldCommitPath.substring(0, oldCommitPath.indexOf('/commits/'))}'
+              '/packs/$packDigest.pack';
+          switch (failure) {
+            case 'missing':
+              transport.remoteFiles.remove(packPath);
+              transport.remoteEtags.remove(packPath);
+            case 'corrupt':
+              final broken = Uint8List.fromList(
+                transport.remoteFiles[packPath]!,
+              );
+              broken[broken.length ~/ 2] ^= 0xff;
+              transport.remoteFiles[packPath] = broken;
+            case 'unsupported':
+              final futureManifest = Map<String, Object?>.from(
+                jsonDecode(utf8.decode(manifestBytes)) as Map,
+              )..['documentSchema'] = 4;
+              final futureBytes = Uint8List.fromList(
+                utf8.encode(jsonEncode(futureManifest)),
+              );
+              final counter = oldCommitPath
+                  .substring(oldCommitPath.lastIndexOf('/') + 1)
+                  .split('-')
+                  .first;
+              final futurePath =
+                  '${oldCommitPath.substring(0, oldCommitPath.lastIndexOf('/') + 1)}'
+                  '$counter-${sha256.convert(futureBytes)}.json';
+              transport.remoteFiles.remove(oldCommitPath);
+              transport.remoteEtags.remove(oldCommitPath);
+              transport.remoteFiles[futurePath] = futureBytes;
+              transport.remoteEtags[futurePath] =
+                  '"${sha256.convert(futureBytes)}"';
+          }
+          final legacyFilesBefore = snapshotLegacyFiles();
+          final legacyDirsBefore = transport.remoteDirs
+              .where(
+                (path) => path.startsWith('${MergeRemote.legacyNamespace}/'),
+              )
+              .toSet();
+          final directory = Directory(
+            '${tempDir.path}/progress_migration_$failure',
+          );
+          final localActor = 'migration_failure_local_$failure';
+          final store = MergeStore(directory, localActor);
+          await store.load();
+          final coordinator = createMigrationCoordinator(
+            actor: localActor,
+            directory: directory,
+            store: store,
+            history: const {},
+          );
+
+          if (failure == 'unsupported') {
+            await expectLater(
+              coordinator.migrateProgressProtocolIfNeeded(),
+              throwsA(isA<UnsupportedSyncProtocolException>()),
+            );
+          } else {
+            await expectLater(
+              coordinator.migrateProgressProtocolIfNeeded(),
+              throwsA(isA<MergeRemoteCorruptException>()),
+            );
+          }
+
+          expect(store.hasProgressProtocolMigration, isFalse);
+          expect(store.document.counterFor(localActor), 0);
+          expect(store.pendingBatchIds, isEmpty);
+          expectLegacyFilesUnchanged(legacyFilesBefore);
+          expect(
+            transport.remoteDirs
+                .where(
+                  (path) => path.startsWith('${MergeRemote.legacyNamespace}/'),
+                )
+                .toSet(),
+            unorderedEquals(legacyDirsBefore),
+          );
+          expect(
+            transport.requests.where(
+              (request) =>
+                  {'PUT', 'DELETE'}.contains(request.method) &&
+                  request.uri.path.contains('/${MergeRemote.legacyNamespace}/'),
+            ),
+            isEmpty,
+          );
+        }
       },
     );
 
@@ -1854,7 +2181,7 @@ void main() {
 
     test('actor identity is durable before it is returned', () async {
       appdata.implicitData.remove('syncDeviceId');
-      final actor = await MergeSyncCoordinator.getOrCreateActorId();
+      final actor = await appdata.getOrCreateSyncDeviceId();
       final json =
           jsonDecode(
                 await File('${tempDir.path}/implicitData.json').readAsString(),

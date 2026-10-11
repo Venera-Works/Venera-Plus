@@ -3,6 +3,7 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
+import '../history/reading_progress.dart';
 import '../../foundation/sync_candidate_preview.dart';
 import '../../foundation/sync_records.dart';
 
@@ -422,6 +423,26 @@ class _Record {
   }
 }
 
+class _ProgressSource {
+  final String field;
+  final String id;
+  final bool deleted;
+  final ReadingProgress? progress;
+
+  const _ProgressSource({
+    required this.field,
+    required this.id,
+    required this.deleted,
+    required this.progress,
+  });
+}
+
+class _ProgressChoice {
+  final MergeCandidate candidate;
+  final Map<String, Object?> payload;
+  const _ProgressChoice(this.candidate, this.payload);
+}
+
 class MergeCandidate {
   final String id;
   final Object? value;
@@ -451,6 +472,26 @@ class MergeCandidate {
       domain = '';
     }
     if (domain == 'cookies') return 'Cookies session data';
+    if (domain == 'history' && field == 'readingProgress') {
+      final progress = value;
+      if (progress is! Map) return 'Reading Progress';
+      final maximum = progress['maximum'];
+      final rounds = progress['rounds'];
+      final parts = <String>[];
+      if (maximum is List && maximum.isNotEmpty) {
+        final first = maximum.first;
+        if (first is Map && first['ep'] is int && first['page'] is int) {
+          parts.add('Episode ${first['ep']}, Page ${first['page']}');
+        }
+        if (maximum.length > 1) {
+          parts.add('${maximum.length} maxima');
+        }
+      }
+      if (rounds is Map && rounds.isNotEmpty) {
+        parts.add('${rounds.length} reread rounds');
+      }
+      return parts.isEmpty ? 'Reading Progress' : parts.join(' · ');
+    }
     if (domain == 'source' || domain == 'sourceSession') {
       return 'Comic source session/script data';
     }
@@ -503,7 +544,8 @@ class MergeConflict {
 
   /// Duration candidate values can change as new contributions arrive, even
   /// when the candidate IDs remain stable.
-  late final String candidateFingerprint = field == 'readDurationMs'
+  late final String candidateFingerprint =
+      field == 'readDurationMs' || field == 'readingProgress'
       ? _digest(candidates.map((candidate) => candidate.toJson()).toList())
       : '';
   MergeConflict({
@@ -609,8 +651,8 @@ class MergeDocument {
       return candidates.containsKey(candidateId) &&
           candidates[candidateId] == present;
     }
-    if (field != 'progress') return false;
-    final raw = record.fields['progress']?.values[candidateId];
+    if (field != 'progress' && field != 'readingProgress') return false;
+    final raw = record.fields[field]?.values[candidateId];
     if (raw == null) return false;
     final payload = raw as Map;
     return payload['deleted'] == !present &&
@@ -716,11 +758,27 @@ class MergeDocument {
         changed.add(key);
     }
     if (changed.isEmpty) return 0;
+    final progressWrites = <String, Map<String, Object?>>{};
     for (final key in changed) {
       _jsonValue(current[key]);
       if (_domain(key) == 'history') {
         _duration(previous[key]?['readDurationMs']);
         _duration(current[key]?['readDurationMs']);
+        final after = current[key];
+        if (after?.containsKey('readingProgress') ?? false) {
+          var progress = ReadingProgress.fromJson(after!['readingProgress']);
+          final record = _records[key];
+          final reincarnation =
+              previous[key] == null &&
+              (record?.presence.values.isNotEmpty ?? false) &&
+              !(record?.alive ?? true);
+          if (!reincarnation && record != null) {
+            for (final source in _progressSources(record)) {
+              if (!source.deleted) progress = progress.merge(source.progress!);
+            }
+          }
+          progressWrites[key] = progress.toJson();
+        }
       }
     }
     final counter = reserveCounter(actor);
@@ -807,7 +865,14 @@ class MergeDocument {
           _write(
             record.fields.putIfAbsent(field, _Cell.new),
             dot,
-            {'value': has ? after[field] : null, 'deleted': !has},
+            {
+              'value': !has
+                  ? null
+                  : _domain(key) == 'history' && field == 'readingProgress'
+                  ? progressWrites[key]!
+                  : after[field],
+              'deleted': !has,
+            },
             edits,
             'field:$field',
           );
@@ -898,72 +963,166 @@ class MergeDocument {
     return values.first;
   }
 
-  int _compareProgressCandidates(String leftId, String rightId) {
-    final left = MergeDot.parse(leftId);
-    final right = MergeDot.parse(rightId);
-    final counter = left.counter.compareTo(right.counter);
-    return counter != 0 ? counter : left.actor.compareTo(right.actor);
-  }
-
   bool _isProgressInteger(Object? value) =>
       value is num && value.isFinite && value == value.toInt();
 
-  bool _sameProgressPosition(
-    Map<String, Object?> left,
-    Map<String, Object?> right,
-  ) {
-    if (left.length != right.length) return false;
-    for (final entry in left.entries) {
-      if (entry.key == 'time') continue;
-      if (!right.containsKey(entry.key) ||
-          !syncValuesEqual(entry.value, right[entry.key])) {
-        return false;
-      }
+  ReadingProgress? _legacyReadingProgress(Object? value) {
+    if (value is! Map) return null;
+    final progress = _map(value);
+    final ep = progress['ep'];
+    final page = progress['page'];
+    final group = progress['group'];
+    final time = progress['time'] ?? 0;
+    if (!_isProgressInteger(ep) ||
+        !_isProgressInteger(page) ||
+        (group != null && !_isProgressInteger(group)) ||
+        !_isProgressInteger(time) ||
+        (time as num) < 0 ||
+        time > 8640000000000000) {
+      return null;
     }
-    return true;
+    return ReadingProgress.seed(
+      ReadingPosition(
+        ep: (ep as num).toInt(),
+        page: (page as num).toInt(),
+        group: group == null ? null : (group as num).toInt(),
+      ),
+      time: (time).toInt(),
+    );
   }
 
-  MapEntry<String, Object?>? _compatibleProgressWinner(_Cell cell) {
-    if (cell.values.length < 2) return null;
-    Map<String, Object?>? position;
-    MapEntry<String, Object?>? winner;
-    var winnerTime = -1;
-    for (final entry in cell.values.entries) {
+  List<_ProgressSource> _progressSources(_Record record) {
+    final sources = <_ProgressSource>[];
+    final current = record.fields['readingProgress'];
+    for (final entry
+        in current?.values.entries ?? const <MapEntry<String, Object?>>[]) {
       final payload = _map(entry.value);
-      if (payload['deleted'] != false) return null;
-      final rawProgress = payload['value'];
-      if (rawProgress is! Map) return null;
-      final progress = _map(rawProgress);
-      if (!progress.containsKey('ep') ||
-          !progress.containsKey('page') ||
-          !progress.containsKey('group') ||
-          !progress.containsKey('time')) {
-        return null;
+      final deleted = payload['deleted'] as bool;
+      sources.add(
+        _ProgressSource(
+          field: 'readingProgress',
+          id: entry.key,
+          deleted: deleted,
+          progress: deleted ? null : ReadingProgress.fromJson(payload['value']),
+        ),
+      );
+    }
+    final legacy = record.fields['progress'];
+    for (final entry
+        in legacy?.values.entries ?? const <MapEntry<String, Object?>>[]) {
+      final payload = _map(entry.value);
+      final deleted = payload['deleted'] as bool;
+      if (deleted && (current?.values.containsKey(entry.key) ?? false)) {
+        continue;
       }
-      if (!_isProgressInteger(progress['ep']) ||
-          !_isProgressInteger(progress['page']) ||
-          (progress['group'] != null &&
-              !_isProgressInteger(progress['group'])) ||
-          !_isProgressInteger(progress['time'])) {
-        return null;
-      }
-      final rawTime = progress['time'] as num;
-      if (rawTime < 0 || rawTime > 8640000000000000) return null;
-      if (position == null) {
-        position = progress;
-      } else if (!_sameProgressPosition(position, progress)) {
-        return null;
-      }
-      final time = rawTime.toInt();
-      if (winner == null ||
-          time > winnerTime ||
-          (time == winnerTime &&
-              _compareProgressCandidates(entry.key, winner.key) > 0)) {
-        winner = entry;
-        winnerTime = time;
+      final progress = deleted
+          ? null
+          : _legacyReadingProgress(payload['value']);
+      if (deleted || progress != null) {
+        sources.add(
+          _ProgressSource(
+            field: 'progress',
+            id: entry.key,
+            deleted: deleted,
+            progress: progress,
+          ),
+        );
       }
     }
-    return winner;
+    return sources;
+  }
+
+  ReadingProgress? _joinedProgress(_Record record) {
+    ReadingProgress? result;
+    for (final source in _progressSources(record)) {
+      if (source.deleted) continue;
+      final progress = source.progress!;
+      result = result == null ? progress : result.merge(progress);
+    }
+    return result;
+  }
+
+  List<_ProgressChoice> _progressChoices(String recordKey, _Record record) {
+    final sources = _progressSources(record);
+    final sourceIdCounts = <String, int>{};
+    for (final source in sources) {
+      sourceIdCounts.update(source.id, (count) => count + 1, ifAbsent: () => 1);
+    }
+    final choices = <_ProgressChoice>[];
+    for (final source in sources) {
+      final dot = MergeDot.parse(source.id);
+      final sourceCandidateId = sourceIdCounts[source.id] == 1
+          ? source.id
+          : 'readingProgress-source:${source.field}:${source.id}';
+      final progress = source.progress;
+      if (progress != null &&
+          progress.hasOrderConflict &&
+          (progress.toJson()['maximum'] as List).length > 1) {
+        final rawMaximum = progress.toJson()['maximum'] as List;
+        for (final position in rawMaximum) {
+          final selectedJson = Map<String, Object?>.of(progress.toJson())
+            ..['maximum'] = [position];
+          final selected = ReadingProgress.fromJson(selectedJson);
+          final selectedId =
+              'readingProgress-choice:${source.field}:${source.id}:'
+              '${_digest(position)}';
+          final value = selected.toJson();
+          choices.add(
+            _ProgressChoice(
+              MergeCandidate(
+                id: selectedId,
+                value: value,
+                actor: dot.actor,
+                counter: dot.counter,
+                isDeleted: false,
+                recordKey: recordKey,
+                field: 'readingProgress',
+              ),
+              {'value': value, 'deleted': false},
+            ),
+          );
+        }
+        continue;
+      }
+      final value = progress?.toJson();
+      choices.add(
+        _ProgressChoice(
+          MergeCandidate(
+            id: sourceCandidateId,
+            value: value,
+            actor: dot.actor,
+            counter: dot.counter,
+            isDeleted: source.deleted,
+            recordKey: recordKey,
+            field: 'readingProgress',
+          ),
+          {'value': source.deleted ? null : value, 'deleted': source.deleted},
+        ),
+      );
+    }
+    return choices;
+  }
+
+  MergeConflict? _readingProgressConflict(String recordKey, _Record record) {
+    final sources = _progressSources(record);
+    final live = sources.where((source) => !source.deleted).toList();
+    final hasDeletionConflict =
+        live.isNotEmpty && sources.any((source) => source.deleted);
+    final joined = _joinedProgress(record);
+    if (!hasDeletionConflict && !(joined?.hasOrderConflict ?? false)) {
+      return null;
+    }
+    final candidates =
+        _progressChoices(
+            recordKey,
+            record,
+          ).map((choice) => choice.candidate).toList()
+          ..sort((left, right) => left.id.compareTo(right.id));
+    return MergeConflict(
+      recordKey: recordKey,
+      field: 'readingProgress',
+      candidates: candidates,
+    );
   }
 
   SyncRecords materialize({SyncRecords? preferred}) {
@@ -971,22 +1130,24 @@ class MergeDocument {
     for (final entry in _records.entries) {
       final record = entry.value;
       if (!record.alive) continue;
+      final history = _domain(entry.key) == 'history';
       final fields = <String, Object?>{};
       for (final field in record.fields.entries) {
         if (field.value.values.isEmpty) continue;
-        final automaticProgress =
-            _domain(entry.key) == 'history' && field.key == 'progress'
-            ? _compatibleProgressWinner(field.value)
-            : null;
+        if (history &&
+            (field.key == 'progress' || field.key == 'readingProgress')) {
+          continue;
+        }
         final payload = _map(
-          (automaticProgress ??
-                  _choose(field.value, preferred?[entry.key], field.key))
-              .value,
+          _choose(field.value, preferred?[entry.key], field.key).value,
         );
-        if (payload['deleted'] == false)
+        if (payload['deleted'] == false) {
           fields[field.key] = canonicalizeSyncValue(payload['value']);
+        }
       }
-      if (_domain(entry.key) == 'history') {
+      if (history) {
+        final progress = _joinedProgress(record);
+        if (progress != null) fields['readingProgress'] = progress.toJson();
         var duration = record.total;
         final local = preferred?[entry.key]?['readDurationMs'];
         if (local is num && record.durationConflict) {
@@ -1031,12 +1192,12 @@ class MergeDocument {
       if (!record.alive) continue;
       final fields = record.fields.keys.toList()..sort();
       for (final field in fields) {
-        final cell = record.fields[field]!;
-        if (cell.values.values.map(canonicalSyncJson).toSet().length <= 1)
+        if (_domain(key) == 'history' &&
+            (field == 'progress' || field == 'readingProgress')) {
           continue;
-        if (field == 'progress' &&
-            _domain(key) == 'history' &&
-            _compatibleProgressWinner(cell) != null) {
+        }
+        final cell = record.fields[field]!;
+        if (cell.values.values.map(canonicalSyncJson).toSet().length <= 1) {
           continue;
         }
         final ids = cell.values.keys.toList()..sort();
@@ -1056,6 +1217,10 @@ class MergeDocument {
             ],
           ),
         );
+      }
+      if (_domain(key) == 'history') {
+        final conflict = _readingProgressConflict(key, record);
+        if (conflict != null) result.add(conflict);
       }
       if (record.presence.values.values.toSet().length > 1) {
         final ids = record.presence.values.keys.toList()..sort();
@@ -1129,6 +1294,16 @@ class MergeDocument {
       chosen = candidateId == 'accumulated_total'
           ? record.total
           : record.totalFor(record.bases.values[candidateId]);
+    } else if (_domain(recordKey) == 'history' && field == 'readingProgress') {
+      _ProgressChoice? selected;
+      for (final choice in _progressChoices(recordKey, record)) {
+        if (choice.candidate.id == candidateId) {
+          selected = choice;
+          break;
+        }
+      }
+      if (selected == null) throw StateError('Unknown candidate');
+      chosen = selected.payload;
     } else {
       final cell = record.fields[field];
       if (cell == null || !cell.values.containsKey(candidateId))
@@ -1176,7 +1351,25 @@ class MergeDocument {
         'base',
       );
     } else if (field != 'presence') {
-      _write(currentRecord.fields[field]!, dot, chosen, edits, 'field:$field');
+      _write(
+        currentRecord.fields.putIfAbsent(field, _Cell.new),
+        dot,
+        chosen,
+        edits,
+        'field:$field',
+      );
+      if (_domain(recordKey) == 'history' && field == 'readingProgress') {
+        final legacy = currentRecord.fields['progress'];
+        if (legacy != null && legacy.values.isNotEmpty) {
+          _write(
+            legacy,
+            dot,
+            {'value': null, 'deleted': true},
+            edits,
+            'field:progress',
+          );
+        }
+      }
     }
     _eventDigests[dot] = _digest({recordKey: edits});
   }
@@ -1216,15 +1409,44 @@ class MergeDocument {
     },
   };
   factory MergeDocument.fromJson(Map<String, Object?> json) {
+    final schema = json['schema'];
+    if (schema is int && schema != 3) {
+      throw UnsupportedSyncProtocolException('merge document', schema);
+    }
+    if (schema != 3) {
+      throw const FormatException('Invalid merge schema');
+    }
     _keys(json, {'schema', 'vclock', 'eventDigests', 'records'});
-    if (json['schema'] != 3)
-      throw const FormatException('Unsupported merge schema');
+    for (final rawRecord in _map(json['records']).values) {
+      final fields = _map(_map(rawRecord)['fields']);
+      final progressCell = fields['readingProgress'];
+      if (progressCell == null) continue;
+      final values = _map(_map(progressCell)['values']);
+      for (final rawPayload in values.values) {
+        final payload = _map(rawPayload);
+        if (payload['deleted'] == false &&
+            payload['value'] is Map &&
+            (payload['value'] as Map)['version'] is int &&
+            (payload['value'] as Map)['version'] != 1) {
+          ReadingProgress.fromJson({
+            'version': (payload['value'] as Map)['version'],
+          });
+        }
+      }
+    }
     final document = MergeDocument();
     document._vclock.addAll(_counters(json['vclock']));
     document._eventDigests.addAll(_digests(json['eventDigests']));
     final referencedEvents = <String>{};
     for (final entry in _map(json['records']).entries) {
       final record = _Record.fromJson(entry.value);
+      final progress = record.fields['readingProgress'];
+      for (final payload in progress?.values.values ?? const <Object?>[]) {
+        final value = _map(payload);
+        if (value['deleted'] == false) {
+          ReadingProgress.fromJson(value['value']);
+        }
+      }
       if (record.presence.values.isEmpty) {
         throw const FormatException('Record lacks a presence candidate');
       }

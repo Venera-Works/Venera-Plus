@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/foundation/sync_records.dart';
+import 'package:venera_plus/features/history/reading_progress.dart';
 
 /// Result summary indicating which domains had actual database row changes.
 class HistorySyncApplyResult {
@@ -44,6 +45,7 @@ class HistorySyncData {
           max_page INTEGER,
           chapter_group INTEGER,
           read_duration_ms INTEGER NOT NULL DEFAULT 0,
+          reading_progress TEXT,
           sync_projection TEXT,
           PRIMARY KEY (id, type)
         );
@@ -61,6 +63,9 @@ class HistorySyncData {
       }
       if (!columnNames.contains("sync_projection")) {
         db.execute("ALTER TABLE history ADD COLUMN sync_projection TEXT;");
+      }
+      if (!columnNames.contains("reading_progress")) {
+        db.execute("ALTER TABLE history ADD COLUMN reading_progress TEXT;");
       }
 
       // Check primary key configuration: must be exact composite PK (id, type)
@@ -91,15 +96,16 @@ class HistorySyncData {
               readEpisode TEXT NOT NULL DEFAULT '',
               max_page INTEGER,
               chapter_group INTEGER,
-              sync_projection TEXT,
               read_duration_ms INTEGER NOT NULL DEFAULT 0,
+              reading_progress TEXT,
+              sync_projection TEXT,
               PRIMARY KEY (id, type)
             );
           ''');
           // Use explicit defaults matching History.fromRow defaults for any legacy NULLs
           db.execute('''
             INSERT OR REPLACE INTO history_migrating (
-              id, title, subtitle, cover, time, type, ep, page, readEpisode, max_page, chapter_group, read_duration_ms, sync_projection
+              id, title, subtitle, cover, time, type, ep, page, readEpisode, max_page, chapter_group, read_duration_ms, reading_progress, sync_projection
             )
             SELECT
               COALESCE(id, '') AS id,
@@ -114,6 +120,7 @@ class HistorySyncData {
               max_page,
               chapter_group,
               COALESCE(read_duration_ms, 0) AS read_duration_ms,
+              reading_progress,
               sync_projection
             FROM history
             WHERE id IS NOT NULL AND id != ''
@@ -128,6 +135,7 @@ class HistorySyncData {
         }
       }
     }
+    _seedLegacyReadingProgress(db);
 
     // 2. Ensure image_favorites table exists
     db.execute('''
@@ -157,6 +165,32 @@ class HistorySyncData {
     ''');
   }
 
+  static void _seedLegacyReadingProgress(Database db) {
+    final rows = db.select('''
+      SELECT id, type, ep, page, chapter_group, time
+      FROM history
+      WHERE reading_progress IS NULL;
+      ''');
+    for (final row in rows) {
+      final ep = (row['ep'] as num?)?.toInt() ?? 0;
+      final page = (row['page'] as num?)?.toInt() ?? 0;
+      final group = (row['chapter_group'] as num?)?.toInt();
+      final time = (row['time'] as num?)?.toInt() ?? 0;
+      final progress = ReadingProgress.seed(
+        ReadingPosition(ep: ep, page: page, group: group),
+        time: time,
+      );
+      db.execute(
+        '''
+        UPDATE history
+        SET reading_progress = ?, sync_projection = NULL
+        WHERE id = ? AND type = ? AND reading_progress IS NULL;
+        ''',
+        [jsonEncode(progress.toJson()), row['id'], row['type']],
+      );
+    }
+  }
+
   /// Exports current database contents into [SyncRecords].
   static SyncRecords readSyncRecords(Database db) {
     ensureSchema(db);
@@ -164,7 +198,7 @@ class HistorySyncData {
 
     // 1. Export history and historyChapter domains
     final historyRows = db.select(
-      'SELECT id, title, subtitle, cover, time, type, ep, page, readEpisode, max_page, chapter_group, read_duration_ms, sync_projection FROM history;',
+      'SELECT id, title, subtitle, cover, type, readEpisode, max_page, read_duration_ms, reading_progress, sync_projection FROM history;',
     );
 
     for (final row in historyRows) {
@@ -173,17 +207,15 @@ class HistorySyncData {
       final title = row['title'] as String? ?? '';
       final subtitle = row['subtitle'] as String? ?? '';
       final cover = row['cover'] as String? ?? '';
-      final time = (row['time'] as num).toInt();
-      final ep = (row['ep'] as num).toInt();
-      final page = (row['page'] as num).toInt();
       final maxPage = (row['max_page'] as num?)?.toInt();
-      final group = (row['chapter_group'] as num?)?.toInt();
       final readDurationMs = (row['read_duration_ms'] as num?)?.round() ?? 0;
       final readEpisodeStr = row['readEpisode'] as String? ?? '';
       final chapters =
           readEpisodeStr.split(',').where((s) => s.isNotEmpty).toList()..sort();
 
-      // Export history record with atomic progress map.
+      final progress = ReadingProgress.fromJson(
+        jsonDecode(row['reading_progress'] as String),
+      );
       final histKey = syncRecordKey('history', [id, type]);
       final historyRecord = <String, Object?>{
         'title': title,
@@ -191,7 +223,7 @@ class HistorySyncData {
         'cover': cover,
         'maxPage': maxPage,
         'readDurationMs': readDurationMs,
-        'progress': {'ep': ep, 'page': page, 'group': group, 'time': time},
+        'readingProgress': progress.toJson(),
       };
       final syncProjection = row['sync_projection'] as String?;
       final projected = syncProjection == null
@@ -383,14 +415,87 @@ class HistorySyncData {
     }
   }
 
+  /// Applies an explicitly legacy state/backup view, seeding old checkpoints
+  /// as maximum history only. Live sync must use [applySyncRecords].
+  static HistorySyncApplyResult applyLegacySyncRecords(
+    Database db,
+    SyncRecords records, {
+    bool applyHistory = true,
+    bool applyImageFavorites = true,
+  }) => applySyncRecords(
+    db,
+    _convertLegacyProgressRecords(records),
+    applyHistory: applyHistory,
+    applyImageFavorites: applyImageFavorites,
+  );
+
+  static SyncRecords _convertLegacyProgressRecords(SyncRecords records) {
+    final converted = <String, Map<String, Object?>>{};
+    for (final entry in records.entries) {
+      if (syncRecordDomain(entry.key) != 'history' ||
+          !entry.value.containsKey('progress')) {
+        converted[entry.key] = entry.value;
+        continue;
+      }
+      if (entry.value.containsKey('readingProgress')) {
+        throw const FormatException(
+          'History record cannot contain both legacy and current progress',
+        );
+      }
+      final legacy = entry.value['progress'];
+      if (legacy != null && legacy is! Map) {
+        throw const FormatException(
+          'Legacy history progress must be an object',
+        );
+      }
+      final position = legacy as Map?;
+      final ep = (position?['ep'] as num?)?.toInt() ?? 0;
+      final page = (position?['page'] as num?)?.toInt() ?? 0;
+      final group = (position?['group'] as num?)?.toInt();
+      final time = (position?['time'] as num?)?.toInt() ?? 0;
+      final progress = ReadingProgress.seed(
+        ReadingPosition(ep: ep, page: page, group: group),
+        time: time,
+      );
+      converted[entry.key] = {
+        ...entry.value,
+        'readingProgress': progress.toJson(),
+      }..remove('progress');
+    }
+    return converted;
+  }
+
+  static ReadingProgress _progressFromRow(Row? row) {
+    if (row == null) return ReadingProgress.fromJson(null);
+    final encoded = row['reading_progress'];
+    if (encoded != null) {
+      return ReadingProgress.fromJson(
+        encoded is String ? jsonDecode(encoded) : encoded,
+      );
+    }
+    return ReadingProgress.seed(
+      ReadingPosition(
+        ep: (row['ep'] as num?)?.toInt() ?? 0,
+        page: (row['page'] as num?)?.toInt() ?? 0,
+        group: (row['chapter_group'] as num?)?.toInt(),
+      ),
+      time: (row['time'] as num?)?.toInt() ?? 0,
+    );
+  }
+
   static bool _applyHistoryRecords(Database db, SyncRecords records) {
-    bool changed = false;
+    var changed = false;
     final historyMap = <String, Map<String, Object?>>{};
     final chaptersMap = <String, Map<String, Map<String, Object?>>>{};
 
     for (final entry in records.entries) {
       final domain = syncRecordDomain(entry.key);
       if (domain == 'history') {
+        if (entry.value.containsKey('progress')) {
+          throw const FormatException(
+            'Legacy history progress requires explicit legacy conversion',
+          );
+        }
         final idParts = syncRecordIdentity(entry.key);
         final comicId = idParts[0].toString();
         final typeVal = (idParts[1] as num).toInt();
@@ -406,82 +511,68 @@ class HistorySyncData {
     }
 
     final survivingKeys = {...historyMap.keys, ...chaptersMap.keys};
-
-    final existingRows = db.select(
-      'SELECT id, type, title, subtitle, cover, max_page, read_duration_ms, ep, page, chapter_group, time, readEpisode, sync_projection FROM history;',
-    );
+    final existingRows = db.select('''
+      SELECT id, type, title, subtitle, cover, max_page, read_duration_ms,
+             ep, page, chapter_group, time, readEpisode, reading_progress,
+             sync_projection
+      FROM history;
+      ''');
     final existingMap = <String, Row>{};
     for (final row in existingRows) {
-      final key = '${row['type']}:${row['id']}';
-      existingMap[key] = row;
+      existingMap['${row['type']}:${row['id']}'] = row;
     }
 
     for (final key in survivingKeys) {
       final colonIdx = key.indexOf(':');
       final typeVal = int.parse(key.substring(0, colonIdx));
       final comicId = key.substring(colonIdx + 1);
-
       final histRecord = historyMap[key];
       final chapMap = chaptersMap[key] ?? {};
       final localRow = existingMap[key];
+      final localProgress = _progressFromRow(localRow);
+      final incomingValue = histRecord?['readingProgress'];
+      final progress = incomingValue == null
+          ? localProgress
+          : ReadingProgress.fromJson(incomingValue).merge(localProgress);
 
-      String title = '';
-      String subtitle = '';
-      String cover = '';
-      int? maxPage;
-      int readDurationMs = 0;
-      int ep = 1;
-      int page = 1;
-      int? group;
-      int time = DateTime.now().millisecondsSinceEpoch;
-
-      if (histRecord != null) {
-        title = histRecord['title'] as String? ?? '';
-        subtitle = histRecord['subtitle'] as String? ?? '';
-        cover = histRecord['cover'] as String? ?? '';
-        maxPage = (histRecord['maxPage'] as num?)?.toInt();
-        readDurationMs = (histRecord['readDurationMs'] as num?)?.round() ?? 0;
-        final progress = histRecord['progress'] as Map?;
-        if (progress != null) {
-          ep = (progress['ep'] as num?)?.toInt() ?? 1;
-          page = (progress['page'] as num?)?.toInt() ?? 1;
-          group = (progress['group'] as num?)?.toInt();
-          time = (progress['time'] as num?)?.toInt() ?? time;
-        }
-      } else {
-        // Parent deleted remotely, child added concurrently!
-        final firstChapRecord = chapMap.values.first;
-        title =
-            firstChapRecord['title'] as String? ??
-            (localRow?['title'] as String? ?? '');
-        subtitle =
-            firstChapRecord['subtitle'] as String? ??
-            (localRow?['subtitle'] as String? ?? '');
-        cover =
-            firstChapRecord['cover'] as String? ??
-            (localRow?['cover'] as String? ?? '');
-        maxPage =
-            (firstChapRecord['maxPage'] as num?)?.toInt() ??
-            (localRow?['max_page'] as num?)?.toInt();
-        readDurationMs = (localRow?['read_duration_ms'] as num?)?.round() ?? 0;
-        time = (localRow?['time'] as num?)?.toInt() ?? time;
-
-        if (localRow != null) {
-          ep = (localRow['ep'] as num).toInt();
-          page = (localRow['page'] as num).toInt();
-          group = (localRow['chapter_group'] as num?)?.toInt();
-        } else {
-          final firstChapKey = chapMap.keys.first;
-          ep = int.tryParse(firstChapKey.split('-').last) ?? 1;
-          page = 1;
-          group = firstChapKey.contains('-')
-              ? int.tryParse(firstChapKey.split('-').first)
-              : null;
-        }
-      }
-
+      final firstChapter = chapMap.isEmpty ? null : chapMap.values.first;
+      final title =
+          histRecord?['title'] as String? ??
+          firstChapter?['title'] as String? ??
+          localRow?['title'] as String? ??
+          '';
+      final subtitle =
+          histRecord?['subtitle'] as String? ??
+          firstChapter?['subtitle'] as String? ??
+          localRow?['subtitle'] as String? ??
+          '';
+      final cover =
+          histRecord?['cover'] as String? ??
+          firstChapter?['cover'] as String? ??
+          localRow?['cover'] as String? ??
+          '';
+      final maxPage =
+          (histRecord?['maxPage'] as num?)?.toInt() ??
+          (firstChapter?['maxPage'] as num?)?.toInt() ??
+          (localRow?['max_page'] as num?)?.toInt();
+      final incomingDuration =
+          (histRecord?['readDurationMs'] as num?)?.round() ?? 0;
+      final localDuration =
+          (localRow?['read_duration_ms'] as num?)?.round() ?? 0;
+      final readDurationMs = incomingDuration > localDuration
+          ? incomingDuration
+          : localDuration;
+      final localTime = (localRow?['time'] as num?)?.toInt() ?? 0;
+      final time = progress.time > localTime ? progress.time : localTime;
+      final position = progress.resumePosition;
+      final ep = position?.ep ?? (localRow?['ep'] as num?)?.toInt() ?? 1;
+      final page = position?.page ?? (localRow?['page'] as num?)?.toInt() ?? 1;
+      final group = position != null
+          ? position.group
+          : (localRow?['chapter_group'] as num?)?.toInt();
       final chapterList = chapMap.keys.toList()..sort();
       final readEpisodeStr = chapterList.join(',');
+      final progressJson = canonicalSyncJson(progress.toJson());
       final syncProjection = histRecord == null
           ? canonicalSyncJson({
               'title': title,
@@ -489,16 +580,10 @@ class HistorySyncData {
               'cover': cover,
               'maxPage': maxPage,
               'readDurationMs': readDurationMs,
-              'progress': {
-                'ep': ep,
-                'page': page,
-                'group': group,
-                'time': time,
-              },
+              'readingProgress': progress.toJson(),
             })
           : null;
 
-      // Check whether existing row matches projection exactly
       if (localRow != null) {
         final matches =
             (localRow['title'] as String? ?? '') == title &&
@@ -510,8 +595,8 @@ class HistorySyncData {
             (localRow['readEpisode'] as String? ?? '') == readEpisodeStr &&
             (localRow['max_page'] as num?)?.toInt() == maxPage &&
             (localRow['chapter_group'] as num?)?.toInt() == group &&
-            (localRow['read_duration_ms'] as num?)?.round() == readDurationMs;
-
+            (localRow['read_duration_ms'] as num?)?.round() == readDurationMs &&
+            (localRow['reading_progress'] as String?) == progressJson;
         if (matches) {
           if ((localRow['sync_projection'] as String?) != syncProjection) {
             db.execute(
@@ -519,16 +604,18 @@ class HistorySyncData {
               [syncProjection, comicId, typeVal],
             );
           }
-          continue; // Unchanged row projection: skip write
+          continue;
         }
       }
 
       db.execute(
         '''
         INSERT OR REPLACE INTO history (
-          id, title, subtitle, cover, time, type, ep, page, readEpisode, max_page, chapter_group, read_duration_ms, sync_projection
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-      ''',
+          id, title, subtitle, cover, time, type, ep, page, readEpisode,
+          max_page, chapter_group, read_duration_ms, reading_progress,
+          sync_projection
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        ''',
         [
           comicId,
           title,
@@ -542,26 +629,24 @@ class HistorySyncData {
           maxPage,
           group,
           readDurationMs,
+          progressJson,
           syncProjection,
         ],
       );
       changed = true;
     }
 
-    // Delete comics omitted from the incoming materialized view
     for (final existingKey in existingMap.keys) {
-      if (!survivingKeys.contains(existingKey)) {
-        final colonIdx = existingKey.indexOf(':');
-        final typeVal = int.parse(existingKey.substring(0, colonIdx));
-        final comicId = existingKey.substring(colonIdx + 1);
-        db.execute('DELETE FROM history WHERE id = ? AND type = ?;', [
-          comicId,
-          typeVal,
-        ]);
-        changed = true;
-      }
+      if (survivingKeys.contains(existingKey)) continue;
+      final colonIdx = existingKey.indexOf(':');
+      final typeVal = int.parse(existingKey.substring(0, colonIdx));
+      final comicId = existingKey.substring(colonIdx + 1);
+      db.execute('DELETE FROM history WHERE id = ? AND type = ?;', [
+        comicId,
+        typeVal,
+      ]);
+      changed = true;
     }
-
     return changed;
   }
 
@@ -947,6 +1032,12 @@ HistorySyncApplyResult applyHistorySyncRecords(
   Database db,
   SyncRecords records,
 ) => HistorySyncData.applySyncRecords(db, records);
+
+/// Applies a pre-readingProgress state/backup record set explicitly.
+HistorySyncApplyResult applyLegacyHistorySyncRecords(
+  Database db,
+  SyncRecords records,
+) => HistorySyncData.applyLegacySyncRecords(db, records);
 
 /// Feature-namespaced schema helper.
 void ensureHistorySchema(Database db) => HistorySyncData.ensureSchema(db);

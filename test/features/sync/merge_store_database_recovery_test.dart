@@ -69,6 +69,9 @@ Future<void> _commitFixture(
   Set<String> received = const {'known/commit.json'},
   Map<String, MergeBatch>? batches,
   Map<String, Map<String, String>> localEdits = const {},
+  SyncRecords? pendingApply,
+  Set<String> pendingUnavailableDomains = const {},
+  bool? hasProgressProtocolMigration,
   bool? counterReconciliationRequired,
 }) async {
   await database.commit(
@@ -81,10 +84,11 @@ Future<void> _commitFixture(
     outboxChangedRecords: {
       fixture.batch.id: {_recordKey},
     },
-    pendingApply: null,
-    pendingUnavailableDomains: const {},
+    pendingApply: pendingApply,
+    pendingUnavailableDomains: pendingUnavailableDomains,
     initialized: true,
     localEdits: localEdits,
+    hasProgressProtocolMigration: hasProgressProtocolMigration,
     counterReconciliationRequired: counterReconciliationRequired,
   );
 }
@@ -757,6 +761,105 @@ void main() {
       expect(after.commitRevision, before.commitRevision);
       expect(after.document.counterFor(_actor), 1);
       expect(after.observed[_recordKey], {'name': 'already committed'});
+    },
+  );
+
+  test(
+    'progress migration marker defaults false and commits to both replicas',
+    () async {
+      final database = MergeStoreDatabase(directory, _actor);
+      expect(await database.load(), isNull);
+      final fixture = _Fixture.named('migration marker');
+      const received = {'known/commit.json', 'known/other.json'};
+      await _commitFixture(
+        database,
+        fixture,
+        received: received,
+        pendingApply: fixture.observed,
+      );
+
+      for (final file in [_primary(directory), _replica(directory)]) {
+        final sqlite = sqlite3.open(file.path);
+        try {
+          sqlite.execute(
+            "DELETE FROM merge_store_meta WHERE key = 'hasProgressProtocolMigration';",
+          );
+          sqlite.execute(
+            "DELETE FROM merge_store_meta WHERE key = 'commitFingerprint';",
+          );
+        } finally {
+          sqlite.close();
+        }
+      }
+
+      final legacyState = await _readState(directory);
+      expect(legacyState.hasProgressProtocolMigration, isFalse);
+      expect(legacyState.outboxIds, [fixture.batch.id]);
+      expect(legacyState.received, received);
+      expect(legacyState.pendingApply, fixture.observed);
+
+      final reopened = MergeStoreDatabase(directory, _actor);
+      expect(await reopened.load(), isNotNull);
+      await _commitFixture(
+        reopened,
+        fixture,
+        received: legacyState.received,
+        pendingApply: legacyState.pendingApply,
+        hasProgressProtocolMigration: true,
+      );
+
+      final completed = await _readState(directory);
+      expect(completed.hasProgressProtocolMigration, isTrue);
+      expect(completed.outboxIds, [fixture.batch.id]);
+      expect(completed.received, received);
+      expect(completed.pendingApply, fixture.observed);
+      for (final file in [_primary(directory), _replica(directory)]) {
+        final sqlite = sqlite3.open(file.path);
+        try {
+          expect(
+            sqlite
+                .select(
+                  "SELECT value FROM merge_store_meta WHERE key = 'hasProgressProtocolMigration';",
+                )
+                .single['value'],
+            '1',
+          );
+        } finally {
+          sqlite.close();
+        }
+      }
+    },
+  );
+
+  test(
+    'future SQLite schema version is not recovered from the backup',
+    () async {
+      final database = MergeStoreDatabase(directory, _actor);
+      expect(await database.load(), isNull);
+      final fixture = _Fixture.named('future SQLite schema');
+      await _commitFixture(database, fixture, pendingApply: fixture.observed);
+      final backupBytes = await _replica(directory).readAsBytes();
+
+      final primary = sqlite3.open(_primary(directory).path);
+      try {
+        primary.execute('PRAGMA user_version = 2;');
+      } finally {
+        primary.close();
+      }
+      final futurePrimaryBytes = await _primary(directory).readAsBytes();
+
+      await expectLater(
+        MergeStoreDatabase(directory, _actor).load(),
+        throwsA(isA<UnsupportedSyncProtocolException>()),
+      );
+      expect(
+        await _primary(directory).readAsBytes(),
+        orderedEquals(futurePrimaryBytes),
+      );
+      expect(
+        await _replica(directory).readAsBytes(),
+        orderedEquals(backupBytes),
+      );
     },
   );
 }

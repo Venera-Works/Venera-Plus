@@ -14,6 +14,7 @@ import 'package:venera_plus/foundation/res.dart';
 const config = ['https://example.com/dav/VeneraPlus', 'user', 'password'];
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   void scheduleTest(
     String name,
     Future<void> Function(_ScheduleClock, _Calls) body,

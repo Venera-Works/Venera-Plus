@@ -14,6 +14,7 @@ class ReaderWithLoading extends StatefulWidget {
     required this.sourceKey,
     this.initialEp,
     this.initialPage,
+    this.initialNavigationSource = ReadingNavigationSource.restore,
   });
 
   final String id;
@@ -24,6 +25,8 @@ class ReaderWithLoading extends StatefulWidget {
 
   final int? initialPage;
 
+  final ReadingNavigationSource initialNavigationSource;
+
   @override
   State<ReaderWithLoading> createState() => _ReaderWithLoadingState();
 }
@@ -32,15 +35,17 @@ class _ReaderWithLoadingState
     extends LoadingState<ReaderWithLoading, ReaderProps> {
   @override
   Widget buildContent(BuildContext context, ReaderProps data) {
+    final hasExplicitTarget =
+        widget.initialEp != null || widget.initialPage != null;
     return Reader(
       type: data.type,
       cid: data.cid,
       name: data.name,
       chapters: data.chapters,
       history: data.history,
-      initialChapter: widget.initialEp ?? data.history.ep,
-      initialPage: widget.initialPage ?? data.history.page,
-      initialChapterGroup: data.history.group,
+      initialChapter: hasExplicitTarget ? widget.initialEp ?? 1 : null,
+      initialPage: hasExplicitTarget ? widget.initialPage ?? 1 : null,
+      initialNavigationSource: widget.initialNavigationSource,
       author: data.author,
       tags: data.tags,
     );
@@ -78,6 +83,12 @@ class _ReaderWithLoadingState
       if (comic.error) {
         return Res.fromErrorRes(comic);
       }
+      history =
+          HistoryManager().find(
+            widget.id,
+            ComicType.fromKey(widget.sourceKey),
+          ) ??
+          history;
       return Res(
         ReaderProps(
           type: ComicType.fromKey(widget.sourceKey),

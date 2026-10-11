@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:venera_plus/features/history/reading_progress.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
@@ -161,6 +162,42 @@ void main() {
       expect(label, contains('21'));
     });
 
+    test('reading progress preview summarizes maxima and reread rounds', () {
+      const secretChapter = 'private-catalog-chapter';
+      const secretRound = 'private-round-identifier';
+      final label = formatCandidateSafePreview(
+        domain: 'history',
+        field: 'readingProgress',
+        value: {
+          'version': 1,
+          'maximum': [
+            {
+              'ep': 5,
+              'page': 21,
+              'chapterId': secretChapter,
+              'groupId': 'private-group',
+            },
+          ],
+          'rounds': {
+            secretRound: {
+              'anchor': {'ep': 1, 'page': 1},
+              'cursor': {'ep': 2, 'page': 4},
+            },
+          },
+          'retired': <String>[],
+          'ended': <String>[],
+          'time': 0,
+        },
+        isDeleted: false,
+      );
+      expect(label, contains('5'));
+      expect(label, contains('21'));
+      expect(label, contains('Reread rounds (1)'));
+      expect(label, isNot(contains(secretChapter)));
+      expect(label, isNot(contains(secretRound)));
+      expect(label, isNot(contains('private-group')));
+    });
+
     test('history progress preview includes group and reading time', () {
       final timestamp = DateTime.utc(2020, 1, 2, 3, 4).millisecondsSinceEpoch;
       final expectedLocalTime = DateTime.fromMillisecondsSinceEpoch(
@@ -247,10 +284,7 @@ void main() {
       (tester) async {
         final key = syncRecordKey('history', ['comic', 1]);
         final previous = {
-          key: <String, Object?>{
-            'title': 'Original',
-            'progress': {'ep': 1, 'page': 10},
-          },
+          key: <String, Object?>{'title': 'Original'},
         };
         final base = MergeDocument()..captureLocal('seed', {}, previous);
         final left = MergeDocument.fromJson(base.toJson());
@@ -258,13 +292,23 @@ void main() {
         left.captureLocal(actorA, previous, {
           key: {
             'title': 'Left',
-            'progress': {'ep': 1, 'page': 5},
+            'readingProgress': ReadingProgress.seed(
+              const ReadingPosition(ep: 1, page: 5, chapterId: 'left-chapter'),
+              catalog: ReadingCatalog([
+                const ReadingChapter(id: 'left-chapter', ep: 1),
+              ]),
+            ).toJson(),
           },
         });
         right.captureLocal(actorB, previous, {
           key: {
             'title': 'Right',
-            'progress': {'ep': 2, 'page': 8},
+            'readingProgress': ReadingProgress.seed(
+              const ReadingPosition(ep: 2, page: 8, chapterId: 'right-chapter'),
+              catalog: ReadingCatalog([
+                const ReadingChapter(id: 'right-chapter', ep: 2),
+              ]),
+            ).toJson(),
           },
         });
         left.merge(right);
@@ -274,7 +318,7 @@ void main() {
           (conflict) => conflict.field == 'title',
         );
         final progressConflict = conflicts.firstWhere(
-          (conflict) => conflict.field == 'progress',
+          (conflict) => conflict.field == 'readingProgress',
         );
         final firstTitle = titleConflict.candidates.firstWhere(
           (candidate) => candidate.actor == actorA,
@@ -411,7 +455,7 @@ void main() {
           calls.single
               .map((selection) => (selection.field, selection.candidateId))
               .toSet(),
-          {('title', lateTitle.id), ('progress', selectedProgress.id)},
+          {('title', lateTitle.id), ('readingProgress', selectedProgress.id)},
         );
         for (final selection in calls.single) {
           final active = updatedConflicts.singleWhere(
@@ -442,7 +486,12 @@ void main() {
         expect(left.conflicts, isEmpty);
         final materialized = left.materialize()[key];
         expect(materialized?['title'], 'Late title');
-        expect(materialized?['progress'], {'ep': 2, 'page': 8});
+        expect(
+          ReadingProgress.fromJson(
+            materialized?['readingProgress'],
+          ).maximumPositions.single.chapterId,
+          'right-chapter',
+        );
         expect(tester.takeException(), isNull);
       },
     );

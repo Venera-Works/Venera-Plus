@@ -9,6 +9,7 @@ import 'package:dio/dio.dart';
 import 'package:path/path.dart' as p;
 import 'package:webdav_client/webdav_client.dart' as dav;
 
+import '../../foundation/sync_records.dart';
 import 'merge_engine.dart';
 import 'merge_snapshot.dart';
 import 'sync_device_name.dart';
@@ -123,16 +124,19 @@ class MergeRemoteEntry {
   /// Regex matching `<counter>-<sha256>.json`.
   static final RegExp _entryRegex = RegExp(r'^(\d+)-([0-9a-fA-F]{64})\.json$');
 
-  /// Parses a `VeneraPlus/<device>/commits/<counter>-<hash>.json` Pack commit.
+  /// Parses a commit in the requested, explicitly isolated protocol namespace.
   static MergeRemoteEntry? tryParsePackCommit(
     String fullPath, {
     required String actor,
     String? eTag,
     DateTime? modifiedAt,
+    String namespace = MergeRemote.currentNamespace,
   }) {
     final segments = fullPath.split('/');
-    if (segments.length != 4 ||
-        segments[0] != 'VeneraPlus' ||
+    if ((namespace != MergeRemote.currentNamespace &&
+            namespace != MergeRemote.legacyNamespace) ||
+        segments.length != 4 ||
+        segments[0] != namespace ||
         !_isSafeDeviceDirectoryName(segments[1]) ||
         segments[2] != 'commits' ||
         !_actorIsSafe(actor)) {
@@ -253,11 +257,26 @@ class _DeviceOwnership {
 /// Publications use immutable content-addressed Packs and four-segment commit paths.
 class MergeRemote {
   MergeRemote(
-    this._client, {
+    dav.Client client, {
+    String deviceName = 'Device',
+    void Function(String warning)? onWarning,
+    Directory? cacheDirectory,
+  }) : this._(
+         client,
+         currentNamespace,
+         deviceName: deviceName,
+         onWarning: onWarning,
+         cacheDirectory: cacheDirectory,
+       );
+
+  MergeRemote._(
+    this._client,
+    this._namespace, {
     String deviceName = 'Device',
     this.onWarning,
     Directory? cacheDirectory,
-  }) : deviceName = normalizeSyncDeviceName(deviceName) {
+  }) : deviceName = normalizeSyncDeviceName(deviceName),
+       _cacheDirectory = cacheDirectory {
     _requestCounter = _counterFor(_client.c);
     _requestCountBaseline = Map.of(_requestCounter.counts);
     final root = cacheDirectory;
@@ -268,7 +287,26 @@ class MergeRemote {
     _packCacheInvalidationBaseline = _packCache?.invalidations ?? 0;
   }
 
-  static const String _namespace = 'VeneraPlus';
+  static const String currentNamespace = 'VeneraPlus-v2';
+  static const String legacyNamespace = 'VeneraPlus';
+  final String _namespace;
+  final Directory? _cacheDirectory;
+
+  /// Old checkpoints are verified once for migration, never published or deleted.
+  MergeRemote legacyReader() => MergeRemote._(
+    _client,
+    legacyNamespace,
+    deviceName: deviceName,
+    onWarning: onWarning,
+    cacheDirectory: _cacheDirectory,
+  );
+
+  void _requireWritable() {
+    if (_namespace != currentNamespace) {
+      throw UnsupportedError('Legacy synchronization namespace is read-only.');
+    }
+  }
+
   static const String _markerName = 'device.json';
   static const int _maxParallelTransfers = 4;
   static const int _maxCompactionCandidates = 64;
@@ -375,6 +413,7 @@ class MergeRemote {
     final parsed = MergeRemoteEntry.tryParsePackCommit(
       entry.filename,
       actor: entry.actor,
+      namespace: _namespace,
     );
     if (parsed == null ||
         parsed.counter != entry.counter ||
@@ -619,6 +658,7 @@ class MergeRemote {
           actor: owner.actor,
           eTag: file.eTag,
           modifiedAt: file.mTime,
+          namespace: _namespace,
         );
         if (entry != null) entries.add(entry);
       }
@@ -693,6 +733,8 @@ class MergeRemote {
     final SyncPackManifest manifest;
     try {
       manifest = SyncPackManifest.parse(manifestBytes);
+    } on UnsupportedSyncProtocolException {
+      rethrow;
     } on Object catch (error) {
       throw MergeRemoteCorruptException(
         'Pack commit manifest is invalid',
@@ -767,6 +809,8 @@ class MergeRemote {
       }
       try {
         pack = SyncPack.decode(bytes, expectedDigest: digest);
+      } on UnsupportedSyncProtocolException {
+        rethrow;
       } on FormatException catch (error) {
         throw MergeRemoteCorruptException(
           'Referenced Pack is corrupt',
@@ -784,6 +828,8 @@ class MergeRemote {
     final MergeBatch batch;
     try {
       batch = manifest.decode(packs);
+    } on UnsupportedSyncProtocolException {
+      rethrow;
     } on Object catch (error) {
       throw MergeRemoteCorruptException(
         'Pack commit or Pack indexes failed validation',
@@ -892,11 +938,13 @@ class MergeRemote {
 
   /// Uploads all missing immutable Packs first, then publishes the Pack commit.
   Future<String> upload(MergeBatch batch) async {
+    _requireWritable();
     return uploadSnapshot(MergeSnapshot.fromBatch(batch));
   }
 
   /// Publishes a logical causal snapshot as an immutable Pack commit.
   Future<String> uploadSnapshot(MergeSnapshot snapshot) async {
+    _requireWritable();
     final sourceManifest = snapshot.manifest;
     final actor = sourceManifest['actor'];
     final counter = sourceManifest['counter'];
@@ -1263,6 +1311,7 @@ class MergeRemote {
     MergeBatch uploaded,
     List<MergeRemoteEntry> priorEntries,
   ) async {
+    _requireWritable();
     final timer = Stopwatch()..start();
     final candidatesByPath = <String, MergeRemoteEntry>{};
     for (final entry in priorEntries) {

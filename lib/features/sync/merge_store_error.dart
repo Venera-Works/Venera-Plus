@@ -33,6 +33,8 @@ String? mergeStoreErrorSummary(String? message) {
       'SYNC_RECOVERY_REMOTE_UNVERIFIED: Check the connection and remote backup data, then retry synchronization.',
     'SYNC_LOCAL_DATABASE_FAILURE' =>
       'SYNC_LOCAL_DATABASE_FAILURE: Check local storage and retry synchronization; details are in the log.',
+    'SYNC_PROTOCOL_INCOMPATIBLE' =>
+      'SYNC_PROTOCOL_INCOMPATIBLE: Update all devices before synchronizing. Existing data and pending changes were preserved.',
     _ => message,
   };
 }

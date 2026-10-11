@@ -7,6 +7,7 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 
+import '../../foundation/sync_records.dart';
 import 'sync_pack.dart';
 
 /// Rebuildable bounded LRU disk cache for verified packs and publication maps.
@@ -77,6 +78,8 @@ final class SyncPackCache {
           await _touch(id);
           hits++;
           return pack;
+        } on UnsupportedSyncProtocolException {
+          rethrow;
         } on Object {
           if (_entries.containsKey(id)) invalidations++;
           misses++;
@@ -135,6 +138,8 @@ final class SyncPackCache {
       await _touch(id);
       hits++;
       return manifest;
+    } on UnsupportedSyncProtocolException {
+      rethrow;
     } on Object {
       if (_entries.containsKey(id)) invalidations++;
       misses++;

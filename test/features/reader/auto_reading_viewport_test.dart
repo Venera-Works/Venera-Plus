@@ -275,7 +275,11 @@ class _TestReaderState extends ReaderState {
   @override
   void disposeReaderWindow() {}
   @override
-  void updateHistory() {}
+  void updateHistory({
+    ReadingNavigationSource source = ReadingNavigationSource.passive,
+    String? commandId,
+    bool recordProgress = true,
+  }) {}
 }
 
 class _Favorites extends ChangeNotifier implements LocalFavoritesManager {

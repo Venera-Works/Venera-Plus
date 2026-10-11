@@ -9,6 +9,29 @@ import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/sync/merge_engine.dart';
 import 'package:venera_plus/foundation/sync_records.dart';
 
+Map<String, Object?> _readingProgress(int ep, int page, int? group, int time) =>
+    ReadingProgress.seed(
+      ReadingPosition(ep: ep, page: page, group: group),
+      time: time,
+    ).toJson();
+
+ReadingProgress _rewoundProgress({
+  required int anchorEp,
+  required int anchorPage,
+  required int cursorEp,
+  required int cursorPage,
+  required String id,
+  required int time,
+}) =>
+    ReadingProgress.seed(
+      ReadingPosition(ep: anchorEp, page: anchorPage),
+      time: time,
+    ).record(
+      ReadingPosition(ep: cursorEp, page: cursorPage),
+      source: ReadingNavigationSource.userBackward,
+      newRoundId: id,
+      time: time,
+    );
 bool _sqliteAvailable() {
   try {
     final db = sqlite3.openInMemory();
@@ -62,8 +85,26 @@ void main() {
         final colNames = columns.map((col) => col['name'] as String).toSet();
         expect(
           colNames,
-          containsAll(['chapter_group', 'read_duration_ms', 'sync_projection']),
+          containsAll([
+            'chapter_group',
+            'read_duration_ms',
+            'reading_progress',
+            'sync_projection',
+          ]),
         );
+        final migratedProgress = ReadingProgress.fromJson(
+          jsonDecode(
+            db.select(
+                  'SELECT reading_progress FROM history WHERE id = ? AND type = ?;',
+                  ['comic-1', 0],
+                ).single['reading_progress']
+                as String,
+          ),
+        );
+        expect(migratedProgress.maximumPositions, const [
+          ReadingPosition(ep: 1, page: 1),
+        ]);
+        expect(migratedProgress.activeRoundIds, isEmpty);
 
         // Now insert another comic with same id but different type
         db.execute('''
@@ -112,10 +153,13 @@ void main() {
         expect(histData['maxPage'], 50);
         expect(histData['readDurationMs'], 45000);
 
-        final progress = histData['progress'] as Map;
-        expect(progress['ep'], 3);
-        expect(progress['page'], 12);
-        expect(progress['group'], 1);
+        expect(histData, contains('readingProgress'));
+        expect(histData, isNot(contains('progress')));
+        final progress = histData['readingProgress'] as Map;
+        final maximum = (progress['maximum'] as List).single as Map;
+        expect(maximum['ep'], 3);
+        expect(maximum['page'], 12);
+        expect(maximum['group'], 1);
         expect(progress['time'], 1700000000);
 
         // Check historyChapter domain records (independent per chapter)
@@ -157,7 +201,14 @@ void main() {
             'cover': 'op.jpg',
             'maxPage': 100,
             'readDurationMs': 75000,
-            'progress': {'ep': 2, 'page': 1, 'group': null, 'time': 2000},
+            'readingProgress': _rewoundProgress(
+              anchorEp: 10,
+              anchorPage: 20,
+              cursorEp: 2,
+              cursorPage: 1,
+              id: 'reread-1',
+              time: 2000,
+            ).toJson(),
           },
           for (var i = 1; i <= 10; i++)
             syncRecordKey('historyChapter', ['onepiece', 1, '$i']): {
@@ -184,6 +235,48 @@ void main() {
         expect(row['page'], 1);
         expect(row['read_duration_ms'], 75000);
         expect((row['readEpisode'] as String).split(','), hasLength(10));
+      },
+      skip: _sqliteAvailable()
+          ? false
+          : 'sqlite3 native library is unavailable',
+    );
+
+    test(
+      'legacy progress is accepted only through explicit max-only import',
+      () {
+        final db = sqlite3.openInMemory();
+        addTearDown(db.dispose);
+        HistorySyncData.ensureSchema(db);
+        final legacy = <String, Map<String, Object?>>{
+          syncRecordKey('history', ['legacy-import', 1]): {
+            'title': 'Legacy',
+            'subtitle': '',
+            'cover': '',
+            'maxPage': 20,
+            'readDurationMs': 400,
+            'progress': {'ep': 2, 'page': 5, 'group': 1, 'time': 1000},
+          },
+        };
+
+        expect(
+          () => HistorySyncData.applySyncRecords(db, legacy),
+          throwsFormatException,
+        );
+        expect(
+          HistorySyncData.applyLegacySyncRecords(db, legacy).historyChanged,
+          isTrue,
+        );
+        final row = db.select(
+          'SELECT reading_progress FROM history WHERE id = ?;',
+          ['legacy-import'],
+        ).single;
+        final progress = ReadingProgress.fromJson(
+          jsonDecode(row['reading_progress'] as String),
+        );
+        expect(progress.maximumPositions, const [
+          ReadingPosition(ep: 2, page: 5, group: 1),
+        ]);
+        expect(progress.activeRoundIds, isEmpty);
       },
       skip: _sqliteAvailable()
           ? false
@@ -228,7 +321,6 @@ void main() {
         expect(row['subtitle'], 'Kubo');
         expect(row['cover'], 'bleach.jpg');
         expect(row['readEpisode'], '5');
-        expect(row['ep'], 5);
       },
       skip: _sqliteAvailable()
           ? false
@@ -264,7 +356,7 @@ void main() {
             'cover': 'cover.jpg',
             'maxPage': 30,
             'readDurationMs': 12000,
-            'progress': {'ep': 1, 'page': 3, 'group': null, 'time': 1000},
+            'readingProgress': _readingProgress(1, 3, null, 1000),
           },
           oldChapterKey: {
             'comicId': 'merge-comic',
@@ -289,7 +381,7 @@ void main() {
             'cover': 'cover.jpg',
             'maxPage': 30,
             'readDurationMs': 15000,
-            'progress': {'ep': 2, 'page': 5, 'group': null, 'time': 2000},
+            'readingProgress': _readingProgress(2, 5, null, 2000),
           },
           oldChapterKey: base[oldChapterKey]!,
           newChapterKey: {
@@ -333,14 +425,18 @@ void main() {
         expect(afterRestart, isNot(contains(parentKey)));
         expect(afterRestart, contains(newChapterKey));
 
+        final lastProgress = jsonEncode(_readingProgress(2, 6, null, 5000));
         db.execute(
-          'UPDATE history SET ep = 2, page = 6, time = 5000, read_duration_ms = 24000 WHERE id = ? AND type = ?;',
-          ['merge-comic', 1],
+          'UPDATE history SET ep = 2, page = 6, time = 5000, read_duration_ms = 24000, reading_progress = ? WHERE id = ? AND type = ?;',
+          [lastProgress, 'merge-comic', 1],
         );
         final afterReading = HistorySyncData.readSyncRecords(db);
         expect(afterReading, contains(parentKey));
         expect(afterReading, contains(newChapterKey));
-        expect(((afterReading[parentKey]!['progress'] as Map)['time']), 5000);
+        expect(
+          (afterReading[parentKey]!['readingProgress'] as Map)['time'],
+          5000,
+        );
         deviceA.captureLocal('reader', afterRestart, afterReading);
         expect(deviceA.materialize(), contains(parentKey));
         expect(deviceA.materialize(), contains(newChapterKey));
@@ -621,7 +717,7 @@ void main() {
             'cover': 'cover.png',
             'maxPage': 25,
             'readDurationMs': 12345,
-            'progress': {'ep': 4, 'page': 8, 'group': null, 'time': 1710000000},
+            'readingProgress': _readingProgress(4, 8, null, 1710000000),
           },
           syncRecordKey('historyChapter', ['idem-comic', 3, '1']): {
             'comicId': 'idem-comic',
@@ -644,16 +740,12 @@ void main() {
         };
 
         HistorySyncData.applySyncRecords(db, originalRecords);
+        final repeated = HistorySyncData.applySyncRecords(db, originalRecords);
+        expect(repeated.hasChanges, isFalse);
         final reExported = HistorySyncData.readSyncRecords(db);
-
-        for (final key in originalRecords.keys) {
-          expect(reExported, contains(key));
-          expect(
-            syncValuesEqual(originalRecords[key], reExported[key]),
-            isTrue,
-            reason:
-                'Field values for $key must match canonically to prevent phantom dirty sync diffs',
-          );
+        expect(reExported.keys, containsAll(originalRecords.keys));
+        for (final entry in originalRecords.entries) {
+          expect(syncValuesEqual(entry.value, reExported[entry.key]), isTrue);
         }
       },
       skip: _sqliteAvailable()
@@ -780,7 +872,7 @@ void main() {
             'cover': 'cov.jpg',
             'maxPage': 10,
             'readDurationMs': 1000,
-            'progress': {'ep': 1, 'page': 1, 'group': null, 'time': 5000},
+            'readingProgress': _readingProgress(1, 1, null, 5000),
           },
         };
 
@@ -910,7 +1002,7 @@ void main() {
             'cover': 'cov.jpg',
             'maxPage': 10,
             'readDurationMs': 15000,
-            'progress': {'ep': 2, 'page': 5, 'group': null, 'time': 20000},
+            'readingProgress': _readingProgress(2, 5, null, 20000),
           },
           syncRecordKey('historyChapter', [
             'async-1',

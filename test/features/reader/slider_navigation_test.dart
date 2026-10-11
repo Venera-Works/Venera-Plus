@@ -105,6 +105,7 @@ void main() {
         }
         expect(reader.maxPage, 300);
         expect(reader.imageViewController, isA<ContinuousModeState>());
+        expect(reader.page, 250);
         final scaffold = tester.state<ReaderScaffoldState>(
           find.byType(ReaderScaffold),
         );
@@ -118,20 +119,171 @@ void main() {
         await frames(50);
         expect(reader.isPageAnimating, isFalse);
         expect(reader.page, 200);
+
+        final manager = HistoryManager();
+        var history = manager.find('book', ComicType.local)!;
+        final firstRoundId = history.activeRereadId;
+        expect(firstRoundId, isNotNull);
+        expect(reader.sessionRoundId, firstRoundId);
+        slider.onChanged(250);
+        await frames(50);
+        expect(reader.page, 250);
+        expect(manager.find('book', ComicType.local)!.activeRereadId, isNull);
+
+        final catalog = ReadingCatalog(const [
+          ReadingChapter(id: 'one', ep: 1),
+        ]);
+        const lateRootId = '00000000-0000-4000-8000-000000000001';
+        reader.toPage(
+          200,
+          animated: false,
+          source: ReadingNavigationSource.automatic,
+        );
+        await frames(50);
+        expect(reader.page, 200);
+        reader.toPage(250, source: ReadingNavigationSource.userSeek);
+        final imported = manager.recordReadingProgress(
+          reader.history!,
+          position: const ReadingPosition(ep: 1, page: 200, chapterId: 'one'),
+          source: ReadingNavigationSource.userBackward,
+          commandId: lateRootId,
+          catalog: catalog,
+        );
+        expect(imported.isActiveRound(lateRootId), isTrue);
+        await frames(50);
+        expect(reader.page, 250);
+        history = manager.find('book', ComicType.local)!;
+        expect(history.readingProgress!.isActiveRound(lateRootId), isTrue);
+        expect(reader.sessionRoundId, firstRoundId);
+        reader.toPage(
+          299,
+          animated: false,
+          source: ReadingNavigationSource.automatic,
+        );
+        await frames(50);
+        // The flow is at its tail: the last original image is visible.
+        expect(reader.page, 300);
+        history = manager.find('book', ComicType.local)!;
+        expect(history.readingProgress!.isActiveRound(lateRootId), isTrue);
+        expect(history.readingProgress!.maximumPositions.single.page, 300);
+        expect(reader.sessionRoundId, firstRoundId);
+        slider.onChanged(250);
+        await frames(10);
+        final rereadRoundId = manager
+            .find('book', ComicType.local)!
+            .activeRereadId;
+        expect(rereadRoundId, isNotNull);
+        expect(rereadRoundId, isNot(firstRoundId));
+        expect(reader.sessionRoundId, rereadRoundId);
+        reader.toPage(
+          260,
+          animated: false,
+          source: ReadingNavigationSource.userForward,
+        );
+        await frames(5);
+        await _pumpAsyncWork(
+          tester,
+          manager.flushReadingProgress(id: 'book', type: ComicType.local),
+        );
+        final flushedRound = manager.find('book', ComicType.local)!;
+        expect(flushedRound.activeRereadId, rereadRoundId);
+        expect(flushedRound.resumePosition?.page, 260);
+
         scaffold.openOrClose();
         await frames(15);
         final flow = reader.imageViewController as ContinuousModeState;
+        final position = flow.scrollController.position;
+        flow.scrollController.jumpTo(
+          (position.minScrollExtent + position.maxScrollExtent) / 2,
+        );
+        await frames(15);
         final before = flow.scrollController.offset;
         await tester.dragFrom(const Offset(400, 400), const Offset(0, -220));
         await frames(15);
         expect(flow.scrollController.offset, greaterThan(before + 50));
         final after = flow.scrollController.offset;
-        await tester.dragFrom(const Offset(400, 150), const Offset(0, 220));
-        await frames(15);
+        final pageBeforeBackwardDrag = reader.page;
+        final backwardDrag = await tester.startGesture(const Offset(400, 150));
+        const concurrentDragRoundId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+        for (var i = 0; i < 12; i++) {
+          await backwardDrag.moveBy(const Offset(0, 300));
+          await frames(2);
+          if (i == 2) {
+            manager.recordReadingProgress(
+              reader.history!,
+              position: const ReadingPosition(
+                ep: 1,
+                page: 100,
+                chapterId: 'one',
+              ),
+              source: ReadingNavigationSource.userBackward,
+              commandId: concurrentDragRoundId,
+              catalog: catalog,
+              observedProgress: ReadingProgress.seed(
+                const ReadingPosition(ep: 1, page: 300, chapterId: 'one'),
+                catalog: catalog,
+              ),
+            );
+          }
+        }
+        await backwardDrag.up();
+        await tester.pumpAndSettle();
         expect(flow.scrollController.offset, lessThan(after - 50));
+        expect(reader.page, lessThan(pageBeforeBackwardDrag - 1));
+        expect(
+          manager
+              .find('book', ComicType.local)!
+              .readingProgress!
+              .isActiveRound(concurrentDragRoundId),
+          isTrue,
+        );
+        final sourceBeforeLayout = reader.page;
+        expect(
+          manager.find('book', ComicType.local)!.resumePosition?.page,
+          sourceBeforeLayout,
+        );
+        final sessionBeforeDoublePageSeek = reader.sessionRoundId;
+
+        settings['readerScreenPicNumberForPortrait'] = 2;
+        settings['readerScreenPicNumberForLandscape'] = 2;
+        settings['showSingleImageOnFirstPage'] = false;
+        reader.mode = ReaderMode.galleryLeftToRight;
+        reader.update();
+        await frames(50);
+        expect(reader.imagesPerPage, 2);
+        expect(reader.page, (sourceBeforeLayout + 1) ~/ 2);
+        expect(reader.sessionRoundId, sessionBeforeDoublePageSeek);
+        reader.toPage(
+          reader.page,
+          animated: false,
+          source: ReadingNavigationSource.userSeek,
+        );
+        await frames(15);
+        expect(reader.sessionRoundId, sessionBeforeDoublePageSeek);
+
+        settings['readerScreenPicNumberForPortrait'] = 1;
+        tester.view.physicalSize = const Size(400, 800);
+        await frames(20);
+        reader.update();
+        await frames(20);
+        expect(reader.imagesPerPage, 1);
+        expect(reader.page, sourceBeforeLayout);
+        expect(reader.sessionRoundId, sessionBeforeDoublePageSeek);
+        await _pumpAsyncWork(
+          tester,
+          manager.flushReadingProgress(id: 'book', type: ComicType.local),
+        );
+        final flushed = manager.find('book', ComicType.local)!;
+        expect(
+          flushed.readingProgress!.maximumPositions.any(
+            (position) => position.page == 300,
+          ),
+          isTrue,
+        );
         expect(tester.takeException(), isNull);
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());
+        tester.view.resetPhysicalSize();
         await tester.pump(const Duration(seconds: 3));
         await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 30)),
@@ -155,6 +307,32 @@ void main() {
   }
 }
 
+Future<void> _pumpAsyncWork(WidgetTester tester, Future<void> work) async {
+  var completed = false;
+  Object? error;
+  StackTrace? errorStack;
+  work.then<void>(
+    (_) => completed = true,
+    onError: (Object failure, StackTrace stack) {
+      error = failure;
+      errorStack = stack;
+      completed = true;
+    },
+  );
+  final clock = Stopwatch()..start();
+  while (!completed && clock.elapsed < const Duration(seconds: 10)) {
+    await tester.pump();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 5)),
+    );
+  }
+  clock.stop();
+  expect(completed, isTrue, reason: 'Timed out waiting for async history work');
+  if (error != null) {
+    Error.throwWithStackTrace(error!, errorStack!);
+  }
+}
+
 const _chapters = ComicChapters({'one': 'One'});
 
 class _Reader extends Reader {
@@ -174,7 +352,7 @@ class _Reader extends Reader {
           'subtitle': '',
           'cover': '',
           'ep': 1,
-          'page': 1,
+          'page': 250,
           'max_page': 300,
         }),
       );
@@ -189,8 +367,6 @@ class _ReaderState extends ReaderState {
   void initReaderWindow() {}
   @override
   void disposeReaderWindow() {}
-  @override
-  void updateHistory() {}
 }
 
 class _Favorites extends ChangeNotifier implements LocalFavoritesManager {

@@ -4,6 +4,27 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:venera_plus/foundation/sync_records.dart';
 import 'package:venera_plus/features/sync/merge_engine.dart';
+import 'package:venera_plus/features/history/reading_progress.dart';
+
+ReadingProgress _progressState({
+  required int ep,
+  required int page,
+  int? group,
+  String? chapterId,
+  String? groupId,
+  int time = 0,
+  ReadingCatalog? catalog,
+}) => ReadingProgress.seed(
+  ReadingPosition(
+    ep: ep,
+    page: page,
+    group: group,
+    chapterId: chapterId,
+    groupId: groupId,
+  ),
+  time: time,
+  catalog: catalog,
+);
 
 void main() {
   group('MergeDocument & MergeEngine', () {
@@ -261,202 +282,321 @@ void main() {
     });
 
     test(
-      'same-position history progress coalesces by the greatest whole-candidate time',
+      'reading progress joins maxima and converges under repeated merges',
       () {
         final key = syncRecordKey('history', ['comic-progress', 0]);
+        final initial = _progressState(ep: 3, page: 12, group: 2, time: 10);
         final common = MergeDocument()
           ..captureLocal('seed', {}, {
             key: {
               'title': 'Progress',
               'readDurationMs': 0,
-              'progress': {
-                'ep': 3,
-                'page': 12,
-                'group': 2,
-                'time': 10,
-                'marker': 'unchanged',
-              },
+              'readingProgress': initial.toJson(),
             },
           });
+        final originalDigests = (common.toJson()['eventDigests'] as Map)
+            .cast<String, String>();
         final deviceA = common.clone();
         final deviceB = common.clone();
+
         final previousA = deviceA.materialize();
         final currentA = cloneSyncRecords(previousA);
-        currentA[key]!['progress'] = {
-          'ep': 3,
-          'page': 12,
-          'group': 2,
-          'time': 100,
-          'marker': 'unchanged',
-        };
+        currentA[key]!['readingProgress'] =
+            ReadingProgress.fromJson(previousA[key]!['readingProgress'])
+                .record(
+                  const ReadingPosition(ep: 3, page: 25, group: 2),
+                  source: ReadingNavigationSource.userForward,
+                  time: 100,
+                )
+                .toJson();
         deviceA.captureLocal('device-a', previousA, currentA);
+
         final previousB = deviceB.materialize();
         final currentB = cloneSyncRecords(previousB);
-        currentB[key]!['progress'] = {
-          'ep': 3,
-          'page': 12,
-          'group': 2,
-          'time': 200,
-          'marker': 'unchanged',
-        };
+        currentB[key]!['readingProgress'] =
+            ReadingProgress.fromJson(previousB[key]!['readingProgress'])
+                .record(
+                  const ReadingPosition(ep: 3, page: 12, group: 2),
+                  source: ReadingNavigationSource.passive,
+                  time: 200,
+                )
+                .toJson();
         deviceB.captureLocal('device-b', previousB, currentB);
-        deviceA.merge(deviceB);
 
-        final reread = MergeDocument.fromJson(deviceA.toJson());
-        expect(
-          reread.conflicts.where((conflict) => conflict.field == 'progress'),
-          isEmpty,
-        );
-        expect(reread.materialize()[key]?['progress'], {
-          'ep': 3,
-          'page': 12,
-          'group': 2,
-          'time': 200,
-          'marker': 'unchanged',
-        });
-        expect(reread.materialize()[key]?['readDurationMs'], 0);
+        final merged = deviceA.clone();
+        final other = deviceB.clone();
+        merged.merge(other);
+        final firstMerge = merged.toJson();
+        merged.merge(other);
+        expect(syncValuesEqual(merged.toJson(), firstMerge), isTrue);
+        other.merge(merged);
+        expect(syncValuesEqual(merged.toJson(), other.toJson()), isTrue);
+
+        final record = merged.materialize()[key]!;
+        final progress = ReadingProgress.fromJson(record['readingProgress']);
+        expect(progress.resumePosition?.page, 25);
+        expect(progress.time, 200);
+        expect(merged.conflicts, isEmpty);
+        expect(record.containsKey('progress'), isFalse);
+        expect(record['readDurationMs'], 0);
+        final mergedDigests = (merged.toJson()['eventDigests'] as Map)
+            .cast<String, String>();
+        for (final entry in originalDigests.entries) {
+          expect(mergedDigests[entry.key], entry.value);
+        }
       },
     );
 
     test(
-      'different progress group, invalid time, and field deletion remain explicit conflicts',
+      'legacy progress materializes as H without changing old batch bytes',
       () {
-        final key = syncRecordKey('history', ['comic-progress-conflict', 0]);
-        final common = MergeDocument()
-          ..captureLocal('seed', {}, {
+        final key = syncRecordKey('history', ['legacy-progress', 0]);
+        final document = MergeDocument()
+          ..captureLocal('legacy', {}, {
             key: {
-              'title': 'Progress',
               'readDurationMs': 0,
-              'progress': {'ep': 3, 'page': 12, 'group': 2, 'time': 10},
+              'progress': {'ep': 3, 'page': 12, 'group': 2, 'time': 100},
             },
           });
-        final groupA = common.clone();
-        final groupB = common.clone();
-        final previousA = groupA.materialize();
-        final currentA = cloneSyncRecords(previousA);
-        currentA[key]!['progress'] = {
-          'ep': 3,
-          'page': 12,
-          'group': 2,
-          'time': 100,
-        };
-        groupA.captureLocal('group-a', previousA, currentA);
-        final previousB = groupB.materialize();
-        final currentB = cloneSyncRecords(previousB);
-        currentB[key]!['progress'] = {
-          'ep': 3,
-          'page': 12,
-          'group': 4,
-          'time': 200,
-        };
-        groupB.captureLocal('group-b', previousB, currentB);
-        groupA.merge(groupB);
-        final groupConflict = groupA.conflicts.singleWhere(
-          (conflict) => conflict.field == 'progress',
-        );
-        expect(groupConflict.candidates, hasLength(2));
-        expect(
-          MergeDocument.fromJson(
-            groupA.toJson(),
-          ).conflicts.any((conflict) => conflict.field == 'progress'),
-          isTrue,
-        );
-        expect(
-          groupA.materialize()[key]?['progress'],
-          anyOf(
-            {'ep': 3, 'page': 12, 'group': 2, 'time': 100},
-            {'ep': 3, 'page': 12, 'group': 4, 'time': 200},
-          ),
+        final before = canonicalSyncJson(document.toJson());
+        final oldBatch = MergeBatch.create(
+          actor: 'legacy',
+          counter: document.counterFor('legacy'),
+          document: document,
         );
 
-        final invalidA = common.clone();
-        final invalidB = common.clone();
-        final invalidPreviousA = invalidA.materialize();
-        final invalidCurrentA = cloneSyncRecords(invalidPreviousA);
-        invalidCurrentA[key]!['progress'] = {
-          'ep': 3,
-          'page': 12,
-          'group': 2,
-          'time': 100.5,
-        };
-        invalidA.captureLocal('invalid-a', invalidPreviousA, invalidCurrentA);
-        final invalidPreviousB = invalidB.materialize();
-        final invalidCurrentB = cloneSyncRecords(invalidPreviousB);
-        invalidCurrentB[key]!['progress'] = {
-          'ep': 3,
-          'page': 12,
-          'group': 2,
-          'time': 200.5,
-        };
-        invalidB.captureLocal('invalid-b', invalidPreviousB, invalidCurrentB);
-        invalidA.merge(invalidB);
+        final record = document.materialize()[key]!;
+        final progress = ReadingProgress.fromJson(record['readingProgress']);
+        expect(record.containsKey('progress'), isFalse);
+        expect(progress.maximumPositions, [
+          const ReadingPosition(ep: 3, page: 12, group: 2),
+        ]);
+        expect(progress.activeRoundId, isNull);
+        expect(progress.toJson()['rounds'], isEmpty);
+        expect(canonicalSyncJson(document.toJson()), before);
         expect(
-          invalidA.conflicts.any((conflict) => conflict.field == 'progress'),
-          isTrue,
+          MergeBatch.create(
+            actor: 'legacy',
+            counter: document.counterFor('legacy'),
+            document: document,
+          ).id,
+          oldBatch.id,
         );
-
-        final invalidPositionA = common.clone();
-        final invalidPositionB = common.clone();
-        final previousPositionA = invalidPositionA.materialize();
-        final currentPositionA = cloneSyncRecords(previousPositionA);
-        currentPositionA[key]!['progress'] = {
-          'ep': 3,
-          'page': '12',
-          'group': 2,
-          'time': 100,
-        };
-        invalidPositionA.captureLocal(
-          'invalid-position-a',
-          previousPositionA,
-          currentPositionA,
-        );
-        final previousPositionB = invalidPositionB.materialize();
-        final currentPositionB = cloneSyncRecords(previousPositionB);
-        currentPositionB[key]!['progress'] = {
-          'ep': 3,
-          'page': '12',
-          'group': 2,
-          'time': 200,
-        };
-        invalidPositionB.captureLocal(
-          'invalid-position-b',
-          previousPositionB,
-          currentPositionB,
-        );
-        invalidPositionA.merge(invalidPositionB);
-        expect(
-          invalidPositionA.conflicts.any(
-            (conflict) => conflict.field == 'progress',
-          ),
-          isTrue,
-        );
-
-        final edit = common.clone();
-        final delete = common.clone();
-        final previousEdit = edit.materialize();
-        final currentEdit = cloneSyncRecords(previousEdit);
-        currentEdit[key]!['progress'] = {
-          'ep': 3,
-          'page': 12,
-          'group': 2,
-          'time': 300,
-        };
-        edit.captureLocal('progress-edit', previousEdit, currentEdit);
-        final previousDelete = delete.materialize();
-        final currentDelete = cloneSyncRecords(previousDelete);
-        currentDelete[key]!.remove('progress');
-        delete.captureLocal('progress-delete', previousDelete, currentDelete);
-        edit.merge(delete);
-        final deleteConflict = edit.conflicts.singleWhere(
-          (conflict) => conflict.field == 'progress',
-        );
-        expect(
-          deleteConflict.candidates.any((candidate) => candidate.isDeleted),
-          isTrue,
-        );
-        expect(edit.materialize()[key]?['progress'], isNotNull);
       },
     );
+
+    test('unsupported merge and progress versions remain protocol errors', () {
+      final key = syncRecordKey('history', ['unsupported-progress', 0]);
+      final document = MergeDocument()
+        ..captureLocal('writer', {}, {
+          key: {'readingProgress': _progressState(ep: 3, page: 12).toJson()},
+        });
+
+      final unsupportedSchema = document.toJson()
+        ..['schema'] = 4
+        ..['futureProperty'] = true;
+      expect(
+        () => MergeDocument.fromJson(unsupportedSchema),
+        throwsA(isA<UnsupportedSyncProtocolException>()),
+      );
+
+      final unsupportedProgress = document.toJson();
+      final records = unsupportedProgress['records'] as Map;
+      final record = records[key] as Map;
+      final fields = record['fields'] as Map;
+      final progress = fields['readingProgress'] as Map;
+      final values = progress['values'] as Map;
+      final candidate = values.values.single as Map;
+      candidate['value'] = {'version': 2};
+      expect(
+        () => MergeDocument.fromJson(unsupportedProgress),
+        throwsA(isA<UnsupportedReadingProgressVersionException>()),
+      );
+    });
+
+    test(
+      'incomparable progress stays visible until an explicit resolution',
+      () {
+        final key = syncRecordKey('history', ['comic-progress-conflict', 0]);
+        final base = MergeDocument()
+          ..captureLocal('seed', {}, {
+            key: {'title': 'Progress', 'readDurationMs': 0},
+          });
+        final catalogA = ReadingCatalog([
+          const ReadingChapter(id: 'chapter-a', ep: 1),
+          const ReadingChapter(id: 'chapter-b', ep: 1),
+        ]);
+        final catalogB = ReadingCatalog([
+          const ReadingChapter(id: 'chapter-b', ep: 1),
+          const ReadingChapter(id: 'chapter-a', ep: 1),
+        ]);
+        final stateA = _progressState(
+          ep: 1,
+          page: 12,
+          chapterId: 'chapter-a',
+          catalog: catalogA,
+        );
+        final stateB = _progressState(
+          ep: 1,
+          page: 4,
+          chapterId: 'chapter-b',
+          catalog: catalogB,
+        );
+        final documentA = base.clone();
+        final documentB = base.clone();
+        final previousA = documentA.materialize();
+        final currentA = cloneSyncRecords(previousA);
+        currentA[key]!['readingProgress'] = stateA.toJson();
+        documentA.captureLocal('candidate-a', previousA, currentA);
+        final previousB = documentB.materialize();
+        final currentB = cloneSyncRecords(previousB);
+        currentB[key]!['readingProgress'] = stateB.toJson();
+        documentB.captureLocal('candidate-b', previousB, currentB);
+        documentA.merge(documentB);
+
+        final conflict = documentA.conflicts.singleWhere(
+          (item) => item.field == 'readingProgress',
+        );
+        expect(conflict.candidates, hasLength(2));
+        expect(conflict.candidateFingerprint, isNotEmpty);
+        expect(
+          conflict.candidates.map((candidate) => candidate.safeLabel),
+          everyElement(isNot(contains('chapter-'))),
+        );
+        expect(
+          ReadingProgress.fromJson(
+            documentA.materialize()[key]!['readingProgress'],
+          ).hasOrderConflict,
+          isTrue,
+        );
+        expect(documentA.materialize()[key]!.containsKey('progress'), isFalse);
+
+        final selected = conflict.candidates.singleWhere(
+          (candidate) => candidate.actor == 'candidate-a',
+        );
+        final originalDigests = (documentA.toJson()['eventDigests'] as Map)
+            .cast<String, String>();
+        documentA.resolve('reviewer', key, 'readingProgress', selected.id);
+        final resolvedProgress = ReadingProgress.fromJson(
+          documentA.materialize()[key]!['readingProgress'],
+        );
+        expect(resolvedProgress.hasOrderConflict, isFalse);
+        expect(resolvedProgress.resumePosition?.chapterId, 'chapter-a');
+        expect(
+          documentA.conflicts.any((item) => item.field == 'readingProgress'),
+          isFalse,
+        );
+        final resolvedDigests = (documentA.toJson()['eventDigests'] as Map)
+            .cast<String, String>();
+        for (final entry in originalDigests.entries) {
+          expect(resolvedDigests[entry.key], entry.value);
+        }
+      },
+    );
+
+    test('capture joins remote rereads and delayed roots cannot resurrect', () {
+      const roundA = '11111111-1111-4111-8111-111111111111';
+      const roundB = '22222222-2222-4222-8222-222222222222';
+      final key = syncRecordKey('history', ['reread-roots', 0]);
+      final baseProgress = _progressState(ep: 1, page: 20, time: 10);
+      final base = MergeDocument()
+        ..captureLocal('seed', {}, {
+          key: {'readDurationMs': 0, 'readingProgress': baseProgress.toJson()},
+        });
+      final baseRecords = base.materialize();
+
+      final rootAProgress = baseProgress.record(
+        const ReadingPosition(ep: 1, page: 4),
+        source: ReadingNavigationSource.userBackward,
+        newRoundId: roundA,
+      );
+      final rootADocument = base.clone();
+      final rootARecords = cloneSyncRecords(baseRecords)
+        ..[key]!['readingProgress'] = rootAProgress.toJson();
+      rootADocument.captureLocal('root-a', baseRecords, rootARecords);
+      final rootAEvent = MergeDot(
+        'root-a',
+        rootADocument.counterFor('root-a'),
+      ).toKey();
+      final rootAEventDigest =
+          (rootADocument.toJson()['eventDigests'] as Map)[rootAEvent];
+
+      final oldSessionProgress = baseProgress.record(
+        const ReadingPosition(ep: 1, page: 7),
+        source: ReadingNavigationSource.restore,
+        time: 1000,
+      );
+      final localDocument = base.clone()..merge(rootADocument);
+      final oldSessionRecords = cloneSyncRecords(baseRecords)
+        ..[key]!['readingProgress'] = oldSessionProgress.toJson();
+      localDocument.captureLocal('old-session', baseRecords, oldSessionRecords);
+      var joined = ReadingProgress.fromJson(
+        localDocument.materialize()[key]!['readingProgress'],
+      );
+      expect(joined.activeRoundId, roundA);
+      expect(joined.resumePosition?.page, 4);
+      expect(joined.maximumPositions.single.page, 20);
+      expect(
+        (localDocument.toJson()['eventDigests'] as Map)[rootAEvent],
+        rootAEventDigest,
+      );
+
+      final rootBProgress = baseProgress.record(
+        const ReadingPosition(ep: 1, page: 6),
+        source: ReadingNavigationSource.userBackward,
+        newRoundId: roundB,
+      );
+      final rootBDocument = base.clone();
+      final rootBRecords = cloneSyncRecords(baseRecords)
+        ..[key]!['readingProgress'] = rootBProgress.toJson();
+      rootBDocument.captureLocal('root-b', baseRecords, rootBRecords);
+
+      final endedRootA = rootAProgress.record(
+        const ReadingPosition(ep: 1, page: 20),
+        source: ReadingNavigationSource.userForward,
+        sessionRoundId: roundA,
+        time: 2000,
+      );
+      final endDocument = rootADocument.clone();
+      final beforeEnd = endDocument.materialize();
+      final afterEnd = cloneSyncRecords(beforeEnd)
+        ..[key]!['readingProgress'] = endedRootA.toJson();
+      endDocument.captureLocal('end-root-a', beforeEnd, afterEnd);
+      endDocument.merge(rootBDocument);
+      endDocument.merge(rootADocument);
+
+      joined = ReadingProgress.fromJson(
+        endDocument.materialize()[key]!['readingProgress'],
+      );
+      expect(joined.activeRoundId, roundB);
+      expect((joined.toJson()['rounds'] as Map).keys, {roundB});
+      expect(joined.toJson()['ended'], contains(roundA));
+      expect(endDocument.conflicts, isEmpty);
+    });
+
+    test('history deletion followed by rebuild starts fresh progress', () {
+      final key = syncRecordKey('history', ['deleted-progress', 0]);
+      final oldProgress = _progressState(ep: 4, page: 30);
+      final document = MergeDocument()
+        ..captureLocal('seed', {}, {
+          key: {'readDurationMs': 0, 'readingProgress': oldProgress.toJson()},
+        });
+      final observed = document.materialize();
+      final deleted = cloneSyncRecords(observed)..remove(key);
+      document.captureLocal('delete-history', observed, deleted);
+      expect(document.materialize().containsKey(key), isFalse);
+
+      final rebuiltProgress = _progressState(ep: 1, page: 2, time: 5);
+      document.captureLocal('rebuild-history', {}, {
+        key: {'readDurationMs': 0, 'readingProgress': rebuiltProgress.toJson()},
+      });
+      final rebuilt = ReadingProgress.fromJson(
+        document.materialize()[key]!['readingProgress'],
+      );
+      expect(rebuilt.resumePosition?.ep, 1);
+      expect(rebuilt.resumePosition?.page, 2);
+      expect(rebuilt.maximumPositions, hasLength(1));
+    });
 
     test(
       'reading duration: legacy base deduplication and multi-device positive increments',

@@ -459,6 +459,18 @@ class Appdata with Init {
     await _writeTextAtomically(file, jsonEncode(implicitData));
   });
 
+  /// Returns the durable local identity shared by synchronization and reading.
+  Future<String> getOrCreateSyncDeviceId() async {
+    var id = implicitData['syncDeviceId'] as String?;
+    if (id == null || id.isEmpty) {
+      id = 'device_${const Uuid().v4()}';
+      implicitData['syncDeviceId'] = id;
+    }
+    // Flush an existing in-memory identity too, including after a failed write.
+    await writeImplicitData();
+    return id;
+  }
+
   @override
   Future<void> doInit() async {
     var dataPath = App.dataPath;

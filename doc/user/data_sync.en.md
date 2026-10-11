@@ -11,7 +11,7 @@ The new protocol merges **business records and fields using causal relationships
 | Domain | Merge granularity and boundaries |
 |---|---|
 | Favorite folders and comics | Folders have stable identities that survive renaming. Favorites are identified by folder, comic, and source type; names, ordering, and comic metadata merge as separate fields. Independent folders with the same name are not forcibly combined; local display names can distinguish them. The role shared by Home and automatic update checks (`reading`) binds to a folder identity. It is unbound by default and can be assigned to any local favorites folder. |
-| Reading history | Identified by comic and source type. Metadata fields merge separately; **current progress**, including chapter, page, group, and time, is one indivisible candidate. Positions are not spliced together or resolved by taking the highest page. Same-position candidates differing only in valid timestamps merge to the newer timestamp; different positions follow the automatic cloud/local policy below. Refreshing the timestamp without moving, even alongside increased reading duration, does not register a new position edit. Reading an earlier chapter again is valid; verified reread provenance survives subsequent timestamp refreshes, restart, and interrupted-apply recovery. |
+| Reading history | Identified by comic and source type. Metadata fields merge separately; progress stores the **maximum reached position H** separately from an **explicit reread round R**. Ordinary forward reading takes the comparable maximum, not device time or local/cloud priority. An active reread supplies the resume cursor without lowering H. Chapter, original-image index, and group remain a complete position, never a splice of two devices. |
 | Read chapters and favorite images | Each read chapter and each favorite image is an independent record. Concurrent additions of different chapters or images coexist rather than competing over one whole episode array. Field differences between images of the same comic are retained, rather than overwritten because local display data shares an aggregate row. |
 | Reading duration | A shared migrated legacy duration base is deduplicated, not added once per copy. New positive contributions from each device are added; this is **not the maximum of total durations**. Resets, reductions, and incompatible bases follow the policy below. A tracked manual local contribution can choose the accumulated total only when it matches the actual local duration. |
 | Settings | Allowed settings merge by key and nested object leaf; lists remain whole values. Concurrent edits to the same setting can still conflict. Filtering is described below. |
@@ -23,6 +23,16 @@ The new protocol merges **business records and fields using causal relationships
 Local comic image files, downloaded comic archives, and images in the online library are not included. Comic archive backups and the online WebDAV comic library remain separate features.
 
 An already-open comic details page refreshes when its history changes. **Continue** uses the latest chapter, page, and group rather than the pre-sync object. Explicit chapter and thumbnail-page selections still open the selected position; synchronization does not force an already-open reader to another page.
+
+### Maximum Progress and Explicit Rereading
+
+- **Continue** resumes the current reread cursor, or the maximum reached position when no reread is active. Group 2, chapter 1, image 1 is valid progress.
+- Only an explicit backward action or selection of an earlier chapter/page creates a reread round. Confirming the already visible page is not a rewind; explicitly confirming the maximum can still end observed rereads. Restore, layout changes, automatic reading, background saves, and timestamp refreshes never infer rereading from a smaller position.
+- Forward movement within one round takes the farther cursor. Another genuine rewind creates a new round. Reaching the round's immutable starting maximum, or explicitly seeking back to the maximum, ends observed rounds; late old saves cannot revive ended or replaced rounds.
+- An already-open ordinary session does not adopt a reread imported during sync. Explicit actions retain their initial observation. A continuous gesture adds only its own validated reading changes to that observation and saves a multi-page rewind at the final source image. Unknown rounds arriving during the gesture, animation, or chapter loading are neither absorbed into the observation nor cancelled.
+- Concurrent offline rereads are retained, with a stable identifier order selecting the default resume round independently of device clocks. Positions use actual source catalog order and stable chapter identities; spread, split-image, and comment-page numbers are not synchronization indexes. Incomparable or unmappable positions remain pending and require chapter selection or conflict resolution rather than silently opening chapter 1.
+- History writes coalesce for approximately one second. Manual sync, backup export, reader exit, and background flush request pending progress to be written and queued writes to finish. Data not yet persisted cannot be guaranteed after abrupt OS termination.
+- Legacy positions seed only known maximum progress. Timestamps, visited chapters, and old manual markers do not establish a reread, and previously lost historical maxima cannot be reconstructed without trusted data.
 
 ### Category Scope
 
@@ -46,14 +56,14 @@ Deletions carry causal information too. A later deletion can supersede observed 
 
 Even explicitly choosing to delete a parent history record preserves read chapters added concurrently. Local metadata retained to display those chapters is not synchronized as a newly created history record; actually reading again creates a new reading edit.
 
-Independent records and fields still merge causally. Conflicts in enabled, available domains are automatically resolved per field, **not by overwriting an entire database**. The policy covers settings, favorites, reading history, scripts, sessions, cookies, and deletions:
+Independent records and fields still merge causally. Ordinary conflicts in enabled, available domains follow the policy below, **not a whole-database overwrite**. Reading progress uses the separate H/R join above; unresolved catalog order or progress-field deletion remains pending instead of using local or latest-cloud priority. Parent-history deletion and other fields retain their own causal semantics:
 
 - **First synchronization with an endpoint, or an empty local field:** select the latest cloud candidate. Missing values, `null`, whitespace-only strings, empty lists, and empty objects are empty; `0` and `false` are not. An explicitly tracked manual deletion is not an uninitialized empty value.
-- **Subsequent genuine manual local edits:** prefer the local candidate when its durable edit identity still matches both the active candidate and the actual value. Local record additions/edits can win against concurrent cloud deletion, and local deletion can win against cloud edits. Reading positions require verified actual-edit or explicit conflict-choice provenance. Timestamp refreshes neither create that provenance nor discard matching genuine reread provenance. Cloud imports and initial defaults are not marked manual. Edit markers, reading provenance, and completion state persist in the same local primary/replica transactions and survive restart.
+- **Subsequent genuine manual local edits:** prefer the local candidate when its durable edit identity still matches both the active candidate and the actual value. Local record additions/edits can win against concurrent cloud deletion, and local deletion can win against cloud edits. Cloud imports and initial defaults are not marked manual. Edit markers and completion state persist in the same local primary/replica transactions and survive restart.
 - **Edits during network waiting:** capture again before application. Even on first sync, new local edits made during download are retained rather than overwritten by a stale target.
 - **No matching manual local edit:** select the latest cloud candidate. Read each actor's highest valid causal checkpoint, then compare concurrent choices using the WebDAV server's commit modification time, never counters across different actors. Undated candidates do not outrank dated ones; equal or entirely missing times use stable actor/candidate identities. This is cloud publication time, not device edit time.
 
-Automatic choices create causal edits and can be published bidirectionally; download-only never uploads them. Excluded or unavailable domains remain unapplied. A conflict without a usable cloud candidate or a provable manual local candidate stays pending. Older state without manual provenance cannot establish that a candidate was manually set; new genuine edits start tracking it. After the first-sync rules above, an older reading marker that still matches the current value but cannot prove a position edit rather than a timestamp refresh leaves its conflict pending for confirmation, without guessing local or cloud. Upgrading does not clear device identities, counters, or pending uploads. Progress incorrectly merged and published by an older version is not automatically undone: use a trusted record to set the correct reading position again, or restore a trusted business backup; do not clear synchronization state.
+Automatic choices create causal edits and can be published bidirectionally; download-only never uploads them. Excluded or unavailable domains remain unapplied. Ordinary conflicts without a usable cloud candidate or provable manual local candidate stay pending. Older state without manual provenance cannot establish that a candidate was manually set. Upgrading does not clear device identities, counters, or pending uploads. Restore lost old-version data from trusted records or business backups rather than clearing synchronization state.
 
 Pending conflicts can still be grouped, searched, and filtered to unselected items. Bulk-select matching local values or a specified device's candidates; missing matches are not guessed. Previews show device names, available times, and safe summaries, distinguishing field and record deletion. The old remembered ordinary-settings device preference has been removed so it cannot compete with the automatic policy.
 
@@ -76,7 +86,7 @@ The top-bar sync icon runs the selected direction and rotates during actual queu
 | Timing | Trigger |
 |---|---|
 | Manual | Explicit sync actions or commands trigger transfers; saving configuration does not itself trigger the first transfer. |
-| Real-time | Real local edits are coalesced for upload; unchanged saves, simple page switches, and device-local-only saves do not publish checkpoints. Remote checks are independent, approximately every ten minutes while running, with overdue checks on startup/resume. Download-only never uploads because of local edits. |
+| Real-time | Real local edits are coalesced for upload; unchanged saves, navigation between application screens, and device-local-only saves do not publish checkpoints. Actual reading-progress changes are captured. Remote checks are independent, approximately every ten minutes while running, with overdue checks on startup/resume. Download-only never uploads because of local edits. |
 | Scheduled | Runs every 5, 15, 30, 60, 180, or 360 minutes (default 30). |
 
 Real-time uploading waits **10 seconds** after the latest edit, with at least **60 seconds** between automatic upload attempts. Continuous editing schedules a batch within **2 minutes** under normal runnable conditions. Leaving the reader or entering the background requests a flush, without bypassing direction, minimum intervals, or failure backoff and without guaranteeing continued OS execution. Manual sync immediately joins the serialized queue and bypasses these automatic timing delays.
@@ -137,15 +147,19 @@ If a recovery journal is corrupt or incomplete, export the original files and ba
 
 ## Cloud Format and Integrity
 
-Synchronization lives under **`VeneraPlus/<device-name>/`** inside the configured WebDAV directory. Normal synchronization uses only device metadata, Commits, and Packs:
+Synchronization lives under **`VeneraPlus-v2/<device-name>/`** inside the configured WebDAV directory. Normal synchronization uses only device metadata, Commits, and Packs:
 
 ```text
-VeneraPlus/
+VeneraPlus-v2/
   <device-name>/
     device.json
     commits/<counter>-<manifest-SHA256>.json
     packs/<Pack-SHA256>.pack
 ```
+
+This directory isolates the new reading-progress semantics. Checkpoint documents retain schema 3 so immutable old batch identifiers and pending contents are not rewritten. First synchronization verifies and merges valid device Pack checkpoints from the original `VeneraPlus/` read-only, marking migration complete only after current local data is captured durably. The old directory is never uploaded to or compacted, and later old-client writes are not continuously imported. Device identities, counters, old outbox entries, and recovery targets are retained.
+
+Unknown integer protocol versions report `SYNC_PROTOCOL_INCOMPATIBLE` while preserving files and pending edits, rather than deleting them as corrupt caches or falling back to an older version. Upgrade every synchronizing device; old and new clients do not continuously interoperate.
 
 Each manifest describes a **full causal checkpoint**, preserving records, candidates, and deletions. Logical objects use gzip encoding: large collections such as favorites and history keep 64 stable identity-based buckets; scripts, sessions, and cookies are sharded per identity. The global causal clock lives in the manifest so a counter-only change does not invalidate every shard. Physical transfer combines logical objects into deterministic, content-addressed Packs targeting 1 MiB; a larger individual object may occupy a larger Pack. Small shards no longer each require a remote file.
 
@@ -167,13 +181,13 @@ Other actors, concurrent new files, historical protocol files, and root `.venera
 
 ### Performance Diagnostics
 
-Debug mode or the `VENERA_SYNC_DIAGNOSTICS=true` compile-time flag enables phase timings and aggregate transfer statistics; detailed logging is off in ordinary releases. Phases include `capture`, `legacyMigration`, `discover`, `download`, `merge`, `apply`, `upload`, `compact`, and `totalDurationMs`, alongside HTTP-method counts, bytes, physical blocks, and cache statistics. Nested phases can overlap and must not simply be summed into the total. UI duration and transfer summaries do not depend on detailed logging.
+Debug mode or the `VENERA_SYNC_DIAGNOSTICS=true` compile-time flag enables phase timings and aggregate transfer statistics; detailed logging is off in ordinary releases. Phases include `capture`, `progressMigration`, `legacyMigration`, `discover`, `download`, `merge`, `apply`, `upload`, `compact`, and `totalDurationMs`, alongside HTTP-method counts, bytes, physical blocks, and cache statistics. Nested phases can overlap and must not simply be summed into the total. UI duration and transfer summaries do not depend on detailed logging.
 
 Request logs retain only the method, HTTP status, and endpoint origin, never endpoint paths, URL user information, queries/fragments, authorization headers, cookies, sessions, scripts, or request/response bodies. Disabling diagnostics does not weaken content verification.
 
 ### Loopback HTTP Verification and Performance Boundaries
 
-The current layout was exercised with two independent SQLite synchronization states and real loopback WebDAV. Initial publication of 120 history records created only 1 Pack. Offline additions, a deletion, and a same-field conflict converged after reconnecting, retaining both candidates. The outbox survived restart, and unchanged old Packs were not uploaded again. Historical remote directories and root backups retained their original bytes, with no access to old-protocol content.
+This progress upgrade was exercised with two independent history SQLite databases, two durable synchronization stores, and real loopback WebDAV. When A advances and B retains an old position, both resume from the maximum. Explicit rereading remains preferred; an old session's automatic advance only raises the maximum and does not cancel rereading. Same-round advances, another rewind, completion, and late replay converge across synchronization exchanges and restart. The original `VeneraPlus/` namespace was also verified as readable but unavailable for upload or compaction, retaining its object bytes. Unknown protocol versions are not skipped as corrupt checkpoints.
 
 This is a functional smoke run on the Windows test host, not a timing benchmark for real NAS, Android, or two physical devices. The goal is fewer small files and round trips, not necessarily fewer bytes; integrity verification may still download existing Packs. Use phase timings, HTTP counts, and transfer statistics to assess your service rather than reusing timing tables from an earlier layout.
 
@@ -198,14 +212,14 @@ Saving configuration validates the connection and prepares endpoint state **with
 
 Changing timing/interval reschedules work. Clear all connection fields and save to disconnect. Legacy auto-sync enabled maps to real-time, disabled to manual, and an existing scheduled mode is retained. Old keys are removed once. Direction defaults to bidirectional.
 
-**This cutover does not migrate old remote checkpoints.** Historical protocol directories, archive markers, and flat checkpoints are not read, updated, or deleted. Old and new clients do not continuously interoperate. Reading original root ZIP backups is separate compatibility, not a bridge for old live synchronization protocols.
+**This cutover migrates valid Pack checkpoints from `VeneraPlus/<device-name>/` read-only, without creating a continuous old/new protocol bridge.** Earlier `sync-v4` and `sync-v5` historical layouts, archive markers, and flat checkpoints are neither updated nor deleted and are not part of this automatic directory migration. Original root ZIP compatibility remains separate.
 
 Rollout order:
 
 1. Export and keep `data.venera` from each device. With the app closed, also back up its complete local profile, including every `sync_state_*` state file. Do not reset these states or replace them with another device's identity.
-2. Stop old clients from writing. Retrieve data present only in an old remote layout using an old client or an exported backup first; the new client will not read it.
-3. Upgrade the device retaining complete, latest causal state first, preserving its profile and synchronization state. Synchronize in an upload-capable direction and verify a usable Commit and Pack under `VeneraPlus/<device-name>/`.
-4. Upgrade the other devices and synchronize. Check favorites, history, scripts, deletions, and conflict candidates. Download-only cannot publish the initial checkpoint and must wait for another device to publish.
+2. Stop old clients from writing. Retrieve data available only in earlier historical layouts with an old client or an exported backup first.
+3. Upgrade the device retaining complete, latest causal state first, preserving its profile and synchronization state. Synchronize in an upload-capable direction, finish read-only migration from `VeneraPlus/`, and verify a usable Commit and Pack under `VeneraPlus-v2/<device-name>/`.
+4. Upgrade all remaining devices and synchronize. Check maximum progress, reread cursors, favorites, scripts, deletions, and conflict candidates. Download-only cannot publish the initial checkpoint and must wait for another device to publish.
 
 **`data.venera` does not retain complete synchronization clocks, deletion tombstones, or the outbox and cannot replace a full-profile backup.** Restoring only the ZIP loses that proof. Do not clear existing sync state to force initial publication, even if there are no new local edits.
 

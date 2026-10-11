@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/foundation/sync_records.dart';
 import 'package:venera_plus/features/sync/merge_engine.dart';
 import 'package:venera_plus/features/sync/sync_conflict_policy.dart';
+import 'package:venera_plus/features/history/reading_progress.dart';
 
 void main() {
   group('automaticConflictResolutions', () {
@@ -59,67 +60,69 @@ void main() {
     );
 
     test(
-      'unverified legacy progress remains pending while unrelated settings merge',
+      'reading progress ignores local proof and cloud time while settings resolve',
       () {
-        final historyKey = syncRecordKey('history', ['legacy-progress', 7]);
+        final historyKey = syncRecordKey('history', ['progress-policy', 7]);
         final settingKey = syncRecordKey('setting', ['readerMode']);
+        final catalogA = ReadingCatalog([
+          const ReadingChapter(id: 'chapter-a', ep: 1),
+          const ReadingChapter(id: 'chapter-b', ep: 1),
+        ]);
+        final catalogB = ReadingCatalog([
+          const ReadingChapter(id: 'chapter-b', ep: 1),
+          const ReadingChapter(id: 'chapter-a', ep: 1),
+        ]);
         final baseline = <String, Map<String, Object?>>{
-          historyKey: {
-            'progress': {'ep': 1, 'page': 1, 'group': null, 'time': 1000},
-            'readDurationMs': 0,
-          },
+          historyKey: {'readDurationMs': 0},
           settingKey: {'value': 'gallery'},
         };
         final seed = MergeDocument()..captureLocal('seed', {}, baseline);
         final localRecords = cloneSyncRecords(baseline);
-        localRecords[historyKey]!['progress'] = {
-          'ep': 1,
-          'page': 1,
-          'group': null,
-          'time': 2000,
-        };
+        localRecords[historyKey]!['readingProgress'] = ReadingProgress.seed(
+          const ReadingPosition(ep: 1, page: 12, chapterId: 'chapter-a'),
+          catalog: catalogA,
+        ).toJson();
         localRecords[settingKey]!['value'] = 'local-mode';
         final local = seed.clone();
         final localDot =
             'device:${local.captureLocal('device', baseline, localRecords)}';
         final cloudRecords = cloneSyncRecords(baseline);
-        cloudRecords[historyKey]!['progress'] = {
-          'ep': 3,
-          'page': 20,
-          'group': null,
-          'time': 3000,
-        };
+        cloudRecords[historyKey]!['readingProgress'] = ReadingProgress.seed(
+          const ReadingPosition(ep: 1, page: 4, chapterId: 'chapter-b'),
+          catalog: catalogB,
+        ).toJson();
         cloudRecords[settingKey]!['value'] = 'cloud-mode';
         final cloud = seed.clone()
           ..captureLocal('cloud', baseline, cloudRecords);
         final document = local.clone()..merge(cloud);
-        String? legacyMarker(String key, String field) =>
-            key == historyKey && field == 'progress' ? localDot : null;
+        String? localProof(String key, String field) =>
+            key == historyKey && field == 'readingProgress' ? localDot : null;
         final choices = automaticConflictResolutions(
           document: document,
           localActor: 'device',
           localRecords: localRecords,
           firstSync: false,
-          manualCandidateId: legacyMarker,
-          unverifiedManualCandidateId: legacyMarker,
+          manualCandidateId: localProof,
+          unverifiedManualCandidateId: localProof,
           cloudActorModifiedAt: {'cloud': DateTime.utc(2026, 10, 10)},
         );
-        for (final choice in choices) {
-          document.resolve(
-            'device',
-            choice.recordKey,
-            choice.field,
-            choice.candidateId,
-          );
-        }
-        final merged = document.materialize(preferred: localRecords);
-        expect(merged[settingKey]!['value'], 'cloud-mode');
-        expect(
-          merged[historyKey]!['progress'],
-          localRecords[historyKey]!['progress'],
+        expect(choices.map((choice) => choice.field), ['value']);
+        document.resolve(
+          'device',
+          choices.single.recordKey,
+          choices.single.field,
+          choices.single.candidateId,
         );
+
+        final merged = document.materialize(preferred: localRecords);
+        final progress = ReadingProgress.fromJson(
+          merged[historyKey]!['readingProgress'],
+        );
+        expect(progress.hasOrderConflict, isTrue);
+        expect(merged[historyKey]!.containsKey('progress'), isFalse);
+        expect(merged[settingKey]!['value'], 'cloud-mode');
         expect(document.conflicts.single.recordKey, historyKey);
-        expect(document.conflicts.single.field, 'progress');
+        expect(document.conflicts.single.field, 'readingProgress');
       },
     );
 

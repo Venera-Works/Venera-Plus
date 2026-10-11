@@ -3,6 +3,7 @@ import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/gesture.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/reader/reader_page.dart';
 import 'package:venera_plus/foundation/context.dart';
@@ -75,7 +76,10 @@ class ReaderChaptersViewState extends State<ReaderChaptersView> {
               var chapter = chapters.titles.elementAt(index);
               return _ChapterListTile(
                 onTap: () {
-                  widget.reader.toChapter(index + 1);
+                  widget.reader.toChapter(
+                    index + 1,
+                    source: ReadingNavigationSource.userSeek,
+                  );
                   Navigator.of(context).pop();
                 },
                 title: chapter,
@@ -179,7 +183,10 @@ class ReaderGroupedChaptersViewState extends State<ReaderGroupedChaptersView>
             i += index + 1;
             return _ChapterListTile(
               onTap: () {
-                widget.reader.toChapter(i);
+                widget.reader.toChapter(
+                  i,
+                  source: ReadingNavigationSource.userSeek,
+                );
                 context.pop();
               },
               title: name,

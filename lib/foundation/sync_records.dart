@@ -8,6 +8,20 @@ import 'package:crypto/crypto.dart';
 /// An empty field map represents existence of a record with no specific fields.
 typedef SyncRecords = Map<String, Map<String, Object?>>;
 
+/// Unsupported versions are not corrupt data and must not trigger old fallback.
+class UnsupportedSyncProtocolException extends FormatException {
+  const UnsupportedSyncProtocolException(this.format, this.version)
+    : super('Unsupported synchronization protocol.');
+
+  final String format;
+  final int version;
+
+  @override
+  String toString() =>
+      'SYNC_PROTOCOL_INCOMPATIBLE: Unsupported $format version $version. '
+      'Update all devices before synchronizing.';
+}
+
 /// Local snapshot containing materialized sync records, discovered source variants,
 /// and flags indicating if local storage requires source file normalization.
 class SyncLocalSnapshot {

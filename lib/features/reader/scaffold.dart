@@ -610,22 +610,40 @@ class ReaderScaffoldState extends State<ReaderScaffold>
               IconButton.filledTonal(
                 onPressed: () => !isReversed
                     ? context.reader.chapter > 1
-                          ? context.reader.toPrevChapter()
-                          : context.reader.toPage(1)
+                          ? context.reader.toPrevChapter(
+                              source: ReadingNavigationSource.userSeek,
+                            )
+                          : context.reader.toPage(
+                              1,
+                              source: ReadingNavigationSource.userSeek,
+                            )
                     : context.reader.chapter < context.reader.maxChapter
-                    ? context.reader.toNextChapter()
-                    : context.reader.toVisualEnd(),
+                    ? context.reader.toNextChapter(
+                        source: ReadingNavigationSource.userSeek,
+                      )
+                    : context.reader.toVisualEnd(
+                        source: ReadingNavigationSource.userSeek,
+                      ),
                 icon: const Icon(Icons.first_page),
               ),
               Expanded(child: buildSlider()),
               IconButton.filledTonal(
                 onPressed: () => !isReversed
                     ? context.reader.chapter < context.reader.maxChapter
-                          ? context.reader.toNextChapter()
-                          : context.reader.toVisualEnd()
+                          ? context.reader.toNextChapter(
+                              source: ReadingNavigationSource.userSeek,
+                            )
+                          : context.reader.toVisualEnd(
+                              source: ReadingNavigationSource.userSeek,
+                            )
                     : context.reader.chapter > 1
-                    ? context.reader.toPrevChapter()
-                    : context.reader.toPage(1),
+                    ? context.reader.toPrevChapter(
+                        source: ReadingNavigationSource.userSeek,
+                      )
+                    : context.reader.toPage(
+                        1,
+                        source: ReadingNavigationSource.userSeek,
+                      ),
                 icon: const Icon(Icons.last_page),
               ),
               const SizedBox(width: 8),
@@ -746,7 +764,11 @@ class ReaderScaffoldState extends State<ReaderScaffold>
       reversed: isReversed,
       divisions: (context.reader.maxPage - 1).clamp(2, 1 << 16),
       onChanged: (i) {
-        context.reader.toPage(i.toInt(), animated: false);
+        context.reader.toPage(
+          i.toInt(),
+          animated: false,
+          source: ReadingNavigationSource.userSeek,
+        );
       },
     );
   }
@@ -1013,9 +1035,13 @@ class ReaderScaffoldState extends State<ReaderScaffold>
             child: ClickInkWell(
               onTap: () {
                 if (showFloatingButtonValue == 1) {
-                  context.reader.toNextChapter();
+                  context.reader.toNextChapter(
+                    source: ReadingNavigationSource.userSeek,
+                  );
                 } else if (showFloatingButtonValue == -1) {
-                  context.reader.toPrevChapter();
+                  context.reader.toPrevChapter(
+                    source: ReadingNavigationSource.userSeek,
+                  );
                 }
                 setFloatingButton(0);
               },

@@ -141,15 +141,21 @@ class LocalComic with HistoryMixin implements Comic {
         }
       }
     }
+    final hasReadingProgress = history?.hasReadingProgress ?? false;
     App.rootContext.to(
       () => Reader(
         type: comicType,
         cid: id,
         name: title,
         chapters: chapters,
-        initialChapter: history?.ep ?? firstDownloadedChapter,
-        initialPage: history?.page,
-        initialChapterGroup: history?.group ?? firstDownloadedChapterGroup,
+        initialChapter: hasReadingProgress ? null : firstDownloadedChapter,
+        initialPage: hasReadingProgress || firstDownloadedChapter == null
+            ? null
+            : 1,
+        initialChapterGroup: hasReadingProgress
+            ? null
+            : firstDownloadedChapterGroup,
+        initialNavigationSource: ReadingNavigationSource.restore,
         history: history ?? History.fromModel(model: this, ep: 0, page: 0),
         author: subtitle,
         tags: tags,

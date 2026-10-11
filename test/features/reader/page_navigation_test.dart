@@ -34,6 +34,8 @@ void main() {
       expect(controller.destination, 200);
       controller.animations.single.complete();
       await pumpEventQueue();
+      expect(reader.page, 1);
+      reader.setPage(200);
       expect(reader.page, 200);
       expect(reader.isPageAnimating, isFalse);
     },
@@ -76,8 +78,9 @@ void main() {
       // Now user jumps with direct navigation or slider
       reader.toPage(50, animated: false);
       expect(reader.isPageAnimating, isFalse);
+      expect(reader.page, 1);
+      reader.setPage(50);
       expect(reader.page, 50);
-
       // Old visual animation finally completes and calls endPageAnimation(token1)
       reader.endPageAnimation(token1);
       // Generation mismatch prevents invalid decrement or state corruption

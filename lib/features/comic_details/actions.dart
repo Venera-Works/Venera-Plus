@@ -147,10 +147,7 @@ abstract mixin class ComicPageActions {
     final currentHistory =
         HistoryManager().find(comic.id, comic.comicType) ??
         History.fromModel(model: comic, ep: 0, page: 0);
-    _readWithHistory(ep, page, group, currentHistory);
-  }
-
-  void _readWithHistory(int? ep, int? page, int? group, History readerHistory) {
+    final hasExplicitTarget = ep != null || page != null || group != null;
     App.rootContext
         .to(
           () => Reader(
@@ -161,7 +158,10 @@ abstract mixin class ComicPageActions {
             initialChapter: ep,
             initialPage: page,
             initialChapterGroup: group,
-            history: readerHistory,
+            initialNavigationSource: hasExplicitTarget
+                ? ReadingNavigationSource.userSeek
+                : ReadingNavigationSource.restore,
+            history: currentHistory,
             author: comic.findAuthor() ?? '',
             tags: comic.plainTags,
           ),
@@ -172,15 +172,7 @@ abstract mixin class ComicPageActions {
   }
 
   void continueRead() {
-    final currentHistory =
-        HistoryManager().find(comic.id, comic.comicType) ??
-        History.fromModel(model: comic, ep: 0, page: 0);
-    _readWithHistory(
-      currentHistory.ep > 0 ? currentHistory.ep : 1,
-      currentHistory.page > 0 ? currentHistory.page : 1,
-      currentHistory.group,
-      currentHistory,
-    );
+    read();
   }
 
   void onReadEnd();

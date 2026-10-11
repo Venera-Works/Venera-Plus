@@ -1049,7 +1049,7 @@ class DataSync with ChangeNotifier {
           endpoint.user,
         );
         attemptedEndpointHash = hash;
-        final actor = await MergeSyncCoordinator.getOrCreateActorId();
+        final actor = await appdata.getOrCreateSyncDeviceId();
         _requireInitializationCurrent(configurationGeneration);
         final directory = _stateDirectoryForHash(hash);
         diagnostics = _initializationDiagnostics(
@@ -1497,7 +1497,7 @@ class DataSync with ChangeNotifier {
       endpoint.url,
       endpoint.user,
     );
-    final actor = await MergeSyncCoordinator.getOrCreateActorId();
+    final actor = await appdata.getOrCreateSyncDeviceId();
     _requireInitializationCurrent(generation);
     if (_currentEndpointHash != hash) {
       throw const SyncInitializationSupersededException();

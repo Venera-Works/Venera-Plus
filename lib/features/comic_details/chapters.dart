@@ -23,7 +23,7 @@ class ComicChaptersView extends StatelessWidget {
 
   final History? history;
 
-  final void Function(int chapter) readChapter;
+  final void Function(int chapter, int? group) readChapter;
 
   @override
   Widget build(BuildContext context) {
@@ -52,7 +52,7 @@ class _NormalComicChapters extends StatefulWidget {
 
   final History? history;
 
-  final void Function(int chapter) readChapter;
+  final void Function(int chapter, int? group) readChapter;
 
   @override
   State<_NormalComicChapters> createState() => _NormalComicChaptersState();
@@ -133,7 +133,7 @@ class _NormalComicChaptersState extends State<_NormalComicChapters> {
                     color: context.colorScheme.surfaceContainer,
                     borderRadius: BorderRadius.circular(16),
                     child: ClickInkWell(
-                      onTap: () => widget.readChapter(i + 1),
+                      onTap: () => widget.readChapter(i + 1, null),
                       borderRadius: BorderRadius.circular(16),
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -194,7 +194,7 @@ class _GroupedComicChapters extends StatefulWidget {
 
   final History? history;
 
-  final void Function(int chapter) readChapter;
+  final void Function(int chapter, int? group) readChapter;
 
   @override
   State<_GroupedComicChapters> createState() => _GroupedComicChaptersState();
@@ -330,7 +330,7 @@ class _GroupedComicChaptersState extends State<_GroupedComicChapters>
                     color: context.colorScheme.surfaceContainerLow,
                     borderRadius: BorderRadius.circular(12),
                     child: ClickInkWell(
-                      onTap: () => widget.readChapter(chapterIndex + 1),
+                      onTap: () => widget.readChapter(i + 1, index + 1),
                       borderRadius: BorderRadius.circular(12),
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 8),

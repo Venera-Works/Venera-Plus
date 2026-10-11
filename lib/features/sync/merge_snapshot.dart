@@ -308,6 +308,14 @@ class MergeSnapshot {
       throw FormatException('Invalid snapshot manifest: $error');
     }
     final manifest = _asMap(decoded, 'snapshot manifest');
+    final manifestVersion = manifest['schema'];
+    final documentVersion = manifest['documentSchema'];
+    if (manifestVersion is int && manifestVersion != 1) {
+      throw UnsupportedSyncProtocolException('snapshot', manifestVersion);
+    }
+    if (documentVersion is int && documentVersion != 3) {
+      throw UnsupportedSyncProtocolException('merge document', documentVersion);
+    }
     _requireKeys(manifest, const {
       'schema',
       'actor',

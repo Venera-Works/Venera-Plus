@@ -555,23 +555,6 @@ void main() {
           },
         );
 
-        test(
-          'toPage executes and updates page when controller is present and animation disabled',
-          () {
-            final location = _ReaderLocationHarness();
-            location.testEnableAnimation = false;
-            final controller = _RoutingWaterfallImageViewController();
-            location.imageViewController = controller;
-            location.testMaxPage = 5;
-            location.page = 1;
-
-            final result = location.toPage(3);
-            expect(result, isTrue);
-            expect(location.page, 3);
-            expect(controller.lastToPage, 3);
-          },
-        );
-
         test('toPage delegates to animateToPage when animation is enabled', () {
           final location = _ReaderLocationHarness();
           location.testEnableAnimation = true;

@@ -50,6 +50,7 @@ class _ImageFavoritesItemState extends State<ImageFavoritesItem> {
         sourceKey: comic.sourceKey,
         initialEp: ep,
         initialPage: page,
+        initialNavigationSource: ReadingNavigationSource.userSeek,
       ),
     );
   }

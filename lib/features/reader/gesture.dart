@@ -2,6 +2,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:venera_plus/components/menu.dart';
+import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/reader/clipboard_image.dart';
 import 'package:venera_plus/features/reader/reader_page.dart';
 import 'package:venera_plus/foundation/app.dart';
@@ -159,14 +160,23 @@ class ReaderGestureDetectorState
     }
     if (context.reader.mode.key.startsWith('gallery')) {
       if (forward) {
-        if (!context.reader.toNextPage() &&
+        if (!context.reader.toNextPage(
+              source: ReadingNavigationSource.userForward,
+            ) &&
             !context.reader.isLastChapterOfGroup) {
-          context.reader.toNextChapter();
+          context.reader.toNextChapter(
+            source: ReadingNavigationSource.userForward,
+          );
         }
       } else {
-        if (!context.reader.toPrevPage() &&
+        if (!context.reader.toPrevPage(
+              source: ReadingNavigationSource.userBackward,
+            ) &&
             !context.reader.isFirstChapterOfGroup) {
-          context.reader.toPrevChapter(toLastPage: true);
+          context.reader.toPrevChapter(
+            toLastPage: true,
+            source: ReadingNavigationSource.userBackward,
+          );
         }
       }
     }
@@ -266,20 +276,30 @@ class ReaderGestureDetectorState
             true;
         if (isOneHandedMode) {
           if (isLeft || isRight || isTop || isBottom) {
-            context.reader.toNextPage();
+            context.reader.toNextPage(
+              source: ReadingNavigationSource.userForward,
+            );
             return;
           }
         } else {
           bool isCenter = false;
-          var prev = () => context.reader.toPrevPage();
-          var next = () => context.reader.toNextPage();
+          var prev = () => context.reader.toPrevPage(
+            source: ReadingNavigationSource.userBackward,
+          );
+          var next = () => context.reader.toNextPage(
+            source: ReadingNavigationSource.userForward,
+          );
           if (appdata.settings.getReaderSetting(
             reader.cid,
             reader.type.sourceKey,
             'reverseTapToTurnPages',
           )) {
-            prev = () => context.reader.toNextPage();
-            next = () => context.reader.toPrevPage();
+            prev = () => context.reader.toNextPage(
+              source: ReadingNavigationSource.userForward,
+            );
+            next = () => context.reader.toPrevPage(
+              source: ReadingNavigationSource.userBackward,
+            );
           }
           switch (context.reader.mode) {
             case ReaderMode.galleryLeftToRight:

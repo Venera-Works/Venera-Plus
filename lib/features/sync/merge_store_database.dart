@@ -176,6 +176,8 @@ class MergeStoreDatabase {
         primaryState = _readDatabase(_databaseFile, recoveredFromBackup: false);
       } on _DatabaseActorMismatch {
         rethrow;
+      } on UnsupportedSyncProtocolException {
+        rethrow;
       } catch (error) {
         primaryError = error;
       }
@@ -187,6 +189,8 @@ class MergeStoreDatabase {
       try {
         backupState = _readDatabase(_backupFile, recoveredFromBackup: false);
       } on _DatabaseActorMismatch {
+        rethrow;
+      } on UnsupportedSyncProtocolException {
         rethrow;
       } catch (error) {
         backupError = error;
@@ -683,6 +687,7 @@ class MergeStoreDatabase {
     Map<String, Map<String, String>> localEdits = const {},
     Map<String, Map<String, String>> verifiedHistoryEdits = const {},
     bool? hasCompletedSync,
+    bool? hasProgressProtocolMigration,
     bool? counterReconciliationRequired,
   }) async {
     _diagnostics ??= SyncInitializationDiagnostics(
@@ -717,6 +722,11 @@ class MergeStoreDatabase {
       'actor': actor,
       'initialized': initialized ? '1' : '0',
       'hasCompletedSync': nextCompletedSync ? '1' : '0',
+      'hasProgressProtocolMigration':
+          (hasProgressProtocolMigration ??
+              (_persistedMeta['hasProgressProtocolMigration'] == '1'))
+          ? '1'
+          : '0',
       'hasPendingApply': pendingApply == null ? '0' : '1',
       'pendingUnavailableDomains': canonicalSyncJson(
         pendingUnavailableDomains.toList()..sort(),
@@ -758,6 +768,8 @@ class MergeStoreDatabase {
       if (!addedOutbox.contains(entry.key)) {
         try {
           batch.validateIdentity();
+        } on UnsupportedSyncProtocolException {
+          rethrow;
         } on FormatException {
           throw MergeStoreIntegrityException(
             metadata: {
@@ -993,6 +1005,8 @@ class MergeStoreDatabase {
               batch,
               encodingCache: _snapshotEncodingCache,
             );
+          } on UnsupportedSyncProtocolException {
+            rethrow;
           } on FormatException {
             throw MergeStoreIntegrityException(
               metadata: {
@@ -1185,6 +1199,9 @@ class MergeStoreDatabase {
           .single
           .values
           .first;
+      if (version is int && version > 1) {
+        throw UnsupportedSyncProtocolException('merge SQLite schema', version);
+      }
       if (version != 1) {
         throw FormatException(
           'Unsupported merge SQLite schema version: $version',
@@ -1212,6 +1229,7 @@ class MergeStoreDatabase {
       const allowedMeta = {
         ...requiredMeta,
         'hasCompletedSync',
+        'hasProgressProtocolMigration',
         'checkpointMigrationComplete',
         'commitFingerprint',
       };
@@ -1229,9 +1247,10 @@ class MergeStoreDatabase {
       if (!{'0', '1'}.contains(meta['initialized']) ||
           !{'0', '1'}.contains(meta['hasPendingApply']) ||
           meta['legacyStateMigrated'] != '1' ||
-          meta['outboxDeltasVersion'] != '1' ||
           (meta.containsKey('hasCompletedSync') &&
               !{'0', '1'}.contains(meta['hasCompletedSync'])) ||
+          (meta.containsKey('hasProgressProtocolMigration') &&
+              !{'0', '1'}.contains(meta['hasProgressProtocolMigration'])) ||
           (meta.containsKey('checkpointMigrationComplete') &&
               !{'0', '1'}.contains(meta['checkpointMigrationComplete']))) {
         throw const FormatException('Invalid merge SQLite metadata values');
@@ -1356,7 +1375,9 @@ class MergeStoreDatabase {
           }
           final fields = <String, String>{};
           for (final entry in value.entries) {
-            if ((entry.key != 'progress' && entry.key != 'presence') ||
+            if ((entry.key != 'progress' &&
+                    entry.key != 'readingProgress' &&
+                    entry.key != 'presence') ||
                 entry.value is! String) {
               throw const FormatException(
                 'Invalid verified history edit metadata',
@@ -1536,6 +1557,8 @@ class MergeStoreDatabase {
         hasCompletedSync:
             meta['hasCompletedSync'] == '1' ||
             (!meta.containsKey('hasCompletedSync') && received.isNotEmpty),
+        hasProgressProtocolMigration:
+            meta['hasProgressProtocolMigration'] == '1',
         localEdits: localEdits,
         verifiedHistoryEdits: verifiedHistoryEdits,
         recoveredFromBackup: recoveredFromBackup,
@@ -2699,7 +2722,9 @@ class MergeStoreDatabase {
       for (final fieldEntry in entry.value.entries) {
         final id = fieldEntry.value;
         final dot = MergeDot.parse(id);
-        if ((fieldEntry.key != 'progress' && fieldEntry.key != 'presence') ||
+        if ((fieldEntry.key != 'progress' &&
+                fieldEntry.key != 'readingProgress' &&
+                fieldEntry.key != 'presence') ||
             localEdits[entry.key]?[fieldEntry.key] != id ||
             dot.actor != actor ||
             dot.counter > ownCounter ||
@@ -2928,6 +2953,7 @@ class MergeStoreDatabaseState {
   final Map<String, Set<String>> outboxChangedRecords;
   final bool initialized;
   final bool hasCompletedSync;
+  final bool hasProgressProtocolMigration;
   final Map<String, Map<String, String>> localEdits;
   final Map<String, Map<String, String>> verifiedHistoryEdits;
   final bool recoveredFromBackup;
@@ -2950,6 +2976,7 @@ class MergeStoreDatabaseState {
     required this.pendingUnavailableDomains,
     required this.initialized,
     this.hasCompletedSync = false,
+    this.hasProgressProtocolMigration = false,
     this.localEdits = const {},
     this.verifiedHistoryEdits = const {},
     required this.recoveredFromBackup,
@@ -2972,6 +2999,7 @@ class MergeStoreDatabaseState {
     pendingUnavailableDomains: pendingUnavailableDomains,
     initialized: initialized,
     hasCompletedSync: hasCompletedSync,
+    hasProgressProtocolMigration: hasProgressProtocolMigration,
     localEdits: localEdits,
     verifiedHistoryEdits: verifiedHistoryEdits,
     recoveredFromBackup: value,

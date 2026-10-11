@@ -1,3 +1,4 @@
+export 'reading_progress.dart';
 export '../../foundation/history_contract.dart';
 export 'history_image_provider.dart';
 export 'image_favorites.dart';
@@ -10,6 +11,7 @@ export 'history_sync_data.dart'
         HistorySyncApplyResult,
         readHistorySyncRecords,
         applyHistorySyncRecords,
+        applyLegacyHistorySyncRecords,
         ensureHistorySchema;
 export 'image_favorites_provider.dart';
 export 'reading_stats_page.dart' show ReadingStatsPage, ReadingStatsSummary;

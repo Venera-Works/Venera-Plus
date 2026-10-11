@@ -256,6 +256,7 @@ class _ImageFavoritesPhotoViewState extends State<ImageFavoritesPhotoView> {
               sourceKey: comic.sourceKey,
               initialEp: ep,
               initialPage: page,
+              initialNavigationSource: ReadingNavigationSource.userSeek,
             ),
           );
         },

@@ -6,6 +6,12 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:dio/io.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sqlite3/sqlite3.dart';
+import 'package:venera_plus/features/history/history_sync_data.dart';
+import 'package:venera_plus/features/history/reading_progress.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/sync_records.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/network/webdav.dart';
 
@@ -121,11 +127,305 @@ void main() {
     expect(readBack.document.toJson(), second.document.toJson());
   }
 
+  test(
+    'two SQLite devices resume maxima and explicit rereads over real WebDAV',
+    () async {
+      final directory = Directory.systemTemp.createTempSync(
+        'reading-two-device-',
+      );
+      String? oldDataPath;
+      try {
+        oldDataPath = App.dataPath;
+      } catch (_) {}
+      final oldImplicit = Map<String, dynamic>.from(appdata.implicitData);
+      App.dataPath = directory.path;
+      appdata.implicitData['legacyMigrationDone_reading-loopback'] = true;
+      final pathA = '${directory.path}/history-a.db';
+      final pathB = '${directory.path}/history-b.db';
+      final dbA = sqlite3.open(pathA);
+      var dbB = sqlite3.open(pathB);
+      const comicId = 'same-source-same-comic';
+      final key = syncRecordKey('history', [comicId, 7]);
+      var time = 100;
+      ReadingPosition position(int page) => ReadingPosition(ep: 1, page: page);
+      ReadingProgress read(Database db) => ReadingProgress.fromJson(
+        HistorySyncData.readSyncRecords(db)[key]!['readingProgress'],
+      );
+      void save(Database db, ReadingProgress progress) {
+        final records = HistorySyncData.readSyncRecords(db);
+        records[key] = {
+          ...?records[key],
+          'title': 'Same comic',
+          'subtitle': '',
+          'cover': '',
+          'maxPage': 30,
+          'readDurationMs': 0,
+          'readingProgress': progress.toJson(),
+        };
+        HistorySyncData.applySyncRecords(db, records);
+      }
+
+      void expectResume(Database db, int page, int maximum, {String? round}) {
+        final progress = read(db);
+        expect(progress.resumePosition!.page, page);
+        expect(progress.maximumPositions.single.page, maximum);
+        expect(progress.activeRoundId, round);
+        final row = db.select(
+          'SELECT page FROM history WHERE id = ? AND type = ?',
+          [comicId, 7],
+        ).single;
+        expect(row['page'], page);
+      }
+
+      MergeSyncCoordinator createDevice(String actor, Database Function() db) {
+        final state = Directory('${directory.path}/$actor');
+        return MergeSyncCoordinator(
+          endpointHash: 'reading-loopback',
+          stateDirectory: state,
+          actor: actor,
+          store: MergeStore(state, actor),
+          remote: MergeRemote(remote.client, deviceName: actor),
+          exportFavoritesOverride: () => {},
+          applyFavoritesOverride: (_) {},
+          exportHistoryOverride: () async =>
+              HistorySyncData.readSyncRecords(db()),
+          applyHistoryOverride: (records) {
+            HistorySyncData.applySyncRecords(db(), records);
+          },
+          exportPreferencesOverride: () async => {},
+          applyPreferencesOverride: (_, {beforeCommit}) async {
+            beforeCommit?.call();
+          },
+        );
+      }
+
+      Future<void> sync(MergeSyncCoordinator device) async {
+        final result = await device.performSync(
+          direction: SyncDirection.bidirectional,
+        );
+        expect(result.success, isTrue, reason: result.errorMessage);
+        expect(device.conflicts, isEmpty);
+      }
+
+      try {
+        save(dbA, ReadingProgress.seed(position(2), time: time++));
+        save(dbB, ReadingProgress.seed(position(2), time: time++));
+        final a = createDevice('sqlite-device-a', () => dbA);
+        final b = createDevice('sqlite-device-b', () => dbB);
+        await a.store.load();
+        await b.store.load();
+        final unopenedOldB = read(dbB);
+        save(
+          dbA,
+          read(dbA).record(
+            position(20),
+            source: ReadingNavigationSource.userForward,
+            time: time++,
+          ),
+        );
+        await sync(a);
+        await sync(b);
+        expectResume(dbB, 20, 20);
+
+        // B's old normal session writes after import: neither its timestamp nor
+        // its smaller cursor can rewind the imported high-water mark.
+        save(
+          dbB,
+          unopenedOldB.record(
+            position(3),
+            source: ReadingNavigationSource.passive,
+            time: time++,
+          ),
+        );
+        await sync(b);
+        await sync(a);
+        expectResume(dbA, 20, 20);
+        final oldNormalB = read(dbB);
+
+        save(
+          dbA,
+          read(dbA).record(
+            position(5),
+            source: ReadingNavigationSource.userBackward,
+            newRoundId: 'reread-a',
+            time: time++,
+          ),
+        );
+        await sync(a);
+        await sync(b);
+        expectResume(dbB, 5, 20, round: 'reread-a');
+        save(
+          dbB,
+          oldNormalB.record(
+            position(21),
+            source: ReadingNavigationSource.automatic,
+            time: time++,
+          ),
+        );
+        await sync(b);
+        await sync(a);
+        expectResume(dbA, 5, 21, round: 'reread-a');
+
+        save(
+          dbB,
+          read(dbB).record(
+            position(6),
+            source: ReadingNavigationSource.userForward,
+            sessionRoundId: 'reread-a',
+            time: time++,
+          ),
+        );
+        await sync(b);
+        await sync(a);
+        expectResume(dbA, 6, 21, round: 'reread-a');
+        final oldRoundB = read(dbB);
+        save(
+          dbA,
+          read(dbA).record(
+            position(4),
+            source: ReadingNavigationSource.userBackward,
+            sessionRoundId: 'reread-a',
+            newRoundId: 'reread-a2',
+            time: time++,
+          ),
+        );
+        await sync(a);
+        save(
+          dbB,
+          oldRoundB.record(
+            position(7),
+            source: ReadingNavigationSource.userForward,
+            sessionRoundId: 'reread-a',
+            time: time++,
+          ),
+        );
+        await sync(b);
+        await sync(a);
+        expectResume(dbA, 4, 21, round: 'reread-a2');
+        expectResume(dbB, 4, 21, round: 'reread-a2');
+
+        final lateRoundA = read(dbA);
+        save(
+          dbB,
+          read(dbB).record(
+            position(21),
+            source: ReadingNavigationSource.userSeek,
+            sessionRoundId: 'reread-a2',
+            time: time++,
+          ),
+        );
+        await sync(b);
+        await sync(a);
+        save(
+          dbA,
+          lateRoundA.record(
+            position(10),
+            source: ReadingNavigationSource.automatic,
+            sessionRoundId: 'reread-a2',
+            time: time++,
+          ),
+        );
+        await sync(a);
+        await sync(b);
+        expectResume(dbA, 21, 21);
+        expectResume(dbB, 21, 21);
+        dbB.dispose();
+        dbB = sqlite3.open(pathB);
+        expectResume(dbB, 21, 21);
+        await sync(b);
+        await sync(a);
+        expect(read(dbA).toJson(), read(dbB).toJson());
+      } finally {
+        dbA.dispose();
+        dbB.dispose();
+        await appdata.writeImplicitData();
+        appdata.implicitData
+          ..clear()
+          ..addAll(oldImplicit);
+        App.dataPath = oldDataPath ?? Directory.systemTemp.path;
+        directory.deleteSync(recursive: true);
+      }
+    },
+  );
+  test(
+    'legacy namespace remains readable but cannot be written or compacted',
+    () async {
+      final batch = createTestBatch(actor: 'legacy-owner', counter: 1);
+      final currentPath = await remote.upload(batch);
+      const currentRoot = '/dav/VeneraPlus-v2/';
+      const oldRoot = '/dav/VeneraPlus/';
+      for (final entry in Map<String, List<int>>.from(server._files).entries) {
+        if (entry.key.startsWith(currentRoot)) {
+          server.injectFile(
+            '$oldRoot${entry.key.substring(currentRoot.length)}',
+            entry.value,
+          );
+        }
+      }
+      final oldBytes = {
+        for (final entry in server._files.entries)
+          if (entry.key.startsWith(oldRoot))
+            entry.key: List<int>.of(entry.value),
+      };
+      final legacy = remote.legacyReader();
+      final entries = await legacy.list();
+      final oldEntry = entries.single;
+      expect(
+        oldEntry.filename,
+        currentPath.replaceFirst('VeneraPlus-v2/', 'VeneraPlus/'),
+      );
+      expect(
+        (await legacy.download(oldEntry)).document.materialize(),
+        batch.document.materialize(),
+      );
+      expect(
+        MergeRemoteEntry.tryParsePackCommit(
+          oldEntry.filename,
+          actor: batch.actor,
+        ),
+        isNull,
+      );
+      await expectLater(() => legacy.upload(batch), throwsUnsupportedError);
+      await expectLater(
+        () => legacy.compact(batch, entries),
+        throwsUnsupportedError,
+      );
+      expect({
+        for (final entry in server._files.entries)
+          if (entry.key.startsWith(oldRoot)) entry.key: entry.value,
+      }, oldBytes);
+    },
+  );
+
+  test(
+    'future remote protocol is not treated as a corrupt older checkpoint',
+    () async {
+      final batch = createTestBatch(actor: 'future-protocol', counter: 1);
+      final path = await remote.upload(batch);
+      final manifest =
+          jsonDecode(utf8.decode(server._files['/dav/$path']!)) as Map;
+      manifest['schema'] = 3;
+      final bytes = utf8.encode(jsonEncode(manifest));
+      final digest = sha256.convert(bytes).toString();
+      final futurePath =
+          '${path.substring(0, path.lastIndexOf('/') + 1)}2-$digest.json';
+      server.injectFile('/dav/$futurePath', bytes);
+      final entries = await remote.list();
+      final future = entries.firstWhere((entry) => entry.counter == 2);
+      await expectLater(
+        remote.download(future),
+        throwsA(isA<UnsupportedSyncProtocolException>()),
+      );
+      expect(server._files['/dav/$futurePath'], bytes);
+      expect(server.hasFile('/dav/$path'), isTrue);
+    },
+  );
+
   group('MergeRemote entry parsing and quoted strong ETag', () {
     test('parses only four-segment Pack commit paths', () {
       final digest = 'a' * 64;
       const actor = 'uuid-actor-123-456';
-      const path = 'VeneraPlus/Workstation 机/commits/7-';
+      const path = 'VeneraPlus-v2/Workstation 机/commits/7-';
       final entry = MergeRemoteEntry.tryParsePackCommit(
         '$path$digest.json',
         actor: actor,
@@ -156,12 +456,12 @@ void main() {
       final digest = 'a' * 64;
       for (final path in [
         '../../etc/commits/1-$digest.json',
-        'VeneraPlus/../Device/commits/1-$digest.json',
-        'VeneraPlus/Device/../commits/1-$digest.json',
-        'VeneraPlus/Device/commits/uuid-actor-1-$digest.json',
-        'VeneraPlus/Device/1-$digest.json',
-        'VeneraPlus/sync-v4/Device/commits/1-$digest.json',
-        'VeneraPlus/sync-v5/Device/commits/1-$digest.json',
+        'VeneraPlus-v2/../Device/commits/1-$digest.json',
+        'VeneraPlus-v2/Device/../commits/1-$digest.json',
+        'VeneraPlus-v2/Device/commits/uuid-actor-1-$digest.json',
+        'VeneraPlus-v2/Device/1-$digest.json',
+        'VeneraPlus-v2/sync-v4/Device/commits/1-$digest.json',
+        'VeneraPlus-v2/sync-v5/Device/commits/1-$digest.json',
         'sync-v2/Device/commits/1-$digest.json',
         '.venera',
       ]) {
@@ -173,7 +473,7 @@ void main() {
       }
       expect(
         MergeRemoteEntry.tryParsePackCommit(
-          'VeneraPlus/Device/commits/1-$digest.json',
+          'VeneraPlus-v2/Device/commits/1-$digest.json',
           actor: '../other',
         ),
         isNull,
@@ -199,9 +499,9 @@ void main() {
 
     test('rejects non-commit filenames', () {
       for (final path in [
-        'VeneraPlus/Device/commits/device.json',
-        'VeneraPlus/Device/commits/actor-notnum-hash.json',
-        'VeneraPlus/Device/commits/1-short.json',
+        'VeneraPlus-v2/Device/commits/device.json',
+        'VeneraPlus-v2/Device/commits/actor-notnum-hash.json',
+        'VeneraPlus-v2/Device/commits/1-short.json',
         '',
       ]) {
         expect(
@@ -268,7 +568,7 @@ void main() {
         );
         expect(remote.warnings, isEmpty);
       }
-      server.getStatuses['/dav/VeneraPlus/${path.split('/')[1]}/device.json'] =
+      server.getStatuses['/dav/VeneraPlus-v2/${path.split('/')[1]}/device.json'] =
           401;
       await expectLater(remote.list(), throwsA(isA<MergeRemoteException>()));
       expect(remote.warnings, isEmpty);
@@ -304,7 +604,7 @@ void main() {
         ]);
         expect(paths[0], isNot(paths[1]));
         for (final path in paths) {
-          expect(path.split('/').first, 'VeneraPlus');
+          expect(path.split('/').first, MergeRemote.currentNamespace);
           expect(
             path.split('/').last,
             matches(RegExp(r'^1-[0-9a-f]{64}\.json$')),
@@ -414,12 +714,12 @@ void main() {
           .toString()
           .substring(0, 8);
       server.injectOwnership(
-        '/dav/VeneraPlus/Device',
+        '/dav/VeneraPlus-v2/Device',
         actor: 'base_owner',
         name: 'Device',
       );
       server.injectOwnership(
-        '/dav/VeneraPlus/Device-$suffix',
+        '/dav/VeneraPlus-v2/Device-$suffix',
         actor: 'fallback_owner',
         name: 'Device-$suffix',
       );
@@ -430,9 +730,9 @@ void main() {
       );
       expect(server.commitPutCount, 0);
       expect(server.objectPutCount, 0);
-      expect(server.hasFile('/dav/VeneraPlus/Device/device.json'), isTrue);
+      expect(server.hasFile('/dav/VeneraPlus-v2/Device/device.json'), isTrue);
       expect(
-        server.hasFile('/dav/VeneraPlus/Device-$suffix/device.json'),
+        server.hasFile('/dav/VeneraPlus-v2/Device-$suffix/device.json'),
         isTrue,
       );
     },
@@ -448,10 +748,16 @@ void main() {
       final oldPath = await oldDevice.upload(oldBatch);
       final newPath = await newDevice.upload(newBatch);
 
-      expect(oldPath, startsWith('VeneraPlus/Old Device/commits/1-'));
-      expect(newPath, startsWith('VeneraPlus/New Device/commits/2-'));
-      expect(server.hasFile('/dav/VeneraPlus/Old Device/device.json'), isTrue);
-      expect(server.hasFile('/dav/VeneraPlus/New Device/device.json'), isTrue);
+      expect(oldPath, startsWith('VeneraPlus-v2/Old Device/commits/1-'));
+      expect(newPath, startsWith('VeneraPlus-v2/New Device/commits/2-'));
+      expect(
+        server.hasFile('/dav/VeneraPlus-v2/Old Device/device.json'),
+        isTrue,
+      );
+      expect(
+        server.hasFile('/dav/VeneraPlus-v2/New Device/device.json'),
+        isTrue,
+      );
 
       final entries = await newDevice.list();
       expect(entries.map((entry) => entry.actor).toSet(), {'renamed_actor'});
@@ -540,7 +846,10 @@ void main() {
           orderedEquals(oldCommit),
         );
         expect(server._files['/dav/.venera'], orderedEquals(legacyBackup));
-        expect(server.hasFile('/dav/VeneraPlus/_sync-v5/device.json'), isTrue);
+        expect(
+          server.hasFile('/dav/VeneraPlus-v2/_sync-v5/device.json'),
+          isTrue,
+        );
         expect(
           server.receivedRequests.any(
             (request) =>
@@ -608,7 +917,7 @@ void main() {
         // HTTP 412 is encountered. Upload inspects HEAD, obtains quoted strong ETag,
         // and safely replaces the truncated file using conditional If-Match: strongEtag.
         final recoveredPath = await remote.upload(batch2);
-        expect(recoveredPath, startsWith('VeneraPlus/Device/commits/2-'));
+        expect(recoveredPath, startsWith('VeneraPlus-v2/Device/commits/2-'));
 
         // 5. Consumer refreshes listing and calls downloadLatestValid:
         // Now candidate 2 succeeds cleanly with valid SHA!
@@ -646,13 +955,16 @@ void main() {
           final batch = createTestBatch(actor: 'MyDevice-Actor', counter: 1);
           final uploadedPath = await customRemote.upload(batch);
 
-          expect(uploadedPath, startsWith('VeneraPlus/My Device 机/commits/1-'));
+          expect(
+            uploadedPath,
+            startsWith('VeneraPlus-v2/My Device 机/commits/1-'),
+          );
 
           final entries = await customRemote.list();
           expect(entries.length, 1);
           expect(
             entries.first.filename,
-            startsWith('VeneraPlus/My Device 机/commits/1-'),
+            startsWith('VeneraPlus-v2/My Device 机/commits/1-'),
           );
 
           final downloaded = await customRemote.download(entries.single);
@@ -784,7 +1096,8 @@ void main() {
       expect(
         server.receivedRequests
             .where(
-              (request) => request == 'PROPFIND /dav/VeneraPlus/Device/packs',
+              (request) =>
+                  request == 'PROPFIND /dav/VeneraPlus-v2/Device/packs',
             )
             .length,
         1,
@@ -885,7 +1198,7 @@ void main() {
         );
         final path = await newRemote.upload(batch);
 
-        expect(path, startsWith('VeneraPlus/Device/commits/1-'));
+        expect(path, startsWith('VeneraPlus-v2/Device/commits/1-'));
         expect(newRemote.transferStats['cacheHits'], 0);
       } finally {
         await cacheDirectory.delete(recursive: true);
@@ -1015,7 +1328,7 @@ void main() {
           Uint8List.fromList(server._files['/dav/$firstPath']!),
         );
         final missingPack = firstManifest.packs.keys.single;
-        final missingPath = '/dav/VeneraPlus/Device/packs/$missingPack.pack';
+        final missingPath = '/dav/VeneraPlus-v2/Device/packs/$missingPack.pack';
         server._files.remove(missingPath);
         server._etags.remove(missingPath);
 
@@ -1103,7 +1416,7 @@ void main() {
         );
         expect(
           server.receivedRequests.skip(requestStart),
-          contains('GET /dav/VeneraPlus/Device/packs/$firstPack.pack'),
+          contains('GET /dav/VeneraPlus-v2/Device/packs/$firstPack.pack'),
         );
 
         server.headUnsupported = false;
@@ -1122,7 +1435,7 @@ void main() {
         for (final digest in reusedPacks) {
           expect(
             thirdRequests,
-            contains('GET /dav/VeneraPlus/Device/packs/$digest.pack'),
+            contains('GET /dav/VeneraPlus-v2/Device/packs/$digest.pack'),
           );
         }
         expect(cachedRemote.uploadedObjects, 1);
@@ -1161,7 +1474,7 @@ void main() {
           Uint8List.fromList(server._files['/dav/$firstPath']!),
         );
         final digest = firstManifest.packs.keys.single;
-        final packPath = '/dav/VeneraPlus/Device/packs/$digest.pack';
+        final packPath = '/dav/VeneraPlus-v2/Device/packs/$digest.pack';
         final correctPack = List<int>.of(server._files[packPath]!);
         final corruptedPack = List<int>.of(correctPack)
           ..[0] = correctPack[0] ^ 1;
@@ -1308,7 +1621,7 @@ void main() {
       utf8.encode(canonicalSyncJson(manifest)),
     );
     final digest = sha256.convert(manifestBytes).toString();
-    const devicePath = 'VeneraPlus/Oversized Device';
+    const devicePath = 'VeneraPlus-v2/Oversized Device';
     final commitPath = '$devicePath/commits/1-$digest.json';
     server.injectOwnership(
       '/dav/$devicePath',
@@ -1403,7 +1716,7 @@ void main() {
 
         final fakeDigest = 'b' * 64;
         server.injectFile(
-          '/dav/VeneraPlus/Device/commits/2-$fakeDigest.json',
+          '/dav/VeneraPlus-v2/Device/commits/2-$fakeDigest.json',
           Uint8List(0),
           eTag: '"etag-2"',
         );
@@ -1469,7 +1782,7 @@ void main() {
         );
         final corruptDigest = secondManifest.packs.keys.first;
         final corruptPackPath =
-            '/dav/VeneraPlus/Device/packs/$corruptDigest.pack';
+            '/dav/VeneraPlus-v2/Device/packs/$corruptDigest.pack';
         final corrupted = List<int>.of(server._files[corruptPackPath]!);
         corrupted[0] ^= 1;
         server.tamperFile(corruptPackPath, corrupted);
@@ -1665,7 +1978,7 @@ void main() {
             final digest = sha256.convert(utf8.encode(foreignActor)).toString();
             foreignEntries.add(
               MergeRemoteEntry.tryParsePackCommit(
-                'VeneraPlus/Foreign $index/commits/1-$digest.json',
+                'VeneraPlus-v2/Foreign $index/commits/1-$digest.json',
                 actor: foreignActor,
                 eTag: '"foreign-$index"',
               )!,
