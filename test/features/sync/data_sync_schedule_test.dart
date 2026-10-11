@@ -121,10 +121,139 @@ void main() {
     expect(calls.uploads, 2);
     appdata.implicitData['webdavSyncTiming'] = 'realtime';
     calls.edit(sync);
-    await clock.elapse(const Duration(minutes: 2));
+    await clock.elapse(const Duration(seconds: 5));
     await sync.waitForSync();
     expect(calls.uploads, 3);
   });
+
+  scheduleTest('only uploads throttle realtime local changes', (
+    clock,
+    calls,
+  ) async {
+    final sync = DataSync();
+    await sync.waitForStartupMerge();
+    appdata.implicitData
+      ..['webdavSyncTiming'] = 'realtime'
+      ..['webdavSyncDirection'] = 'uploadOnly'
+      ..['webdavSyncLastAttempt'] = clock.now().millisecondsSinceEpoch
+      ..remove('webdavSyncLastUploadAttempt');
+
+    calls.edit(sync);
+    await clock.elapse(const Duration(seconds: 1));
+    expect(calls.uploads, 0);
+    await clock.elapse(const Duration(seconds: 1));
+    await sync.waitForSync();
+    expect(calls.uploads, 1);
+
+    calls.edit(sync);
+    await clock.elapse(const Duration(seconds: 4));
+    expect(calls.uploads, 1);
+    await clock.elapse(const Duration(seconds: 1));
+    await sync.waitForSync();
+    expect(calls.uploads, 2);
+  });
+
+  scheduleTest('foreground remote checks repeat and resume catches up once', (
+    clock,
+    _,
+  ) async {
+    appdata.implicitData['webdavSyncTiming'] = 'realtime';
+    appdata.implicitData['webdavSyncDirection'] = 'bidirectional';
+    final sync = DataSync();
+    await sync.waitForStartupMerge();
+    await sync.waitForSync();
+
+    var syncs = 0;
+    DataSync.debugSyncOverride = () async {
+      syncs++;
+      return const Res(true);
+    };
+    await clock.elapse(const Duration(seconds: 4));
+    expect(syncs, 0);
+    await clock.elapse(const Duration(seconds: 1));
+    await sync.waitForSync();
+    expect(syncs, 1);
+
+    sync.onAppForegroundChanged(false);
+    await clock.elapse(const Duration(seconds: 10));
+    expect(syncs, 1);
+    sync.onAppForegroundChanged(true);
+    await sync.waitForSync();
+    expect(syncs, 2);
+  });
+
+  scheduleTest('resume during an active sync queues one catch-up check', (
+    clock,
+    _,
+  ) async {
+    appdata.implicitData['webdavSyncTiming'] = 'realtime';
+    appdata.implicitData['webdavSyncDirection'] = 'bidirectional';
+    final sync = DataSync();
+    await sync.waitForStartupMerge();
+    await sync.waitForSync();
+
+    final started = Completer<void>();
+    final first = Completer<Res<bool>>();
+    var syncs = 0;
+    DataSync.debugSyncOverride = () {
+      syncs++;
+      if (syncs == 1) {
+        started.complete();
+        return first.future;
+      }
+      return Future.value(const Res(true));
+    };
+    sync.onAppForegroundChanged(false);
+    sync.onAppForegroundChanged(true);
+    await started.future;
+    sync.onAppForegroundChanged(false);
+    sync.onAppForegroundChanged(true);
+    sync.onAppForegroundChanged(true);
+    expect(syncs, 1);
+
+    first.complete(const Res(true));
+    await sync.waitForSync();
+    expect(syncs, 2);
+  });
+
+  scheduleTest('pending foreground catch-up hands off to scheduled timing', (
+    clock,
+    _,
+  ) async {
+    appdata.implicitData['webdavSyncTiming'] = 'realtime';
+    appdata.implicitData['webdavSyncDirection'] = 'bidirectional';
+    final sync = DataSync();
+    await sync.waitForStartupMerge();
+    await sync.waitForSync();
+
+    final started = Completer<void>();
+    final first = Completer<Res<bool>>();
+    var syncs = 0;
+    DataSync.debugSyncOverride = () {
+      syncs++;
+      if (syncs == 1) {
+        started.complete();
+        return first.future;
+      }
+      return Future.value(const Res(true));
+    };
+    sync.onAppForegroundChanged(false);
+    sync.onAppForegroundChanged(true);
+    await started.future;
+    sync.onAppForegroundChanged(false);
+    sync.onAppForegroundChanged(true);
+    appdata.implicitData
+      ..['webdavSyncTiming'] = 'scheduled'
+      ..['webdavSyncIntervalMinutes'] = 5;
+
+    first.complete(const Res(true));
+    await sync.waitForSync();
+    expect(syncs, 1);
+    await clock.elapse(const Duration(minutes: 5));
+    await sync.waitForSync();
+    expect(syncs, 2);
+  });
+
   scheduleTest(
     'a local notification with no captured records does not sync remotely',
     (clock, calls) async {
@@ -163,7 +292,7 @@ void main() {
     for (var i = 0; i < 8; i++) {
       calls.edit(sync);
     }
-    await clock.elapse(const Duration(minutes: 3));
+    await clock.elapse(const Duration(seconds: 5));
     await sync.waitForSync();
     expect(calls.uploads, 1);
 
@@ -174,8 +303,8 @@ void main() {
     // 持续编辑期间，至少发生一次额外同步
     await sync.waitForSync();
     expect(calls.uploads, greaterThanOrEqualTo(2));
-    // 停止编辑后，等待 10 秒防抖期结束
-    await clock.elapse(const Duration(seconds: 10));
+    // 停止编辑后，等待短防抖期结束
+    await clock.elapse(const Duration(seconds: 2));
     await sync.waitForSync();
 
     // 包含最初的上传，总计应至少上传 3 次
@@ -200,7 +329,7 @@ void main() {
       final sync = DataSync();
       await sync.waitForStartupMerge();
       calls.edit(sync);
-      await clock.elapse(const Duration(minutes: 3));
+      await clock.elapse(const Duration(seconds: 5));
       await started.future;
       expect(calls.uploads, 1);
 
@@ -209,9 +338,9 @@ void main() {
       await sync.waitForSync();
       expect(sync.hasPendingChanges, isTrue);
 
-      await clock.elapse(const Duration(seconds: 30));
+      await clock.elapse(const Duration(seconds: 4));
       expect(calls.uploads, 1);
-      await clock.elapse(const Duration(minutes: 2));
+      await clock.elapse(const Duration(seconds: 1));
       await sync.waitForSync();
       expect(calls.uploads, 2);
       expect(sync.hasPendingChanges, isFalse);
@@ -239,7 +368,7 @@ void main() {
       final lastSuccess = sync.statusSnapshot.lastSuccessTime;
       appdata.implicitData['webdavSyncTiming'] = 'realtime';
       calls.edit(sync);
-      await clock.elapse(const Duration(minutes: 3));
+      await clock.elapse(const Duration(seconds: 5));
       expect((await sync.waitForSync()).error, isTrue);
       expect(calls.uploads, 1);
       expect(sync.statusSnapshot.lastSuccessTime, lastSuccess);
@@ -249,15 +378,15 @@ void main() {
       );
 
       calls.edit(sync);
-      await clock.elapse(const Duration(seconds: 30));
+      await clock.elapse(const Duration(seconds: 4));
       expect(calls.uploads, 1);
-      await clock.elapse(const Duration(minutes: 2));
+      await clock.elapse(const Duration(seconds: 1));
       await sync.waitForSync();
       expect(calls.uploads, 2);
 
       failWithAuth = true;
       calls.edit(sync);
-      await clock.elapse(const Duration(minutes: 3));
+      await clock.elapse(const Duration(seconds: 5));
       expect((await sync.waitForSync()).error, isTrue);
       expect(calls.uploads, 3);
       calls.edit(sync);

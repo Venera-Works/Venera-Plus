@@ -183,10 +183,10 @@ class DataSync with ChangeNotifier {
       });
     }
   }
-  static const _changeQuietPeriod = Duration(seconds: 10);
-  static const _minimumUploadInterval = Duration(seconds: 60);
-  static const _maximumDirtyWait = Duration(minutes: 2);
-  static const _remoteCheckInterval = Duration(minutes: 10);
+  static const _changeQuietPeriod = Duration(seconds: 2);
+  static const _minimumUploadInterval = Duration(seconds: 5);
+  static const _maximumDirtyWait = Duration(seconds: 5);
+  static const _remoteCheckInterval = Duration(seconds: 5);
   static const _importZoneKey = #_dataSyncImporting;
 
   static final Map<String, Future<void>> _initializationLockTails = {};
@@ -237,6 +237,8 @@ class DataSync with ChangeNotifier {
       appdata.implicitData['webdavSyncAuthenticationBlocked'] == true;
   bool _flushRequested = false;
   bool _activeRequestDidRemote = false;
+  bool _appInForeground = true;
+  bool _foregroundCatchUpRequested = false;
   Set<String>? _unattachedDirtyDomains = <String>{};
 
   DateTime get _now => debugNow?.call() ?? DateTime.now();
@@ -531,9 +533,7 @@ class DataSync with ChangeNotifier {
   }
 
   bool get _uploadThrottleActive {
-    final lastUpload =
-        _readTimestamp('webdavSyncLastUploadAttempt') ??
-        _readTimestamp('webdavSyncLastAttempt');
+    final lastUpload = _readTimestamp('webdavSyncLastUploadAttempt');
     return lastUpload != null &&
         _now.isBefore(lastUpload.add(_minimumUploadInterval));
   }
@@ -548,9 +548,7 @@ class DataSync with ChangeNotifier {
         ? maximumDeadline
         : quietDeadline;
     if (direction != SyncDirection.downloadOnly) {
-      final lastUpload =
-          _readTimestamp('webdavSyncLastUploadAttempt') ??
-          _readTimestamp('webdavSyncLastAttempt');
+      final lastUpload = _readTimestamp('webdavSyncLastUploadAttempt');
       if (lastUpload != null) {
         final uploadDeadline = lastUpload.add(_minimumUploadInterval);
         if (uploadDeadline.isAfter(deadline)) deadline = uploadDeadline;
@@ -563,6 +561,7 @@ class DataSync with ChangeNotifier {
 
   void _scheduleAutomaticWork() {
     if (_disposed ||
+        !_appInForeground ||
         !_startupReady ||
         _configuring ||
         timing != SyncTiming.realtime ||
@@ -621,6 +620,7 @@ class DataSync with ChangeNotifier {
     _remoteCheckTimer?.cancel();
     _remoteCheckTimer = null;
     if (_disposed ||
+        !_appInForeground ||
         !_startupReady ||
         _configuring ||
         !isEnabled ||
@@ -737,11 +737,84 @@ class DataSync with ChangeNotifier {
     return '${endpoint.url}#${endpoint.user}';
   }
 
-  /// Called at startup and resume, independently of the home page being mounted.
+  /// Called by the application lifecycle owner when foreground state changes.
+  void onAppForegroundChanged(bool isForeground) {
+    if (_disposed) return;
+    if (_appInForeground == isForeground) {
+      if (isForeground && timing == SyncTiming.realtime) {
+        _foregroundCatchUpRequested = true;
+        _scheduleForegroundCatchUp();
+      } else if (isForeground) {
+        _foregroundCatchUpRequested = false;
+        checkForAutomaticSync();
+      }
+      return;
+    }
+    _appInForeground = isForeground;
+    if (!isForeground) {
+      _scheduleTimer?.cancel();
+      _scheduleTimer = null;
+      _debounceTimer?.cancel();
+      _debounceTimer = null;
+      _remoteCheckTimer?.cancel();
+      _remoteCheckTimer = null;
+      unawaited(flushPendingChanges());
+      return;
+    }
+    if (timing == SyncTiming.realtime) {
+      _foregroundCatchUpRequested = true;
+      _scheduleForegroundCatchUp();
+    } else {
+      _foregroundCatchUpRequested = false;
+      checkForAutomaticSync();
+    }
+  }
+
+  void _scheduleForegroundCatchUp() {
+    if (_disposed ||
+        !_appInForeground ||
+        !_startupReady ||
+        _configuring ||
+        !isEnabled ||
+        timing != SyncTiming.realtime) {
+      return;
+    }
+    if (_active != null) return;
+    _foregroundCatchUpRequested = false;
+    _localDirty = _localDirty || hasPendingChanges;
+    if (_localDirty) {
+      _dirtySince ??= _now;
+      _lastLocalChange ??= _now;
+    }
+    if (_automaticWorkBlocked) {
+      _scheduleAutomaticWork();
+      return;
+    }
+    if (direction == SyncDirection.uploadOnly) {
+      _scheduleAutomaticWork();
+      return;
+    }
+    final remoteOnly =
+        _localDirty &&
+        direction == SyncDirection.bidirectional &&
+        _uploadThrottleActive;
+    _queueAutomaticSync(
+      trigger: 'Resume check',
+      checkRemote: true,
+      forceCapture: false,
+      remoteOnly: remoteOnly,
+    );
+  }
+
+  /// Called at startup and by timers.
   void checkForAutomaticSync({bool startup = false}) {
     _scheduleTimer?.cancel();
     _scheduleTimer = null;
-    if (_disposed || !_startupReady || _configuring || !isEnabled) {
+    if (_disposed ||
+        !_appInForeground ||
+        !_startupReady ||
+        _configuring ||
+        !isEnabled) {
       return;
     }
 
@@ -757,7 +830,7 @@ class DataSync with ChangeNotifier {
         if (retryRemaining > remaining) remaining = retryRemaining;
       }
       if (remaining > Duration.zero) {
-        _scheduleTimer = Timer(remaining, () => checkForAutomaticSync());
+        _scheduleTimer = Timer(remaining, checkForAutomaticSync);
         return;
       }
       if (_active == null) {
@@ -780,20 +853,19 @@ class DataSync with ChangeNotifier {
       _scheduleAutomaticWork();
       return;
     }
-    if (_active != null) {
-      return;
-    }
-    if (startup) {
+    if (_active != null) return;
+    final forceRemoteCheck = startup && direction != SyncDirection.uploadOnly;
+    final forceStartupUpload = startup && direction == SyncDirection.uploadOnly;
+    if (forceRemoteCheck || forceStartupUpload || _remoteCheckDue) {
+      final remoteOnly =
+          _localDirty &&
+          direction == SyncDirection.bidirectional &&
+          _uploadThrottleActive;
       _queueAutomaticSync(
-        trigger: 'Startup check',
-        checkRemote: _remoteCheckDue,
-        forceCapture: true,
-      );
-    } else if (_remoteCheckDue) {
-      _queueAutomaticSync(
-        trigger: 'Resume check',
-        checkRemote: true,
-        forceCapture: true,
+        trigger: startup ? 'Startup check' : 'Remote check',
+        checkRemote: forceRemoteCheck || _remoteCheckDue,
+        forceCapture: startup,
+        remoteOnly: remoteOnly,
       );
     } else {
       _scheduleAutomaticWork();
@@ -1698,7 +1770,6 @@ class DataSync with ChangeNotifier {
       await _recordSyncAttempt(
         trigger: 'List root backups',
         checkRemote: false,
-        requestUpload: false,
       );
       backups = await coordinator.listLegacyBackups();
       return const Res(true);
@@ -1720,9 +1791,12 @@ class DataSync with ChangeNotifier {
       await _recordSyncAttempt(
         trigger: 'Import root backup',
         checkRemote: true,
-        requestUpload: direction != SyncDirection.downloadOnly,
       );
-      return coordinator.importLegacyBackup(backupName, direction: direction);
+      return coordinator.importLegacyBackup(
+        backupName,
+        direction: direction,
+        onUploadAttempt: _recordUploadAttempt,
+      );
     },
     key: (_DataSyncTask.sync, 'root-backup-import', backupName),
     trigger: 'Import root backup',
@@ -1803,11 +1877,11 @@ class DataSync with ChangeNotifier {
         await _recordSyncAttempt(
           trigger: 'Manual sync',
           checkRemote: direction != SyncDirection.uploadOnly,
-          requestUpload: direction != SyncDirection.downloadOnly,
         );
         return await _coordinator!.resolveConflicts(
           choices,
           direction: direction,
+          onUploadAttempt: _recordUploadAttempt,
         );
       },
       trigger: 'Manual sync',
@@ -2044,7 +2118,8 @@ class DataSync with ChangeNotifier {
     }
 
     var hasOutbox = coordinator.store.outbox.isNotEmpty;
-    if (!forceCapture || !shouldCheckRemote) {
+    if (!shouldCheckRemote ||
+        (!forceCapture && (_localDirty || hasOutbox || hasPendingChanges))) {
       hasOutbox = await coordinator.captureLocalChanges();
     }
     if (!hasOutbox &&
@@ -2095,17 +2170,19 @@ class DataSync with ChangeNotifier {
   Future<void> _recordSyncAttempt({
     required String trigger,
     required bool checkRemote,
-    required bool requestUpload,
   }) async {
     final now = _now.millisecondsSinceEpoch;
     appdata.implicitData['webdavSyncLastAttempt'] = now;
     appdata.implicitData['webdavSyncLastTrigger'] = trigger;
-    if (requestUpload) {
-      appdata.implicitData['webdavSyncLastUploadAttempt'] = now;
-    }
     if (checkRemote) {
       appdata.implicitData['webdavSyncLastRemoteCheck'] = now;
     }
+    await _writeImplicitStatusAndWait();
+  }
+
+  Future<void> _recordUploadAttempt() async {
+    appdata.implicitData['webdavSyncLastUploadAttempt'] =
+        _now.millisecondsSinceEpoch;
     await _writeImplicitStatusAndWait();
   }
 
@@ -2122,12 +2199,12 @@ class DataSync with ChangeNotifier {
     await _recordSyncAttempt(
       trigger: _active?.trigger ?? 'Manual sync',
       checkRemote: checkRemote && direction != SyncDirection.uploadOnly,
-      requestUpload: direction != SyncDirection.downloadOnly,
     );
     return coordinator.performSync(
       direction: direction,
       checkRemote: checkRemote,
       forceCapture: forceCapture,
+      onUploadAttempt: _recordUploadAttempt,
     );
   }
 
@@ -2140,8 +2217,10 @@ class DataSync with ChangeNotifier {
       await _recordSyncAttempt(
         trigger: _active?.trigger ?? 'Manual sync',
         checkRemote: checkRemote && direction != SyncDirection.uploadOnly,
-        requestUpload: direction != SyncDirection.downloadOnly,
       );
+      if (direction != SyncDirection.downloadOnly) {
+        await _recordUploadAttempt();
+      }
       return await debugSyncOverride!();
     }
     if (direction == SyncDirection.uploadOnly && debugUploadOverride != null) {
@@ -2184,8 +2263,8 @@ class DataSync with ChangeNotifier {
       await _recordSyncAttempt(
         trigger: _active?.trigger ?? 'Manual sync',
         checkRemote: false,
-        requestUpload: true,
       );
+      await _recordUploadAttempt();
       return await debugUploadOverride!();
     }
     await _ensureCoordinatorLoaded();
@@ -2210,7 +2289,6 @@ class DataSync with ChangeNotifier {
       await _recordSyncAttempt(
         trigger: _active?.trigger ?? 'Manual sync',
         checkRemote: true,
-        requestUpload: false,
       );
       return await debugDownloadOverride!();
     }
@@ -2406,7 +2484,16 @@ class DataSync with ChangeNotifier {
     if (next != null) {
       unawaited(_runTask(next));
     } else if (!_disposed) {
-      checkForAutomaticSync();
+      if (_foregroundCatchUpRequested) {
+        if (timing == SyncTiming.realtime) {
+          _scheduleForegroundCatchUp();
+        } else {
+          _foregroundCatchUpRequested = false;
+          checkForAutomaticSync();
+        }
+      } else {
+        checkForAutomaticSync();
+      }
     }
   }
 
@@ -2420,10 +2507,14 @@ class DataSync with ChangeNotifier {
       appdata.implicitData.remove('webdavSyncRetryAfter');
       return;
     }
-    final exponent = (failures - 1).clamp(0, 5).toInt();
-    final retryMinutes = exponent == 5 ? 60 : 1 << exponent;
+    final exponent = (failures - 1)
+        .clamp(0, timing == SyncTiming.realtime ? 6 : 5)
+        .toInt();
+    final retryDelay = timing == SyncTiming.realtime
+        ? Duration(seconds: (5 * (1 << exponent)).clamp(5, 300))
+        : Duration(minutes: exponent == 5 ? 60 : 1 << exponent);
     appdata.implicitData['webdavSyncRetryAfter'] = _now
-        .add(Duration(minutes: retryMinutes))
+        .add(retryDelay)
         .millisecondsSinceEpoch;
   }
 

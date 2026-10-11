@@ -60,6 +60,7 @@ class MergeStore {
   }
 
   MergeDocument get document => _document;
+  bool get initialized => _initialized;
   bool get hasCompletedSync => _hasCompletedSync;
   bool get hasProgressProtocolMigration => _hasProgressProtocolMigration;
   String? manualCandidateId(String recordKey, String field) =>

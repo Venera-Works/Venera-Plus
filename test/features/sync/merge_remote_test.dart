@@ -347,6 +347,131 @@ void main() {
       }
     },
   );
+
+  test(
+    'idle discovery skips received heads but still handles changes',
+    () async {
+      final directory = await Directory.systemTemp.createTemp('sync-idle-');
+      final records = <String, Map<String, Object?>>{
+        syncRecordKey('setting', ['theme']): {'value': 'dark'},
+      };
+      var exports = 0;
+      var applies = 0;
+      final state = Directory('${directory.path}/state');
+      final coordinator = MergeSyncCoordinator(
+        endpointHash: 'idle-loopback',
+        stateDirectory: state,
+        actor: 'idle-local',
+        store: MergeStore(state, 'idle-local'),
+        remote: MergeRemote(remote.client, deviceName: 'Local'),
+        exportFavoritesOverride: () => {},
+        applyFavoritesOverride: (_) {},
+        exportHistoryOverride: () async => {},
+        applyHistoryOverride: (_) {},
+        exportPreferencesOverride: () async {
+          exports++;
+          return cloneSyncRecords(records);
+        },
+        applyPreferencesOverride: (_, {beforeCommit}) async {
+          applies++;
+          beforeCommit?.call();
+        },
+      );
+      MergeBatch remoteBatch(int counter, String value) {
+        final document = MergeDocument()
+          ..setCounterFloor('idle-remote', counter - 1)
+          ..captureLocal('idle-remote', {}, {
+            syncRecordKey('setting', ['remote']): {'value': value},
+          });
+        return MergeBatch.create(
+          actor: 'idle-remote',
+          counter: counter,
+          document: document,
+        );
+      }
+
+      try {
+        await coordinator.store.load();
+        expect(
+          (await coordinator.performSync(
+            direction: SyncDirection.bidirectional,
+          )).success,
+          isTrue,
+        );
+        final peer = MergeRemote(remote.client, deviceName: 'Remote');
+        await peer.upload(remoteBatch(2, 'new'));
+        expect(
+          (await coordinator.performSync(
+            direction: SyncDirection.bidirectional,
+          )).success,
+          isTrue,
+        );
+        await peer.upload(remoteBatch(1, 'old-unreceived'));
+
+        final exportBeforeIdle = exports;
+        final applyBeforeIdle = applies;
+        final commitBeforeIdle = server.commitPutCount;
+        final requestStart = server.receivedRequests.length;
+        expect(
+          (await coordinator.performSync(
+            direction: SyncDirection.bidirectional,
+            forceCapture: false,
+          )).success,
+          isTrue,
+        );
+        expect(exports, exportBeforeIdle);
+        expect(applies, applyBeforeIdle);
+        expect(server.commitPutCount, commitBeforeIdle);
+        expect(
+          server.receivedRequests
+              .skip(requestStart)
+              .where((request) => request.contains('/commits/')),
+          isEmpty,
+        );
+
+        await peer.upload(remoteBatch(3, 'newest'));
+        expect(
+          (await coordinator.performSync(
+            direction: SyncDirection.bidirectional,
+            forceCapture: false,
+          )).success,
+          isTrue,
+        );
+        expect(applies, greaterThan(applyBeforeIdle));
+
+        records[syncRecordKey('setting', ['theme'])] = {'value': 'light'};
+        coordinator.markDirty({'setting'});
+        final exportBeforeLocalChange = exports;
+        expect(
+          (await coordinator.performSync(
+            direction: SyncDirection.bidirectional,
+            forceCapture: false,
+          )).success,
+          isTrue,
+        );
+        expect(exports, greaterThan(exportBeforeLocalChange));
+
+        final ownEntries = (await remote.list())
+            .where((entry) => entry.actor == 'idle-local')
+            .toList();
+        for (final entry in ownEntries) {
+          server._files.remove('/dav/${entry.filename}');
+          server._etags.remove('/dav/${entry.filename}');
+        }
+        final commitBeforeRestore = server.commitPutCount;
+        expect(
+          (await coordinator.performSync(
+            direction: SyncDirection.bidirectional,
+            forceCapture: false,
+          )).success,
+          isTrue,
+        );
+        expect(server.commitPutCount, greaterThan(commitBeforeRestore));
+      } finally {
+        if (directory.existsSync()) directory.deleteSync(recursive: true);
+      }
+    },
+  );
   test(
     'legacy namespace remains readable but cannot be written or compacted',
     () async {
@@ -572,6 +697,57 @@ void main() {
           401;
       await expectLater(remote.list(), throwsA(isA<MergeRemoteException>()));
       expect(remote.warnings, isEmpty);
+    },
+  );
+
+  test(
+    'device ownership discovery revalidates cached markers with ETags',
+    () async {
+      final batch = createTestBatch(actor: 'marker-cache', counter: 1);
+      final path = await remote.upload(batch);
+      final reader = MergeRemote(remote.client, deviceName: 'Reader');
+
+      expect((await reader.list()).single.filename, path);
+      final requestStart = server.markerGetHeaders.length;
+      expect((await reader.list()).single.filename, path);
+      expect(
+        server.markerGetHeaders.skip(requestStart).single['if-none-match'],
+        isNotEmpty,
+      );
+
+      final markerPath = '/dav/VeneraPlus-v2/${path.split('/')[1]}/device.json';
+      server.injectFile(
+        markerPath,
+        utf8.encode(
+          jsonEncode({'actor': batch.actor, 'name': path.split('/')[1]}),
+        ),
+        eTag: '"changed-marker"',
+      );
+      expect((await reader.list()).single.filename, path);
+    },
+  );
+
+  test(
+    'device discovery uses four workers and waits for issued marker reads',
+    () async {
+      for (var index = 0; index < 6; index++) {
+        final name = 'Device$index';
+        server.injectOwnership(
+          '/dav/VeneraPlus-v2/$name',
+          actor: 'actor$index',
+          name: name,
+        );
+      }
+      server.markerGetDelay = const Duration(milliseconds: 20);
+
+      await remote.list();
+      expect(server.maxActiveMarkerGetRequests, greaterThan(1));
+      expect(server.maxActiveMarkerGetRequests, lessThanOrEqualTo(4));
+      expect(server.activeMarkerGetRequests, 0);
+
+      server.getStatuses['/dav/VeneraPlus-v2/Device0/device.json'] = 401;
+      await expectLater(remote.list(), throwsA(isA<MergeRemoteException>()));
+      expect(server.activeMarkerGetRequests, 0);
     },
   );
 
@@ -2071,6 +2247,7 @@ class _LoopbackWebDavServer {
   Map<String, List<String>>? lastPackPutHeaders;
   final List<Map<String, List<String>>> packPutHeaderLogs = [];
   final List<Map<String, List<String>>> markerPutHeaders = [];
+  final List<Map<String, List<String>>> markerGetHeaders = [];
   final List<Map<String, String>> deleteHeaderLogs = [];
   final Map<String, int> getStatuses = {};
   int markerPutCount = 0;
@@ -2078,8 +2255,11 @@ class _LoopbackWebDavServer {
   int objectPutCount = 0;
   int activePackRequests = 0;
   int maxActivePackRequests = 0;
+  int activeMarkerGetRequests = 0;
+  int maxActiveMarkerGetRequests = 0;
   Duration packPutDelay = Duration.zero;
   Duration packGetDelay = Duration.zero;
+  Duration markerGetDelay = Duration.zero;
   int? failPackPutAt;
 
   String? _redirectFrom;
@@ -2432,6 +2612,27 @@ class _LoopbackWebDavServer {
         return;
       }
       final isPack = path.contains('/packs/');
+      final isMarker = path.endsWith('/device.json');
+      if (isMarker) {
+        final headersMap = <String, List<String>>{};
+        request.headers.forEach((name, values) {
+          headersMap[name.toLowerCase()] = values;
+        });
+        markerGetHeaders.add(headersMap);
+        activeMarkerGetRequests++;
+        if (activeMarkerGetRequests > maxActiveMarkerGetRequests) {
+          maxActiveMarkerGetRequests = activeMarkerGetRequests;
+        }
+        if (markerGetDelay > Duration.zero) {
+          await Future<void>.delayed(markerGetDelay);
+        }
+        if (request.headers.value('if-none-match') == _etags[path]) {
+          activeMarkerGetRequests--;
+          request.response.statusCode = HttpStatus.notModified;
+          await request.response.close();
+          return;
+        }
+      }
       if (isPack) {
         activePackRequests++;
         if (activePackRequests > maxActivePackRequests) {
@@ -2453,6 +2654,7 @@ class _LoopbackWebDavServer {
       }
       request.response.add(content);
       if (isPack) activePackRequests--;
+      if (isMarker) activeMarkerGetRequests--;
       await request.response.close();
       return;
     }

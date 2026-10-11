@@ -1353,11 +1353,13 @@ class MergeSyncCoordinator {
   Future<Res<bool>> importLegacyBackup(
     String backupName, {
     required SyncDirection direction,
+    Future<void> Function()? onUploadAttempt,
   }) => performSync(
     direction: direction,
     checkRemote: true,
     forceCapture: true,
     legacyBackupName: backupName,
+    onUploadAttempt: onUploadAttempt,
   );
 
   void _recordCloudTime(MergeRemoteEntry entry, MergeDocument? document) {
@@ -1458,6 +1460,7 @@ class MergeSyncCoordinator {
     bool checkRemote = true,
     bool forceCapture = true,
     String? legacyBackupName,
+    Future<void> Function()? onUploadAttempt,
   }) async {
     remote.resetTransferStats();
     _automaticallyResolvedProgressCount = 0;
@@ -1472,7 +1475,25 @@ class MergeSyncCoordinator {
       markDirty();
     }
     var importedProgress = false;
+    List<MergeRemoteEntry>? discovered;
     try {
+      if (_canOnlyDiscoverRemote(
+        direction: direction,
+        checkRemote: checkRemote,
+        forceCapture: forceCapture,
+        legacyBackupName: legacyBackupName,
+      )) {
+        discovered = await _measure<List<MergeRemoteEntry>>(
+          'discover',
+          () => remote.list(latestOnly: false),
+        );
+        if (_capturedGeneration == _getGeneration() &&
+            _highestRemoteCandidatesAreReceived(discovered) &&
+            (direction == SyncDirection.downloadOnly ||
+                discovered.any((entry) => entry.actor == actor))) {
+          return const Res(true);
+        }
+      }
       await _measure('capture', () async {
         if (store.needsRecovery || store.pendingApply != null) {
           await startupRecovery();
@@ -1505,13 +1526,15 @@ class MergeSyncCoordinator {
       }
       final needsRemoteCheck = checkRemote;
 
-      List<MergeRemoteEntry>? discovered;
       if (direction != SyncDirection.uploadOnly && needsRemoteCheck) {
-        discovered = await _measure<List<MergeRemoteEntry>>(
-          'discover',
-          () => remote.list(latestOnly: false),
-        );
-        await _mergeRemoteEntries(discovered);
+        final listed =
+            discovered ??
+            await _measure<List<MergeRemoteEntry>>(
+              'discover',
+              () => remote.list(latestOnly: false),
+            );
+        discovered = listed;
+        await _mergeRemoteEntries(listed);
       }
       if (direction != SyncDirection.uploadOnly &&
           (needsRemoteCheck || importedLegacy || importedProgress)) {
@@ -1530,6 +1553,7 @@ class MergeSyncCoordinator {
         await _uploadOutboxWithRecovery(
           discovered: discovered,
           ensurePublished: needsRemoteCheck || forceCapture,
+          onUploadAttempt: onUploadAttempt,
         );
       }
       if (direction == SyncDirection.uploadOnly) await store.completeSync();
@@ -1562,11 +1586,53 @@ class MergeSyncCoordinator {
     }
   }
 
+  bool _canOnlyDiscoverRemote({
+    required SyncDirection direction,
+    required bool checkRemote,
+    required bool forceCapture,
+    required String? legacyBackupName,
+  }) {
+    if (forceCapture ||
+        !checkRemote ||
+        legacyBackupName != null ||
+        direction == SyncDirection.uploadOnly ||
+        store.needsRecovery ||
+        !store.initialized ||
+        !store.hasCompletedSync ||
+        store.pendingApply != null ||
+        store.pendingBatchIds.isNotEmpty ||
+        store.recoveredFromBackup ||
+        _dirtyDomains.isNotEmpty ||
+        _capturedGeneration != _getGeneration() ||
+        _cachedSnapshot?.needsSourceNormalization == true ||
+        unavailableDomains.isNotEmpty ||
+        hasConflict ||
+        !store.hasProgressProtocolMigration) {
+      return false;
+    }
+    return appdata.implicitData['legacyMigrationDone_$endpointHash'] == true;
+  }
+
+  bool _highestRemoteCandidatesAreReceived(List<MergeRemoteEntry> entries) {
+    final highestByActor = <String, int>{};
+    for (final entry in entries) {
+      final highest = highestByActor[entry.actor];
+      if (highest == null || entry.counter > highest) {
+        highestByActor[entry.actor] = entry.counter;
+      }
+    }
+    final received = store.received;
+    return entries
+        .where((entry) => entry.counter == highestByActor[entry.actor])
+        .every((entry) => received.contains(entry.filename));
+  }
+
   /// Resolves an active conflict batch, applies it, then publishes the durable
   /// checkpoint if allowed by [direction].
   Future<Res<bool>> resolveConflicts(
     List<MergeConflictResolution> resolutions, {
     required SyncDirection direction,
+    Future<void> Function()? onUploadAttempt,
   }) async {
     final immutableResolutions = List<MergeConflictResolution>.unmodifiable([
       for (final resolution in resolutions)
@@ -1608,7 +1674,10 @@ class MergeSyncCoordinator {
       applyCompleted = true;
 
       if (direction != SyncDirection.downloadOnly) {
-        await _uploadOutboxWithRecovery(ensurePublished: true);
+        await _uploadOutboxWithRecovery(
+          ensurePublished: true,
+          onUploadAttempt: onUploadAttempt,
+        );
       }
       return const Res(true);
     } on MergeStorePersistenceException catch (error) {
@@ -1731,6 +1800,7 @@ class MergeSyncCoordinator {
   Future<void> _uploadOutboxWithRecovery({
     List<MergeRemoteEntry>? discovered,
     bool ensurePublished = true,
+    Future<void> Function()? onUploadAttempt,
   }) async {
     if (!ensurePublished && store.pendingBatchIds.isEmpty) return;
     final priorEntries =
@@ -1747,6 +1817,12 @@ class MergeSyncCoordinator {
     }
     MergeSnapshot? lastUploaded;
     var newlyUploadedCommitCount = 0;
+    var uploadAttemptNotified = false;
+    Future<void> notifyUploadAttempt() async {
+      if (uploadAttemptNotified) return;
+      uploadAttemptNotified = true;
+      await onUploadAttempt?.call();
+    }
 
     final pendingIds = store.pendingBatchIds;
     for (final id in pendingIds) {
@@ -1756,6 +1832,7 @@ class MergeSyncCoordinator {
       final expectedBatch = store.pendingBatch(id);
       String uploadedPath;
       try {
+        await notifyUploadAttempt();
         uploadedPath = await _measure(
           'upload',
           () => remote.uploadSnapshot(snapshot),
@@ -1773,6 +1850,7 @@ class MergeSyncCoordinator {
             'The replacement checkpoint does not cover the pending intent.',
           );
         }
+        await notifyUploadAttempt();
         final replacementPath = await _measure(
           'upload',
           () => remote.uploadSnapshot(replacementSnapshot),

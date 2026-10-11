@@ -252,6 +252,20 @@ class _DeviceOwnership {
   final String name;
 }
 
+class _CachedDeviceOwnership {
+  const _CachedDeviceOwnership({required this.owner, required this.eTag});
+
+  final _DeviceOwnership owner;
+  final String eTag;
+}
+
+class _DeviceCommitListing {
+  const _DeviceCommitListing({required this.owner, required this.entries});
+
+  final _DeviceOwnership owner;
+  final List<MergeRemoteEntry> entries;
+}
+
 /// Remote WebDAV transport for VeneraPlus multi-device merge sync.
 ///
 /// Publications use immutable content-addressed Packs and four-segment commit paths.
@@ -335,6 +349,7 @@ class MergeRemote {
   /// Observable record of non-fatal operational warnings.
   final List<String> warnings = [];
   final Map<String, String> _deviceNames = {};
+  final Map<String, _CachedDeviceOwnership> _deviceOwnershipCache = {};
   static const int _maxInMemoryPublicationManifests = 4;
   final Map<String, SyncPackManifest> _publicationManifests = {};
   int _uploadedBytes = 0;
@@ -468,15 +483,78 @@ class MergeRemote {
   }) async {
     final path = _markerPath(directoryName);
     final Uint8List bytes;
+    final cached = _deviceOwnershipCache[path];
+    Response<ResponseBody>? response;
     try {
-      bytes = await _downloadRawBytes(path, maxBytes: 4096);
+      response = await _client.c.req<ResponseBody>(
+        _client,
+        'GET',
+        path,
+        optionsHandler: (options) {
+          options.responseType = ResponseType.stream;
+          if (cached != null) {
+            options.headers ??= {};
+            options.headers!['If-None-Match'] = cached.eTag;
+          }
+        },
+      );
     } on DioException catch (error) {
-      if (error.response?.statusCode == 404) return null;
+      if (error.response?.statusCode == 304 && cached != null) {
+        return cached.owner;
+      }
+      if (error.response?.statusCode == 404) {
+        _deviceOwnershipCache.remove(path);
+        return null;
+      }
       throw MergeRemoteException(
         'Failed to read device ownership marker',
         statusCode: error.response?.statusCode,
         cause: error,
       );
+    }
+    if (response.statusCode == 304) {
+      if (cached != null) return cached.owner;
+      throw const MergeRemoteException(
+        'Device ownership marker returned 304 without a verified cache',
+        statusCode: 304,
+      );
+    }
+    if (response.statusCode == 404) {
+      _deviceOwnershipCache.remove(path);
+      return null;
+    }
+    if (response.statusCode != 200 || response.data == null) {
+      throw MergeRemoteException(
+        'Failed to read device ownership marker',
+        statusCode: response.statusCode,
+      );
+    }
+    // A fresh representation supersedes the previous validator even when its
+    // contents turn out to be invalid; never reuse stale ownership metadata.
+    _deviceOwnershipCache.remove(path);
+    try {
+      final declaredLength = int.tryParse(
+        response.headers.value('content-length') ?? '',
+      );
+      if (declaredLength != null && declaredLength > 4096) {
+        await response.data!.stream.listen(null).cancel();
+        throw const MergeRemoteCorruptException(
+          'Device ownership marker exceeds size limit',
+        );
+      }
+      final builder = BytesBuilder(copy: false);
+      var received = 0;
+      await for (final chunk in response.data!.stream) {
+        _downloadedBytes += chunk.length;
+        if (chunk.length > 4096 - received) {
+          throw const MergeRemoteCorruptException(
+            'Device ownership marker exceeds size limit',
+          );
+        }
+        received += chunk.length;
+        builder.add(chunk);
+      }
+      bytes = builder.takeBytes();
     } on MergeRemoteCorruptException {
       if (!ignoreInvalid) rethrow;
       _recordWarning(
@@ -502,7 +580,15 @@ class MergeRemote {
           !_isSafeDeviceDirectoryName(name)) {
         throw const FormatException('Invalid device ownership marker values');
       }
-      return _DeviceOwnership(actor: actor, name: name);
+      final owner = _DeviceOwnership(actor: actor, name: name);
+      final eTag = response.headers.value('etag');
+      if (eTag != null && eTag.isNotEmpty) {
+        _deviceOwnershipCache[path] = _CachedDeviceOwnership(
+          owner: owner,
+          eTag: eTag,
+        );
+      }
+      return owner;
     } on FormatException catch (error) {
       final corrupt = MergeRemoteCorruptException(
         'Invalid ownership metadata in $path',
@@ -624,23 +710,24 @@ class MergeRemote {
       rethrow;
     }
 
-    final entries = <MergeRemoteEntry>[];
-    _deviceCount = 0;
-    for (final directory in deviceDirectories) {
-      if (directory.isDir != true) continue;
-      final directoryName = directory.name;
-      if (directoryName == null ||
-          const {'sync-v4', 'sync-v5'}.contains(directoryName.toLowerCase()) ||
-          !_isSafeDeviceDirectoryName(directoryName)) {
-        continue;
-      }
+    final directoryNames = <String>[
+      for (final directory in deviceDirectories)
+        if (directory.isDir == true &&
+            directory.name != null &&
+            !const {
+              'sync-v4',
+              'sync-v5',
+            }.contains(directory.name!.toLowerCase()) &&
+            _isSafeDeviceDirectoryName(directory.name!))
+          directory.name!,
+    ];
+    final listings = <_DeviceCommitListing>[];
+    await _runBounded<String>(directoryNames, (directoryName) async {
       final owner = await _readDeviceOwnership(
         directoryName,
         ignoreInvalid: true,
       );
-      if (owner == null) continue;
-      _deviceCount++;
-      _deviceNames[owner.actor] = owner.name;
+      if (owner == null) return;
 
       final List<dav.File> commitFiles;
       try {
@@ -648,9 +735,10 @@ class MergeRemote {
           '${_deviceDirectoryPath(directoryName)}/commits',
         );
       } on DioException catch (error) {
-        if (error.response?.statusCode == 404) continue;
+        if (error.response?.statusCode == 404) return;
         rethrow;
       }
+      final entries = <MergeRemoteEntry>[];
       for (final file in commitFiles) {
         if (file.isDir == true || file.name == null || file.size == 0) continue;
         final entry = MergeRemoteEntry.tryParsePackCommit(
@@ -662,6 +750,14 @@ class MergeRemote {
         );
         if (entry != null) entries.add(entry);
       }
+      listings.add(_DeviceCommitListing(owner: owner, entries: entries));
+    }, concurrency: _maxParallelTransfers);
+
+    final entries = <MergeRemoteEntry>[];
+    _deviceCount = listings.length;
+    for (final listing in listings) {
+      _deviceNames[listing.owner.actor] = listing.owner.name;
+      entries.addAll(listing.entries);
     }
 
     entries.sort((a, b) {

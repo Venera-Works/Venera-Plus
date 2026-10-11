@@ -81,6 +81,12 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     App.registerForceRebuild(forceRebuild);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     WidgetsBinding.instance.addObserver(this);
+    final lifecycleState = WidgetsBinding.instance.lifecycleState;
+    if (lifecycleState == AppLifecycleState.hidden ||
+        lifecycleState == AppLifecycleState.paused ||
+        lifecycleState == AppLifecycleState.detached) {
+      DataSync().onAppForegroundChanged(false);
+    }
     checkUpdates();
     super.initState();
   }
@@ -99,8 +105,12 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      DataSync().checkForAutomaticSync();
+      DataSync().onAppForegroundChanged(true);
       WebDavLibrarySource.checkForAutomaticSync();
+    } else if (state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      DataSync().onAppForegroundChanged(false);
     }
     if (!App.isMobile || !appdata.settings['authorizationRequired']) {
       return;
