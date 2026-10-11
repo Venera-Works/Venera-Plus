@@ -203,12 +203,13 @@ class Appdata with Init {
     }
     final changedDomains = _changedSyncDomains(_lastSyncDataSnapshot, syncJson);
     _lastSyncDataSnapshot = syncJson;
+    final syncData = jsonEncode(syncJson);
+    final write = _enqueueWrite(() => _writeAppData(data, syncData));
     if (sync && handler != null && changedDomains.isNotEmpty) {
       // Keep the notification in the caller's zone, including imported writes.
       unawaited(Future.sync(() => handler(domains: changedDomains)));
     }
-    final syncData = jsonEncode(syncJson);
-    return _enqueueWrite(() => _writeAppData(data, syncData));
+    return write;
   }
 
   void addSearchHistory(String keyword) {
@@ -376,9 +377,7 @@ class Appdata with Init {
 
   /// Removes an eligible setting by key, strictly observing safety filtering.
   void removeSyncSetting(String key) {
-    if (!isSettingSyncAllowed(key) ||
-        key == appdataObsoleteSyncSetting ||
-        key == 'readingFolder') {
+    if (!isSettingSyncAllowed(key) || key == appdataObsoleteSyncSetting) {
       return;
     }
     settings.remove(key);

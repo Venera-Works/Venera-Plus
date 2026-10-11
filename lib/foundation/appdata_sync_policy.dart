@@ -133,7 +133,6 @@ Set<String> getDisabledAppDataSyncFields(Map<String, dynamic> settings) {
     ...appdataDefaultDisabledSyncFields,
     appdataObsoleteSyncSetting,
     appdataObsoleteComicLibrarySyncSetting,
-    'readingFolder',
   };
   if (settings['backupWebdavSyncEnabled'] == true) {
     disabled.removeAll(appdataArchiveSyncFields);

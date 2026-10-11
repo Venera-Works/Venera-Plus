@@ -38,26 +38,6 @@ void main() {
     ]);
   });
 
-  test('failed sync startup never creates other writing services', () async {
-    var created = false;
-    var downloaded = false;
-    await expectLater(
-      initializeBangumiAfterDataSync(
-        waitForStartup: () async => throw StateError('bad merge state'),
-        waitForDownload: () async {
-          downloaded = true;
-        },
-        createInitializer: () {
-          created = true;
-          return () async {};
-        },
-      ),
-      throwsStateError,
-    );
-    expect(created, isFalse);
-    expect(downloaded, isFalse);
-  });
-
   test('Bangumi startup does not wait for network initialization', () async {
     final initialization = Completer<void>();
     var started = false;
@@ -141,46 +121,57 @@ void main() {
     });
 
     test(
-      'migrates legacy scheduled webdavSyncMode to timing and bidirectional direction',
+      'maps new scheduled timing to the restored mode and keeps local upload pending',
       () async {
-        appdata.implicitData['webdavSyncMode'] = 'scheduled';
-        appdata.implicitData.remove('webdavSyncDirection');
-        appdata.implicitData.remove('webdavSyncTiming');
+        appdata.settings['webdav'] = [
+          'https://example.com',
+          'user',
+          'password',
+        ];
+        appdata.implicitData['webdavSyncTiming'] = 'scheduled';
+        appdata.implicitData['webdavSyncDirection'] = 'downloadOnly';
 
         await checkOldConfigsForTesting();
 
-        expect(appdata.implicitData['webdavSyncDirection'], 'bidirectional');
-        expect(appdata.implicitData['webdavSyncTiming'], 'scheduled');
+        expect(appdata.implicitData['webdavSyncMode'], 'scheduled');
+        expect(appdata.implicitData['webdavSyncDirection'], isNull);
+        expect(appdata.implicitData['webdavSyncTiming'], isNull);
         expect(appdata.implicitData['webdavSyncIntervalMinutes'], 30);
-        expect(appdata.implicitData.containsKey('webdavSyncMode'), isFalse);
-        expect(appdata.implicitData.containsKey('webdavAutoSync'), isFalse);
+        expect(appdata.implicitData['webdavAutoSync'], isTrue);
+        expect(appdata.implicitData['webdavSyncPending'], isTrue);
       },
     );
 
-    test('migrates legacy webdavAutoSync to realtime timing', () async {
-      appdata.implicitData['webdavAutoSync'] = true;
-      appdata.implicitData.remove('webdavSyncDirection');
-      appdata.implicitData.remove('webdavSyncTiming');
+    test(
+      'preserves old disabled auto-sync when no new timing exists',
+      () async {
+        appdata.implicitData['webdavAutoSync'] = false;
 
-      await checkOldConfigsForTesting();
+        await checkOldConfigsForTesting();
 
-      expect(appdata.implicitData['webdavSyncDirection'], 'bidirectional');
-      expect(appdata.implicitData['webdavSyncTiming'], 'realtime');
-      expect(appdata.implicitData.containsKey('webdavAutoSync'), isFalse);
-    });
-    test('removes old keys even when new preferences already exist', () async {
-      appdata.implicitData.addAll({
-        'webdavSyncDirection': 'downloadOnly',
-        'webdavSyncTiming': 'manual',
-        'webdavSyncIntervalMinutes': 15,
-        'webdavSyncMode': 'realtime',
-        'webdavAutoSync': true,
-      });
-      await checkOldConfigsForTesting();
-      expect(appdata.implicitData['webdavSyncDirection'], 'downloadOnly');
-      expect(appdata.implicitData['webdavSyncTiming'], 'manual');
-      expect(appdata.implicitData.containsKey('webdavSyncMode'), isFalse);
-      expect(appdata.implicitData.containsKey('webdavAutoSync'), isFalse);
-    });
+        expect(appdata.implicitData['webdavSyncMode'], 'manual');
+        expect(appdata.implicitData['webdavAutoSync'], isFalse);
+      },
+    );
+    test(
+      'migration is idempotent and leaves old protocol state intact',
+      () async {
+        appdata.implicitData.addAll({
+          'webdavSyncDirection': 'downloadOnly',
+          'webdavSyncTiming': 'manual',
+          'webdavSyncIntervalMinutes': 15,
+          'webdavSyncMode': 'realtime',
+          'webdavAutoSync': true,
+        });
+        await checkOldConfigsForTesting();
+        appdata.implicitData['sync_state_device'] = 'preserved';
+        await checkOldConfigsForTesting();
+        expect(appdata.implicitData['webdavSyncDirection'], isNull);
+        expect(appdata.implicitData['webdavSyncTiming'], isNull);
+        expect(appdata.implicitData['webdavSyncMode'], 'realtime');
+        expect(appdata.implicitData['webdavAutoSync'], isTrue);
+        expect(appdata.implicitData['sync_state_device'], 'preserved');
+      },
+    );
   });
 }

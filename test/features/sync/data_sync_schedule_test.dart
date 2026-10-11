@@ -1,20 +1,17 @@
 import 'dart:async';
+import 'dart:convert';
 
-import 'package:dio/dio.dart';
-import 'package:webdav_client/webdav_client.dart' as dav;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
-import 'package:venera_plus/foundation/appdata_sync_policy.dart';
 import 'package:venera_plus/foundation/file_system.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/res.dart';
 
-const config = ['https://example.com/dav/VeneraPlus', 'user', 'password'];
+const config = ['https://example.com/dav/VeneraNext', 'user', 'password'];
 
 void main() {
-  TestWidgetsFlutterBinding.ensureInitialized();
   void scheduleTest(
     String name,
     Future<void> Function(_ScheduleClock, _Calls) body,
@@ -22,42 +19,26 @@ void main() {
     test(name, () async {
       final clock = _ScheduleClock();
       final directory = Directory.systemTemp.createTempSync('sync-schedule-');
-      var oldPath = Directory.systemTemp.path;
-      try {
-        oldPath = App.dataPath;
-      } catch (_) {}
       final previousSettings = Map<String, dynamic>.from(
         appdata.toJson()['settings'],
       );
       final previousImplicit = Map<String, dynamic>.from(appdata.implicitData);
-      final oldMuted = Log.isMuted;
-      _ScheduleDavClient.readDirCalls = 0;
       DataSync.resetForTesting();
       DataSync.debugDisableWindowCloseHandler = true;
       DataSync.debugNow = clock.now;
-      DataSync.debugExportRecords = () async => {};
-      DataSync.debugApplyRecords = (records, {beforeCommit}) async {
-        beforeCommit?.call();
-      };
-      DataSync.debugClientFactory = (_) => _ScheduleDavClient();
       App.dataPath = directory.path;
       Log.isMuted = true;
       appdata.settings['webdav'] = config;
-      appdata.implicitData
-        ..clear()
-        ..addAll({
-          'webdavSyncDirection': 'uploadOnly',
-          'webdavSyncTiming': 'scheduled',
-          'webdavSyncLastAttempt': clock.now().millisecondsSinceEpoch,
-        });
-      final calls = _Calls()..install();
-      DataSync.debugExportRecords = () async => cloneSyncRecords(calls.records);
+      appdata.implicitData.clear();
+      appdata.implicitData.addAll({
+        'webdavSyncMode': 'scheduled',
+        'webdavSyncLastAttempt': clock.now().millisecondsSinceEpoch,
+      });
+      final calls = _Calls();
+      calls.install();
       try {
         await runZoned(
-          () async {
-            await DataSync().waitForStartupMerge();
-            await body(clock, calls);
-          },
+          () => body(clock, calls),
           zoneSpecification: ZoneSpecification(
             createTimer: (self, parent, zone, duration, callback) {
               if (duration == Duration.zero) {
@@ -68,510 +49,260 @@ void main() {
           ),
         );
       } finally {
-        if (DataSync.instance != null) await DataSync.instance!.waitForSync();
         DataSync.resetForTesting();
-        // Flush earlier dirty writes before restoring process-global paths.
-        await appdata.writeImplicitData();
-        appdata.implicitData
-          ..clear()
-          ..addAll(previousImplicit);
-        (appdata.toJson()['settings'] as Map)
-          ..clear()
-          ..addAll(previousSettings);
-        App.dataPath = oldPath;
-        directory.deleteSync(recursive: true);
+        try {
+          await appdata.saveData(false);
+        } catch (_) {}
+        if (directory.existsSync()) {
+          directory.deleteSync(recursive: true);
+        }
+        appdata.implicitData.clear();
+        appdata.implicitData.addAll(previousImplicit);
+        previousSettings.forEach((key, value) => appdata.settings[key] = value);
         Log.clear();
-        Log.isMuted = oldMuted;
+        Log.isMuted = false;
       }
     });
   }
 
+  scheduleTest('legacy preference migration and invalid interval fallback', (
+    clock,
+    calls,
+  ) async {
+    appdata.implicitData.remove('webdavSyncMode');
+    expect(DataSync.mode, DataSyncMode.manual);
+    appdata.implicitData['webdavAutoSync'] = true;
+    expect(DataSync.mode, DataSyncMode.realtime);
+    appdata.implicitData['webdavSyncMode'] = 'scheduled';
+    expect(DataSync.mode, DataSyncMode.scheduled);
+    appdata.implicitData['webdavSyncIntervalMinutes'] = -1;
+    expect(DataSync.intervalMinutes, 30);
+    appdata.implicitData['webdavSyncIntervalMinutes'] = 60;
+    expect(DataSync.intervalMinutes, 60);
+  });
+
   scheduleTest(
-    'scheduled changes wait for due time and resume preserves interval',
+    'changes are batched until due; idle intervals only check downloads',
     (clock, calls) async {
       final sync = DataSync();
       for (var i = 0; i < 10; i++) {
-        calls.edit(sync);
+        sync.onDataChanged();
       }
       await clock.elapse(const Duration(minutes: 29));
-      sync.checkForAutomaticSync();
+      sync.checkForAutomaticSync(); // Resume cannot bypass the interval.
       expect(calls.uploads, 0);
+      expect(calls.downloads, 0);
       await clock.elapse(const Duration(minutes: 1));
-      await sync.waitForSync();
       expect(calls.uploads, 1);
+      expect(calls.downloads, 0);
       expect(sync.hasPendingChanges, isFalse);
       await clock.elapse(const Duration(minutes: 30));
-      await sync.waitForSync();
-      expect(calls.uploads, 2);
-      expect(calls.downloads, 0);
+      expect(calls.uploads, 1);
+      expect(calls.downloads, 1);
     },
   );
 
-  scheduleTest('manual bypasses throttling; realtime reacts to local edits', (
+  scheduleTest('pending changes and deadline survive restart', (
     clock,
     calls,
   ) async {
-    appdata.implicitData['webdavSyncTiming'] = 'manual';
-    final sync = DataSync()..onDataChanged();
-    await clock.elapse(const Duration(hours: 2));
-    expect(calls.uploads, 0);
-    await sync.syncNow();
-    expect(calls.uploads, 1);
-    await sync.syncNow();
-    expect(calls.uploads, 2);
-    appdata.implicitData['webdavSyncTiming'] = 'realtime';
-    calls.edit(sync);
-    await clock.elapse(const Duration(seconds: 5));
-    await sync.waitForSync();
-    expect(calls.uploads, 3);
-  });
-
-  scheduleTest('only uploads throttle realtime local changes', (
-    clock,
-    calls,
-  ) async {
-    final sync = DataSync();
-    await sync.waitForStartupMerge();
-    appdata.implicitData
-      ..['webdavSyncTiming'] = 'realtime'
-      ..['webdavSyncDirection'] = 'uploadOnly'
-      ..['webdavSyncLastAttempt'] = clock.now().millisecondsSinceEpoch
-      ..remove('webdavSyncLastUploadAttempt');
-
-    calls.edit(sync);
-    await clock.elapse(const Duration(seconds: 1));
-    expect(calls.uploads, 0);
-    await clock.elapse(const Duration(seconds: 1));
-    await sync.waitForSync();
-    expect(calls.uploads, 1);
-
-    calls.edit(sync);
-    await clock.elapse(const Duration(seconds: 4));
-    expect(calls.uploads, 1);
-    await clock.elapse(const Duration(seconds: 1));
-    await sync.waitForSync();
-    expect(calls.uploads, 2);
-  });
-
-  scheduleTest('foreground remote checks repeat and resume catches up once', (
-    clock,
-    _,
-  ) async {
-    appdata.implicitData['webdavSyncTiming'] = 'realtime';
-    appdata.implicitData['webdavSyncDirection'] = 'bidirectional';
-    final sync = DataSync();
-    await sync.waitForStartupMerge();
-    await sync.waitForSync();
-
-    var syncs = 0;
-    DataSync.debugSyncOverride = () async {
-      syncs++;
-      return const Res(true);
-    };
-    sync.checkForAutomaticSync();
-    await sync.waitForSync();
-    expect(syncs, 1);
-    await clock.elapse(const Duration(seconds: 4));
-    expect(syncs, 1);
-    await clock.elapse(const Duration(seconds: 1));
-    await sync.waitForSync();
-    expect(syncs, 2);
-
-    sync.onAppForegroundChanged(false);
-    await clock.elapse(const Duration(seconds: 10));
-    expect(syncs, 2);
-    sync.onAppForegroundChanged(true);
-    await sync.waitForSync();
-    expect(syncs, 3);
-  });
-
-  scheduleTest('resume during an active sync queues one catch-up check', (
-    clock,
-    _,
-  ) async {
-    appdata.implicitData['webdavSyncTiming'] = 'realtime';
-    appdata.implicitData['webdavSyncDirection'] = 'bidirectional';
-    final sync = DataSync();
-    await sync.waitForStartupMerge();
-    await sync.waitForSync();
-
-    final started = Completer<void>();
-    final first = Completer<Res<bool>>();
-    var syncs = 0;
-    DataSync.debugSyncOverride = () {
-      syncs++;
-      if (syncs == 1) {
-        started.complete();
-        return first.future;
-      }
-      return Future.value(const Res(true));
-    };
-    sync.onAppForegroundChanged(false);
-    sync.onAppForegroundChanged(true);
-    await started.future;
-    sync.onAppForegroundChanged(false);
-    sync.onAppForegroundChanged(true);
-    sync.onAppForegroundChanged(true);
-    expect(syncs, 1);
-
-    first.complete(const Res(true));
-    await sync.waitForSync();
-    expect(syncs, 2);
-  });
-
-  scheduleTest('pending foreground catch-up hands off to scheduled timing', (
-    clock,
-    _,
-  ) async {
-    appdata.implicitData['webdavSyncTiming'] = 'realtime';
-    appdata.implicitData['webdavSyncDirection'] = 'bidirectional';
-    final sync = DataSync();
-    await sync.waitForStartupMerge();
-    await sync.waitForSync();
-
-    final started = Completer<void>();
-    final first = Completer<Res<bool>>();
-    var syncs = 0;
-    DataSync.debugSyncOverride = () {
-      syncs++;
-      if (syncs == 1) {
-        started.complete();
-        return first.future;
-      }
-      return Future.value(const Res(true));
-    };
-    sync.onAppForegroundChanged(false);
-    sync.onAppForegroundChanged(true);
-    await started.future;
-    sync.onAppForegroundChanged(false);
-    sync.onAppForegroundChanged(true);
-    appdata.implicitData
-      ..['webdavSyncTiming'] = 'scheduled'
-      ..['webdavSyncIntervalMinutes'] = 5;
-
-    first.complete(const Res(true));
-    await sync.waitForSync();
-    expect(syncs, 1);
-    await clock.elapse(const Duration(minutes: 5));
-    await sync.waitForSync();
-    expect(syncs, 2);
-  });
-
-  scheduleTest(
-    'a local notification with no captured records does not sync remotely',
-    (clock, calls) async {
-      appdata.implicitData['webdavSyncTiming'] = 'realtime';
-      appdata.implicitData['webdavSyncDirection'] = 'uploadOnly';
-      DataSync.debugUploadOverride = null;
-      final sync = DataSync();
-      await sync.waitForStartupMerge();
-      final remoteDiscoveryCount = _ScheduleDavClient.readDirCalls;
-      final lastAttempt = sync.statusSnapshot.lastSyncTime;
-      final lastSuccess = sync.statusSnapshot.lastSuccessTime;
-
-      sync.onDataChanged(domains: const {'setting'});
-      await clock.elapse(const Duration(minutes: 3));
-      await sync.waitForSync();
-
-      expect(sync.hasPendingChanges, isFalse);
-      expect(sync.statusSnapshot.lastSyncTime, lastAttempt);
-      expect(sync.statusSnapshot.lastSuccessTime, lastSuccess);
-      expect(_ScheduleDavClient.readDirCalls, remoteDiscoveryCount);
-    },
-  );
-
-  scheduleTest('realtime changes coalesce and sustained edits still publish', (
-    clock,
-    calls,
-  ) async {
-    appdata.implicitData['webdavSyncTiming'] = 'realtime';
-    appdata.implicitData['webdavSyncDirection'] = 'uploadOnly';
-    DataSync.debugUploadOverride = null;
-    final sync = DataSync();
-    await sync.waitForStartupMerge();
-    await sync.waitForSync();
+    DataSync().onDataChanged();
+    await appdata.saveData(false);
+    final saved =
+        jsonDecode(File('${App.dataPath}/implicitData.json').readAsStringSync())
+            as Map;
+    expect(saved['webdavSyncPending'], isTrue);
+    DataSync.resetForTesting();
+    await clock.elapse(const Duration(minutes: 10));
+    DataSync.debugDisableWindowCloseHandler = true;
+    DataSync.debugNow = clock.now;
     calls.install();
-
-    for (var i = 0; i < 8; i++) {
-      calls.edit(sync);
-    }
-    await clock.elapse(const Duration(seconds: 5));
-    await sync.waitForSync();
-    expect(calls.uploads, 1);
-
-    for (var i = 0; i < 40; i++) {
-      calls.edit(sync);
-      await clock.elapse(const Duration(seconds: 5));
-    }
-    // 持续编辑期间，至少发生一次额外同步
-    await sync.waitForSync();
-    expect(calls.uploads, greaterThanOrEqualTo(2));
-    // 停止编辑后，等待短防抖期结束
-    await clock.elapse(const Duration(seconds: 2));
-    await sync.waitForSync();
-
-    // 包含最初的上传，总计应至少上传 3 次
-    expect(calls.uploads, greaterThanOrEqualTo(3));
-  });
-  scheduleTest(
-    'changes made during upload remain pending for the next capture',
-    (clock, calls) async {
-      appdata.implicitData['webdavSyncTiming'] = 'realtime';
-      appdata.implicitData['webdavSyncDirection'] = 'uploadOnly';
-      final firstUpload = Completer<Res<bool>>();
-      final started = Completer<void>();
-      DataSync.debugUploadOverride = () {
-        calls.uploads++;
-        if (calls.uploads == 1) started.complete();
-        return calls.publish(
-          calls.uploads == 1
-              ? firstUpload.future
-              : Future.value(const Res(true)),
-        );
-      };
-      final sync = DataSync();
-      await sync.waitForStartupMerge();
-      calls.edit(sync);
-      await clock.elapse(const Duration(seconds: 5));
-      await started.future;
-      expect(calls.uploads, 1);
-
-      calls.edit(sync);
-      firstUpload.complete(const Res(true));
-      await sync.waitForSync();
-      expect(sync.hasPendingChanges, isTrue);
-
-      await clock.elapse(const Duration(seconds: 4));
-      expect(calls.uploads, 1);
-      await clock.elapse(const Duration(seconds: 1));
-      await sync.waitForSync();
-      expect(calls.uploads, 2);
-      expect(sync.hasPendingChanges, isFalse);
-    },
-  );
-
-  scheduleTest(
-    'realtime failures back off and authentication stops automatic retries',
-    (clock, calls) async {
-      appdata.implicitData['webdavSyncTiming'] = 'manual';
-      appdata.implicitData['webdavSyncDirection'] = 'uploadOnly';
-      var failWithAuth = false;
-      DataSync.debugUploadOverride = () async {
-        calls.uploads++;
-        if (failWithAuth) {
-          throw StateError('HTTP 401 Unauthorized');
-        }
-        if (calls.uploads == 1) {
-          throw StateError('temporary network failure');
-        }
-        return calls.publish(Future.value(const Res(true)));
-      };
-      final sync = DataSync();
-      await sync.waitForStartupMerge();
-      final lastSuccess = sync.statusSnapshot.lastSuccessTime;
-      appdata.implicitData['webdavSyncTiming'] = 'realtime';
-      calls.edit(sync);
-      await clock.elapse(const Duration(seconds: 5));
-      expect((await sync.waitForSync()).error, isTrue);
-      expect(calls.uploads, 1);
-      expect(sync.statusSnapshot.lastSuccessTime, lastSuccess);
-      expect(
-        sync.statusSnapshot.lastSyncTime,
-        clock.now().millisecondsSinceEpoch,
-      );
-
-      calls.edit(sync);
-      await clock.elapse(const Duration(seconds: 4));
-      expect(calls.uploads, 1);
-      await clock.elapse(const Duration(seconds: 1));
-      await sync.waitForSync();
-      expect(calls.uploads, 2);
-
-      failWithAuth = true;
-      calls.edit(sync);
-      await clock.elapse(const Duration(seconds: 5));
-      expect((await sync.waitForSync()).error, isTrue);
-      expect(calls.uploads, 3);
-      calls.edit(sync);
-      await clock.elapse(const Duration(hours: 2));
-      expect(calls.uploads, 3);
-    },
-  );
-
-  scheduleTest('downloadOnly scheduling never uploads dirty local changes', (
-    clock,
-    calls,
-  ) async {
-    appdata.implicitData['webdavSyncDirection'] = 'downloadOnly';
-    final sync = DataSync()..onDataChanged();
-    await clock.elapse(const Duration(minutes: 30));
-    await sync.waitForSync();
+    appdata.implicitData.clear();
+    appdata.implicitData.addAll(Map<String, dynamic>.from(saved));
+    DataSync();
     expect(calls.uploads, 0);
-    expect(calls.downloads, 1);
-    expect((await sync.uploadData()).error, isTrue);
+    DataSync.resetForTesting();
+    await clock.elapse(const Duration(minutes: 25));
+    DataSync.debugDisableWindowCloseHandler = true;
+    DataSync.debugNow = clock.now;
+    calls.install();
+    DataSync();
+    await clock.elapse();
+    expect(calls.uploads, 1);
+    expect(calls.downloads, 0);
   });
 
-  scheduleTest('failure stays dirty and waits until next interval', (
+  scheduleTest('failed attempt keeps pending edits and waits before retry', (
     clock,
     calls,
   ) async {
     DataSync.debugUploadOverride = () async {
       calls.uploads++;
-      throw StateError('network failed');
+      return const Res.error('offline');
     };
     final sync = DataSync()..onDataChanged();
     await clock.elapse(const Duration(minutes: 30));
-    expect((await sync.waitForSync()).error, isTrue);
+    expect(sync.lastError, 'offline');
     expect(sync.hasPendingChanges, isTrue);
-    expect(calls.uploads, 1);
     sync.checkForAutomaticSync();
     await clock.elapse(const Duration(minutes: 29));
     expect(calls.uploads, 1);
     calls.install();
     await clock.elapse(const Duration(minutes: 1));
-    await sync.waitForSync();
     expect(calls.uploads, 2);
+    expect(sync.hasPendingChanges, isFalse);
   });
 
   scheduleTest(
-    'manual configuration cancels timers; scheduled confirmation reschedules',
+    'edits during upload remain pending without an immediate second upload',
     (clock, calls) async {
-      appdata.implicitData[appdataSyncExcludedDomainsKey] = ['search'];
-      final sync = DataSync();
-      final invalidScope = await sync.configure(
-        config: config,
-        excludedFields: '',
-        direction: SyncDirection.uploadOnly,
-        timing: SyncTiming.manual,
-        minutes: 15,
-        excludedDomains: const {'not-a-domain'},
-      );
-      expect(invalidScope.error, isTrue);
-      expect(appdata.implicitData[appdataSyncExcludedDomainsKey], ['search']);
+      final upload = Completer<Res<bool>>();
+      DataSync.debugUploadOverride = () {
+        calls.uploads++;
+        return upload.future;
+      };
+      final sync = DataSync()..onDataChanged();
+      await clock.elapse(const Duration(minutes: 30));
+      sync.onDataChanged();
+      sync.checkForAutomaticSync();
+      upload.complete(const Res(true));
+      await clock.elapse();
+      expect(sync.hasPendingChanges, isTrue);
+      expect(calls.uploads, 1);
+      calls.install();
+      await clock.elapse(const Duration(minutes: 30));
+      expect(calls.uploads, 2);
+      expect(sync.hasPendingChanges, isFalse);
+    },
+  );
 
-      expect(
-        (await sync.configure(
-          config: config,
-          excludedFields: '',
-          direction: SyncDirection.uploadOnly,
-          timing: SyncTiming.manual,
-          minutes: 15,
-          excludedDomains: const {'historyChapter'},
-        )).success,
-        isTrue,
-      );
-      expect(appdata.implicitData[appdataSyncExcludedDomainsKey], [
-        'history',
-        'historyChapter',
-      ]);
-      await clock.elapse(const Duration(hours: 1));
-      expect(calls.uploads, 0);
-      expect(
-        (await sync.configure(
-          config: config,
-          excludedFields: '',
-          direction: SyncDirection.uploadOnly,
-          timing: SyncTiming.scheduled,
-          minutes: 15,
-          excludedDomains: null,
-        )).success,
-        isTrue,
-      );
-      expect(appdata.implicitData[appdataSyncExcludedDomainsKey], [
-        'history',
-        'historyChapter',
-      ]);
-      // Saved configuration queues a separate transfer. Finish that task (and
-      // its disk writes) before advancing the fake wall clock.
-      await sync.waitForSync();
+  scheduleTest('download import notifications do not schedule an upload', (
+    clock,
+    calls,
+  ) async {
+    final sync = DataSync();
+    DataSync.debugDownloadOverride = () async {
+      calls.downloads++;
+      sync.onDataChanged();
+      return const Res(true);
+    };
+    await clock.elapse(const Duration(minutes: 60));
+    expect(calls.downloads, 1);
+    expect(sync.hasPendingChanges, isFalse);
+    expect(calls.uploads, 0);
+  });
+
+  scheduleTest('download without a newer snapshot keeps local edits pending', (
+    clock,
+    calls,
+  ) async {
+    final sync = DataSync()..onDataChanged();
+    await sync.downloadData();
+    expect(calls.downloads, 1);
+    expect(sync.hasPendingChanges, isTrue);
+    await clock.elapse(const Duration(minutes: 30));
+    expect(calls.uploads, 1);
+    expect(sync.hasPendingChanges, isFalse);
+  });
+
+  scheduleTest(
+    'manual sync works immediately and postpones the next scheduled check',
+    (clock, calls) async {
+      final sync = DataSync()..onDataChanged();
+      await clock.elapse(const Duration(minutes: 20));
+      await sync.uploadData();
+      await clock.elapse(const Duration(minutes: 10));
+      sync.checkForAutomaticSync();
       expect(calls.uploads, 1);
-      await clock.elapse(const Duration(minutes: 14));
+      expect(calls.downloads, 0);
+      await clock.elapse(const Duration(minutes: 20));
+      expect(calls.downloads, 1);
+    },
+  );
+
+  scheduleTest(
+    'manual mode has no automatic transfer; realtime preserves immediate uploads',
+    (clock, calls) async {
+      appdata.implicitData['webdavSyncMode'] = 'manual';
+      final sync = DataSync()..onDataChanged();
+      sync.checkForAutomaticSync();
+      await clock.elapse(const Duration(hours: 2));
+      expect(calls.uploads + calls.downloads, 0);
+      expect(sync.statusSnapshot.shouldShow, isTrue);
+      await sync.uploadData();
       expect(calls.uploads, 1);
-      await clock.elapse(const Duration(minutes: 1));
-      await sync.waitForSync();
+      appdata.implicitData['webdavSyncMode'] = 'realtime';
+      sync.onDataChanged();
+      await clock.elapse();
       expect(calls.uploads, 2);
     },
   );
+
   scheduleTest(
-    'unrecoverable state errors pause automatic work and preserve pending data',
+    'configuration rollback retains endpoint, mode, fields and schedule',
     (clock, calls) async {
-      appdata.implicitData['webdavSyncTiming'] = 'realtime';
-      appdata.implicitData['webdavSyncDirection'] = 'uploadOnly';
-      final sync = DataSync();
-      await sync.waitForStartupMerge();
-      await sync.waitForSync();
-
-      var failPublication = true;
-      DataSync.debugUploadOverride = () async {
-        calls.uploads++;
-        final coordinator = sync.coordinator!;
-        await coordinator.captureLocalChanges();
-        final store = coordinator.store;
-        if (failPublication) {
-          final batch = store.outbox.last;
-          return Res.error(
-            MergeOutboxCounterConflictException(
-              actor: batch.actor,
-              counter: batch.counter,
-              existingBatchId: batch.id,
-              incomingBatchId: 'conflicting-publication',
-            ).toString(),
-          );
-        }
-        for (final id in store.pendingBatchIds) {
-          await store.acknowledge(id);
-        }
-        return const Res(true);
-      };
-
-      calls.edit(sync);
-      await clock.elapse(const Duration(minutes: 3));
-      final failed = await sync.waitForSync();
-      expect(failed.error, isTrue);
-      expect(
-        sync.statusSnapshot.lastError,
-        contains('SYNC_OUTBOX_COUNTER_CONFLICT'),
+      final sync = DataSync()..onDataChanged();
+      appdata.settings['disableSyncFields'] = 'readerMode';
+      final previous = Map<String, dynamic>.from(appdata.implicitData);
+      DataSync.debugUploadOverride = () async => const Res.error('denied');
+      final result = await sync.configure(
+        config: ['https://example.com/new', 'new-user', 'new-password'],
+        excludedFields: 'language',
+        syncMode: DataSyncMode.realtime,
+        minutes: 60,
+        initialUpload: true,
       );
-      expect(sync.hasPendingChanges, isTrue);
-      final coordinator = sync.coordinator!;
-      final pendingIds = coordinator.store.pendingBatchIds;
-      expect(pendingIds, hasLength(1));
-      final pendingDocument = coordinator.store
-          .pendingBatch(pendingIds.single)
-          .document
-          .toJson();
-      final publicationCount = calls.uploads;
-
-      sync.onDataChanged();
-      sync.checkForAutomaticSync();
-      await clock.elapse(const Duration(hours: 2));
-      await sync.waitForSync();
-
-      expect(calls.uploads, publicationCount);
-      expect(coordinator.store.pendingBatchIds, pendingIds);
-      final reopened = MergeStore(
-        coordinator.stateDirectory,
-        coordinator.actor,
-      );
-      await reopened.load();
-      expect(reopened.pendingBatchIds, pendingIds);
-      expect(
-        reopened.pendingBatch(pendingIds.single).document.toJson(),
-        pendingDocument,
-      );
-      expect(sync.hasPendingChanges, isTrue);
-
-      failPublication = false;
-      final manual = await sync.syncNow();
-      expect(manual.success, isTrue, reason: manual.errorMessage);
-      expect(calls.uploads, publicationCount + 1);
-      expect(coordinator.store.outbox, isEmpty);
-      expect(sync.hasPendingChanges, isFalse);
-      expect(sync.lastError, isNull);
+      expect(result.error, isTrue);
+      expect(appdata.settings['webdav'], config);
+      expect(appdata.settings['disableSyncFields'], 'readerMode');
+      expect(appdata.implicitData, previous);
+      calls.install();
+      await clock.elapse(const Duration(minutes: 30));
+      expect(calls.uploads, 1);
     },
   );
 
-  scheduleTest('future timestamps recover and dispose cancels timers', (
+  scheduleTest(
+    'saving manual mode cancels timer, and changing interval reschedules it',
+    (clock, calls) async {
+      final sync = DataSync();
+      await sync.configure(
+        config: config,
+        excludedFields: '',
+        syncMode: DataSyncMode.manual,
+        minutes: 15,
+        initialUpload: true,
+      );
+      sync.onDataChanged();
+      await clock.elapse(const Duration(hours: 1));
+      expect(calls.uploads + calls.downloads, 0);
+      await sync.configure(
+        config: config,
+        excludedFields: '',
+        syncMode: DataSyncMode.scheduled,
+        minutes: 15,
+        initialUpload: true,
+      );
+      sync.checkForAutomaticSync();
+      expect(calls.uploads, 1);
+      await clock.elapse(const Duration(minutes: 14));
+      expect(calls.downloads, 0);
+      await clock.elapse(const Duration(minutes: 1));
+      expect(calls.downloads, 1);
+      await sync.configure(
+        config: [],
+        excludedFields: '',
+        syncMode: DataSyncMode.scheduled,
+        minutes: 15,
+        initialUpload: true,
+      );
+      await clock.elapse(const Duration(hours: 1));
+      expect(sync.isEnabled, isFalse);
+      expect(calls.downloads, 1);
+    },
+  );
+
+  scheduleTest('future timestamp recovers and dispose cancels automatic work', (
     clock,
     calls,
   ) async {
@@ -580,16 +311,111 @@ void main() {
         .add(const Duration(days: 1))
         .millisecondsSinceEpoch;
     final sync = DataSync();
-    // The shared fixture has already completed startup. Re-evaluate the changed
-    // persisted timestamp through the same resume/startup scheduler entrypoint.
-    sync.checkForAutomaticSync();
-    await sync.waitForSync();
-    expect(calls.uploads, 1);
+    await clock.elapse();
+    expect(calls.downloads, 1);
     sync.dispose();
     DataSync.instance = null;
     await clock.elapse(const Duration(hours: 2));
-    expect(calls.uploads, 1);
+    expect(calls.downloads, 1);
   });
+
+  scheduleTest(
+    'configure in realtime triggers upload if data changed during initial upload',
+    (clock, calls) async {
+      final uploadCompleter = Completer<Res<bool>>();
+      DataSync.debugUploadOverride = () {
+        calls.uploads++;
+        return uploadCompleter.future;
+      };
+      final sync = DataSync();
+      final configureFuture = sync.configure(
+        config: config,
+        excludedFields: '',
+        syncMode: DataSyncMode.realtime,
+        minutes: 30,
+        initialUpload: true,
+      );
+      await pumpEventQueue();
+      expect(calls.uploads, 1);
+      sync.onDataChanged();
+      expect(sync.hasPendingChanges, isTrue);
+
+      calls.install();
+      uploadCompleter.complete(const Res(true));
+      final result = await configureFuture;
+      expect(result.success, isTrue);
+      await clock.elapse();
+      expect(calls.uploads, 2);
+      expect(sync.hasPendingChanges, isFalse);
+    },
+  );
+
+  scheduleTest(
+    'configure rollback in realtime triggers upload if data changed during failed initial upload',
+    (clock, calls) async {
+      appdata.implicitData['webdavSyncMode'] = 'realtime';
+      final sync = DataSync();
+
+      var callCount = 0;
+      final uploadCompleter = Completer<Res<bool>>();
+      DataSync.debugUploadOverride = () {
+        callCount++;
+        calls.uploads++;
+        if (callCount == 1) {
+          return uploadCompleter.future;
+        }
+        return Future.value(const Res(true));
+      };
+
+      final configureFuture = sync.configure(
+        config: ['https://example.com/new', 'user2', 'pass2'],
+        excludedFields: '',
+        syncMode: DataSyncMode.realtime,
+        minutes: 30,
+        initialUpload: true,
+      );
+      await pumpEventQueue();
+      expect(calls.uploads, 1);
+
+      sync.onDataChanged();
+
+      uploadCompleter.complete(const Res.error('network failure'));
+      final result = await configureFuture;
+      expect(result.error, isTrue);
+      await clock.elapse();
+      expect(calls.uploads, 2);
+      expect(sync.hasPendingChanges, isFalse);
+    },
+  );
+
+  scheduleTest(
+    'storage save failure during configure and rollback releases configuring flag',
+    (clock, calls) async {
+      final sync = DataSync();
+      final appDataFile = FilePath.join(App.dataPath, 'appdata.json');
+      final blockingDir = Directory(appDataFile)..createSync();
+
+      final result = await sync.configure(
+        config: config,
+        excludedFields: '',
+        syncMode: DataSyncMode.manual,
+        minutes: 30,
+        initialUpload: true,
+      );
+      expect(result.error, isTrue);
+
+      blockingDir.deleteSync();
+
+      final retryResult = await sync.configure(
+        config: config,
+        excludedFields: '',
+        syncMode: DataSyncMode.manual,
+        minutes: 30,
+        initialUpload: true,
+      );
+      expect(retryResult.error, isFalse);
+    },
+  );
 }
 
 class _ScheduleClock {
@@ -632,59 +458,14 @@ class _ScheduledTimer implements Timer {
 class _Calls {
   int uploads = 0;
   int downloads = 0;
-  final SyncRecords records = {};
-  int _revision = 0;
-
-  void edit(DataSync sync) {
-    records[syncRecordKey('setting', ['testPreference'])] = {
-      'value': ++_revision,
-    };
-    sync.onDataChanged(domains: {'setting'});
-  }
-
-  Future<Res<bool>> publish(Future<Res<bool>> completion) async {
-    final store = DataSync().coordinator!.store;
-    final pending = store.pendingBatchIds;
-    final result = await completion;
-    if (result.success) {
-      for (final id in pending) {
-        await store.acknowledge(id);
-      }
-    }
-    return result;
-  }
-
   void install() {
     DataSync.debugUploadOverride = () async {
       uploads++;
-      return publish(Future.value(const Res(true)));
+      return const Res(true);
     };
     DataSync.debugDownloadOverride = () async {
       downloads++;
       return const Res(true);
     };
   }
-}
-
-class _ScheduleDavClient extends dav.Client {
-  static int readDirCalls = 0;
-
-  _ScheduleDavClient()
-    : super(
-        uri: 'https://example.com/dav/',
-        c: dav.WdDio(),
-        auth: dav.Auth(user: 'user', pwd: 'password'),
-      );
-
-  @override
-  Future<List<dav.File>> readDir(
-    String path, [
-    CancelToken? cancelToken,
-  ]) async {
-    readDirCalls++;
-    return const [];
-  }
-
-  @override
-  Future<void> ping([CancelToken? cancelToken]) async {}
 }

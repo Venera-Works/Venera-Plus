@@ -2,7 +2,9 @@ import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:typed_data';
 
+import 'package:dio/io.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqlite3/sqlite3.dart';
@@ -13,6 +15,7 @@ import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/network/cookie_jar.dart';
+import 'package:webdav_client/webdav_client.dart' as dav;
 import 'package:zip_flutter/zip_flutter.dart';
 
 const bool _ciRequireNativeZip = bool.fromEnvironment(
@@ -143,7 +146,7 @@ void main() {
       late Directory fallbackRoot;
       late Map<String, dynamic> previousSettings;
       late Map<String, dynamic> previousImplicit;
-      late List<String> previousSearchHistory;
+      late Map<String, dynamic> previousAppData;
       late HistoryManager? previousHistory;
       late LocalFavoritesManager? previousFavorites;
       late SingleInstanceCookieJar? previousCookieJar;
@@ -186,8 +189,9 @@ void main() {
         previousSettings = Map<String, dynamic>.from(
           appdata.toJson()['settings'],
         );
+        previousAppData =
+            jsonDecode(jsonEncode(appdata.toJson())) as Map<String, dynamic>;
         previousImplicit = Map<String, dynamic>.from(appdata.implicitData);
-        previousSearchHistory = List.of(appdata.searchHistory);
         previousDataPath = App.dataPath;
         previousCachePath = App.cachePath;
         previousHistory = HistoryManager.cache;
@@ -211,12 +215,15 @@ void main() {
         Directory(p.join(App.dataPath, 'comic_source')).createSync();
         appdata.settings['disableSyncFields'] = '';
         appdata.settings['dataVersion'] = 0;
-        appdata.searchHistory = [];
+        appdata.setFullSearchHistory([]);
         await appdata.saveData(false);
+        DataSync.resetForTesting();
+        DataSync.debugDisableWindowCloseHandler = true;
         registerAppDataSettingsChangedHandler(null);
       });
 
       tearDown(() async {
+        DataSync.resetForTesting();
         registerAppDataSettingsChangedHandler(null);
         final history = HistoryManager.cache;
         if (history != null) {
@@ -239,11 +246,14 @@ void main() {
         SingleInstanceCookieJar.instance = previousCookieJar;
 
         await appdata.writeImplicitData();
+        appdata.settings.replaceAll(
+          Map<String, dynamic>.from(previousAppData['settings'] as Map),
+        );
+        await appdata.syncData(previousAppData);
         appdata.settings.replaceAll(previousSettings);
         appdata.implicitData
           ..clear()
           ..addAll(previousImplicit);
-        appdata.searchHistory = previousSearchHistory;
         App.dataPath = previousDataPath;
         App.cachePath = previousCachePath;
         if (root.existsSync()) root.deleteSync(recursive: true);
@@ -428,7 +438,8 @@ void main() {
           expect(appdata.settings['localOnly'], 'local-value');
           expect(appdata.settings['dataVersion'], 42);
           expect(appdata.settings['extensionSetting'], {'accepted': true});
-          expect(appdata.searchHistory, searchHistory);
+          expect(appdata.fullSearchHistory, searchHistory);
+          expect(appdata.searchHistory, searchHistory.take(50).toList());
           expect(
             Directory(p.join(App.cachePath, 'temp_data')).existsSync(),
             isFalse,
@@ -472,6 +483,133 @@ void main() {
             Directory(p.join(App.cachePath, 'temp_data')).existsSync(),
             isFalse,
           );
+        },
+      );
+
+      test(
+        'WebDAV writes root snapshots, replaces same-day files and retains ten',
+        () async {
+          final server = await _SyncWebDav.start();
+          addTearDown(server.close);
+          final clients = <dav.Client>[];
+          DataSync.debugClientFactory = (endpoint) {
+            final client = endpoint.createClient();
+            client.c.httpClientAdapter = IOHttpClientAdapter();
+            clients.add(client);
+            return client;
+          };
+          addTearDown(() {
+            for (final client in clients) {
+              client.c.close(force: true);
+            }
+          });
+          appdata.settings['webdav'] = [server.url, '', ''];
+          appdata.settings['cacheSize'] = 2048;
+          appdata.settings['webdavComicLibrary'] = ['fixed-library'];
+          appdata.settings['disableSyncFields'] =
+              'cacheSize, webdavComicLibrary';
+          await appdata.saveData(false);
+
+          final sync = DataSync();
+          expect((await sync.uploadData()).success, isTrue);
+          final firstName = server.snapshotNames.single;
+          expect(firstName, matches(RegExp(r'^\d+-1\.venera$')));
+          final extracted = await _extractServerSnapshot(
+            server,
+            firstName,
+            root,
+          );
+          final syncSettings =
+              jsonDecode(
+                    File(
+                      p.join(extracted.path, 'appdata.json'),
+                    ).readAsStringSync(),
+                  )
+                  as Map<String, dynamic>;
+          expect(syncSettings['settings'].containsKey('cacheSize'), isFalse);
+          expect(syncSettings['settings']['dataVersion'], 1);
+          expect(appdata.settings['dataVersion'], 1);
+          expect(syncSettings['settings']['webdavComicLibrary'], [
+            'fixed-library',
+          ]);
+
+          expect((await sync.uploadData()).success, isTrue);
+          expect(server.snapshotNames, hasLength(1));
+          expect(server.snapshotNames.single, endsWith('-2.venera'));
+          expect(
+            server.requests.where((request) => request.startsWith('DELETE ')),
+            isNotEmpty,
+          );
+
+          server.files.remove(server.snapshotNames.single);
+          for (var day = 0; day < 10; day++) {
+            server.files['$day-1.venera'] = Uint8List(1);
+          }
+          server.files['keep.txt'] = Uint8List(1);
+          expect((await sync.uploadData()).success, isTrue);
+          expect(server.snapshotNames, hasLength(10));
+          expect(server.files.containsKey('0-1.venera'), isFalse);
+          expect(server.files.containsKey('keep.txt'), isTrue);
+        },
+      );
+
+      test(
+        'WebDAV skips equal snapshots and downloads newer snapshots without upload loop',
+        () async {
+          final server = await _SyncWebDav.start();
+          addTearDown(server.close);
+          final clients = <dav.Client>[];
+          DataSync.debugClientFactory = (endpoint) {
+            final client = endpoint.createClient();
+            client.c.httpClientAdapter = IOHttpClientAdapter();
+            clients.add(client);
+            return client;
+          };
+          addTearDown(() {
+            for (final client in clients) {
+              client.c.close(force: true);
+            }
+          });
+          appdata.settings['webdav'] = [server.url, '', ''];
+          appdata.settings['dataVersion'] = 7;
+          await appdata.saveData(false);
+          server.files['999-7.venera'] = Uint8List(1);
+
+          final sync = DataSync();
+          appdata.implicitData['webdavSyncMode'] = DataSyncMode.realtime.name;
+          expect((await sync.downloadData()).success, isTrue);
+          expect(
+            server.requests.where((request) => request.startsWith('GET ')),
+            isEmpty,
+          );
+
+          appdata.settings['dataVersion'] = 8;
+          appdata.settings['cacheSize'] = 512;
+          await appdata.saveData(false);
+          final incoming = await exportAppData();
+          appdata.settings['dataVersion'] = 7;
+          appdata.settings['cacheSize'] = 2048;
+          await appdata.saveData(false);
+          _addHistory('local-only', 'Must be replaced');
+          await HistoryManager().waitForAsyncWrites();
+          server.files['999-8.venera'] = Uint8List.fromList(
+            await incoming.readAsBytes(),
+          );
+          await incoming.delete();
+          server.requests.clear();
+          expect((await sync.downloadData()).success, isTrue);
+          expect(
+            server.requests.where((request) => request.startsWith('GET ')),
+            hasLength(1),
+          );
+          expect(
+            server.requests.where((request) => request.startsWith('PUT ')),
+            isEmpty,
+          );
+          expect(appdata.settings['dataVersion'], 8);
+          expect(appdata.settings['cacheSize'], 512);
+          expect(_historyTitle('local-only'), isNull);
+          expect(sync.hasPendingChanges, isFalse);
         },
       );
 
@@ -521,90 +659,38 @@ void main() {
       );
 
       test(
-        'original restore reloads durable sync state before recapturing changed settings',
+        'rolls back an earlier history replacement after a later appdata failure',
         () async {
-          DataSync.resetForTesting();
-          DataSync.debugDisableWindowCloseHandler = true;
-          appdata.settings['webdav'] = [
-            'https://example.com/dav',
-            'user',
-            'pass',
-          ];
-          appdata.settings['cacheSize'] = 2048;
-          appdata.implicitData['syncDeviceId'] = 'native_restore_device';
-          appdata.implicitData['webdavSyncDeviceName'] = 'Native Restore';
-          appdata.implicitData['webdavSyncTiming'] = 'manual';
-          final key = syncRecordKey('setting', ['cacheSize']);
-          DataSync.debugExportRecords = () async => {
-            key: {'value': appdata.settings['cacheSize']},
-          };
-          DataSync.debugApplyRecords = (records, {beforeCommit}) async {
-            beforeCommit?.call();
-            appdata.settings['cacheSize'] = records[key]!['value'];
-          };
-          final sync = DataSync();
-          try {
-            await sync.waitForStartupMerge();
-            final coordinator = sync.coordinator!;
-            final actor = coordinator.actor;
-            expect(coordinator.store.document.counterFor(actor), 1);
-            final concurrentWriter = MergeStore(
-              coordinator.stateDirectory,
-              actor,
-            );
-            await concurrentWriter.load();
-            appdata.settings['cacheSize'] = 1024;
-            await concurrentWriter.capture({
-              key: {'value': 1024},
-            });
-            final pendingIntent = concurrentWriter
-                .pendingBatch(concurrentWriter.pendingBatchIds.single)
-                .document;
-            final archive = await _createArchive(
-              root,
-              textEntries: {
-                'appdata.json': jsonEncode({
-                  'settings': {'cacheSize': 512},
-                  'searchHistory': <String>[],
-                }),
-              },
-            );
-            await importAppData(archive);
-            expect(appdata.settings['cacheSize'], 512);
-            expect(coordinator.store.needsRecovery, isTrue);
-            await coordinator.captureLocalChanges();
-            expect(coordinator.store.document.counterFor(actor), 3);
-            expect(coordinator.store.observed[key], {'value': 512});
-            final replacement = coordinator.store.pendingBatch(
-              coordinator.store.pendingBatchIds.single,
-            );
-            expect(replacement.document.dominates(pendingIntent), isTrue);
-            final restarted = MergeStore(coordinator.stateDirectory, actor);
-            await restarted.load();
-            expect(restarted.document.counterFor(actor), 3);
-            expect(restarted.observed[key], {'value': 512});
-            expect(restarted.pendingBatchIds, [replacement.id]);
-          } finally {
-            await sync.waitForStartupMerge().catchError((_) {});
-            await sync.waitForSync();
-            DataSync.resetForTesting();
-          }
-        },
-      );
-
-      test(
-        'keeps earlier history replacement after a later appdata failure',
-        () async {
+          appdata.settings['cacheSize'] = 1024;
+          await appdata.syncData({
+            'settings': <String, dynamic>{},
+            'searchHistory': ['before-backup'],
+            'nextSearchHistoryOrder': -42,
+          });
           _addHistory('from-backup', 'Backup history');
           await HistoryManager().waitForAsyncWrites();
           final archive = await _createArchive(
             root,
-            textEntries: {'appdata.json': '{invalid json'},
+            textEntries: {
+              'appdata.json': jsonEncode({
+                'settings': {'cacheSize': 512, 'rollbackExtension': true},
+                'searchHistory': ['from-backup'],
+                'nextSearchHistoryOrder': 'invalid',
+              }),
+            },
             fileEntries: {
               'history.db': File(p.join(App.dataPath, 'history.db')),
             },
           );
           _addHistory('after-backup', 'Local history');
+          var replacedHistoryObserved = false;
+          void historyListener() {
+            replacedHistoryObserved |=
+                HistoryManager().find('after-backup', ComicType.local) == null;
+          }
+
+          HistoryManager().addListener(historyListener);
+          addTearDown(() => HistoryManager().removeListener(historyListener));
           var notificationCount = 0;
           registerAppDataSettingsChangedHandler(() {
             notificationCount++;
@@ -613,9 +699,14 @@ void main() {
 
           await expectLater(importAppData(archive), throwsFormatException);
 
-          expect(notificationCount, 1);
+          expect(notificationCount, 0);
+          expect(replacedHistoryObserved, isTrue);
           expect(_historyTitle('from-backup'), 'Backup history');
-          expect(_historyTitle('after-backup'), isNull);
+          expect(_historyTitle('after-backup'), 'Local history');
+          expect(appdata.settings['cacheSize'], 1024);
+          expect(appdata.settings['rollbackExtension'], isNull);
+          expect(appdata.fullSearchHistory, ['before-backup']);
+          expect(appdata.toJson()['nextSearchHistoryOrder'], -42);
           expect(
             Directory(p.join(App.cachePath, 'temp_data')).existsSync(),
             isFalse,
@@ -627,4 +718,102 @@ void main() {
         ? 'zip_flutter native library unavailable: $_nativeZipFailure'
         : null,
   );
+}
+
+Future<Directory> _extractServerSnapshot(
+  _SyncWebDav server,
+  String name,
+  Directory root,
+) async {
+  final archive = File(p.join(root.path, name))
+    ..writeAsBytesSync(server.files[name]!);
+  return _extractArchive(archive, root);
+}
+
+class _SyncWebDav {
+  _SyncWebDav(this.server);
+
+  final HttpServer server;
+  final files = <String, Uint8List>{};
+  final requests = <String>[];
+
+  String get url => 'http://127.0.0.1:${server.port}/dav/VeneraPlus';
+
+  Iterable<String> get snapshotNames =>
+      files.keys.where((name) => name.endsWith('.venera'));
+
+  static Future<_SyncWebDav> start() async {
+    final fixture = _SyncWebDav(
+      await HttpServer.bind(InternetAddress.loopbackIPv4, 0),
+    );
+    fixture.server.listen(fixture._handle);
+    return fixture;
+  }
+
+  Future<void> close() => server.close(force: true);
+
+  Future<void> _handle(HttpRequest request) async {
+    final path = request.uri.path;
+    requests.add('${request.method} $path');
+    final body = await request.fold<BytesBuilder>(
+      BytesBuilder(),
+      (buffer, chunk) => buffer..add(chunk),
+    );
+    const root = '/dav/VeneraPlus/';
+    if (!path.startsWith(root)) {
+      request.response.statusCode = HttpStatus.notFound;
+    } else {
+      final name = Uri.decodeComponent(path.substring(root.length));
+      switch (request.method) {
+        case 'OPTIONS':
+          request.response.statusCode = HttpStatus.ok;
+          break;
+        case 'PROPFIND':
+          request.response.statusCode = HttpStatus.multiStatus;
+          request.response.headers.contentType = ContentType(
+            'application',
+            'xml',
+          );
+          request.response.write(_directoryResponse());
+          break;
+        case 'PUT':
+          files[name] = body.toBytes();
+          request.response.statusCode = HttpStatus.created;
+          break;
+        case 'GET':
+          final bytes = files[name];
+          if (bytes == null) {
+            request.response.statusCode = HttpStatus.notFound;
+          } else {
+            request.response.add(bytes);
+          }
+          break;
+        case 'DELETE':
+          files.remove(name);
+          request.response.statusCode = HttpStatus.noContent;
+          break;
+        default:
+          request.response.statusCode = HttpStatus.methodNotAllowed;
+      }
+    }
+    await request.response.close();
+  }
+
+  String _directoryResponse() {
+    final entries = files.keys
+        .map(
+          (name) =>
+              '''
+<D:response><D:href>/dav/VeneraPlus/${Uri.encodeComponent(name)}</D:href>
+<D:propstat><D:prop><D:resourcetype/></D:prop>
+<D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>''',
+        )
+        .join();
+    return '''<?xml version="1.0"?>
+<D:multistatus xmlns:D="DAV:"><D:response>
+<D:href>/dav/VeneraPlus/</D:href>
+<D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+<D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+$entries</D:multistatus>''';
+  }
 }

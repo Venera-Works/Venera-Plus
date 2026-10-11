@@ -30,10 +30,12 @@ class WebDavConnectionFields extends StatelessWidget {
     super.key,
     required this.controllers,
     required this.remotePathHint,
+    this.showRemotePath = true,
   });
 
   final WebDavConnectionControllers controllers;
   final String remotePathHint;
+  final bool showRemotePath;
 
   @override
   Widget build(BuildContext context) {
@@ -64,15 +66,17 @@ class WebDavConnectionFields extends StatelessWidget {
           controller: controllers.password,
           obscureText: true,
         ),
-        const SizedBox(height: 12),
-        TextField(
-          decoration: InputDecoration(
-            labelText: 'Remote Path'.tl,
-            hintText: remotePathHint,
-            border: const OutlineInputBorder(),
+        if (showRemotePath) ...[
+          const SizedBox(height: 12),
+          TextField(
+            decoration: InputDecoration(
+              labelText: 'Remote Path'.tl,
+              hintText: remotePathHint,
+              border: const OutlineInputBorder(),
+            ),
+            controller: controllers.remotePath,
           ),
-          controller: controllers.remotePath,
-        ),
+        ],
       ],
     );
   }

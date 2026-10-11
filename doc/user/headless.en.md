@@ -20,62 +20,18 @@ venera-plus --headless <command> [subcommand] [options]
 
 ### `webdav`
 
-Manage WebDAV data synchronization.
+Manage complete WebDAV data snapshots.
 
-- **`webdav sync`**: Runs immediately in the configured direction: bidirectional merges and publishes, upload-only publishes, and download-only merges without publishing. The top-level **`sync`** command does the same.
-- **`webdav up`**: Publishes a full local causal checkpoint without applying remote business data. Rejected in download-only direction. This is not a whole-database upload overwriting the cloud.
-- **`webdav down`**: Merges valid remote checkpoints, retaining local edit candidates, without publishing. Rejected in upload-only direction. This is not forced download overwrite.
-- **`webdav conflicts`**: Reads record/field conflicts currently known locally; it does not fetch new remote content. Top-level **`conflicts`** does the same. To inspect up-to-date remote conflicts, first run synchronization in a direction allowing remote reads.
-- **`webdav resolve`**: Selects an existing candidate for one field of one record. Top-level **`resolve`** does the same. Arguments are described below.
-- **`webdav backups`**: Lists numeric original backups in the WebDAV root. Results use `data.count` and `data.backups`; each item contains only `name`, `day`, and `version`. Listing itself does not read archive bodies.
-- **`webdav import-backup <name> --confirm`**: Causally merges the explicitly selected root backup in the configured direction, not local ZIP overwrite restore. Use its complete listed filename and explicit confirmation. Missing confirmation is rejected before application initialization and cannot trigger initial automatic seed reading.
+- **`webdav up`**: Uploads the current local complete snapshot.
+- **`webdav down`**: Downloads and restores a newer remote complete snapshot.
 
-Commands wait for startup recovery and existing sync/configuration work. Actual operation failures report `status: error` and a nonzero exit code; commands cannot bypass direction restrictions. Authentication, network, and application errors are not success, and unfinished work is retained for retry. A later failure does not pretend to undo already committed remote or local changes. See [App Data Synchronization](data_sync.en.md) for protocol, one-time legacy migration, and crash-recovery boundaries.
-
-A complete successful transfer through `webdav sync` / `sync` outputs `status: success`, with `data.conflictCount` and `data.hasConflict` describing conflicts still requiring attention. **Unresolved candidate conflicts can coexist with success (exit code 0).** Success does not mean every candidate was selected automatically. When source domains are unavailable but other domains transfer successfully, `sync`, `up`, and `down` output `status: partial` (exit code 0), including `data.unavailableDomains` and `data.sourceIssues`; `sync` still includes conflict counts. Source summaries expose only filenames, safe reasons and translations, backup availability, and action hints, never script/session bodies, source identities, or private backup paths. `repairAction` distinguishes in-app replacement, recovery retry, and the prerequisite of restoring a complete journal; damaged backups are not presented as directly restorable data. `up` / `down` do not include conflict lists; query `conflicts` separately.
-
-`sync` and `conflicts` also separate automatic progress handling from catalog status. `data.pendingProgressCount` / `pendingProgressRecordKeys` report records waiting for a catalog; `data.unmappableProgressCount` / `unmappableProgressRecordKeys` report positions unmappable in the loaded catalog without selectable progress-field candidates. `data.automaticallyResolvedProgressCount` reports automatic reconciliations. `conflictCount` includes manual candidate conflicts and those unmappable items, but excludes catalog-pending records; `unresolvedCandidateConflictCount` counts only manual field-candidate conflicts. With only catalog-pending records, `hasConflict` can be `false` while original candidates remain preserved.
-
-Successful backup import reports `data.imported`: `true` means new seed domains were imported; repeated imports return `false`, not an alias for transport success. Partial source problems report `status: partial` (exit code 0), safe source summaries, unavailable domains, and `data.imported`. Actual errors exit nonzero. Valid commands retain ordinary startup recovery/initial automatic-seed behavior; listing backups is not a switch disabling startup synchronization.
+Only `up` and `down` are available. Network or restore failures print `status: error` and exit nonzero.
 
 **Example:**
 
 ```bash
 venera-plus --headless webdav up
 ```
-
-**Select and confirm an original root backup:**
-
-```bash
-venera-plus --headless webdav backups
-venera-plus --headless webdav import-backup 20261008-1.venera --confirm
-```
-
-**Resolving individual conflicts:**
-
-```bash
-venera-plus --headless webdav sync
-venera-plus --headless webdav conflicts
-
-# Copy values from the conflicts JSON output into variables; names are illustrative
-venera-plus --headless webdav resolve --record-key "$RECORD_KEY" --field "$FIELD" --candidate-id "$CANDIDATE_ID"
-```
-
-The successful `conflicts` response uses `data.count` and `data.conflicts` for manually selectable field-candidate conflicts. Catalog-pending and unmappable items without progress-field candidates use the separate record-key lists above, not guessed device choices. Open a pending comic normally in the app to reconcile its catalog. Each array entry contains:
-
-- `recordKey`: The record-key string. Its contents are a JSON-encoded identity array, **not a dot-separated path**. Extract the string with a JSON parser and pass it intact; do not construct your own key or pass the outer JSON escaping as part of the argument.
-- `field`: The field requiring resolution; copy it directly.
-- `candidates`: An array with `id`, `actor`, `counter`, `isDeleted`, and `label` per candidate. The `id` is opaque and may contain special characters. Copy it directly; **do not infer its format from actor/counter**. `isDeleted` marks deletion candidates. `label` is a safe summary, not a raw secret candidate value.
-
-`resolve` requires `--record-key` (alias `--key`), `--field`, and `--candidate-id` (alias `--candidate`). Alternatively, pass exactly three positional arguments in record-key, field, candidate-ID order:
-
-```bash
-venera-plus --headless resolve "$RECORD_KEY" "$FIELD" "$CANDIDATE_ID"
-```
-
-Quote/escape values according to your shell, especially the double quotes inside a record key. The quoted-variable examples above apply to Bash and PowerShell; Windows `cmd.exe` has different variable/escaping syntax. Stale or nonexistent candidates fail; query `conflicts` again.
-
-Success returns `recordKey`, `field`, `candidateId`, and `remainingConflicts` in `data`. Selection creates a new causal edit: bidirectional/upload-only can publish it, while download-only retains it locally for later publication. Upload can fail after the local choice has durably committed; an error does not mean that choice was undone. There is no global keep-local/keep-cloud snapshot selection or force-overwrite option. Manual `.venera` backup/restore remains separate.
 
 ### `updatescript`
 
@@ -135,7 +91,7 @@ A summary is provided at the end, detailing the total number of scripts, how man
 
 ### `updatesubscribe`
 
-Checks the persisted favorites role (`reading`) shared by Home and automatic update checks. Users select the bound folder from Home or Library; the default is unbound, without creating a Reading folder. The command waits for pending downloads before resolving the role. A deleted or unbound folder is an error, not a reason to scan another folder.
+Checks the persisted favorites folder bound to Home and automatic update checks. The command waits for pending downloads before resolving that binding; an unbound or deleted folder is an error.
 
 - **`updatesubscribe`**: Checks comics in the folder bound to Home.
 - **`updatesubscribe --update-comic-by-id-type <id> <type>`**: Updates one comic in that folder by `id` and `type`.
@@ -143,7 +99,7 @@ Checks the persisted favorites role (`reading`) shared by Home and automatic upd
 **Example:**
 
 ```bash
-# Update all subscriptions
+# Update all comics in the bound folder
 venera-plus --headless updatesubscribe
 
 # Update a single comic

@@ -215,7 +215,7 @@ jobs:
       - name: 校验 Windows 构建产物
         shell: pwsh
         run: |
-          $zip = @(Get-ChildItem -Path build/windows -File -Filter 'VeneraPlus-*-windows.zip')
+          $zip = @(Get-ChildItem -Path build/windows -File -Filter 'VeneraPlus-*-windows-portable.zip')
           $installer = @(Get-ChildItem -Path build/windows -File -Filter 'VeneraPlus-*-windows-installer.exe')
           if ($zip.Count -ne 1) { throw "应当恰好生成一个 Windows zip，实际为 $($zip.Count)。" }
           if ($installer.Count -ne 1) { throw "应当恰好生成一个 Windows 安装包，实际为 $($installer.Count)。" }
@@ -249,7 +249,7 @@ jobs:
         with:
           name: windows_build
           path: |
-            build/windows/VeneraPlus-*-windows.zip
+            build/windows/VeneraPlus-*-windows-portable.zip
             build/windows/VeneraPlus-*-windows-installer.exe
           if-no-files-found: error
           retention-days: 7

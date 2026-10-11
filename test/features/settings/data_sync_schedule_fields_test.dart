@@ -19,10 +19,8 @@ void main() {
         appdata.settings['language'] = 'zh-CN';
         addTearDown(() => appdata.settings['language'] = previous);
         await AppTranslation.init();
-        var direction = SyncDirection.bidirectional;
-        var timing = SyncTiming.manual;
+        var mode = DataSyncMode.manual;
         var minutes = 30;
-        var excludedDomains = {'folder', 'favorite', 'favoriteRole'};
         await tester.pumpWidget(
           MaterialApp(
             theme: ThemeData(brightness: brightness),
@@ -36,16 +34,9 @@ void main() {
                   padding: const EdgeInsets.all(16),
                   child: StatefulBuilder(
                     builder: (context, setState) => DataSyncScheduleFields(
-                      direction: direction,
-                      timing: timing,
+                      mode: mode,
                       minutes: minutes,
-                      excludedDomains: excludedDomains,
-                      onExcludedDomainsChanged: (value) =>
-                          setState(() => excludedDomains = value),
-                      onDirectionChanged: (value) =>
-                          setState(() => direction = value),
-                      onTimingChanged: (value) =>
-                          setState(() => timing = value),
+                      onModeChanged: (value) => setState(() => mode = value),
                       onIntervalChanged: (value) =>
                           setState(() => minutes = value),
                     ),
@@ -56,29 +47,13 @@ void main() {
           ),
         );
         expect(find.byType(DropdownButton<int>), findsNothing);
-        expect(find.byType(DropdownButton<SyncDirection>), findsOneWidget);
-        expect(find.byType(DropdownButton<SyncTiming>), findsOneWidget);
-        final favoriteScope = find.byKey(
-          const ValueKey('sync-scope-favorites'),
-        );
-        await tester.ensureVisible(favoriteScope);
-        expect(tester.widget<SwitchListTile>(favoriteScope).value, isFalse);
-        expect(excludedDomains, {'folder', 'favorite', 'favoriteRole'});
-        await tester.tap(favoriteScope);
-        await tester.pumpAndSettle();
-        expect(excludedDomains, isEmpty);
-        expect(tester.widget<SwitchListTile>(favoriteScope).value, isTrue);
-        await tester.tap(favoriteScope);
-        await tester.pumpAndSettle();
-        expect(excludedDomains, {'folder', 'favorite', 'favoriteRole'});
-
-        expect(tester.widget<SwitchListTile>(favoriteScope).value, isFalse);
-        await tester.ensureVisible(find.byType(DropdownButton<SyncTiming>));
-        await tester.tap(find.byType(DropdownButton<SyncTiming>));
+        expect(find.byType(DropdownButton<DataSyncMode>), findsOneWidget);
+        await tester.ensureVisible(find.byType(DropdownButton<DataSyncMode>));
+        await tester.tap(find.byType(DropdownButton<DataSyncMode>));
         await tester.pumpAndSettle();
         await tester.tap(find.text('Scheduled'.tl).hitTestable().last);
         await tester.pumpAndSettle();
-        expect(timing, SyncTiming.scheduled);
+        expect(mode, DataSyncMode.scheduled);
         expect(find.byType(DropdownButton<int>), findsOneWidget);
         await tester.ensureVisible(find.byType(DropdownButton<int>));
         await tester.tap(find.byType(DropdownButton<int>));

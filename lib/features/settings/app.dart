@@ -20,171 +20,12 @@ import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
-import 'package:venera_plus/foundation/appdata_sync_policy.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/file_interaction.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
-
-String _formatDataSyncTimestamp(int timestamp) {
-  if (timestamp <= 0) return 'Not synced yet'.tl;
-  final value = DateTime.fromMillisecondsSinceEpoch(timestamp);
-  String twoDigits(int part) => part.toString().padLeft(2, '0');
-  return '${value.year}-${twoDigits(value.month)}-${twoDigits(value.day)} '
-      '${twoDigits(value.hour)}:${twoDigits(value.minute)}';
-}
-
-String _dataSyncTriggerLabel(String? trigger) {
-  final label = switch (trigger) {
-    'Manual sync' => 'Manual sync',
-    'Local changes' => 'Local changes',
-    'Scheduled sync' => 'Scheduled sync',
-    'Startup check' => 'Startup check',
-    'Resume check' => 'Resume check',
-    'Remote check' => 'Remote check',
-    'Retry' => 'Retry',
-    _ => null,
-  };
-  if (label != null) return label.tl;
-  if (trigger == null || trigger.isEmpty) return 'Not synced yet'.tl;
-  return 'Other sync trigger: @trigger'.tlParams({'trigger': trigger});
-}
-
-String _changedSyncRecordSummary(Map<String, int> counts) {
-  if (counts.isEmpty) return 'No captured record changes'.tl;
-  final entries = counts.entries.toList()
-    ..sort((a, b) => a.key.compareTo(b.key));
-  return entries.map((entry) => '${entry.key}: ${entry.value}').join(', ');
-}
-
-String _dataSyncReviewLabel(DataSyncStatusSnapshot status) {
-  if (status.unmappableProgressRecordKeys.isNotEmpty) {
-    return 'Review sync items'.tl;
-  }
-  if (status.conflictCount > 0 && status.pendingProgressCount > 0) {
-    return 'Review conflicts and pending progress'.tl;
-  }
-  if (status.pendingProgressCount > 0) return 'View pending progress'.tl;
-  return 'Resolve conflicts'.tl;
-}
-
-class _DataSyncStatusPanel extends StatelessWidget {
-  const _DataSyncStatusPanel({
-    required this.status,
-    required this.isBusy,
-    required this.onSyncNow,
-  });
-
-  final DataSyncStatusSnapshot status;
-  final bool isBusy;
-  final VoidCallback onSyncNow;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      key: const Key('data-sync-status-summary'),
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Sync status'.tl, style: Theme.of(context).textTheme.titleSmall),
-          const SizedBox(height: 8),
-          if (status.lastError != null) ...[
-            Text(
-              mergeStoreErrorSummary(status.lastError)!.tl,
-              key: const Key('data-sync-state-error'),
-              style: TextStyle(color: Theme.of(context).colorScheme.error),
-            ),
-            const SizedBox(height: 8),
-          ],
-          Text(
-            'Last trigger: @trigger'.tlParams({
-              'trigger': _dataSyncTriggerLabel(status.lastTrigger),
-            }),
-          ),
-          Text(
-            'Last successful sync: @time'.tlParams({
-              'time': _formatDataSyncTimestamp(status.lastSuccessTime),
-            }),
-          ),
-          Text(
-            'Pending publication records: @count'.tlParams({
-              'count': status.pendingChangeCount,
-            }),
-          ),
-          Text(
-            'Manual conflicts requiring review: @count'.tlParams({
-              'count': status.conflictCount,
-            }),
-          ),
-          Text(
-            'Reading positions waiting for directory: @count'.tlParams({
-              'count': status.pendingProgressCount,
-            }),
-          ),
-          Text(
-            'Within manual review: @count reading positions need chapter selection'
-                .tlParams({'count': status.unmappableProgressCount}),
-          ),
-          Text(
-            'Reading positions automatically reconciled: @count'.tlParams({
-              'count': status.automaticallyResolvedProgressCount,
-            }),
-          ),
-          Text(
-            'Changed records: @counts'.tlParams({
-              'counts': _changedSyncRecordSummary(status.changedRecordCounts),
-            }),
-          ),
-          Text(
-            'Last sync duration: @duration ms'.tlParams({
-              'duration': status.lastSyncDurationMs,
-            }),
-          ),
-          Text(
-            'Uploaded: @bytes bytes in @objects objects'.tlParams({
-              'bytes': status.uploadedBytes,
-              'objects': status.uploadedObjects,
-            }),
-          ),
-          Text(
-            'Downloaded: @bytes bytes in @objects objects'.tlParams({
-              'bytes': status.downloadedBytes,
-              'objects': status.downloadedObjects,
-            }),
-          ),
-          const SizedBox(height: 8),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton(
-              key: const Key('data-sync-now'),
-              onPressed: isBusy ? null : onSyncNow,
-              child: Text('Sync now'.tl),
-            ),
-          ),
-          if (status.conflictCount > 0 || status.pendingProgressCount > 0)
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton(
-                key: const Key('data-sync-review-conflicts'),
-                onPressed: isBusy
-                    ? null
-                    : () => showSyncConflictDialog(context),
-                child: Text(_dataSyncReviewLabel(status)),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
 
 class SourcesAndServicesSettings extends StatefulWidget {
   const SourcesAndServicesSettings({super.key});
@@ -377,14 +218,6 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
           icon: Icons.import_export,
         ),
         CallbackSetting(
-          title: "Import WebDAV Root Backup".tl,
-          subtitle:
-              "Choose a root day-version.venera ZIP and merge it as causal seeds. The remote archive is not modified, and local app data is not overwritten."
-                  .tl,
-          callback: _importWebdavRootBackup,
-          actionTitle: _isImportingRootBackup ? "Loading".tl : "Import".tl,
-        ).toSliver(),
-        CallbackSetting(
           title: "Export App Data".tl,
           callback: () async {
             var controller = showLoadingDialog(context);
@@ -427,103 +260,6 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
         ).toSliver(),
       ],
     );
-  }
-
-  bool _isImportingRootBackup = false;
-
-  Future<void> _importWebdavRootBackup() async {
-    if (_isImportingRootBackup) return;
-    setState(() => _isImportingRootBackup = true);
-    try {
-      final backups = await DataSync().listLegacyBackups();
-      if (!mounted) return;
-      if (backups.isEmpty) {
-        context.showMessage(message: "No root backups found".tl);
-        return;
-      }
-      final selected = await showDialog<LegacyRemoteBackup>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: Text("Select a root backup".tl),
-          content: SizedBox(
-            width: double.maxFinite,
-            height: 320,
-            child: ListView.separated(
-              itemCount: backups.length,
-              separatorBuilder: (_, _) => const Divider(height: 1),
-              itemBuilder: (context, index) {
-                final backup = backups[index];
-                return ListTile(
-                  title: Text(backup.name),
-                  subtitle: Text(
-                    "Day @day · version @version".tlParams({
-                      "day": backup.day,
-                      "version": backup.version,
-                    }),
-                  ),
-                  onTap: () => Navigator.of(dialogContext).pop(backup),
-                );
-              },
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: Text("Cancel".tl),
-            ),
-          ],
-        ),
-      );
-      if (!mounted || selected == null) return;
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: Text("Merge WebDAV root backup?".tl),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(selected.name),
-              const SizedBox(height: 8),
-              Text(
-                "This merges the selected root ZIP as causal seeds. The remote ZIP is not modified, and this does not overwrite local app data."
-                    .tl,
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(false),
-              child: Text("Cancel".tl),
-            ),
-            FilledButton(
-              key: const Key('data-sync-root-backup-import-confirm'),
-              onPressed: () => Navigator.of(dialogContext).pop(true),
-              child: Text("Merge backup".tl),
-            ),
-          ],
-        ),
-      );
-      if (confirmed != true || !mounted) return;
-      final result = await DataSync().importLegacyBackup(selected.name);
-      if (!mounted) return;
-      final message = result.error
-          ? mergeStoreErrorSummary(result.errorMessage)?.tl ??
-                "Root backup import failed".tl
-          : !result.data
-          ? "No new root backup data to import".tl
-          : DataSync().statusSnapshot.isPartial
-          ? "Root backup processed with partial sources. Review source issues in Data Sync."
-                .tl
-          : "Root backup imported".tl;
-      context.showMessage(message: message);
-    } catch (error, stack) {
-      Log.error("Import WebDAV root backup", error.toString(), stack);
-      if (!mounted) return;
-      context.showMessage(message: "Root backup import failed".tl);
-    } finally {
-      if (mounted) setState(() => _isImportingRootBackup = false);
-    }
   }
 }
 
@@ -595,15 +331,11 @@ class _WebdavSetting extends StatefulWidget {
 
 Future<void> showDataSyncSettings(BuildContext context) async {
   final sync = DataSync();
-  if (!sync.beginInteraction()) {
+  if (sync.isSyncing) {
     context.showMessage(message: 'Sync is currently in progress'.tl);
     return;
   }
-  try {
-    await showPopUpWidget(context, const _WebdavSetting());
-  } finally {
-    sync.endInteraction();
-  }
+  await showPopUpWidget(context, const _WebdavSetting());
 }
 
 class _WebdavSettingState extends State<_WebdavSetting> {
@@ -611,65 +343,43 @@ class _WebdavSettingState extends State<_WebdavSetting> {
   String user = "";
   String pass = "";
   String disableSync = "";
-  Set<String> excludedDomains = {};
-
-  bool _deviceNameEdited = false;
-
-  SyncDirection syncDirection = SyncDirection.bidirectional;
-  SyncTiming syncTiming = SyncTiming.realtime;
+  DataSyncMode syncMode = DataSyncMode.realtime;
   int syncInterval = 30;
-  late final TextEditingController urlController;
-  late final TextEditingController userController;
-  late final TextEditingController passController;
+  bool initialUpload = true;
+  late final WebDavConnectionControllers _connectionControllers;
   late final TextEditingController fieldsController;
-  late final TextEditingController deviceNameController;
 
   bool isTesting = false;
 
   @override
   void initState() {
     super.initState();
-    var deviceName = '';
     if (appdata.settings['webdav'] is! List) {
       appdata.settings['webdav'] = [];
     }
     if (appdata.settings['disableSyncFields'].trim().isNotEmpty) {
       disableSync = appdata.settings['disableSyncFields'];
     }
-    excludedDomains = getAppDataSyncExcludedDomains(appdata.implicitData);
-    final savedDeviceName = appdata.implicitData['webdavSyncDeviceName'];
-    if (savedDeviceName is String && savedDeviceName.trim().isNotEmpty) {
-      try {
-        deviceName = normalizeSyncDeviceName(savedDeviceName);
-      } on FormatException {
-        deviceName = '';
-      }
-    }
     var configs = appdata.settings['webdav'] as List;
     if (configs.length == 3 && configs.whereType<String>().length == 3) {
       url = configs[0];
       user = configs[1];
       pass = configs[2];
-      syncDirection = DataSync.direction;
-      syncTiming = DataSync.timing;
+      syncMode = DataSync.mode;
     }
     syncInterval = DataSync.intervalMinutes;
-    urlController = TextEditingController(text: url);
-    userController = TextEditingController(text: user);
-    passController = TextEditingController(text: pass);
-    deviceNameController = TextEditingController(text: deviceName);
-    if (deviceName.isEmpty) {
-      unawaited(_autofillDeviceName());
-    }
+    _connectionControllers = WebDavConnectionControllers(
+      url: url,
+      user: user,
+      password: pass,
+      remotePath: '/',
+    );
     fieldsController = TextEditingController(text: disableSync);
   }
 
   @override
   void dispose() {
-    urlController.dispose();
-    userController.dispose();
-    passController.dispose();
-    deviceNameController.dispose();
+    _connectionControllers.dispose();
     fieldsController.dispose();
     super.dispose();
   }
@@ -684,44 +394,10 @@ class _WebdavSettingState extends State<_WebdavSetting> {
           child: Column(
             children: [
               const SizedBox(height: 12),
-              TextField(
-                decoration: InputDecoration(
-                  labelText: "URL",
-                  hintText: "A valid WebDav directory URL".tl,
-                  border: OutlineInputBorder(),
-                ),
-                controller: urlController,
-                onChanged: (value) => url = value,
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                decoration: InputDecoration(
-                  labelText: "Username".tl,
-                  border: const OutlineInputBorder(),
-                ),
-                controller: userController,
-                onChanged: (value) => user = value,
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                obscureText: true,
-                decoration: InputDecoration(
-                  labelText: "Password".tl,
-                  border: const OutlineInputBorder(),
-                ),
-                controller: passController,
-                onChanged: (value) => pass = value,
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                decoration: InputDecoration(
-                  labelText: "Device name".tl,
-                  border: const OutlineInputBorder(),
-                ),
-                controller: deviceNameController,
-                onChanged: (_) {
-                  _deviceNameEdited = true;
-                },
+              WebDavConnectionFields(
+                controllers: _connectionControllers,
+                remotePathHint: '/',
+                showRemotePath: false,
               ),
               const SizedBox(height: 12),
               Align(
@@ -784,18 +460,25 @@ class _WebdavSettingState extends State<_WebdavSetting> {
               ),
               const SizedBox(height: 12),
               DataSyncScheduleFields(
-                direction: syncDirection,
-                timing: syncTiming,
+                mode: syncMode,
                 minutes: syncInterval,
-                excludedDomains: excludedDomains,
-                onExcludedDomainsChanged: (value) =>
-                    setState(() => excludedDomains = value),
-                onDirectionChanged: (value) =>
-                    setState(() => syncDirection = value),
-                onTimingChanged: (value) => setState(() => syncTiming = value),
+                onModeChanged: (value) => setState(() => syncMode = value),
                 onIntervalChanged: (value) =>
                     setState(() => syncInterval = value),
               ),
+              if (syncMode != DataSyncMode.manual) ...[
+                const SizedBox(height: 12),
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text('Upload local data first'.tl),
+                  subtitle: Text(
+                    'For the first automatic sync, choose whether to upload local data or download remote data.'
+                        .tl,
+                  ),
+                  value: initialUpload,
+                  onChanged: (value) => setState(() => initialUpload = value),
+                ),
+              ],
               const SizedBox(height: 12),
               Container(
                 key: const Key('data-sync-mode-notice'),
@@ -811,50 +494,12 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                     ).colorScheme.primary.withValues(alpha: 0.2),
                   ),
                 ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.info_outline,
-                          size: 18,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            syncDirection == SyncDirection.bidirectional
-                                ? 'Reading progress merges by chapter order and preserves rereads; '
-                                          'unmapped positions wait for the comic catalog, '
-                                          'and only unresolved ambiguities need manual review.'
-                                      .tl
-                                : (syncDirection == SyncDirection.uploadOnly
-                                      ? 'Upload-only mode will propagate local changes to remote without importing remote data.'
-                                            .tl
-                                      : 'Download-only mode will import remote changes without uploading local data.'
-                                            .tl),
-                            style: Theme.of(context).textTheme.bodySmall
-                                ?.copyWith(
-                                  color: Theme.of(
-                                    context,
-                                  ).colorScheme.onSurface,
-                                ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    if (syncTiming != SyncTiming.manual) ...[
-                      const SizedBox(height: 6),
-                      Text(
-                        'Once saved, the app will automatically sync data according to the schedule.'
+                child: Text(
+                  syncMode == DataSyncMode.manual
+                      ? 'Sync only when you choose upload or download.'.tl
+                      : 'Once saved, the app will automatically sync data according to the schedule.'
                             .tl,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ],
+                  style: Theme.of(context).textTheme.bodySmall,
                 ),
               ),
               const SizedBox(height: 12),
@@ -874,69 +519,6 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                 ),
               ),
               const SizedBox(height: 12),
-              ListenableBuilder(
-                listenable: DataSync(),
-                builder: (context, _) => _DataSyncStatusPanel(
-                  status: DataSync().statusSnapshot,
-                  isBusy: isTesting,
-                  onSyncNow: _syncNowFromSettings,
-                ),
-              ),
-              if (DataSync().statusSnapshot.isPartial) ...[
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Theme.of(
-                      context,
-                    ).colorScheme.errorContainer.withValues(alpha: 0.5),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: Theme.of(
-                        context,
-                      ).colorScheme.error.withValues(alpha: 0.3),
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.warning_amber_rounded,
-                        size: 20,
-                        color: Theme.of(context).colorScheme.error,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'Some synchronization data is unavailable. Other data can sync independently.'
-                              .tl,
-                          style: Theme.of(context).textTheme.bodySmall
-                              ?.copyWith(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.onErrorContainer,
-                              ),
-                        ),
-                      ),
-                      TextButton(
-                        onPressed: () => showSyncSourceIssuesDialog(
-                          context,
-                          issues: DataSync().statusSnapshot.sourceIssues,
-                          onRepair: (issue, content) =>
-                              DataSync().repairSourceIssue(
-                                issue: issue,
-                                replacementContent: content,
-                              ),
-                          onRetry: () => DataSync().syncNow(),
-                          description:
-                              'Some synchronization data is unavailable. Other data can sync independently.'
-                                  .tl,
-                        ),
-                        child: Text('View Details'.tl),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
               const SizedBox(height: 16),
               Row(
                 children: [
@@ -959,40 +541,27 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                     setState(() {
                       isTesting = true;
                     });
+                    final url = _connectionControllers.url.text.trim();
+                    final user = _connectionControllers.user.text;
+                    final pass = _connectionControllers.password.text;
                     final clear =
-                        url.trim().isEmpty &&
+                        url.isEmpty &&
                         user.trim().isEmpty &&
                         pass.trim().isEmpty;
-                    final String? resolvedDeviceName;
-                    try {
-                      resolvedDeviceName = clear
-                          ? null
-                          : await _resolveDeviceNameForSave();
-                    } on FormatException {
-                      if (!mounted) return;
-                      setState(() => isTesting = false);
-                      context.showMessage(
-                        message: "Enter a valid device name".tl,
-                      );
-                      return;
-                    }
                     if (!mounted) return;
                     final testResult = await DataSync().configure(
-                      config: clear ? [] : [url.trim(), user, pass],
-                      deviceName: resolvedDeviceName,
+                      config: clear ? [] : [url, user, pass],
                       excludedFields: disableSync,
-                      direction: syncDirection,
-                      excludedDomains: excludedDomains,
-                      timing: syncTiming,
+                      syncMode: syncMode,
                       minutes: syncInterval,
+                      initialUpload: initialUpload,
                     );
                     if (!mounted) return;
                     setState(() => isTesting = false);
                     if (testResult.error) {
                       context.showMessage(
-                        message: mergeStoreErrorSummary(
-                          testResult.errorMessage,
-                        )!.tl,
+                        message:
+                            testResult.errorMessage?.tl ?? 'Saved Failed'.tl,
                       );
                       context.showMessage(message: "Saved Failed".tl);
                     } else {
@@ -1010,58 +579,12 @@ class _WebdavSettingState extends State<_WebdavSetting> {
     );
   }
 
-  Future<void> _syncNowFromSettings() async {
-    if (isTesting) return;
-    setState(() => isTesting = true);
-    try {
-      final result = await DataSync().syncNow();
-      if (!mounted) return;
-      if (result.error) {
-        context.showMessage(
-          message:
-              mergeStoreErrorSummary(result.errorMessage)?.tl ??
-              'Sync failed'.tl,
-        );
-        return;
-      }
-      context.showMessage(message: DataSync().statusSnapshot.completionSummary);
-    } finally {
-      if (mounted) setState(() => isTesting = false);
-    }
-  }
-
-  Future<void> _autofillDeviceName() async {
-    final name = await readSyncDeviceName();
-    if (!mounted ||
-        _deviceNameEdited ||
-        deviceNameController.text.trim().isNotEmpty) {
-      return;
-    }
-    deviceNameController.text = name;
-  }
-
-  Future<String> _resolveDeviceNameForSave() async {
-    final current = deviceNameController.text;
-    if (current.trim().isNotEmpty || _deviceNameEdited) {
-      return normalizeSyncDeviceName(current);
-    }
-
-    final detected = await readSyncDeviceName();
-    if (!mounted) return detected;
-    final latest = deviceNameController.text;
-    if (_deviceNameEdited) {
-      final normalized = normalizeSyncDeviceName(latest);
-      deviceNameController.text = normalized;
-      return normalized;
-    }
-    final resolved = latest.trim().isEmpty ? detected : latest;
-    final normalized = normalizeSyncDeviceName(resolved);
-    deviceNameController.text = normalized;
-    return normalized;
-  }
-
-  BackupConfig get currentConfig =>
-      BackupConfig(url: url, user: user, pass: pass, remotePath: '/');
+  BackupConfig get currentConfig => BackupConfig(
+    url: _connectionControllers.url.text,
+    user: _connectionControllers.user.text,
+    pass: _connectionControllers.password.text,
+    remotePath: '/',
+  );
 
   Future<void> testConnection() async {
     if (isTesting) return;

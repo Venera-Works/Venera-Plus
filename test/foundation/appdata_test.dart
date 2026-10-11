@@ -199,6 +199,50 @@ void main() {
     },
   );
 
+  test(
+    'sync callback reentrant save keeps the latest data version on disk',
+    () async {
+      final dataDir = Directory.systemTemp.createTempSync(
+        'venera-appdata-reentrant-save-',
+      );
+      final previousDataPath = App.dataPath;
+      final previousVersion = appdata.settings['dataVersion'];
+      Future<void>? reentrantSave;
+      var reentered = false;
+      addTearDown(() async {
+        appdata.registerSyncDataRequestHandler(null);
+        appdata.settings['dataVersion'] = previousVersion;
+        App.dataPath = previousDataPath;
+        if (dataDir.existsSync()) dataDir.deleteSync(recursive: true);
+      });
+
+      App.dataPath = dataDir.path;
+      appdata.settings['dataVersion'] = 40;
+      await appdata.saveData(false);
+      appdata.registerSyncDataRequestHandler(({domains}) {
+        if (reentered) return;
+        reentered = true;
+        appdata.settings['dataVersion'] = 42;
+        reentrantSave = appdata.saveData(false);
+      });
+
+      appdata.settings['dataVersion'] = 41;
+      await appdata.saveData();
+      expect(reentrantSave, isNotNull);
+      await reentrantSave!;
+
+      final appData =
+          jsonDecode(File('${dataDir.path}/appdata.json').readAsStringSync())
+              as Map<String, dynamic>;
+      final syncData =
+          jsonDecode(File('${dataDir.path}/syncdata.json').readAsStringSync())
+              as Map<String, dynamic>;
+      expect(appdata.settings['dataVersion'], 42);
+      expect((appData['settings'] as Map)['dataVersion'], 42);
+      expect((syncData['settings'] as Map)['dataVersion'], 42);
+    },
+  );
+
   test('sync snapshot filters sync and archive WebDAV settings', () async {
     final dataDir = Directory.systemTemp.createTempSync(
       'venera-appdata-sync-policy-',
@@ -242,6 +286,22 @@ void main() {
     expect(syncSettings.containsKey('backupWebdavPath'), isFalse);
     expect(syncContent, isNot(contains('main-secret')));
     expect(syncContent, isNot(contains('backup-secret')));
+  });
+
+  test('sync snapshot keeps the home reading folder binding', () {
+    final previous = appdata.settings['readingFolder'];
+    try {
+      appdata.settings['readingFolder'] = 'folder-id';
+      expect(appdata.exportSyncSettings()['readingFolder'], 'folder-id');
+      appdata.removeSyncSetting('readingFolder');
+      expect(appdata.settings['readingFolder'], isNull);
+    } finally {
+      if (previous == null) {
+        appdata.settings.remove('readingFolder');
+      } else {
+        appdata.settings['readingFolder'] = previous;
+      }
+    }
   });
 
   test(

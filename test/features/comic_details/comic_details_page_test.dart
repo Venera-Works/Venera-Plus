@@ -681,10 +681,7 @@ Future<_ComicDetailsFixture> _createFixture(
   settings['webdav'] = <String>[];
   appdata.implicitData
     ..clear()
-    ..addAll({
-      'webdavSyncDirection': 'bidirectional',
-      'webdavSyncTiming': 'manual',
-    });
+    ..addAll({'webdavSyncMode': 'manual', 'webdavAutoSync': false});
   settings['language'] = 'en-US';
   settings['readerMode'] = 'galleryLeftToRight';
   settings['autoReaderMode'] = false;
@@ -741,12 +738,8 @@ Future<_ComicDetailsFixture> _createFixture(
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();
       await _pumpAsyncWork(tester, histories.flushReadingProgress());
-      final sync = DataSync.instance;
-      if (sync != null) {
-        await _pumpAsyncWork(tester, sync.flushPendingChanges());
-      }
-      // Reader disposal can enqueue read-duration/progress work while sync
-      // flushes; drain the history queue only after that producer has settled.
+      // Reader disposal can enqueue read-duration/progress work; drain the
+      // history queue after that producer has settled.
       await _pumpAsyncWork(tester, histories.flushReadingProgress());
       await _pumpAsyncWork(tester, histories.waitForAsyncWrites());
     } finally {

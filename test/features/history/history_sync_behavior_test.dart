@@ -6,7 +6,6 @@ import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/features/history/history.dart';
-import 'package:venera_plus/features/sync/merge_engine.dart';
 import 'package:venera_plus/foundation/sync_records.dart';
 
 Map<String, Object?> _readingProgress(int ep, int page, int? group, int time) =>
@@ -326,126 +325,6 @@ void main() {
           ? false
           : 'sqlite3 native library is unavailable',
     );
-    test(
-      'a resolved parent deletion survives SQL projection, restart, and causal capture',
-      () {
-        final tempDir = Directory.systemTemp.createTempSync(
-          'venera-history-parent-projection-',
-        );
-        var db = sqlite3.open('${tempDir.path}/history.sqlite');
-        addTearDown(() {
-          db.dispose();
-          tempDir.deleteSync(recursive: true);
-        });
-
-        final parentKey = syncRecordKey('history', ['merge-comic', 1]);
-        final oldChapterKey = syncRecordKey('historyChapter', [
-          'merge-comic',
-          1,
-          '1',
-        ]);
-        final newChapterKey = syncRecordKey('historyChapter', [
-          'merge-comic',
-          1,
-          '2',
-        ]);
-        final base = <String, Map<String, Object?>>{
-          parentKey: {
-            'title': 'Merged Comic',
-            'subtitle': 'Author',
-            'cover': 'cover.jpg',
-            'maxPage': 30,
-            'readDurationMs': 12000,
-            'readingProgress': _readingProgress(1, 3, null, 1000),
-          },
-          oldChapterKey: {
-            'comicId': 'merge-comic',
-            'typeValue': 1,
-            'chapter': '1',
-            'title': 'Merged Comic',
-            'subtitle': 'Author',
-            'cover': 'cover.jpg',
-            'maxPage': 30,
-          },
-        };
-        HistorySyncData.applySyncRecords(db, base);
-
-        final seed = MergeDocument()..captureLocal('seed', {}, base);
-        final deviceA = seed.clone();
-        final deviceB = seed.clone();
-        deviceA.captureLocal('device-a', base, {});
-        final deviceBRecords = <String, Map<String, Object?>>{
-          parentKey: {
-            'title': 'Merged Comic',
-            'subtitle': 'Author',
-            'cover': 'cover.jpg',
-            'maxPage': 30,
-            'readDurationMs': 15000,
-            'readingProgress': _readingProgress(2, 5, null, 2000),
-          },
-          oldChapterKey: base[oldChapterKey]!,
-          newChapterKey: {
-            'comicId': 'merge-comic',
-            'typeValue': 1,
-            'chapter': '2',
-            'title': 'Merged Comic',
-            'subtitle': 'Author',
-            'cover': 'cover.jpg',
-            'maxPage': 30,
-          },
-        };
-        deviceB.captureLocal('device-b', base, deviceBRecords);
-        deviceA.merge(deviceB);
-
-        final presenceConflict = deviceA.conflicts.singleWhere(
-          (conflict) =>
-              conflict.recordKey == parentKey && conflict.field == 'presence',
-        );
-        final deletion = presenceConflict.candidates.singleWhere(
-          (candidate) => candidate.isDeleted,
-        );
-        deviceA.resolve('resolver', parentKey, 'presence', deletion.id);
-        final resolved = deviceA.materialize();
-        expect(resolved, isNot(contains(parentKey)));
-        expect(resolved, contains(newChapterKey));
-        expect(resolved, isNot(contains(oldChapterKey)));
-
-        HistorySyncData.applySyncRecords(db, resolved);
-        final exported = HistorySyncData.readSyncRecords(db);
-        expect(exported, isNot(contains(parentKey)));
-        expect(exported, contains(newChapterKey));
-        expect(exported, isNot(contains(oldChapterKey)));
-        expect(deviceA.captureLocal('receiver', resolved, exported), 0);
-        expect(deviceA.materialize(), isNot(contains(parentKey)));
-        expect(deviceA.materialize(), contains(newChapterKey));
-
-        db.dispose();
-        db = sqlite3.open('${tempDir.path}/history.sqlite');
-        final afterRestart = HistorySyncData.readSyncRecords(db);
-        expect(afterRestart, isNot(contains(parentKey)));
-        expect(afterRestart, contains(newChapterKey));
-
-        final lastProgress = jsonEncode(_readingProgress(2, 6, null, 5000));
-        db.execute(
-          'UPDATE history SET ep = 2, page = 6, time = 5000, read_duration_ms = 24000, reading_progress = ? WHERE id = ? AND type = ?;',
-          [lastProgress, 'merge-comic', 1],
-        );
-        final afterReading = HistorySyncData.readSyncRecords(db);
-        expect(afterReading, contains(parentKey));
-        expect(afterReading, contains(newChapterKey));
-        expect(
-          (afterReading[parentKey]!['readingProgress'] as Map)['time'],
-          5000,
-        );
-        deviceA.captureLocal('reader', afterRestart, afterReading);
-        expect(deviceA.materialize(), contains(parentKey));
-        expect(deviceA.materialize(), contains(newChapterKey));
-      },
-      skip: _sqliteAvailable()
-          ? false
-          : 'sqlite3 native library is unavailable',
-    );
-
     test(
       'independent imageFavorite records reconstruct complete comic and episode in image_favorites table',
       () {

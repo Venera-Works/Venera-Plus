@@ -13,216 +13,6 @@ void cliPrint(Map<String, dynamic> data) {
   print('[CLI PRINT] ${jsonEncode(data)}');
 }
 
-({String action, int argumentIndex}) parseHeadlessSyncCommand(
-  List<String> args,
-  int commandIndex,
-) {
-  if (commandIndex < 0 || commandIndex >= args.length) {
-    throw const FormatException('Missing sync command.');
-  }
-  final grouped = args[commandIndex] == 'webdav';
-  final actionIndex = commandIndex + (grouped ? 1 : 0);
-  if (actionIndex >= args.length ||
-      !(grouped
-              ? const {
-                  'up',
-                  'down',
-                  'sync',
-                  'conflicts',
-                  'resolve',
-                  'backups',
-                  'import-backup',
-                }
-              : const {'sync', 'conflicts', 'resolve'})
-          .contains(args[actionIndex])) {
-    throw const FormatException(
-      'Invalid sync command. Use webdav up, down, sync, conflicts, resolve, backups, or import-backup <name> --confirm.',
-    );
-  }
-  return (action: args[actionIndex], argumentIndex: actionIndex + 1);
-}
-
-void parseHeadlessWebdavBackupsArguments(List<String> args, int startIndex) {
-  if (startIndex != args.length) {
-    throw const FormatException(
-      'The webdav backups command takes no arguments.',
-    );
-  }
-}
-
-String parseHeadlessWebdavImportBackupArguments(
-  List<String> args,
-  int startIndex,
-) {
-  if (startIndex >= args.length ||
-      args[startIndex].isEmpty ||
-      args[startIndex].startsWith('--')) {
-    throw const FormatException('Missing required backup name.');
-  }
-  if (startIndex + 1 >= args.length || args[startIndex + 1] != '--confirm') {
-    throw const FormatException('Importing a root backup requires --confirm.');
-  }
-  if (startIndex + 2 != args.length) {
-    throw const FormatException(
-      'Unexpected argument for webdav import-backup.',
-    );
-  }
-  return args[startIndex];
-}
-
-/// IDs are opaque engine output, including duration-resolution candidates.
-({String recordKey, String field, String candidateId})
-parseHeadlessSyncResolveArguments(List<String> args, int startIndex) {
-  String? recordKey;
-  String? field;
-  String? candidateId;
-  final positional = <String>[];
-  for (var i = startIndex; i < args.length; i++) {
-    final arg = args[i];
-    if (!arg.startsWith('--')) {
-      positional.add(arg);
-      continue;
-    }
-    if (i + 1 >= args.length || args[i + 1].startsWith('--')) {
-      throw FormatException('Missing value for $arg.');
-    }
-    final value = args[++i];
-    switch (arg) {
-      case '--record-key':
-      case '--key':
-        recordKey = value;
-        break;
-      case '--field':
-        field = value;
-        break;
-      case '--candidate-id':
-      case '--candidate':
-        candidateId = value;
-        break;
-      default:
-        throw FormatException('Unknown resolve argument: $arg.');
-    }
-  }
-  if (positional.isNotEmpty) {
-    if (positional.length != 3 ||
-        recordKey != null ||
-        field != null ||
-        candidateId != null) {
-      throw const FormatException(
-        'Use three positional arguments or named resolve arguments, not both.',
-      );
-    }
-    recordKey = positional[0];
-    field = positional[1];
-    candidateId = positional[2];
-  }
-  if (recordKey == null ||
-      field == null ||
-      candidateId == null ||
-      recordKey.isEmpty ||
-      field.isEmpty ||
-      candidateId.isEmpty) {
-    throw const FormatException(
-      'Missing required arguments: record-key, field, and candidate-id are required.',
-    );
-  }
-  return (recordKey: recordKey, field: field, candidateId: candidateId);
-}
-
-/// Never serialize MergeCandidate.toJson here: its value may contain credentials.
-List<Map<String, Object?>> headlessSyncConflictPreviews(
-  List<MergeConflict> conflicts, {
-  Set<String> pendingProgressRecordKeys = const {},
-}) => [
-  for (final conflict in conflicts)
-    if (!(conflict.field == 'readingProgress' &&
-        pendingProgressRecordKeys.contains(conflict.recordKey)))
-      {
-        'recordKey': conflict.recordKey,
-        'field': conflict.field,
-        'candidates': [
-          for (final candidate in conflict.candidates)
-            {
-              'id': candidate.id,
-              'actor': candidate.actor,
-              'counter': candidate.counter,
-              'isDeleted': candidate.isDeleted,
-              'label': candidate.safeLabel,
-            },
-        ],
-      },
-];
-
-/// Summarizes candidate conflicts separately from catalog-pending and
-/// unmappable reading progress.
-Map<String, Object?> headlessSyncStatusSummary(
-  DataSyncStatusSnapshot status, {
-  required int unresolvedCandidateConflictCount,
-}) => {
-  'conflictCount': status.conflictCount,
-  'hasConflict': status.hasConflict,
-  'pendingProgressCount': status.pendingProgressCount,
-  'pendingProgressRecordKeys': status.pendingProgressRecordKeys,
-  'unmappableProgressCount': status.unmappableProgressCount,
-  'unmappableProgressRecordKeys': status.unmappableProgressRecordKeys,
-  'automaticallyResolvedProgressCount':
-      status.automaticallyResolvedProgressCount,
-  'unresolvedCandidateConflictCount': unresolvedCandidateConflictCount,
-};
-
-/// Formats only safe, actionable issue metadata for CLI output.
-List<Map<String, Object?>> headlessSyncSourceIssuePreviews(
-  List<SyncSourceIssue> issues,
-) {
-  const safeReasons = {
-    'emptyScript',
-    'missingEntryClass',
-    'syntaxError',
-    'unsupportedHostApi',
-    'timeout',
-    'memoryLimit',
-    'invalidKey',
-    'evaluationError',
-    'runtimeFailure',
-    'invalidSession',
-    'readFailure',
-    'identityMismatch',
-    'quarantineFailure',
-    'quarantineFailed',
-    'metadataCorrupted',
-    'journalCorrupted',
-    'concurrentModification',
-    'writeFailure',
-    'runtimeReloadDeferred',
-    'runtimeReloadFailed',
-    'repairPending',
-  };
-  return [
-    for (final issue in issues)
-      {
-        'filename': issue.filename,
-        'reason': safeReasons.contains(issue.reason) ? issue.reason : 'unknown',
-        'reasonText': syncSourceIssueReasonText(
-          safeReasons.contains(issue.reason) ? issue.reason : 'unknown',
-        ),
-        'hasBackup': issue.backupPath != null,
-        if (issue.archiveName != null) 'archiveName': issue.archiveName,
-        'originalBackupAction': issue.backupPath == null
-            ? null
-            : 'exportForForensicsInApp',
-        if (!issue.recovered)
-          'repairAction': switch (issue.reason) {
-            'journalCorrupted' => 'requiresCompleteJournalBeforeRetry',
-            'repairPending' ||
-            'runtimeReloadDeferred' ||
-            'runtimeReloadFailed' => 'retryRecoveryInApp',
-            _ => 'replaceFileInApp',
-          },
-        'recovered': issue.recovered,
-      },
-  ];
-}
-
 Future<void> runHeadlessMode(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   if (args.contains('--ignore-disheadless-log')) {
@@ -245,68 +35,20 @@ Future<void> runHeadlessMode(List<String> args) async {
   var subCommand = (commandIndex + 1 < args.length)
       ? args[commandIndex + 1]
       : null;
-  ({String action, int argumentIndex})? parsedWebdavCommand;
-  String? confirmedBackupName;
-  if (command == 'webdav') {
-    try {
-      final parsed = parseHeadlessSyncCommand(args, commandIndex);
-      if (parsed.action == 'backups') {
-        parseHeadlessWebdavBackupsArguments(args, parsed.argumentIndex);
-      } else if (parsed.action == 'import-backup') {
-        confirmedBackupName = parseHeadlessWebdavImportBackupArguments(
-          args,
-          parsed.argumentIndex,
-        );
-      }
-      parsedWebdavCommand = parsed;
-    } on FormatException catch (error) {
-      cliPrint({'status': 'error', 'message': error.message});
-      exit(1);
-    }
-  }
-
   // Need to initialize the app for some features to work
   await init();
 
   switch (command) {
     case 'webdav':
-    case 'sync':
-    case 'conflicts':
-    case 'resolve':
-      try {
-        final parsed =
-            parsedWebdavCommand ?? parseHeadlessSyncCommand(args, commandIndex);
-        switch (parsed.action) {
-          case 'up':
-            await _handleWebdavTransfer(upload: true);
-            break;
-          case 'down':
-            await _handleWebdavTransfer(upload: false);
-            break;
-          case 'sync':
-            await _handleWebdavSync();
-            break;
-          case 'conflicts':
-            await _handleWebdavConflicts();
-            break;
-          case 'resolve':
-            await _handleWebdavResolve(args, parsed.argumentIndex);
-            break;
-          case 'backups':
-            await _handleWebdavBackups();
-            break;
-          case 'import-backup':
-            final backupName =
-                confirmedBackupName ??
-                parseHeadlessWebdavImportBackupArguments(
-                  args,
-                  parsed.argumentIndex,
-                );
-            await _handleWebdavImportBackup(backupName);
-            break;
-        }
-      } on FormatException catch (error) {
-        cliPrint({'status': 'error', 'message': error.message});
+      if (subCommand == 'up' && commandIndex + 2 == args.length) {
+        await _handleWebdavTransfer(upload: true);
+      } else if (subCommand == 'down' && commandIndex + 2 == args.length) {
+        await _handleWebdavTransfer(upload: false);
+      } else {
+        cliPrint({
+          'status': 'error',
+          'message': 'Invalid webdav command. Use "up" or "down".',
+        });
         exit(1);
       }
       break;
@@ -382,7 +124,6 @@ Future<void> runHeadlessMode(List<String> args) async {
           'status': 'running',
           'message': 'Updating subscribed comics...',
         });
-        await DataSync().waitForStartupMerge();
         await DataSync().waitForDownload();
         var folder = LocalFavoritesManager().readingFolder;
         if (folder == null) {
@@ -522,11 +263,13 @@ Future<void> _handleWebdavTransfer({required bool upload}) async {
         ? 'Uploading WebDAV data...'
         : 'Downloading WebDAV data...',
   });
-  await DataSync().waitForStartupMerge();
-  await DataSync().waitForSync();
-  final result = upload
-      ? await DataSync().uploadData()
-      : await DataSync().downloadData();
+  final sync = DataSync();
+  await sync.waitForDownload();
+  if (!sync.hasConfiguration) {
+    cliPrint({'status': 'error', 'message': 'WebDAV is not configured.'});
+    exit(1);
+  }
+  final result = upload ? await sync.uploadData() : await sync.downloadData();
   if (result.error) {
     cliPrint({
       'status': 'error',
@@ -536,207 +279,8 @@ Future<void> _handleWebdavTransfer({required bool upload}) async {
     });
     exit(1);
   }
-  final snapshot = DataSync().statusSnapshot;
-  if (snapshot.isPartial) {
-    cliPrint({
-      'status': 'partial',
-      'message': upload
-          ? 'Upload completed with partial sources.'
-          : 'Download completed with partial sources.',
-      'data': {
-        'sourceIssues': headlessSyncSourceIssuePreviews(snapshot.sourceIssues),
-        'unavailableDomains': snapshot.unavailableDomains.toList()..sort(),
-      },
-    });
-  } else {
-    cliPrint({
-      'status': 'success',
-      'message': upload ? 'Upload complete.' : 'Download complete.',
-    });
-  }
-}
-
-Future<void> _handleWebdavSync() async {
-  cliPrint({'status': 'running', 'message': 'Syncing WebDAV data...'});
-  await DataSync().waitForStartupMerge();
-  await DataSync().waitForSync();
-  final result = await DataSync().syncData();
-  if (result.error) {
-    cliPrint({
-      'status': 'error',
-      'message': result.errorMessage ?? 'Sync failed.',
-    });
-    exit(1);
-  }
-  final snapshot = DataSync().statusSnapshot;
-  final pendingProgressRecordKeys = snapshot.pendingProgressRecordKeys.toSet();
-  final conflicts = [
-    for (final conflict in DataSync().conflicts)
-      if (!(conflict.field == 'readingProgress' &&
-          pendingProgressRecordKeys.contains(conflict.recordKey)))
-        conflict,
-  ];
-  final summary = headlessSyncStatusSummary(
-    snapshot,
-    unresolvedCandidateConflictCount: conflicts.length,
-  );
-  if (snapshot.isPartial) {
-    cliPrint({
-      'status': 'partial',
-      'message': 'Sync completed with partial sources.',
-      'data': {
-        ...summary,
-        'sourceIssues': headlessSyncSourceIssuePreviews(snapshot.sourceIssues),
-        'unavailableDomains': snapshot.unavailableDomains.toList()..sort(),
-      },
-    });
-  } else {
-    cliPrint({
-      'status': 'success',
-      'message': 'Sync complete.',
-      'data': summary,
-    });
-  }
-}
-
-Future<void> _handleWebdavConflicts() async {
-  cliPrint({'status': 'running', 'message': 'Checking sync conflicts...'});
-  await DataSync().waitForStartupMerge();
-  await DataSync().waitForSync();
-  final status = DataSync().statusSnapshot;
-  final pendingProgressRecordKeys = status.pendingProgressRecordKeys.toSet();
-  final allConflicts = DataSync().conflicts;
-  final conflicts = [
-    for (final conflict in allConflicts)
-      if (!(conflict.field == 'readingProgress' &&
-          pendingProgressRecordKeys.contains(conflict.recordKey)))
-        conflict,
-  ];
-  final sanitizedConflicts = headlessSyncConflictPreviews(
-    allConflicts,
-    pendingProgressRecordKeys: pendingProgressRecordKeys,
-  );
-  final summary = headlessSyncStatusSummary(
-    status,
-    unresolvedCandidateConflictCount: conflicts.length,
-  );
   cliPrint({
     'status': 'success',
-    'message': 'Sync conflicts retrieved.',
-    'data': {
-      'count': conflicts.length,
-      ...summary,
-      'conflicts': sanitizedConflicts,
-    },
-  });
-}
-
-Future<void> _handleWebdavBackups() async {
-  cliPrint({'status': 'running', 'message': 'Listing WebDAV root backups...'});
-  try {
-    await DataSync().waitForStartupMerge();
-    await DataSync().waitForSync();
-    final backups = await DataSync().listLegacyBackups();
-    cliPrint({
-      'status': 'success',
-      'message': 'WebDAV root backups retrieved.',
-      'data': {
-        'count': backups.length,
-        'backups': [
-          for (final backup in backups)
-            {'name': backup.name, 'day': backup.day, 'version': backup.version},
-        ],
-      },
-    });
-  } catch (_) {
-    cliPrint({
-      'status': 'error',
-      'message': 'Could not list WebDAV root backups.',
-    });
-    exit(1);
-  }
-}
-
-Future<void> _handleWebdavImportBackup(String backupName) async {
-  cliPrint({
-    'status': 'running',
-    'message': 'Importing the confirmed WebDAV root backup...',
-  });
-  try {
-    await DataSync().waitForStartupMerge();
-    await DataSync().waitForSync();
-    final result = await DataSync().importLegacyBackup(backupName);
-    if (result.error) {
-      cliPrint({
-        'status': 'error',
-        'message': 'WebDAV root backup import failed.',
-      });
-      exit(1);
-    }
-    final snapshot = DataSync().statusSnapshot;
-    if (snapshot.isPartial) {
-      cliPrint({
-        'status': 'partial',
-        'message': result.data
-            ? 'WebDAV root backup processed with partial sources. Review source issues in Data Sync.'
-            : 'No new WebDAV root backup data to import.',
-        'data': {
-          'imported': result.data,
-          'sourceIssues': headlessSyncSourceIssuePreviews(
-            snapshot.sourceIssues,
-          ),
-          'unavailableDomains': snapshot.unavailableDomains.toList()..sort(),
-        },
-      });
-    } else {
-      cliPrint({
-        'status': 'success',
-        'message': result.data
-            ? 'WebDAV root backup imported.'
-            : 'No new WebDAV root backup data to import.',
-        'data': {'imported': result.data},
-      });
-    }
-  } catch (_) {
-    cliPrint({
-      'status': 'error',
-      'message': 'WebDAV root backup import failed.',
-    });
-    exit(1);
-  }
-}
-
-Future<void> _handleWebdavResolve(List<String> args, int startIndex) async {
-  final parsed = parseHeadlessSyncResolveArguments(args, startIndex);
-  final recordKey = parsed.recordKey;
-  final field = parsed.field;
-  final candidateId = parsed.candidateId;
-
-  cliPrint({'status': 'running', 'message': 'Resolving sync conflict...'});
-  await DataSync().waitForStartupMerge();
-  await DataSync().waitForSync();
-  final result = await DataSync().resolveConflicts([
-    MergeConflictResolution(
-      recordKey: recordKey,
-      field: field,
-      candidateId: candidateId,
-    ),
-  ]);
-  if (result.error) {
-    cliPrint({
-      'status': 'error',
-      'message': result.errorMessage ?? 'Resolve conflict failed.',
-    });
-    exit(1);
-  }
-  cliPrint({
-    'status': 'success',
-    'message': 'Conflict resolved.',
-    'data': {
-      'recordKey': recordKey,
-      'field': field,
-      'candidateId': candidateId,
-      'remainingConflicts': DataSync().conflicts.length,
-    },
+    'message': upload ? 'Upload complete.' : 'Download complete.',
   });
 }

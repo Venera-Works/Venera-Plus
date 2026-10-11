@@ -546,9 +546,7 @@ class ReaderState extends State<Reader>
     unawaited(() async {
       await _readingSession.dispose();
       await HistoryManager().flushReadingProgress(id: cid, type: type);
-      final sync = DataSync();
-      sync.onDataChanged(domains: {'history', 'historyChapter'});
-      await sync.flushPendingChanges();
+      DataSync().onDataChanged();
     }());
     focusNode.dispose();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
@@ -597,12 +595,11 @@ class ReaderState extends State<Reader>
       case AppLifecycleState.paused:
       case AppLifecycleState.detached:
         flushRemoteProgress();
-        unawaited(HistoryManager().flushReadingProgress(id: cid, type: type));
-        unawaited(
-          _readingSession.pause().whenComplete(
-            () => DataSync().flushPendingChanges(),
-          ),
-        );
+        unawaited(() async {
+          await _readingSession.pause();
+          await HistoryManager().flushReadingProgress(id: cid, type: type);
+          DataSync().onDataChanged();
+        }());
     }
   }
 

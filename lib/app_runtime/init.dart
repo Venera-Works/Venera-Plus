@@ -49,11 +49,7 @@ extension _FutureInit<T> on Future<T> {
 Future<void> initializeBangumiAfterDataSync({
   required Future<void> Function() waitForDownload,
   required Future<void> Function() Function() createInitializer,
-  Future<void> Function()? waitForStartup,
 }) async {
-  if (waitForStartup != null) {
-    await waitForStartup();
-  }
   await waitForDownload();
   await createInitializer()();
 }
@@ -62,11 +58,9 @@ Future<void> initializeBangumiAfterDataSync({
 void startBangumiAfterDataSync({
   required Future<void> Function() waitForDownload,
   required Future<void> Function() Function() createInitializer,
-  Future<void> Function()? waitForStartup,
 }) {
   unawaited(
     initializeBangumiAfterDataSync(
-      waitForStartup: waitForStartup,
       waitForDownload: waitForDownload,
       createInitializer: createInitializer,
     ).wait(),
@@ -129,7 +123,6 @@ Future<void> init() async {
     return binding?.scopeId == libraryId && binding?.subjectId == subjectId;
   });
   registerAppDataSettingsChangedHandler(() async {
-    DataSync().onDataChanged();
     await refreshRuntimeAfterSettingsImport(
       resetWebDavLibrary: WebDavLibrarySource.onSettingsImported,
       reloadComicSources: () async {
@@ -138,14 +131,6 @@ Future<void> init() async {
       initializeBangumi: BangumiService().initialize,
       checkForAutomaticSync: WebDavLibrarySource.checkForAutomaticSync,
     );
-  });
-  SyncPreferencesAdapter.registerSettingsImportedCallback(() async {
-    WebDavLibrarySource.onSettingsImported();
-    // Source/session refresh belongs to the adapter's post-journal phase.
-    // Startup services must not run until conservative recovery is ready.
-    if (DataSync.instance?.isReady != true) return;
-    await BangumiService().initialize();
-    WebDavLibrarySource.checkForAutomaticSync();
   });
   WebDavLibrarySource.configureMetadataScraper(
     scrapeBangumiMetadataForWebDav,
@@ -175,16 +160,6 @@ Future<void> init() async {
       expectedLibraryId: scopeId,
       expectedSubjectId: subject.id,
     );
-  });
-  configureHistoryReadingProgressCatalogResolver((recordKey, catalog) async {
-    final result = await DataSync().resolveReadingProgressCatalog(
-      recordKey,
-      catalog,
-    );
-    if (result.error) {
-      throw StateError(result.errorMessage!);
-    }
-    return result.data;
   });
   configureReaderChapterCompletedHandler(
     (event) => BangumiService().onChapterCompleted(
@@ -250,11 +225,8 @@ Future<void> init() async {
   }
   await _checkOldConfigs();
   final dataSync = DataSync();
-  configureComicSourceDataSavedHandler(
-    () async => dataSync.onDataChanged(domains: {'source', 'sourceSession'}),
-  );
+  configureComicSourceDataSavedHandler(() async => dataSync.onDataChanged());
   startBangumiAfterDataSync(
-    waitForStartup: dataSync.waitForStartupMerge,
     waitForDownload: dataSync.waitForDownload,
     createInitializer: () => () async {
       await BangumiService().initialize();
@@ -343,48 +315,51 @@ Future<Uint8List?> _loadLocalCoverFallback(String sourceKey, String id) async {
 }
 
 Future<void> _checkOldConfigs() async {
-  if (appdata.implicitData['webdavSyncDirection'] == null ||
-      appdata.implicitData['webdavSyncTiming'] == null ||
-      appdata.implicitData['webdavSyncIntervalMinutes'] == null ||
-      appdata.implicitData.containsKey('webdavSyncMode') ||
-      appdata.implicitData.containsKey('webdavAutoSync')) {
-    var webdavConfig = appdata.settings['webdav'];
-    var hasValidConfig =
-        webdavConfig is List &&
-        webdavConfig.length == 3 &&
-        webdavConfig.whereType<String>().length == 3;
+  final implicit = appdata.implicitData;
+  final timing = implicit['webdavSyncTiming'];
+  final config = appdata.settings['webdav'];
+  final configured =
+      config is List &&
+      config.length == 3 &&
+      config.whereType<String>().length == 3 &&
+      (config[0] as String).isNotEmpty;
+  var changed = false;
 
-    if (appdata.implicitData['webdavSyncDirection'] == null) {
-      appdata.implicitData['webdavSyncDirection'] = 'bidirectional';
-    }
-
-    if (appdata.implicitData['webdavSyncTiming'] == null) {
-      final oldMode = appdata.implicitData['webdavSyncMode'];
-      if (oldMode == 'scheduled') {
-        appdata.implicitData['webdavSyncTiming'] = 'scheduled';
-      } else if (oldMode == 'realtime') {
-        appdata.implicitData['webdavSyncTiming'] = 'realtime';
-      } else if (oldMode == 'manual') {
-        appdata.implicitData['webdavSyncTiming'] = 'manual';
-      } else if (appdata.implicitData['webdavAutoSync'] == true) {
-        appdata.implicitData['webdavSyncTiming'] = 'realtime';
-      } else if (appdata.implicitData['webdavAutoSync'] == false) {
-        appdata.implicitData['webdavSyncTiming'] = 'manual';
-      } else {
-        appdata.implicitData['webdavSyncTiming'] = hasValidConfig
-            ? 'realtime'
-            : 'manual';
-      }
-    }
-
-    if (appdata.implicitData['webdavSyncIntervalMinutes'] == null) {
-      appdata.implicitData['webdavSyncIntervalMinutes'] = 30;
-    }
-
-    appdata.implicitData.remove('webdavSyncMode');
-    appdata.implicitData.remove('webdavAutoSync');
-    await appdata.writeImplicitData();
+  if (!implicit.containsKey('webdavSyncMode')) {
+    final mapped = switch (timing) {
+      'realtime' => DataSyncMode.realtime.name,
+      'scheduled' => DataSyncMode.scheduled.name,
+      'manual' => DataSyncMode.manual.name,
+      _ =>
+        implicit['webdavAutoSync'] == true
+            ? DataSyncMode.realtime.name
+            : implicit['webdavAutoSync'] == false
+            ? DataSyncMode.manual.name
+            : configured
+            ? DataSyncMode.realtime.name
+            : DataSyncMode.manual.name,
+    };
+    implicit['webdavSyncMode'] = mapped;
+    changed = true;
   }
+  if (!implicit.containsKey('webdavAutoSync')) {
+    implicit['webdavAutoSync'] =
+        implicit['webdavSyncMode'] != DataSyncMode.manual.name;
+    changed = true;
+  }
+  if (implicit['webdavSyncIntervalMinutes'] is! int) {
+    implicit['webdavSyncIntervalMinutes'] = 30;
+    changed = true;
+  }
+  if (timing != null || implicit.containsKey('webdavSyncDirection')) {
+    if (configured) {
+      implicit['webdavSyncPending'] = true;
+    }
+    implicit.remove('webdavSyncTiming');
+    implicit.remove('webdavSyncDirection');
+    changed = true;
+  }
+  if (changed) await appdata.writeImplicitData();
 }
 
 @visibleForTesting
@@ -408,7 +383,6 @@ void checkUpdates() {
   _checkAppUpdates();
   unawaited(
     () async {
-      await DataSync().waitForStartupMerge();
       await DataSync().waitForDownload();
       FollowUpdatesService.initChecker();
     }().wait(),

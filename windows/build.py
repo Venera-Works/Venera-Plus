@@ -54,8 +54,8 @@ def create_portable_zip(version):
     if not WINDOWS_RELEASE_DIR.is_dir():
         raise FileNotFoundError(WINDOWS_RELEASE_DIR)
 
-    zip_path = WINDOWS_BUILD_DIR / f"VeneraPlus-{version}-windows.zip"
-    package_dir = WINDOWS_BUILD_DIR / f"VeneraPlus-{version}-windows"
+    zip_path = WINDOWS_BUILD_DIR / f"VeneraPlus-{version}-windows-portable.zip"
+    package_dir = WINDOWS_BUILD_DIR / f"VeneraPlus-{version}-windows-portable"
     if zip_path.exists():
         zip_path.unlink()
     if package_dir.exists():
