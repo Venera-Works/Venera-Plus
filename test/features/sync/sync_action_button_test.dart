@@ -44,9 +44,7 @@ void main() {
 
   tearDown(() async {
     DataSync.resetForTesting();
-    try {
-      await appdata.saveData(false);
-    } catch (_) {}
+    await appdata.saveData(false);
     appdata.settings['webdav'] = previousConfig;
     appdata.implicitData
       ..clear()
@@ -101,18 +99,34 @@ void main() {
     };
     await pumpButton(tester, onConfigure: () async {});
 
-    await tester.tap(find.byKey(const Key('data-sync-action')));
+    // Starting the dialog in the real zone keeps its selected action and
+    // persistence writes in that zone.
+    await tester.runAsync(() async {
+      await tester.tap(find.byKey(const Key('data-sync-action')));
+    });
     await tester.pumpAndSettle();
     expect(find.text('Upload'), findsOneWidget);
     expect(find.text('Download'), findsOneWidget);
-    await tester.tap(find.text('Upload'));
+    await tester.runAsync(() async {
+      await tester.tap(find.text('Upload'));
+      await Future<void>.delayed(Duration.zero);
+      await DataSync().debugWaitForUploadBeforeClose();
+      await appdata.saveData(false);
+    });
     await tester.pumpAndSettle();
     expect(uploads, 1);
     expect(downloads, 0);
 
-    await tester.tap(find.byKey(const Key('data-sync-action')));
+    await tester.runAsync(() async {
+      await tester.tap(find.byKey(const Key('data-sync-action')));
+    });
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Download'));
+    await tester.runAsync(() async {
+      await tester.tap(find.text('Download'));
+      await Future<void>.delayed(Duration.zero);
+      await DataSync().waitForDownload();
+      await appdata.saveData(false);
+    });
     await tester.pumpAndSettle();
     expect(uploads, 1);
     expect(downloads, 1);
@@ -126,13 +140,21 @@ void main() {
       'user',
       'password',
     ];
-    final upload = Completer<Res<bool>>();
-    DataSync.debugUploadOverride = () => upload.future;
+    late Completer<Res<bool>> upload;
+    DataSync.debugUploadOverride = () {
+      upload = Completer<Res<bool>>();
+      return upload.future;
+    };
     await pumpButton(tester, onConfigure: () async {});
 
-    await tester.tap(find.byKey(const Key('data-sync-action')));
+    await tester.runAsync(() async {
+      await tester.tap(find.byKey(const Key('data-sync-action')));
+    });
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Upload'));
+    await tester.runAsync(() async {
+      await tester.tap(find.text('Upload'));
+      await Future<void>.delayed(Duration.zero);
+    });
     await tester.pump();
 
     expect(DataSync().isUploading, isTrue);
@@ -144,7 +166,11 @@ void main() {
       'Syncing data...',
     );
 
-    upload.complete(const Res(true));
+    await tester.runAsync(() async {
+      upload.complete(const Res(true));
+      await DataSync().debugWaitForUploadBeforeClose();
+      await appdata.saveData(false);
+    });
     await tester.pumpAndSettle();
     expect(DataSync().isSyncing, isFalse);
   });
