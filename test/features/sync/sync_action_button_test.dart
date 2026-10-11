@@ -158,7 +158,16 @@ void main() {
     await tester.pump();
 
     expect(DataSync().isUploading, isTrue);
-    expect(find.byType(RotationTransition), findsOneWidget);
+
+    final rotationFinder = find.descendant(
+      of: find.byKey(const Key('data-sync-action')),
+      matching: find.byType(RotationTransition),
+    );
+
+    expect(rotationFinder, findsOneWidget);
+
+    final rotation = tester.widget<RotationTransition>(rotationFinder);
+    expect(rotation.turns.isAnimating, isTrue);
     expect(
       tester
           .widget<IconButton>(find.byKey(const Key('data-sync-action')))
