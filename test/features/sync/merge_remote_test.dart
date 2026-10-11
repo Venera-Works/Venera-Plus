@@ -372,9 +372,12 @@ void main() {
           exports++;
           return cloneSyncRecords(records);
         },
-        applyPreferencesOverride: (_, {beforeCommit}) async {
+        applyPreferencesOverride: (incoming, {beforeCommit}) async {
           applies++;
           beforeCommit?.call();
+          records
+            ..clear()
+            ..addAll(cloneSyncRecords(incoming));
         },
       );
       MergeBatch remoteBatch(int counter, String value) {
@@ -438,6 +441,9 @@ void main() {
           isTrue,
         );
         expect(applies, greaterThan(applyBeforeIdle));
+        expect(records[syncRecordKey('setting', ['remote'])], {
+          'value': 'newest',
+        });
 
         records[syncRecordKey('setting', ['theme'])] = {'value': 'light'};
         coordinator.markDirty({'setting'});
@@ -2613,7 +2619,9 @@ class _LoopbackWebDavServer {
         if (markerGetDelay > Duration.zero) {
           await Future<void>.delayed(markerGetDelay);
         }
-        if (request.headers.value('if-none-match') == _etags[path]) {
+        final ifNoneMatch = request.headers.value('if-none-match');
+        final eTag = _etags[path];
+        if (ifNoneMatch != null && eTag != null && ifNoneMatch == eTag) {
           activeMarkerGetRequests--;
           request.response.statusCode = HttpStatus.notModified;
           await request.response.close();

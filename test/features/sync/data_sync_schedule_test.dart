@@ -168,18 +168,21 @@ void main() {
       syncs++;
       return const Res(true);
     };
-    await clock.elapse(const Duration(seconds: 4));
-    expect(syncs, 0);
-    await clock.elapse(const Duration(seconds: 1));
+    sync.checkForAutomaticSync();
     await sync.waitForSync();
     expect(syncs, 1);
+    await clock.elapse(const Duration(seconds: 4));
+    expect(syncs, 1);
+    await clock.elapse(const Duration(seconds: 1));
+    await sync.waitForSync();
+    expect(syncs, 2);
 
     sync.onAppForegroundChanged(false);
     await clock.elapse(const Duration(seconds: 10));
-    expect(syncs, 1);
+    expect(syncs, 2);
     sync.onAppForegroundChanged(true);
     await sync.waitForSync();
-    expect(syncs, 2);
+    expect(syncs, 3);
   });
 
   scheduleTest('resume during an active sync queues one catch-up check', (
