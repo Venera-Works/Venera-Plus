@@ -14,7 +14,7 @@ import 'package:webdav_client/webdav_client.dart' as dav;
 
 void main() {
   test(
-    'backup recovery verifies own publications in both namespaces until migration completes',
+    'backup recovery verifies own publications only in the current namespace',
     () async {
       final tempDir = Directory.systemTemp.createTempSync(
         'data-sync-namespace-recovery-',
@@ -156,7 +156,7 @@ void main() {
                 request.method == 'GET' &&
                 request.uri.path.contains('/$legacyPrefix'),
           ),
-          isTrue,
+          isFalse,
         );
         expect(
           transport.requests.any(
@@ -166,12 +166,10 @@ void main() {
           ),
           isTrue,
         );
+        expect(client.directoryReads, contains(MergeRemote.currentNamespace));
         expect(
           client.directoryReads,
-          containsAll([
-            MergeRemote.currentNamespace,
-            MergeRemote.legacyNamespace,
-          ]),
+          isNot(contains(MergeRemote.legacyNamespace)),
         );
 
         final migratedStore = await loadRecoveredStore(

@@ -1535,7 +1535,7 @@ void main() {
       expect(ownEntries, hasLength(1));
       expect(
         ownEntries.single.filename,
-        startsWith('VeneraPlus-v2/Test 東京 Device/commits/'),
+        startsWith('VeneraPlus/Test 東京 Device/commits/'),
       );
       expect(
         (await remote.download(ownEntries.single)).document.materialize(),
@@ -1544,7 +1544,10 @@ void main() {
       for (final entry in oldFiles.entries) {
         expect(transport.remoteFiles[entry.key], entry.value);
       }
-      expect(client.directoryReads, contains(MergeRemote.legacyNamespace));
+      expect(
+        client.directoryReads,
+        isNot(contains(MergeRemote.legacyNamespace)),
+      );
       expect(
         transport.requests.where(
           (request) =>
@@ -1588,7 +1591,7 @@ void main() {
     });
 
     test(
-      'old-root progress migration preserves local intent and leaves legacy bytes read-only',
+      'progress migration completes locally without reading the legacy namespace',
       () async {
         final historyKey = syncRecordKey('history', ['legacy-resume', 1]);
         final oldCommitPath = await publishLegacyCheckpoint(
@@ -1639,7 +1642,7 @@ void main() {
           preferences: localPreferences,
         );
 
-        expect(await coordinator.migrateProgressProtocolIfNeeded(), isTrue);
+        expect(await coordinator.migrateProgressProtocolIfNeeded(), isFalse);
         expect(store.hasProgressProtocolMigration, isTrue);
         expect(store.document.counterFor(actor), actorCounterBefore);
         expect(store.pendingBatchIds, outboxIdsBefore);
@@ -1647,20 +1650,17 @@ void main() {
           store.pendingBatch(outboxIdsBefore.single).document.toJson(),
           localBatchBefore,
         );
-        expect(
-          store.document.counterFor('legacy_progress_device'),
-          greaterThan(0),
-        );
+        expect(store.document.counterFor('legacy_progress_device'), 0);
         final migratedHistory = store.document.materialize()[historyKey]!;
         final migratedProgress = ReadingProgress.fromJson(
           migratedHistory['readingProgress'],
         );
         expect(migratedProgress.maximumPositions, [
-          const ReadingPosition(ep: 3, page: 20),
+          const ReadingPosition(ep: 1, page: 1),
         ]);
         expect(
           migratedProgress.resumePosition,
-          const ReadingPosition(ep: 3, page: 20),
+          const ReadingPosition(ep: 1, page: 1),
         );
         expect(migratedHistory, isNot(contains('progress')));
         expectLegacyFilesUnchanged(legacyFilesBefore);
@@ -1675,7 +1675,6 @@ void main() {
         expect(
           transport.requests.where(
             (request) =>
-                {'PUT', 'DELETE'}.contains(request.method) &&
                 request.uri.path.contains('/${MergeRemote.legacyNamespace}/'),
           ),
           isEmpty,
@@ -1684,16 +1683,26 @@ void main() {
     );
 
     test(
-      'unverified old-root checkpoints do not complete migration or mutate legacy objects',
+      'current corrupt candidates are skipped and unknown protocols are rejected',
       () async {
         for (final failure in ['missing', 'corrupt', 'unsupported']) {
           transport = _VirtualWebDavTransport();
           client = _VirtualDavClient(transport);
           final actor = 'legacy_failure_$failure';
           final key = syncRecordKey('setting', ['legacy-$failure']);
-          final oldCommitPath = await publishLegacyCheckpoint(actor, {
-            key: {'value': 'legacy'},
-          });
+          final document = MergeDocument()
+            ..captureLocal(actor, {}, {
+              key: {'value': 'legacy'},
+            });
+          final batch = MergeBatch.create(
+            actor: actor,
+            counter: document.counterFor(actor),
+            document: document,
+          );
+          final oldCommitPath = await MergeRemote(
+            client,
+            deviceName: actor,
+          ).upload(batch);
           final manifestBytes = transport.remoteFiles[oldCommitPath]!;
           final manifest = SyncPackManifest.parse(manifestBytes);
           final packDigest = manifest.packs.keys.single;
@@ -1730,12 +1739,6 @@ void main() {
               transport.remoteEtags[futurePath] =
                   '"${sha256.convert(futureBytes)}"';
           }
-          final legacyFilesBefore = snapshotLegacyFiles();
-          final legacyDirsBefore = transport.remoteDirs
-              .where(
-                (path) => path.startsWith('${MergeRemote.legacyNamespace}/'),
-              )
-              .toSet();
           final directory = Directory(
             '${tempDir.path}/progress_migration_$failure',
           );
@@ -1748,36 +1751,40 @@ void main() {
             store: store,
             history: const {},
           );
+          final remoteFilesBefore = {
+            for (final entry in transport.remoteFiles.entries)
+              entry.key: Uint8List.fromList(entry.value),
+          };
+          final remoteDirsBefore = Set<String>.from(transport.remoteDirs);
+          transport.requests.clear();
 
+          final result = await coordinator.performSync(
+            direction: SyncDirection.downloadOnly,
+            checkRemote: true,
+            forceCapture: false,
+          );
+          expect(result.error, failure == 'unsupported');
           if (failure == 'unsupported') {
-            await expectLater(
-              coordinator.migrateProgressProtocolIfNeeded(),
-              throwsA(isA<UnsupportedSyncProtocolException>()),
-            );
-          } else {
-            await expectLater(
-              coordinator.migrateProgressProtocolIfNeeded(),
-              throwsA(isA<MergeRemoteCorruptException>()),
-            );
+            expect(result.errorMessage, contains('SYNC_PROTOCOL_INCOMPATIBLE'));
           }
 
-          expect(store.hasProgressProtocolMigration, isFalse);
+          expect(store.hasProgressProtocolMigration, isTrue);
           expect(store.document.counterFor(localActor), 0);
           expect(store.pendingBatchIds, isEmpty);
-          expectLegacyFilesUnchanged(legacyFilesBefore);
           expect(
-            transport.remoteDirs
-                .where(
-                  (path) => path.startsWith('${MergeRemote.legacyNamespace}/'),
-                )
-                .toSet(),
-            unorderedEquals(legacyDirsBefore),
+            transport.remoteFiles.keys,
+            unorderedEquals(remoteFilesBefore.keys),
           );
+          for (final entry in remoteFilesBefore.entries) {
+            expect(
+              transport.remoteFiles[entry.key],
+              orderedEquals(entry.value),
+            );
+          }
+          expect(transport.remoteDirs, unorderedEquals(remoteDirsBefore));
           expect(
             transport.requests.where(
-              (request) =>
-                  {'PUT', 'DELETE'}.contains(request.method) &&
-                  request.uri.path.contains('/${MergeRemote.legacyNamespace}/'),
+              (request) => {'PUT', 'DELETE'}.contains(request.method),
             ),
             isEmpty,
           );

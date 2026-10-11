@@ -477,8 +477,8 @@ void main() {
     () async {
       final batch = createTestBatch(actor: 'legacy-owner', counter: 1);
       final currentPath = await remote.upload(batch);
-      const currentRoot = '/dav/VeneraPlus-v2/';
-      const oldRoot = '/dav/VeneraPlus/';
+      const currentRoot = '/dav/VeneraPlus/';
+      const oldRoot = '/dav/VeneraPlus-v2/';
       for (final entry in Map<String, List<int>>.from(server._files).entries) {
         if (entry.key.startsWith(currentRoot)) {
           server.injectFile(
@@ -497,7 +497,7 @@ void main() {
       final oldEntry = entries.single;
       expect(
         oldEntry.filename,
-        currentPath.replaceFirst('VeneraPlus-v2/', 'VeneraPlus/'),
+        currentPath.replaceFirst('VeneraPlus/', 'VeneraPlus-v2/'),
       );
       expect(
         (await legacy.download(oldEntry)).document.materialize(),
@@ -550,7 +550,7 @@ void main() {
     test('parses only four-segment Pack commit paths', () {
       final digest = 'a' * 64;
       const actor = 'uuid-actor-123-456';
-      const path = 'VeneraPlus-v2/Workstation 机/commits/7-';
+      const path = 'VeneraPlus/Workstation 机/commits/7-';
       final entry = MergeRemoteEntry.tryParsePackCommit(
         '$path$digest.json',
         actor: actor,
@@ -566,9 +566,9 @@ void main() {
       expect(entry.filename, '$path$digest.json');
 
       for (final oldPath in [
-        'VeneraPlus/Workstation 机/7-$digest.json',
-        'VeneraPlus/sync-v4/Workstation 机/commits/7-$digest.json',
-        'VeneraPlus/sync-v5/Workstation 机/commits/7-$digest.json',
+        'VeneraPlus-v2/Workstation 机/7-$digest.json',
+        'VeneraPlus-v2/sync-v4/Workstation 机/commits/7-$digest.json',
+        'VeneraPlus-v2/sync-v5/Workstation 机/commits/7-$digest.json',
       ]) {
         expect(
           MergeRemoteEntry.tryParsePackCommit(oldPath, actor: actor),
@@ -581,12 +581,12 @@ void main() {
       final digest = 'a' * 64;
       for (final path in [
         '../../etc/commits/1-$digest.json',
-        'VeneraPlus-v2/../Device/commits/1-$digest.json',
-        'VeneraPlus-v2/Device/../commits/1-$digest.json',
-        'VeneraPlus-v2/Device/commits/uuid-actor-1-$digest.json',
-        'VeneraPlus-v2/Device/1-$digest.json',
-        'VeneraPlus-v2/sync-v4/Device/commits/1-$digest.json',
-        'VeneraPlus-v2/sync-v5/Device/commits/1-$digest.json',
+        'VeneraPlus/../Device/commits/1-$digest.json',
+        'VeneraPlus/Device/../commits/1-$digest.json',
+        'VeneraPlus/Device/commits/uuid-actor-1-$digest.json',
+        'VeneraPlus/Device/1-$digest.json',
+        'VeneraPlus/sync-v4/Device/commits/1-$digest.json',
+        'VeneraPlus/sync-v5/Device/commits/1-$digest.json',
         'sync-v2/Device/commits/1-$digest.json',
         '.venera',
       ]) {
@@ -598,7 +598,7 @@ void main() {
       }
       expect(
         MergeRemoteEntry.tryParsePackCommit(
-          'VeneraPlus-v2/Device/commits/1-$digest.json',
+          'VeneraPlus/Device/commits/1-$digest.json',
           actor: '../other',
         ),
         isNull,
@@ -624,9 +624,9 @@ void main() {
 
     test('rejects non-commit filenames', () {
       for (final path in [
-        'VeneraPlus-v2/Device/commits/device.json',
-        'VeneraPlus-v2/Device/commits/actor-notnum-hash.json',
-        'VeneraPlus-v2/Device/commits/1-short.json',
+        'VeneraPlus/Device/commits/device.json',
+        'VeneraPlus/Device/commits/actor-notnum-hash.json',
+        'VeneraPlus/Device/commits/1-short.json',
         '',
       ]) {
         expect(
@@ -693,7 +693,7 @@ void main() {
         );
         expect(remote.warnings, isEmpty);
       }
-      server.getStatuses['/dav/VeneraPlus-v2/${path.split('/')[1]}/device.json'] =
+      server.getStatuses['/dav/VeneraPlus/${path.split('/')[1]}/device.json'] =
           401;
       await expectLater(remote.list(), throwsA(isA<MergeRemoteException>()));
       expect(remote.warnings, isEmpty);
@@ -715,7 +715,7 @@ void main() {
         isNotEmpty,
       );
 
-      final markerPath = '/dav/VeneraPlus-v2/${path.split('/')[1]}/device.json';
+      final markerPath = '/dav/VeneraPlus/${path.split('/')[1]}/device.json';
       server.injectFile(
         markerPath,
         utf8.encode(
@@ -733,7 +733,7 @@ void main() {
       for (var index = 0; index < 6; index++) {
         final name = 'Device$index';
         server.injectOwnership(
-          '/dav/VeneraPlus-v2/$name',
+          '/dav/VeneraPlus/$name',
           actor: 'actor$index',
           name: name,
         );
@@ -745,7 +745,7 @@ void main() {
       expect(server.maxActiveMarkerGetRequests, lessThanOrEqualTo(4));
       expect(server.activeMarkerGetRequests, 0);
 
-      server.getStatuses['/dav/VeneraPlus-v2/Device0/device.json'] = 401;
+      server.getStatuses['/dav/VeneraPlus/Device0/device.json'] = 401;
       await expectLater(remote.list(), throwsA(isA<MergeRemoteException>()));
       expect(server.activeMarkerGetRequests, 0);
     },
@@ -890,12 +890,12 @@ void main() {
           .toString()
           .substring(0, 8);
       server.injectOwnership(
-        '/dav/VeneraPlus-v2/Device',
+        '/dav/VeneraPlus/Device',
         actor: 'base_owner',
         name: 'Device',
       );
       server.injectOwnership(
-        '/dav/VeneraPlus-v2/Device-$suffix',
+        '/dav/VeneraPlus/Device-$suffix',
         actor: 'fallback_owner',
         name: 'Device-$suffix',
       );
@@ -906,9 +906,9 @@ void main() {
       );
       expect(server.commitPutCount, 0);
       expect(server.objectPutCount, 0);
-      expect(server.hasFile('/dav/VeneraPlus-v2/Device/device.json'), isTrue);
+      expect(server.hasFile('/dav/VeneraPlus/Device/device.json'), isTrue);
       expect(
-        server.hasFile('/dav/VeneraPlus-v2/Device-$suffix/device.json'),
+        server.hasFile('/dav/VeneraPlus/Device-$suffix/device.json'),
         isTrue,
       );
     },
@@ -924,16 +924,10 @@ void main() {
       final oldPath = await oldDevice.upload(oldBatch);
       final newPath = await newDevice.upload(newBatch);
 
-      expect(oldPath, startsWith('VeneraPlus-v2/Old Device/commits/1-'));
-      expect(newPath, startsWith('VeneraPlus-v2/New Device/commits/2-'));
-      expect(
-        server.hasFile('/dav/VeneraPlus-v2/Old Device/device.json'),
-        isTrue,
-      );
-      expect(
-        server.hasFile('/dav/VeneraPlus-v2/New Device/device.json'),
-        isTrue,
-      );
+      expect(oldPath, startsWith('VeneraPlus/Old Device/commits/1-'));
+      expect(newPath, startsWith('VeneraPlus/New Device/commits/2-'));
+      expect(server.hasFile('/dav/VeneraPlus/Old Device/device.json'), isTrue);
+      expect(server.hasFile('/dav/VeneraPlus/New Device/device.json'), isTrue);
 
       final entries = await newDevice.list();
       expect(entries.map((entry) => entry.actor).toSet(), {'renamed_actor'});
@@ -1022,10 +1016,7 @@ void main() {
           orderedEquals(oldCommit),
         );
         expect(server._files['/dav/.venera'], orderedEquals(legacyBackup));
-        expect(
-          server.hasFile('/dav/VeneraPlus-v2/_sync-v5/device.json'),
-          isTrue,
-        );
+        expect(server.hasFile('/dav/VeneraPlus/_sync-v5/device.json'), isTrue);
         expect(
           server.receivedRequests.any(
             (request) =>
@@ -1093,7 +1084,7 @@ void main() {
         // HTTP 412 is encountered. Upload inspects HEAD, obtains quoted strong ETag,
         // and safely replaces the truncated file using conditional If-Match: strongEtag.
         final recoveredPath = await remote.upload(batch2);
-        expect(recoveredPath, startsWith('VeneraPlus-v2/Device/commits/2-'));
+        expect(recoveredPath, startsWith('VeneraPlus/Device/commits/2-'));
 
         // 5. Consumer refreshes listing and calls downloadLatestValid:
         // Now candidate 2 succeeds cleanly with valid SHA!
@@ -1131,16 +1122,13 @@ void main() {
           final batch = createTestBatch(actor: 'MyDevice-Actor', counter: 1);
           final uploadedPath = await customRemote.upload(batch);
 
-          expect(
-            uploadedPath,
-            startsWith('VeneraPlus-v2/My Device 机/commits/1-'),
-          );
+          expect(uploadedPath, startsWith('VeneraPlus/My Device 机/commits/1-'));
 
           final entries = await customRemote.list();
           expect(entries.length, 1);
           expect(
             entries.first.filename,
-            startsWith('VeneraPlus-v2/My Device 机/commits/1-'),
+            startsWith('VeneraPlus/My Device 机/commits/1-'),
           );
 
           final downloaded = await customRemote.download(entries.single);
@@ -1272,8 +1260,7 @@ void main() {
       expect(
         server.receivedRequests
             .where(
-              (request) =>
-                  request == 'PROPFIND /dav/VeneraPlus-v2/Device/packs',
+              (request) => request == 'PROPFIND /dav/VeneraPlus/Device/packs',
             )
             .length,
         1,
@@ -1374,7 +1361,7 @@ void main() {
         );
         final path = await newRemote.upload(batch);
 
-        expect(path, startsWith('VeneraPlus-v2/Device/commits/1-'));
+        expect(path, startsWith('VeneraPlus/Device/commits/1-'));
         expect(newRemote.transferStats['cacheHits'], 0);
       } finally {
         await cacheDirectory.delete(recursive: true);
@@ -1504,7 +1491,7 @@ void main() {
           Uint8List.fromList(server._files['/dav/$firstPath']!),
         );
         final missingPack = firstManifest.packs.keys.single;
-        final missingPath = '/dav/VeneraPlus-v2/Device/packs/$missingPack.pack';
+        final missingPath = '/dav/VeneraPlus/Device/packs/$missingPack.pack';
         server._files.remove(missingPath);
         server._etags.remove(missingPath);
 
@@ -1592,7 +1579,7 @@ void main() {
         );
         expect(
           server.receivedRequests.skip(requestStart),
-          contains('GET /dav/VeneraPlus-v2/Device/packs/$firstPack.pack'),
+          contains('GET /dav/VeneraPlus/Device/packs/$firstPack.pack'),
         );
 
         server.headUnsupported = false;
@@ -1611,7 +1598,7 @@ void main() {
         for (final digest in reusedPacks) {
           expect(
             thirdRequests,
-            contains('GET /dav/VeneraPlus-v2/Device/packs/$digest.pack'),
+            contains('GET /dav/VeneraPlus/Device/packs/$digest.pack'),
           );
         }
         expect(cachedRemote.uploadedObjects, 1);
@@ -1650,7 +1637,7 @@ void main() {
           Uint8List.fromList(server._files['/dav/$firstPath']!),
         );
         final digest = firstManifest.packs.keys.single;
-        final packPath = '/dav/VeneraPlus-v2/Device/packs/$digest.pack';
+        final packPath = '/dav/VeneraPlus/Device/packs/$digest.pack';
         final correctPack = List<int>.of(server._files[packPath]!);
         final corruptedPack = List<int>.of(correctPack)
           ..[0] = correctPack[0] ^ 1;
@@ -1797,7 +1784,7 @@ void main() {
       utf8.encode(canonicalSyncJson(manifest)),
     );
     final digest = sha256.convert(manifestBytes).toString();
-    const devicePath = 'VeneraPlus-v2/Oversized Device';
+    const devicePath = 'VeneraPlus/Oversized Device';
     final commitPath = '$devicePath/commits/1-$digest.json';
     server.injectOwnership(
       '/dav/$devicePath',
@@ -1892,7 +1879,7 @@ void main() {
 
         final fakeDigest = 'b' * 64;
         server.injectFile(
-          '/dav/VeneraPlus-v2/Device/commits/2-$fakeDigest.json',
+          '/dav/VeneraPlus/Device/commits/2-$fakeDigest.json',
           Uint8List(0),
           eTag: '"etag-2"',
         );
@@ -1958,7 +1945,7 @@ void main() {
         );
         final corruptDigest = secondManifest.packs.keys.first;
         final corruptPackPath =
-            '/dav/VeneraPlus-v2/Device/packs/$corruptDigest.pack';
+            '/dav/VeneraPlus/Device/packs/$corruptDigest.pack';
         final corrupted = List<int>.of(server._files[corruptPackPath]!);
         corrupted[0] ^= 1;
         server.tamperFile(corruptPackPath, corrupted);
@@ -2154,7 +2141,7 @@ void main() {
             final digest = sha256.convert(utf8.encode(foreignActor)).toString();
             foreignEntries.add(
               MergeRemoteEntry.tryParsePackCommit(
-                'VeneraPlus-v2/Foreign $index/commits/1-$digest.json',
+                'VeneraPlus/Foreign $index/commits/1-$digest.json',
                 actor: foreignActor,
                 eTag: '"foreign-$index"',
               )!,

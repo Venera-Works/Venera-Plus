@@ -301,8 +301,8 @@ class MergeRemote {
     _packCacheInvalidationBaseline = _packCache?.invalidations ?? 0;
   }
 
-  static const String currentNamespace = 'VeneraPlus-v2';
-  static const String legacyNamespace = 'VeneraPlus';
+  static const String currentNamespace = 'VeneraPlus';
+  static const String legacyNamespace = 'VeneraPlus-v2';
   final String _namespace;
   final Directory? _cacheDirectory;
 

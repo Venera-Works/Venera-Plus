@@ -86,7 +86,7 @@ Clicking the top-bar sync icon directly runs the selected direction without firs
 | Direction | Behavior |
 |---|---|
 | Bidirectional (default) | Captures local edits, reads and merges remote checkpoints from devices, applies the business-record result, and publishes pending checkpoints. An empty server is initialized from local data. |
-| Upload only | Publishes the local causal checkpoint without applying other devices' remote business data locally. Initial legacy migration may read old archives into merge metadata but still does not import their business data locally. Directory reads, verification, and recovery are not business downloads. |
+| Upload only | Publishes the local causal checkpoint without applying other devices' remote business data locally. Root original `.venera` backup-seed migration may read old archives into merge metadata but still does not import their business data locally. Directory reads, verification, and recovery are not business downloads. |
 | Download only | Reads and merges remote checkpoints without publishing local checkpoints. Local edits are still captured and retained as candidates; this is not a forced cloud overwrite. |
 
 | Timing | Trigger |
@@ -153,17 +153,17 @@ If a recovery journal is corrupt or incomplete, export the original files and ba
 
 ## Cloud Format and Integrity
 
-Synchronization lives under **`VeneraPlus-v2/<device-name>/`** inside the configured WebDAV directory. Normal synchronization uses only device metadata, Commits, and Packs:
+Synchronization lives under **`VeneraPlus/<device-name>/`** inside the configured WebDAV directory. Normal synchronization uses only device metadata, Commits, and Packs:
 
 ```text
-VeneraPlus-v2/
+VeneraPlus/
   <device-name>/
     device.json
     commits/<counter>-<manifest-SHA256>.json
     packs/<Pack-SHA256>.pack
 ```
 
-This directory isolates the new reading-progress semantics. Checkpoint documents retain schema 3 so immutable old batch identifiers and pending contents are not rewritten. First synchronization verifies and merges valid device Pack checkpoints from the original `VeneraPlus/` read-only, marking migration complete only after current local data is captured durably. The old directory is never uploaded to or compacted, and later old-client writes are not continuously imported. Device identities, counters, old outbox entries, and recovery targets are retained.
+Checkpoint documents retain schema 3 so immutable old batch identifiers and pending contents are not rewritten. `VeneraPlus-v2/` and other old remote directories are not automatically read, imported, migrated, or deleted. Device identities, counters, the outbox, and recovery targets are retained; if the current root has no Commit for this device, a full checkpoint is published even without new local edits.
 
 Unknown integer protocol versions report `SYNC_PROTOCOL_INCOMPATIBLE` while preserving files and pending edits, rather than deleting them as corrupt caches or falling back to an older version. Upgrade every synchronizing device; old and new clients do not continuously interoperate.
 
@@ -173,7 +173,7 @@ Device-directory discovery, Pack uploads, and downloads use at most **4 workers*
 
 The bounded encoding cache includes full causal content and event digests, avoiding repeated gzip work. Verified Pack/publication caches are scoped to the endpoint and current namespace and survive restarts; the Pack disk cache defaults to **128 MiB**. Corrupt or unwritable caches fall back safely, and removing a cache does not lose business state. A full manifest may reference at most **256 MiB** of physical Packs. Sparse old references reaching this limit cause current shards to be repacked, not a full repack on every sync and not deletion of remote Packs. Initial sync, cleared caches, or rebuilding trusted references still incur full packing/downloading and discovery costs.
 
-Path separators, URL delimiters, and control characters in device names are replaced with underscores, and unsafe trailing dots/spaces are removed. Empty or dot-only names are rejected. If another actor owns the same name, a stable short identifier is appended to the directory instead of overwriting that actor. Renaming preserves the internal actor identity and counters; old directories remain discoverable, with checkpoints subject to the same read and safe-cleanup rules. Synchronization reads every device directory, not just this device's directory. Existing local sync state publishes a full checkpoint when this actor has no checkpoint in the new namespace, even without new local edits.
+Path separators, URL delimiters, and control characters in device names are replaced with underscores, and unsafe trailing dots/spaces are removed. Empty or dot-only names are rejected. If another actor owns the same name, a stable short identifier is appended to the directory instead of overwriting that actor. Renaming preserves the internal actor identity and counters. Synchronization reads every device directory under the current `VeneraPlus/` root, not just this device's directory.
 
 Reads verify the SHA-256 in the filename, content format, counter, and agreement between directory ownership and the payload actor. GET redirects or missing ETags can still be validated by the content hash. Corrupt or partial candidate files are not committed checkpoints and cannot hide an older valid checkpoint from that device; multiple files with the same counter cannot be resolved by arbitrarily choosing one. Authentication and network failures are actual errors, not evidence that the server has no data.
 
@@ -193,7 +193,7 @@ Request logs retain only the method, HTTP status, and endpoint origin, never end
 
 ### Loopback HTTP Verification and Performance Boundaries
 
-This progress upgrade was exercised with two independent history SQLite databases, two durable synchronization stores, and real loopback WebDAV. When A advances and B retains an old position, both resume from the maximum. Explicit rereading remains preferred; an old session's automatic advance only raises the maximum and does not cancel rereading. Same-round advances, another rewind, completion, and late replay converge across synchronization exchanges and restart. The original `VeneraPlus/` namespace was also verified as readable but unavailable for upload or compaction, retaining its object bytes. Unknown protocol versions are not skipped as corrupt checkpoints.
+This progress upgrade was exercised with two independent history SQLite databases, two durable synchronization stores, and real loopback WebDAV. When A advances and B retains an old position, both resume from the maximum. Explicit rereading remains preferred; an old session's automatic advance only raises the maximum and does not cancel rereading. Same-round advances, another rewind, completion, and late replay converge across synchronization exchanges and restart. `VeneraPlus-v2/` is not automatically read, imported, migrated, or deleted. Unknown protocol versions are not skipped as corrupt checkpoints.
 
 This is a functional smoke run on the Windows test host, not a timing benchmark for real NAS, Android, or two physical devices. The goal is fewer small files and round trips, not necessarily fewer bytes; integrity verification may still download existing Packs. Use phase timings, HTTP counts, and transfer statistics to assess your service rather than reusing timing tables from an earlier layout.
 
@@ -218,13 +218,13 @@ Saving configuration validates the connection and prepares endpoint state **with
 
 Changing timing/interval reschedules work. Clear all connection fields and save to disconnect. Legacy auto-sync enabled maps to real-time, disabled to manual, and an existing scheduled mode is retained. Old keys are removed once. Direction defaults to bidirectional.
 
-**This cutover migrates valid Pack checkpoints from `VeneraPlus/<device-name>/` read-only, without creating a continuous old/new protocol bridge.** Earlier `sync-v4` and `sync-v5` historical layouts, archive markers, and flat checkpoints are neither updated nor deleted and are not part of this automatic directory migration. Original root ZIP compatibility remains separate.
+**`VeneraPlus-v2/`, `sync-v4/`, `sync-v5/`, and other old remote directories are not automatically read, imported, migrated, updated, or deleted.** Original root ZIP compatibility remains separate.
 
 Rollout order:
 
 1. Export and keep `data.venera` from each device. With the app closed, also back up its complete local profile, including every `sync_state_*` state file. Do not reset these states or replace them with another device's identity.
 2. Stop old clients from writing. Retrieve data available only in earlier historical layouts with an old client or an exported backup first.
-3. Upgrade the device retaining complete, latest causal state first, preserving its profile and synchronization state. Synchronize in an upload-capable direction, finish read-only migration from `VeneraPlus/`, and verify a usable Commit and Pack under `VeneraPlus-v2/<device-name>/`.
+3. Upgrade the device retaining complete, latest causal state first, preserving its profile and synchronization state. Synchronize in an upload-capable direction and verify a usable Commit and Pack under `VeneraPlus/<device-name>/`.
 4. Upgrade all remaining devices and synchronize. Check maximum progress, reread cursors, favorites, scripts, deletions, and conflict candidates. Download-only cannot publish the initial checkpoint and must wait for another device to publish.
 
 **`data.venera` does not retain complete synchronization clocks, deletion tombstones, or the outbox and cannot replace a full-profile backup.** Restoring only the ZIP loses that proof. Do not clear existing sync state to force initial publication, even if there are no new local edits.

@@ -1231,28 +1231,22 @@ class MergeSyncCoordinator {
     return imported;
   }
 
-  /// Restored local backups may have rolled back actor counters. During the
-  /// protocol cutover, verify own commits in both namespaces before allocation.
+  /// Restored local backups may have rolled back actor counters. Verify own
+  /// commits in the current namespace before allocation.
   Future<void> reconcileBackupRecoveryIfNeeded() async {
     if (!store.recoveredFromBackup || _counterReconciliationComplete) return;
 
     try {
-      final readers = [
-        remote,
-        if (!store.hasProgressProtocolMigration) remote.legacyReader(),
-      ];
       final publicationsToVerify = <(MergeRemote, MergeRemoteEntry)>[];
-      for (final reader in readers) {
-        final entries = await _measure(
-          'discover',
-          () => reader.list(latestOnly: false),
-        );
-        publicationsToVerify.addAll(
-          entries
-              .where((entry) => entry.actor == actor)
-              .map((entry) => (reader, entry)),
-        );
-      }
+      final entries = await _measure(
+        'discover',
+        () => remote.list(latestOnly: false),
+      );
+      publicationsToVerify.addAll(
+        entries
+            .where((entry) => entry.actor == actor)
+            .map((entry) => (remote, entry)),
+      );
       _assertInitializationCurrent();
       MergeDocument? verifiedDocument;
       final verifiedFilenames = <String>[];
@@ -1382,25 +1376,15 @@ class MergeSyncCoordinator {
     }
   }
 
-  /// Verifies the old namespace once without changing its immutable bytes.
-  /// Persist the marker only after every actor has a usable checkpoint and the
-  /// current local snapshot (including queued reading writes) is durable.
+  /// Completes the local progress marker without reading another remote
+  /// namespace. Persist it only after the current local snapshot (including
+  /// queued reading writes) is durable.
   Future<bool> migrateProgressProtocolIfNeeded() async {
     if (store.hasProgressProtocolMigration) return false;
-    final legacy = remote.legacyReader();
-    final entries = await _measure(
-      'discover',
-      () => legacy.list(latestOnly: false),
-    );
-    final changed = await _mergeRemoteEntries(
-      entries,
-      source: legacy,
-      requireVerifiedActors: true,
-    );
     _assertInitializationCurrent();
     await _captureStable();
     await store.completeProgressProtocolMigration();
-    return changed;
+    return false;
   }
 
   Future<bool> _mergeRemoteEntries(
