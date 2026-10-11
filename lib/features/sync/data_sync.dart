@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/window_frame.dart';
@@ -55,6 +56,8 @@ class DataSyncStatusSnapshot {
 }
 
 class DataSync with ChangeNotifier {
+  static const _remoteDirectory = '/VeneraPlus/';
+
   DataSync._() {
     appdata.registerSyncDataRequestHandler(({domains}) => onDataChanged());
     LocalFavoritesManager().addListener(onDataChanged);
@@ -517,17 +520,27 @@ class DataSync with ChangeNotifier {
       filename += '-';
       filename += appdata.settings['dataVersion'].toString();
       filename += '.venera';
-      var files = await client.readDir('/');
+      late List<dav.File> files;
+      try {
+        files = await client.readDir(_remoteDirectory);
+      } on DioException catch (error) {
+        if (error.response?.statusCode != 404) rethrow;
+        await client.mkdir(_remoteDirectory);
+        files = await client.readDir(_remoteDirectory);
+      }
       files = files.where((e) => e.name!.endsWith('.venera')).toList();
       var old = files.firstWhereOrNull((e) => e.name!.startsWith("$time-"));
       if (old != null) {
-        await client.remove(old.name!);
+        await client.remove('$_remoteDirectory${old.name!}');
       }
       if (files.length >= 10) {
         files.sort((a, b) => a.name!.compareTo(b.name!));
-        await client.remove(files.first.name!);
+        await client.remove('$_remoteDirectory${files.first.name!}');
       }
-      await client.write(filename, await data.readAsBytes());
+      await client.write(
+        '$_remoteDirectory$filename',
+        await data.readAsBytes(),
+      );
       data.deleteIgnoreError();
       appdata.settings['lastSyncTime'] = DateTime.now().millisecondsSinceEpoch;
       await appdata.saveData(false);
@@ -558,7 +571,7 @@ class DataSync with ChangeNotifier {
         config.createClient(logRequests: true);
 
     try {
-      var files = await client.readDir('/');
+      var files = await client.readDir(_remoteDirectory);
       files.sort((a, b) => b.name!.compareTo(a.name!));
       var file = files.firstWhereOrNull((e) => e.name!.endsWith('.venera'));
       if (file == null) {
@@ -574,7 +587,7 @@ class DataSync with ChangeNotifier {
       }
       Log.info("Data Sync", "Downloading data from WebDAV server");
       var localFile = File(FilePath.join(App.cachePath, file.name!));
-      await client.read2File(file.name!, localFile.path);
+      await client.read2File('$_remoteDirectory${file.name!}', localFile.path);
       await importAppData(localFile, checkVersion: true);
       _downloadApplied = true;
       await localFile.delete();

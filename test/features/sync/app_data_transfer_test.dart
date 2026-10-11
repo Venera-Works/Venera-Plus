@@ -487,7 +487,7 @@ void main() {
       );
 
       test(
-        'WebDAV writes root snapshots, replaces same-day files and retains ten',
+        'WebDAV writes VeneraPlus snapshots, creates the directory and retains ten',
         () async {
           final server = await _SyncWebDav.start();
           addTearDown(server.close);
@@ -509,9 +509,21 @@ void main() {
           appdata.settings['disableSyncFields'] =
               'cacheSize, webdavComicLibrary';
           await appdata.saveData(false);
+          final day = (DateTime.now().millisecondsSinceEpoch ~/ 86400000)
+              .toString();
+          server.rootFiles['$day-0.venera'] = Uint8List(1);
+          server.rootFiles['999999-999.venera'] = Uint8List(1);
 
           final sync = DataSync();
           expect((await sync.uploadData()).success, isTrue);
+          expect(server.syncDirectoryExists, isTrue);
+          expect(
+            server.requests.where(
+              (request) => request == 'MKCOL /dav/VeneraPlus/',
+            ),
+            hasLength(1),
+          );
+          expect(server.requests, contains('PROPFIND /dav/VeneraPlus/'));
           final firstName = server.snapshotNames.single;
           expect(firstName, matches(RegExp(r'^\d+-1\.venera$')));
           final extracted = await _extractServerSnapshot(
@@ -537,6 +549,12 @@ void main() {
           expect(server.snapshotNames, hasLength(1));
           expect(server.snapshotNames.single, endsWith('-2.venera'));
           expect(
+            server.requests.where(
+              (request) => request == 'MKCOL /dav/VeneraPlus/',
+            ),
+            hasLength(1),
+          );
+          expect(
             server.requests.where((request) => request.startsWith('DELETE ')),
             isNotEmpty,
           );
@@ -550,6 +568,12 @@ void main() {
           expect(server.snapshotNames, hasLength(10));
           expect(server.files.containsKey('0-1.venera'), isFalse);
           expect(server.files.containsKey('keep.txt'), isTrue);
+          expect(server.rootFiles.containsKey('$day-0.venera'), isTrue);
+          expect(server.rootFiles.containsKey('999999-999.venera'), isTrue);
+          expect(
+            server.requests.where((request) => request.startsWith('DELETE ')),
+            everyElement(startsWith('DELETE /dav/VeneraPlus/')),
+          );
         },
       );
 
@@ -573,7 +597,9 @@ void main() {
           appdata.settings['webdav'] = [server.url, '', ''];
           appdata.settings['dataVersion'] = 7;
           await appdata.saveData(false);
+          server.syncDirectoryExists = true;
           server.files['999-7.venera'] = Uint8List(1);
+          server.rootFiles['999999-999.venera'] = Uint8List(1);
 
           final sync = DataSync();
           appdata.implicitData['webdavSyncMode'] = DataSyncMode.realtime.name;
@@ -603,6 +629,10 @@ void main() {
             hasLength(1),
           );
           expect(
+            server.requests.where((request) => request.startsWith('GET ')),
+            contains('GET /dav/VeneraPlus/999-8.venera'),
+          );
+          expect(
             server.requests.where((request) => request.startsWith('PUT ')),
             isEmpty,
           );
@@ -610,6 +640,7 @@ void main() {
           expect(appdata.settings['cacheSize'], 512);
           expect(_historyTitle('local-only'), isNull);
           expect(sync.hasPendingChanges, isFalse);
+          expect(server.rootFiles.containsKey('999999-999.venera'), isTrue);
         },
       );
 
@@ -735,9 +766,11 @@ class _SyncWebDav {
 
   final HttpServer server;
   final files = <String, Uint8List>{};
+  final rootFiles = <String, Uint8List>{};
   final requests = <String>[];
+  var syncDirectoryExists = false;
 
-  String get url => 'http://127.0.0.1:${server.port}/dav/VeneraPlus';
+  String get url => 'http://127.0.0.1:${server.port}/dav';
 
   Iterable<String> get snapshotNames =>
       files.keys.where((name) => name.endsWith('.venera'));
@@ -759,59 +792,98 @@ class _SyncWebDav {
       BytesBuilder(),
       (buffer, chunk) => buffer..add(chunk),
     );
-    const root = '/dav/VeneraPlus/';
-    if (!path.startsWith(root)) {
-      request.response.statusCode = HttpStatus.notFound;
-    } else {
-      final name = Uri.decodeComponent(path.substring(root.length));
-      switch (request.method) {
-        case 'OPTIONS':
-          request.response.statusCode = HttpStatus.ok;
-          break;
-        case 'PROPFIND':
-          request.response.statusCode = HttpStatus.multiStatus;
-          request.response.headers.contentType = ContentType(
-            'application',
-            'xml',
-          );
-          request.response.write(_directoryResponse());
-          break;
-        case 'PUT':
-          files[name] = body.toBytes();
-          request.response.statusCode = HttpStatus.created;
-          break;
-        case 'GET':
-          final bytes = files[name];
-          if (bytes == null) {
-            request.response.statusCode = HttpStatus.notFound;
-          } else {
-            request.response.add(bytes);
-          }
-          break;
-        case 'DELETE':
-          files.remove(name);
-          request.response.statusCode = HttpStatus.noContent;
-          break;
-        default:
-          request.response.statusCode = HttpStatus.methodNotAllowed;
+    const root = '/dav/';
+    const syncDirectory = '/dav/VeneraPlus/';
+    if (path == syncDirectory || path == '/dav/VeneraPlus') {
+      if (request.method == 'MKCOL') {
+        request.response.statusCode = syncDirectoryExists
+            ? HttpStatus.forbidden
+            : HttpStatus.created;
+        syncDirectoryExists = true;
+      } else if (request.method == 'PROPFIND') {
+        if (!syncDirectoryExists) {
+          request.response.statusCode = HttpStatus.notFound;
+        } else {
+          _writeDirectoryResponse(request.response, files, syncDirectory);
+        }
+      } else {
+        request.response.statusCode = HttpStatus.ok;
       }
+    } else if (path.startsWith(syncDirectory)) {
+      _handleFile(request, body.toBytes(), path, syncDirectory, files);
+    } else if (path == root || path == '/dav') {
+      if (request.method == 'PROPFIND') {
+        _writeDirectoryResponse(request.response, rootFiles, root);
+      } else {
+        request.response.statusCode = HttpStatus.ok;
+      }
+    } else if (path.startsWith(root)) {
+      _handleFile(request, body.toBytes(), path, root, rootFiles);
+    } else {
+      request.response.statusCode = HttpStatus.notFound;
     }
     await request.response.close();
   }
 
-  String _directoryResponse() {
-    final entries = files.keys
+  void _handleFile(
+    HttpRequest request,
+    Uint8List body,
+    String path,
+    String directory,
+    Map<String, Uint8List> directoryFiles,
+  ) {
+    final name = Uri.decodeComponent(path.substring(directory.length));
+    switch (request.method) {
+      case 'OPTIONS':
+        request.response.statusCode = HttpStatus.ok;
+        break;
+      case 'PUT':
+        directoryFiles[name] = body;
+        request.response.statusCode = HttpStatus.created;
+        break;
+      case 'GET':
+        final bytes = directoryFiles[name];
+        if (bytes == null) {
+          request.response.statusCode = HttpStatus.notFound;
+        } else {
+          request.response.add(bytes);
+        }
+        break;
+      case 'DELETE':
+        directoryFiles.remove(name);
+        request.response.statusCode = HttpStatus.noContent;
+        break;
+      default:
+        request.response.statusCode = HttpStatus.methodNotAllowed;
+    }
+  }
+
+  void _writeDirectoryResponse(
+    HttpResponse response,
+    Map<String, Uint8List> directoryFiles,
+    String directory,
+  ) {
+    response.statusCode = HttpStatus.multiStatus;
+    response.headers.contentType = ContentType('application', 'xml');
+    response.write(_directoryResponse(directoryFiles, directory));
+  }
+
+  String _directoryResponse(
+    Map<String, Uint8List> directoryFiles,
+    String directory,
+  ) {
+    final entries = directoryFiles.keys
         .map(
           (name) =>
               '''
-<D:response><D:href>/dav/VeneraPlus/${Uri.encodeComponent(name)}</D:href>
+<D:response><D:href>$directory${Uri.encodeComponent(name)}</D:href>
 <D:propstat><D:prop><D:resourcetype/></D:prop>
 <D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>''',
         )
         .join();
     return '''<?xml version="1.0"?>
 <D:multistatus xmlns:D="DAV:"><D:response>
-<D:href>/dav/VeneraPlus/</D:href>
+<D:href>$directory</D:href>
 <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
 <D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
 $entries</D:multistatus>''';

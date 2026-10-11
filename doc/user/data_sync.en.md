@@ -4,7 +4,7 @@ Chinese: [data_sync.zh.md](data_sync.zh.md)
 
 Open **Settings → Storage and Sync → Data Sync** and enter the WebDAV directory URL, username, and password. Directory letter case must match the server. When sync is not configured, the top-bar button opens this page; once configured, it lets you choose Upload or Download.
 
-Synchronization uses complete snapshots in the WebDAV root directory, named `<day>-<dataVersion>.venera`. Upload replaces an earlier snapshot from the same day and keeps at most ten snapshots. A snapshot contains settings, favorites, reading history, cookies, and comic source files. It does not contain local comic images, downloaded archives, or remote comic-library contents. Downloads restore a newer remote snapshot over local data; there is no record merge or conflict resolution.
+Synchronization uses complete snapshots in the fixed `VeneraPlus/` directory below the WebDAV URL, stored as `VeneraPlus/<day>-<dataVersion>.venera`. The first upload creates that directory automatically. Upload replaces an earlier snapshot from the same day and keeps at most ten snapshots. A snapshot contains settings, favorites, reading history, cookies, and comic source files. It does not contain local comic images, downloaded archives, or remote comic-library contents. Downloads restore a newer remote snapshot over local data; there is no record merge or conflict resolution.
 
 ## Sync modes
 
