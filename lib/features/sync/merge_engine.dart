@@ -125,7 +125,12 @@ class _Cell {
     }
   }
 
-  void write(String dot, Object? value, {bool contribution = false}) {
+  void write(
+    String dot,
+    Object? value, {
+    bool contribution = false,
+    bool preserveSameActorContributions = false,
+  }) {
     final copy = canonicalizeSyncValue(value);
     final hash = _digest(copy);
     if (seen.containsKey(dot) && seen[dot] != hash) {
@@ -134,7 +139,10 @@ class _Cell {
     final actor = MergeDot.parse(dot).actor;
     retire(
       values.keys.where(
-        (id) => !contribution || MergeDot.parse(id).actor == actor,
+        (id) =>
+            !contribution ||
+            (!preserveSameActorContributions &&
+                MergeDot.parse(id).actor == actor),
       ),
       dot,
     );
@@ -437,6 +445,45 @@ class _ProgressSource {
   });
 }
 
+ReadingCatalog? _compatibleCatalogForProgress(
+  Iterable<ReadingProgress> progresses,
+) {
+  final catalogs = [
+    for (final progress in progresses)
+      if (progress.catalog != null) progress.catalog!,
+  ];
+  if (catalogs.isEmpty) return null;
+
+  String chapterKey(ReadingChapter chapter) => jsonEncode([
+    chapter.groupId ?? chapter.group?.toString() ?? '',
+    chapter.id,
+  ]);
+  bool containsCatalog(ReadingCatalog outer, ReadingCatalog inner) {
+    var next = 0;
+    for (final chapter in outer.chapters) {
+      if (next < inner.chapters.length &&
+          chapterKey(chapter) == chapterKey(inner.chapters[next])) {
+        next++;
+      }
+    }
+    return next == inner.chapters.length;
+  }
+
+  final compatible = catalogs
+      .where(
+        (candidate) =>
+            catalogs.every((other) => containsCatalog(candidate, other)),
+      )
+      .toList();
+  if (compatible.isEmpty) return null;
+  compatible.sort(
+    (left, right) => canonicalSyncJson(
+      left.toJson(),
+    ).compareTo(canonicalSyncJson(right.toJson())),
+  );
+  return compatible.first;
+}
+
 class _ProgressChoice {
   final MergeCandidate candidate;
   final Map<String, Object?> payload;
@@ -723,6 +770,7 @@ class MergeDocument {
     Map<String, Object?> edits,
     String cellKey, {
     bool contribution = false,
+    bool preserveSameActorContributions = false,
     bool proposalsOnly = false,
   }) {
     final context = cell.seen.keys.toList()..sort();
@@ -740,7 +788,12 @@ class MergeDocument {
       cell.seen[dot] = hash;
       cell.values[dot] = canonicalizeSyncValue(value);
     } else {
-      cell.write(dot, value, contribution: contribution);
+      cell.write(
+        dot,
+        value,
+        contribution: contribution,
+        preserveSameActorContributions: preserveSameActorContributions,
+      );
     }
   }
 
@@ -758,28 +811,58 @@ class MergeDocument {
         changed.add(key);
     }
     if (changed.isEmpty) return 0;
+    // Local writes replace the same actor's prior contribution only after
+    // safely carrying its already-normalized H/R state forward.
     final progressWrites = <String, Map<String, Object?>>{};
+    final preserveProgressContributions = <String>{};
+    final progressFloor = contributionFloor ?? this;
     for (final key in changed) {
       _jsonValue(current[key]);
-      if (_domain(key) == 'history') {
-        _duration(previous[key]?['readDurationMs']);
-        _duration(current[key]?['readDurationMs']);
-        final after = current[key];
-        if (after?.containsKey('readingProgress') ?? false) {
-          var progress = ReadingProgress.fromJson(after!['readingProgress']);
-          final record = _records[key];
-          final reincarnation =
-              previous[key] == null &&
-              (record?.presence.values.isNotEmpty ?? false) &&
-              !(record?.alive ?? true);
-          if (!reincarnation && record != null) {
-            for (final source in _progressSources(record)) {
-              if (!source.deleted) progress = progress.merge(source.progress!);
-            }
+      if (_domain(key) != 'history') continue;
+      _duration(previous[key]?['readDurationMs']);
+      _duration(current[key]?['readDurationMs']);
+      final after = current[key];
+      if (after == null || !after.containsKey('readingProgress')) continue;
+
+      var progress = ReadingProgress.fromJson(after['readingProgress']);
+      final before = previous[key];
+      final progressChanged =
+          !(before?.containsKey('readingProgress') ?? false) ||
+          !syncValuesEqual(
+            before!['readingProgress'],
+            after['readingProgress'],
+          );
+      final record = _records[key];
+      final reincarnation =
+          before == null &&
+          record != null &&
+          record.presence.values.isNotEmpty &&
+          !record.alive;
+      final floorRecord = progressFloor._records[key];
+      if (progressChanged && !reincarnation && floorRecord != null) {
+        final previousProgress = progressFloor
+            ._progressSources(floorRecord)
+            .where(
+              (source) =>
+                  !source.deleted &&
+                  source.progress != null &&
+                  MergeDot.parse(source.id).actor == actor,
+            )
+            .map((source) => source.progress!)
+            .toList();
+        if (previousProgress.isNotEmpty) {
+          final joined = _joinLocalProgressSafely([
+            ...previousProgress,
+            progress,
+          ]);
+          if (joined == null) {
+            preserveProgressContributions.add(key);
+          } else {
+            progress = joined;
           }
-          progressWrites[key] = progress.toJson();
         }
       }
+      progressWrites[key] = progress.toJson();
     }
     final counter = reserveCounter(actor);
     final dot = MergeDot(actor, counter).toKey();
@@ -810,6 +893,16 @@ class MergeDocument {
             had == has &&
             syncValuesEqual(before?[field], after[field]))
           continue;
+        if (!reincarnation &&
+            _domain(key) == 'history' &&
+            field == 'progress' &&
+            had &&
+            !has &&
+            after.containsKey('readingProgress')) {
+          // Legacy progress remains an original source until catalog
+          // normalization can consume it together with the other candidates.
+          continue;
+        }
         if (_domain(key) == 'history' && field == 'readDurationMs') {
           final old = _duration(before?[field]);
           final next = _duration(after[field]);
@@ -875,6 +968,14 @@ class MergeDocument {
             },
             edits,
             'field:$field',
+            contribution:
+                !reincarnation &&
+                has &&
+                _domain(key) == 'history' &&
+                (field == 'readingProgress' || field == 'progress'),
+            preserveSameActorContributions:
+                field == 'readingProgress' &&
+                preserveProgressContributions.contains(key),
           );
         }
       }
@@ -1012,7 +1113,7 @@ class MergeDocument {
         in legacy?.values.entries ?? const <MapEntry<String, Object?>>[]) {
       final payload = _map(entry.value);
       final deleted = payload['deleted'] as bool;
-      if (deleted && (current?.values.containsKey(entry.key) ?? false)) {
+      if (deleted && (current?.seen.containsKey(entry.key) ?? false)) {
         continue;
       }
       final progress = deleted
@@ -1032,14 +1133,473 @@ class MergeDocument {
     return sources;
   }
 
-  ReadingProgress? _joinedProgress(_Record record) {
+  bool _hasRelocatableRoundAnchorConflict(List<_ProgressSource> sources) {
+    final anchors = <String, ReadingPosition>{};
+    var found = false;
+    for (final source in sources) {
+      final progress = source.progress;
+      if (source.deleted || progress == null) continue;
+      final rounds = _map(progress.toJson()['rounds']);
+      for (final entry in rounds.entries) {
+        final anchor = ReadingPosition.fromJson(_map(entry.value)['anchor']);
+        final previous = anchors[entry.key];
+        if (previous == null || previous == anchor) {
+          anchors[entry.key] = anchor;
+          continue;
+        }
+        final relocatedGroup =
+            previous.chapterId != null &&
+            previous.chapterId == anchor.chapterId &&
+            previous.page == anchor.page &&
+            previous.groupId != null &&
+            anchor.groupId != null &&
+            previous.groupId != anchor.groupId;
+        if (!relocatedGroup) return false;
+        found = true;
+      }
+    }
+    return found;
+  }
+
+  ReadingProgress? _joinedProgressFromSources(List<_ProgressSource> sources) {
     ReadingProgress? result;
-    for (final source in _progressSources(record)) {
+    for (final source in sources) {
       if (source.deleted) continue;
       final progress = source.progress!;
       result = result == null ? progress : result.merge(progress);
     }
     return result;
+  }
+
+  /// Projects only real source positions, forcing an ambiguous relocated round
+  /// to remain non-resumable while its original causal candidates stay intact.
+  ReadingProgress _unresolvedProgressProjection(List<_ProgressSource> sources) {
+    final maximum = <Object?>[];
+    final roundCandidates = <String, List<Map<String, Object?>>>{};
+    final retired = <String>{};
+    final ended = <String>{};
+    var time = 0;
+    for (final source in sources) {
+      final progress = source.progress;
+      if (source.deleted || progress == null) continue;
+      final json = progress.toJson();
+      maximum.addAll(
+        progress.maximumPositions.map((position) => position.toJson()),
+      );
+      retired.addAll((json['retired'] as List).cast<String>());
+      ended.addAll((json['ended'] as List).cast<String>());
+      for (final entry in _map(json['rounds']).entries) {
+        final round = _map(entry.value);
+        final anchor = ReadingPosition.fromJson(round['anchor']);
+        final cursor = ReadingPosition.fromJson(round['cursor']);
+        maximum
+          ..add(anchor.toJson())
+          ..add(cursor.toJson());
+        roundCandidates
+            .putIfAbsent(entry.key, () => <Map<String, Object?>>[])
+            .add({'anchor': anchor.toJson(), 'cursor': cursor.toJson()});
+      }
+      if (progress.time > time) time = progress.time;
+    }
+
+    final rounds = <String, Object?>{};
+    for (final entry in roundCandidates.entries) {
+      if (retired.contains(entry.key) || ended.contains(entry.key)) continue;
+      entry.value.sort(
+        (left, right) =>
+            canonicalSyncJson(left).compareTo(canonicalSyncJson(right)),
+      );
+      rounds[entry.key] = entry.value.first;
+    }
+    return ReadingProgress.fromJson({
+      'version': 1,
+      'maximum': maximum,
+      'catalog': null,
+      'rounds': rounds,
+      'retired': retired.toList()..sort(),
+      'ended': ended.toList()..sort(),
+      'time': time,
+    });
+  }
+
+  bool hasHistoryPresenceDeletionConflict(String recordKey) {
+    if (_domain(recordKey) != 'history') return false;
+    final record = _records[recordKey];
+    if (record == null) return false;
+    final values = record.presence.values.values;
+    return values.contains(false) && values.contains(true);
+  }
+
+  bool hasReadingProgressDeletionConflict(String recordKey) {
+    if (_domain(recordKey) != 'history') return false;
+    final record = _records[recordKey];
+    if (record == null) return false;
+    final sources = _progressSources(record);
+    return sources.any((source) => !source.deleted) &&
+        sources.any((source) => source.deleted);
+  }
+
+  /// Uses a source-provided catalog only when one candidate catalog is a
+  /// provable order-preserving superset of every other candidate catalog.
+  ReadingCatalog? compatibleReadingProgressCatalog(String recordKey) {
+    if (_domain(recordKey) != 'history') return null;
+    final record = _records[recordKey];
+    if (record == null ||
+        !record.alive ||
+        record.presence.values.values.contains(false)) {
+      return null;
+    }
+    final sources = _progressSources(record);
+    if (sources.isEmpty ||
+        sources.any((source) => source.deleted || source.progress == null) ||
+        _hasUnparsedLegacyProgress(record)) {
+      return null;
+    }
+    return _compatibleCatalogForProgress(
+      sources.map((source) => source.progress!),
+    );
+  }
+
+  /// Uses only positions whose source catalogs are absent and whose existing
+  /// progress comparison rules establish an unambiguous H/R join.
+  ReadingProgress? readingProgressWithoutCatalog(String recordKey) {
+    if (_domain(recordKey) != 'history') return null;
+    final record = _records[recordKey];
+    if (record == null ||
+        !record.alive ||
+        record.presence.values.values.contains(false)) {
+      return null;
+    }
+    final sources = _progressSources(record);
+    if (sources.isEmpty ||
+        sources.any(
+          (source) =>
+              source.deleted ||
+              source.progress == null ||
+              source.progress!.catalog != null,
+        ) ||
+        _hasUnparsedLegacyProgress(record) ||
+        _hasRelocatableRoundAnchorConflict(sources)) {
+      return null;
+    }
+    final joined = _joinedProgressFromSources(sources);
+    return joined != null && !joined.hasOrderConflict ? joined : null;
+  }
+
+  bool needsReadingProgressResolutionWithoutCatalog(String recordKey) {
+    final normalized = readingProgressWithoutCatalog(recordKey);
+    return normalized != null &&
+        !_isSingleAlreadyNormalizedProgress(_records[recordKey]!, normalized);
+  }
+
+  bool resolveReadingProgressWithoutCatalog(String actor, String recordKey) {
+    if (actor.isEmpty) throw ArgumentError.value(actor, 'actor');
+    final normalized = readingProgressWithoutCatalog(recordKey);
+    if (normalized == null) return false;
+    final record = _records[recordKey]!;
+    if (_isSingleAlreadyNormalizedProgress(record, normalized)) return false;
+    return _commitReadingProgressResolution(actor, recordKey, normalized);
+  }
+
+  ReadingProgress? _normalizeAmbiguousProgressSource(
+    _ProgressSource source,
+    List<_ProgressSource> allSources,
+    ReadingCatalog catalog,
+  ) {
+    final progress = source.progress!;
+    if (!progress.hasOrderConflict || progress.activeRoundIds.isEmpty) {
+      return null;
+    }
+    for (final roundId in progress.activeRoundIds) {
+      if (!allSources.any(
+        (other) =>
+            !identical(other, source) &&
+            (other.progress?.isActiveRound(roundId) ?? false),
+      )) {
+        return null;
+      }
+    }
+    final json = _mappedProgressJson(progress, catalog);
+    return json == null ? null : ReadingProgress.fromJson(json);
+  }
+
+  ReadingProgress? _joinLocalProgressSafely(List<ReadingProgress> progresses) {
+    // An order-conflicted active-R value can be a joined business projection;
+    // it is not proof that the original cursor choices
+    // have been preserved. Keep same-actor raw candidates until catalog join.
+    if (progresses.any(
+      (progress) =>
+          progress.hasOrderConflict && progress.activeRoundIds.isNotEmpty,
+    )) {
+      return null;
+    }
+    final catalog = _compatibleCatalogForProgress(progresses);
+    if (catalog == null &&
+        progresses.any((progress) => progress.catalog != null)) {
+      return null;
+    }
+    if (catalog == null &&
+        _hasRelocatableRoundAnchorConflict([
+          for (var index = 0; index < progresses.length; index++)
+            _ProgressSource(
+              field: 'readingProgress',
+              id: 'local-progress-$index',
+              deleted: false,
+              progress: progresses[index],
+            ),
+        ])) {
+      return null;
+    }
+
+    ReadingProgress? joined;
+    for (final progress in progresses) {
+      final normalized = catalog == null
+          ? progress
+          : progress.normalizeForCatalog(catalog);
+      if (normalized == null) return null;
+      joined = joined == null ? normalized : joined.merge(normalized);
+    }
+    if (joined == null ||
+        (joined.hasOrderConflict && joined.activeRoundIds.isNotEmpty)) {
+      return null;
+    }
+    return joined;
+  }
+
+  Map<String, Object?>? _mappedProgressJson(
+    ReadingProgress progress,
+    ReadingCatalog catalog,
+  ) {
+    ReadingPosition? mapPosition(ReadingPosition position) {
+      var identity = position;
+      final sourceCatalog = progress.catalog;
+      if (sourceCatalog != null) {
+        final sourceIndex = sourceCatalog.indexOf(position);
+        if (position.chapterId == null) {
+          if (sourceIndex == null) return null;
+          final chapter = sourceCatalog.chapters[sourceIndex];
+          identity = ReadingPosition(
+            ep: chapter.ep,
+            page: position.page,
+            group: chapter.group,
+            chapterId: chapter.id,
+            groupId: chapter.groupId,
+          );
+        } else if (sourceIndex != null) {
+          final chapter = sourceCatalog.chapters[sourceIndex];
+          identity = ReadingPosition(
+            ep: chapter.ep,
+            page: position.page,
+            group: chapter.group,
+            chapterId: chapter.id,
+            groupId: chapter.groupId,
+          );
+        }
+      }
+      final targetIndex = catalog.indexOf(identity);
+      if (targetIndex == null) return null;
+      final chapter = catalog.chapters[targetIndex];
+      return ReadingPosition(
+        ep: chapter.ep,
+        page: position.page,
+        group: chapter.group,
+        chapterId: chapter.id,
+        groupId: chapter.groupId,
+      );
+    }
+
+    final maximum = <Object?>[];
+    for (final position in progress.maximumPositions) {
+      final mapped = mapPosition(position);
+      if (mapped == null) return null;
+      maximum.add(mapped.toJson());
+    }
+    final rounds = <String, Object?>{};
+    for (final entry in _map(progress.toJson()['rounds']).entries) {
+      final raw = _map(entry.value);
+      final anchor = mapPosition(ReadingPosition.fromJson(raw['anchor']));
+      final cursor = mapPosition(ReadingPosition.fromJson(raw['cursor']));
+      if (anchor == null || cursor == null) return null;
+      rounds[entry.key] = {
+        'anchor': anchor.toJson(),
+        'cursor': cursor.toJson(),
+      };
+    }
+    return {
+      ...progress.toJson(),
+      'catalog': catalog.toJson(),
+      'maximum': maximum,
+      'rounds': rounds,
+    };
+  }
+
+  /// Joins original live progress candidates only after mapping each one into
+  /// the authoritative loaded catalog. Null means the position or causal
+  /// deletion state is not safe for automatic resolution.
+  ReadingProgress? readingProgressForCatalog(
+    String recordKey,
+    ReadingCatalog catalog,
+  ) {
+    if (_domain(recordKey) != 'history') return null;
+    final record = _records[recordKey];
+    if (record == null ||
+        !record.alive ||
+        record.presence.values.values.contains(false)) {
+      return null;
+    }
+    final sources = _progressSources(record);
+    if (sources.isEmpty ||
+        sources.any((source) => source.deleted || source.progress == null) ||
+        _hasUnparsedLegacyProgress(record)) {
+      return null;
+    }
+    ReadingProgress? joined;
+    for (final source in sources) {
+      final progress = source.progress!;
+      final normalized =
+          progress.normalizeForCatalog(catalog) ??
+          _normalizeAmbiguousProgressSource(source, sources, catalog);
+      if (normalized == null) return null;
+      joined = joined == null ? normalized : joined.merge(normalized);
+    }
+    return joined;
+  }
+
+  bool _hasUnparsedLegacyProgress(_Record record) {
+    final legacy = record.fields['progress'];
+    for (final candidate in legacy?.values.values ?? const <Object?>[]) {
+      final payload = _map(candidate);
+      if (payload['deleted'] == false &&
+          _legacyReadingProgress(payload['value']) == null) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool _isSingleAlreadyNormalizedProgress(
+    _Record record,
+    ReadingProgress normalized,
+  ) {
+    final sources = _progressSources(record);
+    if (sources.length != 1 ||
+        sources.single.deleted ||
+        sources.single.field != 'readingProgress' ||
+        _hasUnparsedLegacyProgress(record)) {
+      return false;
+    }
+    final raw = record.fields['readingProgress']?.values[sources.single.id];
+    if (raw == null) return false;
+    final payload = _map(raw);
+    return payload['deleted'] == false &&
+        syncValuesEqual(payload['value'], normalized.toJson());
+  }
+
+  /// True when a saved candidate still needs an authoritative directory or a
+  /// safe catalog-less join before it can be considered resolved.
+  bool needsReadingProgressCatalog(String recordKey) {
+    if (_domain(recordKey) != 'history') return false;
+    final record = _records[recordKey];
+    if (record == null ||
+        !record.alive ||
+        record.presence.values.values.contains(false) ||
+        hasReadingProgressDeletionConflict(recordKey) ||
+        _hasUnparsedLegacyProgress(record)) {
+      return false;
+    }
+    final sources = _progressSources(record);
+    if (sources.isEmpty ||
+        sources.any((source) => source.deleted || source.progress == null)) {
+      return false;
+    }
+    final catalog = compatibleReadingProgressCatalog(recordKey);
+    if (catalog != null) {
+      final normalized = readingProgressForCatalog(recordKey, catalog);
+      return normalized == null ||
+          !_isSingleAlreadyNormalizedProgress(record, normalized);
+    }
+    if (sources.any((source) => source.progress!.catalog != null)) return true;
+    final normalized = readingProgressWithoutCatalog(recordKey);
+    return normalized == null ||
+        !_isSingleAlreadyNormalizedProgress(record, normalized);
+  }
+
+  /// True only when the catalog can safely produce a new progress candidate.
+  bool needsReadingProgressResolution(
+    String recordKey,
+    ReadingCatalog catalog,
+  ) {
+    final normalized = readingProgressForCatalog(recordKey, catalog);
+    return normalized != null &&
+        !_isSingleAlreadyNormalizedProgress(_records[recordKey]!, normalized);
+  }
+
+  /// True when a loaded directory cannot uniquely map an otherwise live
+  /// progress candidate, excluding conflicts already represented by deletion.
+  bool hasUnmappableReadingProgress(String recordKey, ReadingCatalog catalog) {
+    if (_domain(recordKey) != 'history' ||
+        hasHistoryPresenceDeletionConflict(recordKey) ||
+        hasReadingProgressDeletionConflict(recordKey)) {
+      return false;
+    }
+    final record = _records[recordKey];
+    if (record == null ||
+        !record.alive ||
+        record.presence.values.values.contains(false)) {
+      return false;
+    }
+    final sources = _progressSources(record);
+    if (sources.isEmpty ||
+        sources.any((source) => source.deleted || source.progress == null) ||
+        _hasUnparsedLegacyProgress(record)) {
+      return false;
+    }
+    return readingProgressForCatalog(recordKey, catalog) == null;
+  }
+
+  /// Causally consumes every currently observed live source using a complete,
+  /// catalog-normalized H/R value derived synchronously from this document.
+  bool resolveReadingProgress(
+    String actor,
+    String recordKey,
+    ReadingCatalog catalog,
+  ) {
+    if (actor.isEmpty) throw ArgumentError.value(actor, 'actor');
+    final normalized = readingProgressForCatalog(recordKey, catalog);
+    if (normalized == null) return false;
+    final record = _records[recordKey]!;
+    if (_isSingleAlreadyNormalizedProgress(record, normalized)) return false;
+    return _commitReadingProgressResolution(actor, recordKey, normalized);
+  }
+
+  bool _commitReadingProgressResolution(
+    String actor,
+    String recordKey,
+    ReadingProgress normalized,
+  ) {
+    final record = _records[recordKey]!;
+    final dot = MergeDot(actor, reserveCounter(actor)).toKey();
+    final edits = <String, Object?>{};
+    _write(record.presence, dot, true, edits, 'presence');
+    _write(
+      record.fields.putIfAbsent('readingProgress', _Cell.new),
+      dot,
+      {'value': normalized.toJson(), 'deleted': false},
+      edits,
+      'field:readingProgress',
+    );
+    final legacy = record.fields['progress'];
+    if (legacy != null && legacy.values.isNotEmpty) {
+      _write(
+        legacy,
+        dot,
+        {'value': null, 'deleted': true},
+        edits,
+        'field:progress',
+      );
+    }
+    _eventDigests[dot] = _digest({recordKey: edits});
+    return true;
   }
 
   List<_ProgressChoice> _progressChoices(String recordKey, _Record record) {
@@ -1108,8 +1668,15 @@ class MergeDocument {
     final live = sources.where((source) => !source.deleted).toList();
     final hasDeletionConflict =
         live.isNotEmpty && sources.any((source) => source.deleted);
-    final joined = _joinedProgress(record);
-    if (!hasDeletionConflict && !(joined?.hasOrderConflict ?? false)) {
+    final relocatableAnchorConflict = _hasRelocatableRoundAnchorConflict(
+      sources,
+    );
+    final joined = relocatableAnchorConflict
+        ? null
+        : _joinedProgressFromSources(sources);
+    if (!hasDeletionConflict &&
+        !relocatableAnchorConflict &&
+        !(joined?.hasOrderConflict ?? false)) {
       return null;
     }
     final candidates =
@@ -1146,8 +1713,26 @@ class MergeDocument {
         }
       }
       if (history) {
-        final progress = _joinedProgress(record);
-        if (progress != null) fields['readingProgress'] = progress.toJson();
+        final progressSources = _progressSources(record);
+        final relocatableAnchorConflict = _hasRelocatableRoundAnchorConflict(
+          progressSources,
+        );
+        final progress = relocatableAnchorConflict
+            ? null
+            : _joinedProgressFromSources(progressSources);
+        if (progress != null) {
+          fields['readingProgress'] = progress.toJson();
+        } else if (relocatableAnchorConflict) {
+          if (preferred?[entry.key]?.containsKey('readingProgress') ?? false) {
+            fields['readingProgress'] = canonicalizeSyncValue(
+              preferred![entry.key]!['readingProgress'],
+            );
+          } else {
+            fields['readingProgress'] = _unresolvedProgressProjection(
+              progressSources,
+            ).toJson();
+          }
+        }
         var duration = record.total;
         final local = preferred?[entry.key]?['readDurationMs'];
         if (local is num && record.durationConflict) {
@@ -1331,13 +1916,32 @@ class MergeDocument {
     final currentRecord = _records[recordKey]!;
     final dot = MergeDot(actor, reserveCounter(actor)).toKey();
     final edits = <String, Object?>{};
-    _write(
-      currentRecord.presence,
-      dot,
-      field == 'presence' ? chosen : true,
-      edits,
-      'presence',
-    );
+    final presenceValues = currentRecord.presence.values.values.toSet();
+    if (field == 'presence') {
+      _write(currentRecord.presence, dot, chosen, edits, 'presence');
+    } else if (presenceValues.contains(true) &&
+        presenceValues.contains(false)) {
+      // Every schema-3 event retains a presence witness. Only a true/false
+      // ambiguity keeps the existing alternatives for an ordinary field
+      // resolution; same-value witnesses can use the normal causal write.
+      _write(
+        currentRecord.presence,
+        dot,
+        currentRecord.alive,
+        edits,
+        'presence',
+        contribution: true,
+        preserveSameActorContributions: true,
+      );
+    } else {
+      _write(
+        currentRecord.presence,
+        dot,
+        currentRecord.alive,
+        edits,
+        'presence',
+      );
+    }
     if (field == 'readDurationMs') {
       _write(
         currentRecord.bases,

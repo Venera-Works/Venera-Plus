@@ -149,6 +149,10 @@ class MergeSyncCoordinator {
   final Set<String> _directCloudActors = {};
   int _lastSyncDurationMs = 0;
   int get lastSyncDurationMs => _lastSyncDurationMs;
+  final Map<String, ReadingCatalog> _readingCatalogs = {};
+  int _automaticallyResolvedProgressCount = 0;
+  int get automaticallyResolvedProgressCount =>
+      _automaticallyResolvedProgressCount;
 
   /// Hints only narrow reads; startup, explicit checks and failed guards still
   /// reconcile the entire profile so external file edits cannot be missed.
@@ -379,9 +383,62 @@ class MergeSyncCoordinator {
     return approved;
   }
 
-  List<MergeConflict> get conflicts => store.document.conflicts;
-  int get conflictCount => conflicts.length;
-  bool get hasConflict => conflicts.isNotEmpty;
+  List<MergeConflict> get conflicts {
+    final unavailable = unavailableDomains;
+    return List.unmodifiable(
+      store.document.conflicts.where(
+        (conflict) =>
+            !unavailable.contains(syncRecordDomain(conflict.recordKey)) &&
+            preferencesAdapter.shouldObserveRecord(conflict.recordKey),
+      ),
+    );
+  }
+
+  bool _awaitsReadingCatalog(MergeConflict conflict) =>
+      syncRecordDomain(conflict.recordKey) == 'history' &&
+      conflict.field == 'readingProgress' &&
+      !_readingCatalogs.containsKey(conflict.recordKey) &&
+      !store.document.hasReadingProgressDeletionConflict(conflict.recordKey) &&
+      !store.document.hasHistoryPresenceDeletionConflict(conflict.recordKey);
+
+  List<String> get pendingProgressRecordKeys {
+    final unavailable = unavailableDomains;
+    final keys = <String>{
+      for (final conflict in conflicts)
+        if (_awaitsReadingCatalog(conflict)) conflict.recordKey,
+      for (final recordKey in store.document.recordKeys)
+        if (syncRecordDomain(recordKey) == 'history' &&
+            !_readingCatalogs.containsKey(recordKey) &&
+            preferencesAdapter.shouldObserveRecord(recordKey) &&
+            !unavailable.contains('history') &&
+            store.document.needsReadingProgressCatalog(recordKey))
+          recordKey,
+    }.toList()..sort();
+    return List.unmodifiable(keys);
+  }
+
+  int get pendingProgressCount => pendingProgressRecordKeys.length;
+  List<String> get unmappableProgressRecordKeys {
+    final unavailable = unavailableDomains;
+    final progressConflictKeys = {
+      for (final conflict in conflicts)
+        if (conflict.field == 'readingProgress') conflict.recordKey,
+    };
+    final keys = <String>{
+      for (final entry in _readingCatalogs.entries)
+        if (preferencesAdapter.shouldObserveRecord(entry.key) &&
+            !unavailable.contains(syncRecordDomain(entry.key)) &&
+            !progressConflictKeys.contains(entry.key) &&
+            store.document.hasUnmappableReadingProgress(entry.key, entry.value))
+          entry.key,
+    }.toList()..sort();
+    return List.unmodifiable(keys);
+  }
+
+  int get conflictCount =>
+      conflicts.where((conflict) => !_awaitsReadingCatalog(conflict)).length +
+      unmappableProgressRecordKeys.length;
+  bool get hasConflict => conflictCount > 0;
 
   static String computeEndpointHash(String url, String username) {
     final normalized = '${normalizeWebDavEndpointUrl(url)}#$username';
@@ -591,6 +648,37 @@ class MergeSyncCoordinator {
     }
   }
 
+  /// Resolves saved progress using a directory already loaded by the reader.
+  /// This is local queued work; the regular schedule publishes its checkpoint.
+  Future<Res<bool>> resolveReadingProgressCatalog(
+    String recordKey,
+    ReadingCatalog catalog,
+  ) async {
+    if (syncRecordDomain(recordKey) != 'history' ||
+        !preferencesAdapter.shouldObserveRecord(recordKey)) {
+      return const Res(false);
+    }
+    _readingCatalogs[recordKey] = catalog;
+    _automaticallyResolvedProgressCount = 0;
+    try {
+      if (store.needsRecovery || store.pendingApply != null) {
+        await startupRecovery();
+      } else {
+        await reconcileBackupRecoveryIfNeeded();
+      }
+      markDirty(_historyDomains);
+      final observation = store.localObservation;
+      await _applyMerged(observation, autoResolve: true);
+      return const Res(true);
+    } catch (error) {
+      Log.error(
+        'MergeSyncCoordinator',
+        'Reading progress normalization failed (${error.runtimeType})',
+      );
+      return Res.error(mergeStoreErrorMessage(error));
+    }
+  }
+
   /// Every guard failure cancels its durable target before another export.
   /// Partial business-write failures deliberately retain their recovery target.
   Future<void> _applyMerged(
@@ -624,13 +712,43 @@ class MergeSyncCoordinator {
           unavailableDomains: unavailable,
           shouldObserveRecord: preferencesAdapter.shouldObserveRecord,
         );
-        if (resolutions.isNotEmpty) {
-          await store.resolveAll(
+        final catalogs = <String, ReadingCatalog>{
+          for (final entry in _readingCatalogs.entries)
+            if (preferencesAdapter.shouldObserveRecord(entry.key) &&
+                !unavailable.contains(syncRecordDomain(entry.key)))
+              entry.key: entry.value,
+        };
+        final withoutCatalog = <String>{};
+        final materialized = store.document.materialize(
+          preferred: captured.snapshot.records,
+        );
+        for (final recordKey in materialized.keys) {
+          if (syncRecordDomain(recordKey) != 'history' ||
+              !preferencesAdapter.shouldObserveRecord(recordKey) ||
+              unavailable.contains(syncRecordDomain(recordKey)) ||
+              catalogs.containsKey(recordKey)) {
+            continue;
+          }
+          final compatibleCatalog = store.document
+              .compatibleReadingProgressCatalog(recordKey);
+          if (compatibleCatalog != null) {
+            catalogs[recordKey] = compatibleCatalog;
+          } else if (store.document
+              .needsReadingProgressResolutionWithoutCatalog(recordKey)) {
+            withoutCatalog.add(recordKey);
+          }
+        }
+        if (resolutions.isNotEmpty ||
+            catalogs.isNotEmpty ||
+            withoutCatalog.isNotEmpty) {
+          _automaticallyResolvedProgressCount += await store.resolveAll(
             resolutions,
             unavailableDomains: unavailable,
             manual: false,
+            readingProgressCatalogs: catalogs,
+            readingProgressWithoutCatalog: withoutCatalog,
           );
-          hasStagedTarget = true;
+          hasStagedTarget = store.pendingApply != null;
         }
       }
       final desired = hasStagedTarget
@@ -1342,6 +1460,7 @@ class MergeSyncCoordinator {
     String? legacyBackupName,
   }) async {
     remote.resetTransferStats();
+    _automaticallyResolvedProgressCount = 0;
     final diagnostics = _SyncDiagnostics();
     final total = Stopwatch()..start();
     _activeDiagnostics = diagnostics;

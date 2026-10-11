@@ -59,6 +59,17 @@ String _changedSyncRecordSummary(Map<String, int> counts) {
   return entries.map((entry) => '${entry.key}: ${entry.value}').join(', ');
 }
 
+String _dataSyncReviewLabel(DataSyncStatusSnapshot status) {
+  if (status.unmappableProgressRecordKeys.isNotEmpty) {
+    return 'Review sync items'.tl;
+  }
+  if (status.conflictCount > 0 && status.pendingProgressCount > 0) {
+    return 'Review conflicts and pending progress'.tl;
+  }
+  if (status.pendingProgressCount > 0) return 'View pending progress'.tl;
+  return 'Resolve conflicts'.tl;
+}
+
 class _DataSyncStatusPanel extends StatelessWidget {
   const _DataSyncStatusPanel({
     required this.status,
@@ -109,8 +120,22 @@ class _DataSyncStatusPanel extends StatelessWidget {
             }),
           ),
           Text(
-            'Sync Conflict (@count pending)'.tlParams({
+            'Manual conflicts requiring review: @count'.tlParams({
               'count': status.conflictCount,
+            }),
+          ),
+          Text(
+            'Reading positions waiting for directory: @count'.tlParams({
+              'count': status.pendingProgressCount,
+            }),
+          ),
+          Text(
+            'Within manual review: @count reading positions need chapter selection'
+                .tlParams({'count': status.unmappableProgressCount}),
+          ),
+          Text(
+            'Reading positions automatically reconciled: @count'.tlParams({
+              'count': status.automaticallyResolvedProgressCount,
             }),
           ),
           Text(
@@ -144,14 +169,17 @@ class _DataSyncStatusPanel extends StatelessWidget {
               child: Text('Sync now'.tl),
             ),
           ),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton(
-              key: const Key('data-sync-review-conflicts'),
-              onPressed: isBusy ? null : () => showSyncConflictDialog(context),
-              child: Text('Resolve conflicts'.tl),
+          if (status.conflictCount > 0 || status.pendingProgressCount > 0)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                key: const Key('data-sync-review-conflicts'),
+                onPressed: isBusy
+                    ? null
+                    : () => showSyncConflictDialog(context),
+                child: Text(_dataSyncReviewLabel(status)),
+              ),
             ),
-          ),
         ],
       ),
     );
@@ -797,7 +825,9 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                         Expanded(
                           child: Text(
                             syncDirection == SyncDirection.bidirectional
-                                ? 'Sync merges independent changes. Conflicts use the latest cloud value on first sync or when empty, and prefer later manual local edits.'
+                                ? 'Reading progress merges by chapter order and preserves rereads; '
+                                          'unmapped positions wait for the comic catalog, '
+                                          'and only unresolved ambiguities need manual review.'
                                       .tl
                                 : (syncDirection == SyncDirection.uploadOnly
                                       ? 'Upload-only mode will propagate local changes to remote without importing remote data.'
@@ -986,12 +1016,15 @@ class _WebdavSettingState extends State<_WebdavSetting> {
     try {
       final result = await DataSync().syncNow();
       if (!mounted) return;
-      context.showMessage(
-        message: result.error
-            ? mergeStoreErrorSummary(result.errorMessage)?.tl ??
-                  'Sync failed'.tl
-            : 'Sync completed'.tl,
-      );
+      if (result.error) {
+        context.showMessage(
+          message:
+              mergeStoreErrorSummary(result.errorMessage)?.tl ??
+              'Sync failed'.tl,
+        );
+        return;
+      }
+      context.showMessage(message: DataSync().statusSnapshot.completionSummary);
     } finally {
       if (mounted) setState(() => isTesting = false);
     }

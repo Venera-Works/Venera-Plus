@@ -131,24 +131,44 @@ parseHeadlessSyncResolveArguments(List<String> args, int startIndex) {
 
 /// Never serialize MergeCandidate.toJson here: its value may contain credentials.
 List<Map<String, Object?>> headlessSyncConflictPreviews(
-  List<MergeConflict> conflicts,
-) => [
+  List<MergeConflict> conflicts, {
+  Set<String> pendingProgressRecordKeys = const {},
+}) => [
   for (final conflict in conflicts)
-    {
-      'recordKey': conflict.recordKey,
-      'field': conflict.field,
-      'candidates': [
-        for (final candidate in conflict.candidates)
-          {
-            'id': candidate.id,
-            'actor': candidate.actor,
-            'counter': candidate.counter,
-            'isDeleted': candidate.isDeleted,
-            'label': candidate.safeLabel,
-          },
-      ],
-    },
+    if (!(conflict.field == 'readingProgress' &&
+        pendingProgressRecordKeys.contains(conflict.recordKey)))
+      {
+        'recordKey': conflict.recordKey,
+        'field': conflict.field,
+        'candidates': [
+          for (final candidate in conflict.candidates)
+            {
+              'id': candidate.id,
+              'actor': candidate.actor,
+              'counter': candidate.counter,
+              'isDeleted': candidate.isDeleted,
+              'label': candidate.safeLabel,
+            },
+        ],
+      },
 ];
+
+/// Summarizes candidate conflicts separately from catalog-pending and
+/// unmappable reading progress.
+Map<String, Object?> headlessSyncStatusSummary(
+  DataSyncStatusSnapshot status, {
+  required int unresolvedCandidateConflictCount,
+}) => {
+  'conflictCount': status.conflictCount,
+  'hasConflict': status.hasConflict,
+  'pendingProgressCount': status.pendingProgressCount,
+  'pendingProgressRecordKeys': status.pendingProgressRecordKeys,
+  'unmappableProgressCount': status.unmappableProgressCount,
+  'unmappableProgressRecordKeys': status.unmappableProgressRecordKeys,
+  'automaticallyResolvedProgressCount':
+      status.automaticallyResolvedProgressCount,
+  'unresolvedCandidateConflictCount': unresolvedCandidateConflictCount,
+};
 
 /// Formats only safe, actionable issue metadata for CLI output.
 List<Map<String, Object?>> headlessSyncSourceIssuePreviews(
@@ -549,14 +569,23 @@ Future<void> _handleWebdavSync() async {
     exit(1);
   }
   final snapshot = DataSync().statusSnapshot;
-  final conflicts = DataSync().conflicts;
+  final pendingProgressRecordKeys = snapshot.pendingProgressRecordKeys.toSet();
+  final conflicts = [
+    for (final conflict in DataSync().conflicts)
+      if (!(conflict.field == 'readingProgress' &&
+          pendingProgressRecordKeys.contains(conflict.recordKey)))
+        conflict,
+  ];
+  final summary = headlessSyncStatusSummary(
+    snapshot,
+    unresolvedCandidateConflictCount: conflicts.length,
+  );
   if (snapshot.isPartial) {
     cliPrint({
       'status': 'partial',
       'message': 'Sync completed with partial sources.',
       'data': {
-        'conflictCount': conflicts.length,
-        'hasConflict': conflicts.isNotEmpty,
+        ...summary,
         'sourceIssues': headlessSyncSourceIssuePreviews(snapshot.sourceIssues),
         'unavailableDomains': snapshot.unavailableDomains.toList()..sort(),
       },
@@ -565,10 +594,7 @@ Future<void> _handleWebdavSync() async {
     cliPrint({
       'status': 'success',
       'message': 'Sync complete.',
-      'data': {
-        'conflictCount': conflicts.length,
-        'hasConflict': conflicts.isNotEmpty,
-      },
+      'data': summary,
     });
   }
 }
@@ -577,12 +603,31 @@ Future<void> _handleWebdavConflicts() async {
   cliPrint({'status': 'running', 'message': 'Checking sync conflicts...'});
   await DataSync().waitForStartupMerge();
   await DataSync().waitForSync();
-  final conflicts = DataSync().conflicts;
-  final sanitizedConflicts = headlessSyncConflictPreviews(conflicts);
+  final status = DataSync().statusSnapshot;
+  final pendingProgressRecordKeys = status.pendingProgressRecordKeys.toSet();
+  final allConflicts = DataSync().conflicts;
+  final conflicts = [
+    for (final conflict in allConflicts)
+      if (!(conflict.field == 'readingProgress' &&
+          pendingProgressRecordKeys.contains(conflict.recordKey)))
+        conflict,
+  ];
+  final sanitizedConflicts = headlessSyncConflictPreviews(
+    allConflicts,
+    pendingProgressRecordKeys: pendingProgressRecordKeys,
+  );
+  final summary = headlessSyncStatusSummary(
+    status,
+    unresolvedCandidateConflictCount: conflicts.length,
+  );
   cliPrint({
     'status': 'success',
     'message': 'Sync conflicts retrieved.',
-    'data': {'count': conflicts.length, 'conflicts': sanitizedConflicts},
+    'data': {
+      'count': conflicts.length,
+      ...summary,
+      'conflicts': sanitizedConflicts,
+    },
   });
 }
 

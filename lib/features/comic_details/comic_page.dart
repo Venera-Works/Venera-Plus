@@ -254,26 +254,34 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
 
   Future<Res<ComicDetails>> loadData() async {
     if (widget.sourceKey == 'local') {
-      var localComic = LocalManager().find(widget.id, ComicType.local);
+      final localComic = LocalManager().find(widget.id, ComicType.local);
       if (localComic == null) {
         return const Res.error('Local comic not found');
+      }
+      var resolvedHistory =
+          _historyManager.find(widget.id, ComicType.local) ??
+          History.fromModel(model: localComic, ep: 0, page: 0);
+      final catalog = readingCatalogFromComicChapters(localComic.chapters);
+      if (catalog != null) {
+        try {
+          resolvedHistory = await _historyManager.resolveReadingProgressCatalog(
+            resolvedHistory,
+            catalog,
+          );
+        } catch (error) {
+          return Res.error(error.toString());
+        }
       }
       _rememberHistory(_historyManager.find(widget.id, ComicType.local));
       if (isFirst) {
         Future.microtask(() {
           App.rootContext.to(() {
-            final latestHistory = _historyManager.find(
-              widget.id,
-              ComicType.local,
-            );
             return Reader(
               type: ComicType.local,
               cid: widget.id,
               name: localComic.title,
               chapters: localComic.chapters,
-              history:
-                  latestHistory ??
-                  History.fromModel(model: localComic, ep: 0, page: 0),
+              history: resolvedHistory,
               author: localComic.subTitle ?? '',
               tags: localComic.tags,
             );
@@ -285,13 +293,27 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
       await Future.delayed(const Duration(milliseconds: 200));
       return const Res.error('Local comic');
     }
-    var comicSource = ComicSource.find(widget.sourceKey);
+    final comicSource = ComicSource.find(widget.sourceKey);
     if (comicSource == null) {
       return const Res.error('Comic source not found');
     }
     isAddToLocalFav = LocalFavoritesManager().isExist(widget.id, _historyType);
     _rememberHistory(_historyManager.find(widget.id, _historyType));
-    return comicSource.loadComicInfo!(widget.id);
+    final result = await comicSource.loadComicInfo!(widget.id);
+    if (result.error) return result;
+    final catalog = readingCatalogFromComicChapters(result.data.chapters);
+    if (catalog != null) {
+      final current =
+          _historyManager.find(widget.id, _historyType) ??
+          History.fromModel(model: result.data, ep: 0, page: 0);
+      try {
+        await _historyManager.resolveReadingProgressCatalog(current, catalog);
+      } catch (error) {
+        return Res.error(error.toString());
+      }
+    }
+    _rememberHistory(_historyManager.find(widget.id, _historyType));
+    return result;
   }
 
   @override

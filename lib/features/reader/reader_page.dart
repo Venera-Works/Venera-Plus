@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:uuid/uuid.dart';
+import 'package:venera_plus/components/loading.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/features/reader/auto_reading.dart';
@@ -80,6 +81,11 @@ class Reader extends StatefulWidget {
   State<Reader> createState() => ReaderState();
 }
 
+ReadingCatalog? readingCatalogFromComicChapters(ComicChapters? chapters) {
+  final entries = _buildReadingChapters(chapters);
+  return entries == null ? null : ReadingCatalog(entries);
+}
+
 List<ReadingChapter>? _buildReadingChapters(ComicChapters? chapters) {
   if (chapters == null) return null;
   final entries = <ReadingChapter>[];
@@ -103,30 +109,6 @@ List<ReadingChapter>? _buildReadingChapters(ComicChapters? chapters) {
     }
   }
   return entries;
-}
-
-int? _resolveReadingChapterIndex(
-  List<ReadingChapter> chapters,
-  ComicChapters source,
-  ReadingPosition position,
-) {
-  int? match;
-  for (var i = 0; i < chapters.length; i++) {
-    final chapter = chapters[i];
-    final matches = position.chapterId != null
-        ? chapter.id == position.chapterId &&
-              (position.groupId == null || chapter.groupId == position.groupId)
-        : position.groupId != null
-        ? chapter.groupId == position.groupId && chapter.ep == position.ep
-        : position.group != null
-        ? chapter.group == position.group && chapter.ep == position.ep
-        : !source.isGrouped && chapter.ep == position.ep;
-    if (matches) {
-      if (match != null) return null;
-      match = i + 1;
-    }
-  }
-  return match;
 }
 
 class _PendingReaderNavigation {
@@ -248,6 +230,8 @@ class ReaderState extends State<Reader>
   late final String _initialNavigationCommandId;
   bool _initialNavigationSubmitted = false;
   ReadingProgress? _initialObservedProgress;
+  bool _readingProgressResolutionComplete = true;
+  String? _readingProgressResolutionError;
   bool _showProgressConflict = false;
 
   bool _reportedMissingLocalFiles = false;
@@ -331,54 +315,25 @@ class ReaderState extends State<Reader>
       },
     )..addListener(update);
     history = widget.history;
-    _readingChapters = _buildReadingChapters(widget.chapters) ?? const [];
-    _readingCatalog = widget.chapters == null
-        ? null
-        : ReadingCatalog(_readingChapters);
+    _readingCatalog = readingCatalogFromComicChapters(widget.chapters);
+    _readingChapters = _readingCatalog?.chapters ?? const [];
     sessionRoundId = widget.history.activeRereadId;
     _initialNavigationCommandId = const Uuid().v4();
-    final resumePosition = widget.history.resumePosition;
+    _applyInitialHistoryPosition(widget.history);
+    _initialObservedProgress = _captureReadingProgressSnapshot();
+    final catalog = _readingCatalog;
     final hasExplicitTarget =
         widget.initialChapter != null ||
         widget.initialPage != null ||
         widget.initialChapterGroup != null;
-    final resolvedResumeChapter =
-        resumePosition == null || widget.chapters == null
-        ? null
-        : _resolveReadingChapterIndex(
-            _readingChapters,
-            widget.chapters!,
-            resumePosition,
-          );
-    final unresolvedResume =
-        !hasExplicitTarget &&
-        resumePosition != null &&
-        widget.chapters != null &&
-        resolvedResumeChapter == null;
-    _showProgressConflict =
-        !hasExplicitTarget &&
-        (widget.history.hasOrderConflict || unresolvedResume);
-    chapter =
-        widget.initialChapter ??
-        (hasExplicitTarget
-            ? 1
-            : resolvedResumeChapter ?? resumePosition?.ep ?? 1);
-    if (chapter < 1) {
-      chapter = 1;
+    // Resume restoration must not gate or later reset an explicit target.
+    _readingProgressResolutionComplete = catalog == null || hasExplicitTarget;
+    if (catalog != null) {
+      unawaited(_resolveInitialReadingProgress(catalog));
     }
-    final initialGroup = widget.initialChapterGroup;
-    if (initialGroup != null && widget.chapters?.isGrouped == true) {
-      for (int i = 0; i < (initialGroup - 1); i++) {
-        chapter += widget.chapters!.getGroupByIndex(i).length;
-      }
-    }
-    pageValue = normalizeReaderInitialPage(
-      widget.initialPage ?? (hasExplicitTarget ? 1 : resumePosition?.page),
-    );
-    _initialObservedProgress = _captureReadingProgressSnapshot();
     _readingSession = ReadingSessionTracker(
       onDuration: (duration) =>
-          HistoryManager().addReadDuration(widget.history, duration),
+          HistoryManager().addReadDuration(history ?? widget.history, duration),
       onError: (error, stackTrace) {
         Log.error(
           "Reader",
@@ -421,8 +376,125 @@ class ReaderState extends State<Reader>
         },
       );
     }
+
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+  }
+
+  void _applyInitialHistoryPosition(History savedHistory) {
+    final resumePosition = savedHistory.resumePosition;
+    final hasExplicitTarget =
+        widget.initialChapter != null ||
+        widget.initialPage != null ||
+        widget.initialChapterGroup != null;
+    final resolvedResumeIndex = resumePosition == null
+        ? null
+        : _readingCatalog?.indexOf(resumePosition);
+    final resolvedResumeChapter = resolvedResumeIndex == null
+        ? null
+        : resolvedResumeIndex + 1;
+    final progress =
+        savedHistory.readingProgress ??
+        (resumePosition == null
+            ? null
+            : ReadingProgress.seed(
+                resumePosition,
+                time: savedHistory.time.millisecondsSinceEpoch,
+              ));
+    final unmappableProgress =
+        _readingCatalog != null &&
+        progress != null &&
+        progress.normalizeForCatalog(_readingCatalog) == null;
+    final unresolvedResume =
+        !hasExplicitTarget &&
+        resumePosition != null &&
+        widget.chapters != null &&
+        resolvedResumeChapter == null;
+    final unmappableChapterlessProgress =
+        !hasExplicitTarget &&
+        _readingCatalog == null &&
+        progress != null &&
+        (progress.hasOrderConflict ||
+            (resumePosition != null &&
+                (resumePosition.ep != 1 ||
+                    resumePosition.group != null ||
+                    resumePosition.groupId != null)));
+    _showProgressConflict =
+        !hasExplicitTarget &&
+        ((_readingCatalog != null &&
+                (savedHistory.hasOrderConflict ||
+                    unresolvedResume ||
+                    unmappableProgress)) ||
+            unmappableChapterlessProgress);
+    chapter =
+        widget.initialChapter ??
+        (hasExplicitTarget
+            ? 1
+            : resolvedResumeChapter ?? resumePosition?.ep ?? 1);
+    if (chapter < 1) {
+      chapter = 1;
+    }
+    final initialGroup = widget.initialChapterGroup;
+    if (initialGroup != null && widget.chapters?.isGrouped == true) {
+      for (int i = 0; i < (initialGroup - 1); i++) {
+        chapter += widget.chapters!.getGroupByIndex(i).length;
+      }
+    }
+    pageValue = normalizeReaderInitialPage(
+      widget.initialPage ?? (hasExplicitTarget ? 1 : resumePosition?.page),
+    );
+  }
+
+  Future<void> _resolveInitialReadingProgress(ReadingCatalog catalog) async {
+    final hasExplicitTarget =
+        widget.initialChapter != null ||
+        widget.initialPage != null ||
+        widget.initialChapterGroup != null;
+    try {
+      final resolved = await HistoryManager().resolveReadingProgressCatalog(
+        widget.history,
+        catalog,
+      );
+      if (!mounted) return;
+      setState(() {
+        if (!_initialNavigationSubmitted) {
+          history = resolved;
+          sessionRoundId = resolved.activeRereadId;
+          if (!hasExplicitTarget) {
+            _applyInitialHistoryPosition(resolved);
+            if (_isInitialized) initImagesPerPage(pageValue);
+          }
+          _initialObservedProgress = _captureReadingProgressSnapshot();
+        }
+        _readingProgressResolutionError = null;
+        _readingProgressResolutionComplete = true;
+      });
+    } catch (error, stackTrace) {
+      Log.error(
+        'Reader',
+        'Failed to resolve saved reading progress: $error',
+        stackTrace,
+      );
+      if (!mounted) return;
+      if (hasExplicitTarget) {
+        setState(() {
+          _readingProgressResolutionError = null;
+          _readingProgressResolutionComplete = true;
+        });
+        return;
+      }
+      setState(() => _readingProgressResolutionError = error.toString());
+    }
+  }
+
+  void _retryInitialReadingProgressResolution() {
+    final catalog = _readingCatalog;
+    if (catalog == null) return;
+    setState(() {
+      _readingProgressResolutionError = null;
+      _readingProgressResolutionComplete = false;
+    });
+    unawaited(_resolveInitialReadingProgress(catalog));
   }
 
   bool _isInitialized = false;
@@ -541,6 +613,18 @@ class ReaderState extends State<Reader>
 
   @override
   Widget build(BuildContext context) {
+    if (_readingProgressResolutionError case final error?) {
+      return NetworkError(
+        message: 'Unable to resolve saved reading progress: @error'.tlParams({
+          'error': error,
+        }),
+        withAppbar: false,
+        retry: _retryInitialReadingProgressResolution,
+      );
+    }
+    if (!_readingProgressResolutionComplete) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
     if (_showProgressConflict) {
       return Scaffold(
         body: SafeArea(
@@ -556,17 +640,22 @@ class ReaderState extends State<Reader>
               ),
               Expanded(
                 child: ListView.builder(
-                  itemCount: _readingChapters.length,
+                  itemCount: _readingCatalog == null
+                      ? 1
+                      : _readingChapters.length,
                   itemBuilder: (context, index) {
-                    final chapterEntry = _readingChapters[index];
-                    final title =
-                        widget.chapters?.allChapters[chapterEntry.id] ??
-                        chapterEntry.id;
+                    final chapterEntry = _readingCatalog == null
+                        ? null
+                        : _readingChapters[index];
+                    final title = chapterEntry == null
+                        ? widget.name
+                        : widget.chapters?.allChapters[chapterEntry.id] ??
+                              chapterEntry.id;
                     return ListTile(
                       title: Text(
-                        chapterEntry.groupId == null
+                        chapterEntry?.groupId == null
                             ? title
-                            : '${chapterEntry.groupId} · $title',
+                            : '${chapterEntry?.groupId} · $title',
                       ),
                       onTap: () => _selectProgressConflictChapter(index + 1),
                     );
@@ -814,18 +903,14 @@ class ReaderState extends State<Reader>
     if (progress != null) return progress;
 
     final savedPosition = item.resumePosition;
-    final savedChapterIndex = savedPosition == null || widget.chapters == null
+    final savedChapterIndex = savedPosition == null
         ? null
-        : _resolveReadingChapterIndex(
-            _readingChapters,
-            widget.chapters!,
-            savedPosition,
-          );
+        : _readingCatalog?.indexOf(savedPosition);
     final chapterEntry = savedPosition == null
         ? readingChapter
         : savedChapterIndex == null
         ? null
-        : _readingChapters.elementAtOrNull(savedChapterIndex - 1);
+        : _readingChapters.elementAtOrNull(savedChapterIndex);
     final sourcePage =
         savedPosition?.page ??
         (images == null || images!.isEmpty

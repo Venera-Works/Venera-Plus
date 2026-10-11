@@ -34,6 +34,8 @@ venera-plus --headless <command> [subcommand] [options]
 
 `webdav sync` / `sync` 完整传输成功时输出 `status: success`，`data.conflictCount` 和 `data.hasConflict` 表示仍需处理的冲突。**存在候选冲突仍可成功退出（退出码 0）**；成功不等于已经自动选定所有候选。源相关领域暂不可用但其他领域传输完成时，`sync`、`up`、`down` 输出 `status: partial`（退出码 0），并给出 `data.unavailableDomains` 与 `data.sourceIssues`；`sync` 仍附冲突计数。源摘要只包含文件名、安全原因及翻译、是否有备份和操作提示，不输出脚本、会话、源身份或私有备份路径。`repairAction` 区分应用内替换、重试恢复及“须先恢复完整日志”的前置条件，不将坏备份当作可直接恢复的数据。`up` / `down` 不附冲突列表，需另查 `conflicts`。
 
+`sync` 与 `conflicts` 还区分自动进度处理和待目录状态：`data.pendingProgressCount` / `pendingProgressRecordKeys` 为等待目录的记录，`data.unmappableProgressCount` / `unmappableProgressRecordKeys` 为当前目录仍无法定位、没有可选进度字段候选的记录，`data.automaticallyResolvedProgressCount` 为自动处理数量。`conflictCount` 包含需人工处理的候选冲突及上述无法定位项，但不包含待目录项目；`unresolvedCandidateConflictCount` 只计需人工处理的字段候选冲突。仅有待目录项目时，`hasConflict` 可以为 `false`，原始候选仍被保留。
+
 备份导入成功输出 `data.imported`：`true` 表示有新的种子领域导入，重复操作为 `false`，不是“传输成功”的别名。部分源异常时输出 `status: partial`（退出码 0）及安全的源摘要和不可用领域，仍保留 `data.imported`；实际错误以非零退出码报告。合法命令仍有普通应用启动恢复/首次自动种子的行为边界，不能把备份列表命令当成禁用启动同步的开关。
 
 **示例：**
@@ -59,7 +61,7 @@ venera-plus --headless webdav conflicts
 venera-plus --headless webdav resolve --record-key "$RECORD_KEY" --field "$FIELD" --candidate-id "$CANDIDATE_ID"
 ```
 
-`conflicts` 的成功输出中，`data.count` 是冲突数，`data.conflicts` 是数组，每项包含：
+`conflicts` 的成功输出中，`data.count` 是可供人工选择的字段候选冲突数，`data.conflicts` 是对应数组；待目录及没有进度字段候选的无法定位项通过上述独立记录键列表报告，不要求在命令行猜选设备。待目录项目可回到应用正常打开漫画后自动处理。数组每项包含：
 
 - `recordKey`：记录键字符串。其内容是 JSON 编码的身份数组，**不是点分路径**；用 JSON 解析器取出字符串值后完整传入，不自行拼造键或把外层 JSON 转义也一并传入。
 - `field`：需处理的字段名，直接复制。

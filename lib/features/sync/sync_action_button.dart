@@ -1,13 +1,9 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/features/sync/data_sync.dart';
 import 'package:venera_plus/features/sync/sync_conflict_dialog.dart';
-import 'package:venera_plus/features/sync/sync_source_issues_dialog.dart';
 import 'package:venera_plus/features/sync/merge_store_error.dart';
 import 'package:venera_plus/foundation/translations.dart';
-
-enum _SyncConflictAction { resolve, sync }
 
 String _syncActionTimestamp(int timestamp) {
   if (timestamp <= 0) return 'Not synced yet'.tl;
@@ -33,6 +29,20 @@ String _syncActionTriggerLabel(String? trigger) {
   return 'Other sync trigger: @trigger'.tlParams({'trigger': trigger});
 }
 
+String _syncReviewLabel(DataSyncStatusSnapshot status) {
+  if (status.unmappableProgressRecordKeys.isNotEmpty) {
+    return 'Review sync items'.tl;
+  }
+  if (status.conflictCount > 0 && status.pendingProgressCount > 0) {
+    return 'Review conflicts and pending progress'.tl;
+  }
+  if (status.pendingProgressCount > 0) return 'View pending progress'.tl;
+  return 'Resolve conflicts'.tl;
+}
+
+bool _hasSyncReviewItems(DataSyncStatusSnapshot status) =>
+    status.conflictCount > 0 || status.pendingProgressCount > 0;
+
 String _syncActionStatusSummary(DataSyncStatusSnapshot status) {
   final counts = status.changedRecordCounts.entries.toList()
     ..sort((a, b) => a.key.compareTo(b.key));
@@ -50,7 +60,17 @@ String _syncActionStatusSummary(DataSyncStatusSnapshot status) {
     'Pending publication records: @count'.tlParams({
       'count': status.pendingChangeCount,
     }),
-    'Sync Conflict (@count pending)'.tlParams({'count': status.conflictCount}),
+    'Manual conflicts requiring review: @count'.tlParams({
+      'count': status.conflictCount,
+    }),
+    'Reading positions waiting for directory: @count'.tlParams({
+      'count': status.pendingProgressCount,
+    }),
+    'Within manual review: @count reading positions need chapter selection'
+        .tlParams({'count': status.unmappableProgressCount}),
+    'Reading positions automatically reconciled: @count'.tlParams({
+      'count': status.automaticallyResolvedProgressCount,
+    }),
     'Changed records: @counts'.tlParams({'counts': countSummary}),
     'Last sync duration: @duration ms'.tlParams({
       'duration': status.lastSyncDurationMs,
@@ -116,34 +136,6 @@ class _SyncActionButtonState extends State<SyncActionButton>
     }
   }
 
-  Future<_SyncConflictAction?> _showConflictSyncActions(
-    DataSyncStatusSnapshot status,
-  ) => showDialog<_SyncConflictAction>(
-    context: context,
-    builder: (dialogContext) => AlertDialog(
-      title: Text(
-        'Sync Conflict (@count pending)'.tlParams({
-          'count': status.conflictCount,
-        }),
-      ),
-      content: SingleChildScrollView(
-        child: Text(_syncActionStatusSummary(status)),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () =>
-              Navigator.of(dialogContext).pop(_SyncConflictAction.resolve),
-          child: Text('Resolve conflicts'.tl),
-        ),
-        FilledButton(
-          onPressed: () =>
-              Navigator.of(dialogContext).pop(_SyncConflictAction.sync),
-          child: Text('Sync now'.tl),
-        ),
-      ],
-    ),
-  );
-
   Future<void> _showStatusDetails(DataSyncStatusSnapshot status) =>
       showDialog<void>(
         context: context,
@@ -154,6 +146,12 @@ class _SyncActionButtonState extends State<SyncActionButton>
             child: Text(_syncActionStatusSummary(status)),
           ),
           actions: [
+            if (_hasSyncReviewItems(status))
+              TextButton(
+                key: const Key('data-sync-status-review-conflicts'),
+                onPressed: () => showSyncConflictDialog(context),
+                child: Text(_syncReviewLabel(status)),
+              ),
             TextButton(
               onPressed: () => Navigator.of(dialogContext).pop(),
               child: Text('Close'.tl),
@@ -173,61 +171,18 @@ class _SyncActionButtonState extends State<SyncActionButton>
     }
     if (!_sync.beginInteraction()) return;
     try {
-      final currentSnapshot = _sync.statusSnapshot;
-      if (currentSnapshot.hasConflict) {
-        final action = await _showConflictSyncActions(currentSnapshot);
-        if (!mounted || action == null) return;
-        if (action == _SyncConflictAction.resolve) {
-          await showSyncConflictDialog(context);
-          return;
-        }
-      }
-      if (currentSnapshot.isPartial) {
-        if (!mounted) return;
-        await showSyncSourceIssuesDialog(
-          context,
-          issues: currentSnapshot.sourceIssues,
-          onRepair: (issue, content) => _sync.repairSourceIssue(
-            issue: issue,
-            replacementContent: content,
-          ),
-          onRetry: () => unawaited(_sync.syncNow()),
-          description:
-              'Some synchronization data is unavailable. Other data can sync independently.'
-                  .tl,
-        );
-        return;
-      }
       final result = await _sync.syncNow();
       if (!mounted) return;
-      if (_sync.hasConflict) {
-        await showSyncConflictDialog(context);
+      if (result.error) {
+        final error = mergeStoreErrorSummary(result.errorMessage)?.tl;
+        context.showMessage(
+          message: error == null || error.isEmpty
+              ? 'Sync failed'.tl
+              : '${'Sync failed'.tl}: $error',
+        );
         return;
       }
-      final snapshot = _sync.statusSnapshot;
-      if (snapshot.isPartial && result.success) {
-        context.showMessage(message: 'Sync completed partially'.tl);
-        if (mounted) {
-          await showSyncSourceIssuesDialog(
-            context,
-            issues: snapshot.sourceIssues,
-            onRepair: (issue, content) => _sync.repairSourceIssue(
-              issue: issue,
-              replacementContent: content,
-            ),
-            onRetry: () => unawaited(_sync.syncNow()),
-            description:
-                'Sync completed partially. Unaffected data was synchronized successfully.'
-                    .tl,
-          );
-        }
-      } else {
-        context.showMessage(
-          message: result.error
-              ? '${"Sync failed".tl}: ${mergeStoreErrorSummary(result.errorMessage)?.tl ?? ""}'
-              : 'Sync completed'.tl,
-        );
-      }
+      context.showMessage(message: _sync.statusSnapshot.completionSummary);
     } finally {
       _sync.endInteraction();
     }
@@ -250,17 +205,15 @@ class _SyncActionButtonState extends State<SyncActionButton>
         } else if (!status.isConfigured) {
           iconData = Icons.cloud_off_outlined;
           tooltip = 'WebDAV is not configured. Please configure it first.'.tl;
-        } else if (status.hasConflict) {
-          iconData = Icons.sync_problem;
-          tooltip = status.conflictCount > 0
-              ? 'Sync Conflict (@count pending)'.tlParams({
-                  'count': status.conflictCount,
-                })
-              : 'Sync Conflict'.tl;
-          iconColor = Theme.of(context).colorScheme.error;
         } else if (status.lastError != null) {
           iconData = Icons.sync_problem_outlined;
           tooltip = mergeStoreErrorSummary(status.lastError)!.tl;
+          iconColor = Theme.of(context).colorScheme.error;
+        } else if (status.hasConflict) {
+          iconData = Icons.sync_problem;
+          tooltip = 'Manual conflicts requiring review: @count'.tlParams({
+            'count': status.conflictCount,
+          });
           iconColor = Theme.of(context).colorScheme.error;
         } else if (status.isPartial) {
           iconData = Icons.sync_problem_outlined;

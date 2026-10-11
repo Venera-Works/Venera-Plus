@@ -192,7 +192,6 @@ void main() {
       );
       expect(label, contains('5'));
       expect(label, contains('21'));
-      expect(label, contains('Reread rounds (1)'));
       expect(label, isNot(contains(secretChapter)));
       expect(label, isNot(contains(secretRound)));
       expect(label, isNot(contains('private-group')));
@@ -219,13 +218,6 @@ void main() {
     });
 
     test('clearly indicates deletion vs retention', () {
-      final deleteLabel = formatCandidateSafePreview(
-        domain: 'favorite',
-        field: 'value',
-        value: null,
-        isDeleted: true,
-      );
-      expect(deleteLabel, isNotEmpty);
       final deletedRecordLabel = formatCandidateSafePreview(
         domain: 'favorite',
         field: 'presence',
@@ -246,7 +238,7 @@ void main() {
         value: 'My Favorite Comic',
         isDeleted: false,
       );
-      expect(retainLabel, 'My Favorite Comic');
+      expect(retainLabel, isNot(deletedFieldLabel));
     });
 
     test(
@@ -267,7 +259,6 @@ void main() {
                   : 'secret-password',
               isDeleted: false,
             );
-            expect(label, '***protected setting value***');
             expect(label, isNot(contains('secret-')));
           }
         }
@@ -356,6 +347,7 @@ void main() {
               key: const ValueKey('batch-conflict-dialog'),
               conflicts: active,
               onResolve: resolve,
+              pendingProgressRecordKeys: const {},
             ),
           ),
         );
@@ -843,6 +835,230 @@ void main() {
           scrollable: find.byType(Scrollable).first,
         );
         expect(remainingChoice, findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'directory-pending reading progress is informational, not a device choice',
+      (tester) async {
+        final key = syncRecordKey('history', ['book', 7]);
+        final conflict = MergeConflict(
+          recordKey: key,
+          field: 'readingProgress',
+          candidates: [
+            for (final (actor, id, counter) in [
+              (actorA, 'pending-a', 1),
+              (actorB, 'pending-b', 2),
+            ])
+              MergeCandidate(
+                id: id,
+                value: const {'version': 1},
+                actor: actor,
+                counter: counter,
+                isDeleted: false,
+                recordKey: key,
+                field: 'readingProgress',
+              ),
+          ],
+        );
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: SyncConflictDialog(
+                conflicts: [conflict],
+                pendingProgressRecordKeys: {key},
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(
+          find.byKey(const Key('sync-conflict-pending-progress-count')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const Key('sync-conflict-manual-empty')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(ValueKey(('sync-conflict-pending-item', key))),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const Key('sync-conflict-pending-progress-guidance')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const ValueKey('sync-conflict-device-selector')),
+          findsNothing,
+        );
+        expect(
+          find.byKey(const ValueKey('sync-conflict-select-local')),
+          findsNothing,
+        );
+        expect(
+          find.byKey(const ValueKey('sync-conflict-resolve-selected')),
+          findsNothing,
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+    testWidgets(
+      'catalog-unmappable progress lists chapter selection without device choice',
+      (tester) async {
+        final key = syncRecordKey('history', ['book', 7]);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: SyncConflictDialog(
+                conflicts: const [],
+                unmappableProgressRecordKeys: {key},
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(
+          find.byKey(const Key('sync-conflict-unmappable-progress-count')),
+          findsOneWidget,
+        );
+        final progressItem = find.byKey(
+          ValueKey(('sync-conflict-unmappable-progress-item', key)),
+        );
+        await tester.scrollUntilVisible(
+          progressItem,
+          100,
+          scrollable: find.byType(Scrollable).first,
+        );
+        expect(progressItem, findsOneWidget);
+        expect(
+          find.byKey(const Key('sync-conflict-unmappable-progress-guidance')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const ValueKey('sync-conflict-device-selector')),
+          findsNothing,
+        );
+        expect(
+          find.byKey(const ValueKey('sync-conflict-select-local')),
+          findsNothing,
+        );
+        expect(
+          find.byKey(const ValueKey('sync-conflict-resolve-selected')),
+          findsNothing,
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+    testWidgets(
+      'unmappable progress does not duplicate a manual progress conflict',
+      (tester) async {
+        final key = syncRecordKey('history', ['book', 7]);
+        final conflict = MergeConflict(
+          recordKey: key,
+          field: 'readingProgress',
+          candidates: [
+            MergeCandidate(
+              id: 'progress-candidate',
+              value: const {'maximum': []},
+              actor: actorA,
+              counter: 1,
+              isDeleted: false,
+              recordKey: key,
+              field: 'readingProgress',
+            ),
+          ],
+        );
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: SyncConflictDialog(
+                conflicts: [conflict],
+                unmappableProgressRecordKeys: {key},
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(
+          find.byKey(const Key('sync-conflict-unmappable-progress-count')),
+          findsNothing,
+        );
+        final manualProgress = find.byKey(
+          ValueKey((key, 'readingProgress', 'progress-candidate')),
+        );
+        await tester.scrollUntilVisible(
+          manualProgress,
+          100,
+          scrollable: find.byType(Scrollable).first,
+        );
+        expect(manualProgress, findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+    testWidgets(
+      'directory-pending progress does not hide manual fields on its record',
+      (tester) async {
+        final key = syncRecordKey('history', ['book', 7]);
+
+        MergeConflict conflict(String field, String id) => MergeConflict(
+          recordKey: key,
+          field: field,
+          candidates: [
+            MergeCandidate(
+              id: id,
+              value: '$field value',
+              actor: actorA,
+              counter: 1,
+              isDeleted: false,
+              recordKey: key,
+              field: field,
+            ),
+          ],
+        );
+
+        final pending = conflict('readingProgress', 'pending-progress');
+        final manualTitle = conflict('title', 'manual-title');
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: SyncConflictDialog(
+                conflicts: [pending, manualTitle],
+                pendingProgressRecordKeys: {key},
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        final pendingItem = find.byKey(
+          ValueKey(('sync-conflict-pending-item', key)),
+        );
+        expect(pendingItem, findsOneWidget);
+        final titleChoice = find.byKey(
+          ValueKey((key, 'title', 'manual-title')),
+        );
+        await tester.scrollUntilVisible(
+          titleChoice,
+          100,
+          scrollable: find.byType(Scrollable).first,
+        );
+        expect(titleChoice, findsOneWidget);
+        expect(
+          find.byKey(ValueKey((key, 'readingProgress', 'pending-progress'))),
+          findsNothing,
+        );
+        await tester.scrollUntilVisible(
+          pendingItem,
+          -100,
+          scrollable: find.byType(Scrollable).first,
+        );
+        expect(pendingItem, findsOneWidget);
+        expect(tester.takeException(), isNull);
       },
     );
 

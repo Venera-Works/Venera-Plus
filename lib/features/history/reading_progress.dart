@@ -73,9 +73,7 @@ class ReadingCatalog {
     for (var index = 0; index < this.chapters.length; index++) {
       byId.putIfAbsent(this.chapters[index].id, () => <int>[]).add(index);
     }
-    _indicesById = byId.map(
-      (id, indices) => MapEntry(id, List<int>.unmodifiable(indices)),
-    );
+    _indicesById = byId;
   }
 
   final List<ReadingChapter> chapters;
@@ -100,33 +98,35 @@ class ReadingCatalog {
     final chapterId = position.chapterId;
     if (chapterId != null) {
       final candidates = _indicesById[chapterId];
-      if (candidates == null || candidates.isEmpty) return null;
-      if (position.groupId != null) {
-        for (final index in candidates) {
-          if (chapters[index].groupId == position.groupId) return index;
+      if (candidates == null) return null;
+      if (candidates.length == 1) return candidates.single;
+      int? match;
+      for (final index in candidates) {
+        final chapter = chapters[index];
+        if (position.groupId != null
+            ? chapter.groupId != position.groupId
+            : position.group != null && chapter.group != position.group) {
+          continue;
         }
+        if (match != null) return null;
+        match = index;
       }
-      if (position.group != null) {
-        for (final index in candidates) {
-          if (chapters[index].group == position.group &&
-              (position.groupId == null ||
-                  chapters[index].groupId == position.groupId)) {
-            return index;
-          }
-        }
-      }
-      return candidates.length == 1 ? candidates.single : null;
+      return match;
     }
 
+    int? match;
     for (var index = 0; index < chapters.length; index++) {
       final chapter = chapters[index];
-      if (chapter.ep == position.ep &&
-          chapter.group == position.group &&
-          (position.groupId == null || chapter.groupId == position.groupId)) {
-        return index;
+      if (chapter.ep != position.ep ||
+          (position.groupId != null
+              ? chapter.groupId != position.groupId
+              : chapter.group != position.group)) {
+        continue;
       }
+      if (match != null) return null;
+      match = index;
     }
-    return null;
+    return match;
   }
 
   ReadingPosition rebasePosition(ReadingPosition position) {
@@ -216,6 +216,25 @@ class ReadingPosition {
   String toString() => 'ReadingPosition(${jsonEncode(toJson())})';
 }
 
+ReadingPosition _positionAt(ReadingCatalog catalog, int index, int page) {
+  final chapter = catalog.chapters[index];
+  return ReadingPosition(
+    ep: chapter.ep,
+    page: page,
+    group: chapter.group,
+    chapterId: chapter.id,
+    groupId: chapter.groupId,
+  );
+}
+
+ReadingPosition? _rebaseUniquePosition(
+  ReadingCatalog catalog,
+  ReadingPosition position,
+) {
+  final index = catalog.indexOf(position);
+  return index == null ? null : _positionAt(catalog, index, position.page);
+}
+
 class _ReadingRound {
   const _ReadingRound({required this.anchor, required this.cursor});
 
@@ -265,7 +284,9 @@ class ReadingProgress {
     if (!position.isValid) {
       return ReadingProgress._empty(time: time, catalog: catalog);
     }
-    final rebased = catalog?.rebasePosition(position) ?? position;
+    final rebased = catalog == null
+        ? position
+        : _rebaseUniquePosition(catalog, position) ?? position;
     return ReadingProgress._create(
       maximum: [rebased],
       catalog: catalog,
@@ -327,8 +348,12 @@ class ReadingProgress {
       final cursor = ReadingPosition.fromJson(rawRound['cursor']);
       if (!retired.contains(id) && !ended.contains(id)) {
         rounds[id] = _ReadingRound(
-          anchor: catalog?.rebasePosition(anchor) ?? anchor,
-          cursor: catalog?.rebasePosition(cursor) ?? cursor,
+          anchor: catalog == null
+              ? anchor
+              : _rebaseUniquePosition(catalog, anchor) ?? anchor,
+          cursor: catalog == null
+              ? cursor
+              : _rebaseUniquePosition(catalog, cursor) ?? cursor,
         );
       }
     }
@@ -454,7 +479,9 @@ class ReadingProgress {
     final maxima =
         <ReadingPosition>[...maximumPositions, ...other.maximumPositions]
             .map(
-              (position) => mergedCatalog?.rebasePosition(position) ?? position,
+              (position) => mergedCatalog == null
+                  ? position
+                  : _rebaseUniquePosition(mergedCatalog, position) ?? position,
             )
             .toList();
 
@@ -475,15 +502,30 @@ class ReadingProgress {
           throw FormatException('Reading round $id has conflicting anchors');
         }
         final anchor = _canonicalPosition(left.anchor, right.anchor);
+        final cursor = _joinPosition(left.cursor, right.cursor, mergedCatalog);
         if (_comparePositions(left.cursor, right.cursor, mergedCatalog) ==
             null) {
           maxima
-            ..add(mergedCatalog?.rebasePosition(left.cursor) ?? left.cursor)
-            ..add(mergedCatalog?.rebasePosition(right.cursor) ?? right.cursor);
+            ..add(
+              mergedCatalog == null
+                  ? left.cursor
+                  : _rebaseUniquePosition(mergedCatalog, left.cursor) ??
+                        left.cursor,
+            )
+            ..add(
+              mergedCatalog == null
+                  ? right.cursor
+                  : _rebaseUniquePosition(mergedCatalog, right.cursor) ??
+                        right.cursor,
+            );
         }
         rounds[id] = _ReadingRound(
-          anchor: mergedCatalog?.rebasePosition(anchor) ?? anchor,
-          cursor: _joinPosition(left.cursor, right.cursor, mergedCatalog),
+          anchor: mergedCatalog == null
+              ? anchor
+              : _rebaseUniquePosition(mergedCatalog, anchor) ?? anchor,
+          cursor: mergedCatalog == null
+              ? cursor
+              : _rebaseUniquePosition(mergedCatalog, cursor) ?? cursor,
         );
       }
     }
@@ -509,7 +551,9 @@ class ReadingProgress {
   }) {
     if (!position.isValid) return this;
     final base = catalog == null ? this : rebaseCatalog(catalog);
-    final resolvedPosition = catalog?.rebasePosition(position) ?? position;
+    final resolvedPosition = catalog == null
+        ? position
+        : _rebaseUniquePosition(catalog, position) ?? position;
     final maxPosition = base.maximumPositions.length == 1
         ? base.maximumPositions.single
         : null;
@@ -630,12 +674,18 @@ class ReadingProgress {
   /// Re-resolves stable chapter IDs against the authoritative loaded source.
   ReadingProgress rebaseCatalog(ReadingCatalog catalog) {
     if (identical(catalog, this.catalog)) return this;
-    final maximum = maximumPositions.map(catalog.rebasePosition);
+    final maximum = maximumPositions.map(
+      (position) => _rebaseUniquePosition(catalog, position) ?? position,
+    );
     final rounds = <String, _ReadingRound>{};
     for (final entry in _rounds.entries) {
       rounds[entry.key] = _ReadingRound(
-        anchor: catalog.rebasePosition(entry.value.anchor),
-        cursor: catalog.rebasePosition(entry.value.cursor),
+        anchor:
+            _rebaseUniquePosition(catalog, entry.value.anchor) ??
+            entry.value.anchor,
+        cursor:
+            _rebaseUniquePosition(catalog, entry.value.cursor) ??
+            entry.value.cursor,
       );
     }
     return ReadingProgress._create(
@@ -646,6 +696,51 @@ class ReadingProgress {
       ended: _ended,
       time: time,
       previous: this,
+    );
+  }
+
+  /// Maps every original maximum and active-round position into [catalog].
+  /// Returns null for ambiguous identities or an already joined ambiguous
+  /// reread whose original same-round cursors are no longer available.
+  ReadingProgress? normalizeForCatalog(ReadingCatalog catalog) {
+    if (hasOrderConflict && _rounds.isNotEmpty) return null;
+
+    ReadingPosition? normalizePosition(ReadingPosition position) {
+      var identity = position;
+      final sourceCatalog = this.catalog;
+      if (sourceCatalog != null) {
+        final sourceIndex = sourceCatalog.indexOf(position);
+        if (position.chapterId == null) {
+          if (sourceIndex == null) return null;
+          identity = _positionAt(sourceCatalog, sourceIndex, position.page);
+        } else if (sourceIndex != null) {
+          identity = _positionAt(sourceCatalog, sourceIndex, position.page);
+        }
+      }
+      return _rebaseUniquePosition(catalog, identity);
+    }
+
+    final maximum = <ReadingPosition>[];
+    for (final position in maximumPositions) {
+      final normalized = normalizePosition(position);
+      if (normalized == null) return null;
+      maximum.add(normalized);
+    }
+    final rounds = <String, _ReadingRound>{};
+    for (final entry in _rounds.entries) {
+      final anchor = normalizePosition(entry.value.anchor);
+      final cursor = normalizePosition(entry.value.cursor);
+      if (anchor == null || cursor == null) return null;
+      rounds[entry.key] = _ReadingRound(anchor: anchor, cursor: cursor);
+    }
+    return ReadingProgress._create(
+      maximum: _pruneMaximum(maximum, catalog),
+      maximumIsPruned: true,
+      catalog: catalog,
+      rounds: rounds,
+      retired: _retired,
+      ended: _ended,
+      time: time,
     );
   }
 }
@@ -785,7 +880,9 @@ List<ReadingPosition> _pruneMaximum(
   final candidates = <ReadingPosition>[];
   for (final position in input) {
     if (!position.isValid) continue;
-    final normalized = catalog?.rebasePosition(position) ?? position;
+    final normalized = catalog == null
+        ? position
+        : _rebaseUniquePosition(catalog, position) ?? position;
     final matchingIndex = candidates.indexWhere(
       (candidate) => _comparePositions(candidate, normalized, catalog) == 0,
     );

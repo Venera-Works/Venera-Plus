@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/features/history/reading_progress.dart';
@@ -17,6 +18,8 @@ import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/foundation/sync_records.dart';
 import 'package:webdav_client/webdav_client.dart' as dav;
+
+import '../../widget_test_io.dart';
 
 void main() {
   late Directory tempDir;
@@ -78,13 +81,28 @@ void main() {
   });
 
   tearDown(() async {
-    if (DataSync.instance != null) {
-      await DataSync.instance!.waitForStartupMerge().catchError((_) {});
-      await DataSync.instance!.waitForSync();
+    Object? cleanupError;
+    StackTrace? cleanupStack;
+
+    Future<void> attemptCleanup(Future<void> Function() action) async {
+      try {
+        await action();
+      } catch (error, stackTrace) {
+        cleanupError ??= error;
+        cleanupStack ??= stackTrace;
+      }
+    }
+
+    final sync = DataSync.instance;
+    if (sync != null) {
+      await attemptCleanup(sync.waitForStartupMerge);
+      await attemptCleanup(() async {
+        await sync.waitForSync();
+      });
     }
     DataSync.resetForTesting();
 
-    await appdata.writeImplicitData();
+    await attemptCleanup(appdata.writeImplicitData);
     appdata.implicitData
       ..clear()
       ..addAll(previousImplicit);
@@ -99,6 +117,9 @@ void main() {
 
     if (tempDir.existsSync()) {
       tempDir.deleteSync(recursive: true);
+    }
+    if (cleanupError != null) {
+      Error.throwWithStackTrace(cleanupError!, cleanupStack!);
     }
   });
 
@@ -377,6 +398,16 @@ void main() {
       };
     }
 
+    Future<void> installHistoryExport(DataSync sync) async {
+      await sync.waitForStartupMerge();
+      final coordinator = sync.coordinator!;
+      coordinator.exportHistoryOverride = () async => {
+        for (final entry in localRecords.entries)
+          if (syncRecordDomain(entry.key) == 'history') entry.key: entry.value,
+      };
+      coordinator.markDirty({'history'});
+    }
+
     Map<String, Uint8List> mirrorCurrentNamespaceIntoLegacy() {
       final currentPrefix = '${MergeRemote.currentNamespace}/';
       final legacyPrefix = '${MergeRemote.legacyNamespace}/';
@@ -598,6 +629,669 @@ void main() {
         }
         expect(deviceA.conflicts, isEmpty);
         expect(deviceB.conflicts, isEmpty);
+      },
+    );
+
+    test(
+      'loaded directory resolves original reread candidates durably without forcing transfer',
+      () async {
+        final key = syncRecordKey('history', ['catalog-resume', 0]);
+        final currentCatalog = ReadingCatalog(const [
+          ReadingChapter(id: 'start', ep: 1),
+          ReadingChapter(id: 'a', ep: 2),
+          ReadingChapter(id: 'b', ep: 3),
+          ReadingChapter(id: 'end', ep: 4),
+        ]);
+        final reversedCatalog = ReadingCatalog(const [
+          ReadingChapter(id: 'start', ep: 1),
+          ReadingChapter(id: 'b', ep: 2),
+          ReadingChapter(id: 'a', ep: 3),
+          ReadingChapter(id: 'end', ep: 4),
+        ]);
+        final round =
+            ReadingProgress.seed(
+              const ReadingPosition(ep: 4, page: 1, chapterId: 'end'),
+              catalog: currentCatalog,
+            ).record(
+              const ReadingPosition(ep: 1, page: 1, chapterId: 'start'),
+              source: ReadingNavigationSource.userBackward,
+              newRoundId: 'shared-reread',
+              catalog: currentCatalog,
+            );
+        final localProgress = round.record(
+          const ReadingPosition(ep: 2, page: 1, chapterId: 'a'),
+          source: ReadingNavigationSource.userForward,
+          sessionRoundId: 'shared-reread',
+          catalog: currentCatalog,
+        );
+        final cloudProgress = round
+            .rebaseCatalog(reversedCatalog)
+            .record(
+              const ReadingPosition(ep: 2, page: 9, chapterId: 'b'),
+              source: ReadingNavigationSource.userForward,
+              sessionRoundId: 'shared-reread',
+              catalog: reversedCatalog,
+            );
+        SyncRecords records(ReadingProgress progress) => {
+          key: {'readDurationMs': 0, 'readingProgress': progress.toJson()},
+        };
+        localRecords = records(localProgress);
+        final cloud = MergeDocument()
+          ..captureLocal('catalog-cloud', {}, records(cloudProgress));
+        final remote = MergeRemote(client, deviceName: 'catalog-cloud');
+        await remote.upload(
+          MergeBatch.create(
+            actor: 'catalog-cloud',
+            counter: cloud.counterFor('catalog-cloud'),
+            document: cloud,
+          ),
+        );
+        final stateDirectory = Directory('${tempDir.path}/catalog-state');
+        DataSync.debugStateDirFactory = (_) => stateDirectory;
+        final sync = DataSync();
+        await installHistoryExport(sync);
+        final firstSync = await sync.syncNow();
+        expect(firstSync.success, isTrue, reason: firstSync.errorMessage);
+        expect(sync.pendingProgressRecordKeys, [key]);
+        expect(sync.statusSnapshot.pendingProgressRecordKeys, [key]);
+        expect(sync.conflictCount, 0);
+        expect(sync.hasConflict, isFalse);
+        expect(sync.conflicts.single.field, 'readingProgress');
+
+        final lastTransferSuccess = sync.statusSnapshot.lastSuccessTime;
+        final resolution = await sync.resolveReadingProgressCatalog(
+          key,
+          currentCatalog,
+        );
+        expect(resolution.success, isTrue, reason: resolution.errorMessage);
+        final normalized = ReadingProgress.fromJson(
+          localRecords[key]!['readingProgress'],
+        );
+        expect(
+          normalized.resumePosition,
+          const ReadingPosition(ep: 3, page: 9, chapterId: 'b'),
+        );
+        expect(normalized.maximumPositions, const [
+          ReadingPosition(ep: 4, page: 1, chapterId: 'end'),
+        ]);
+        expect(normalized.activeRoundIds, ['shared-reread']);
+        expect(sync.pendingProgressCount, 0);
+        expect(sync.pendingProgressRecordKeys, isEmpty);
+        expect(sync.unmappableProgressRecordKeys, isEmpty);
+        expect(sync.statusSnapshot.lastSuccessTime, lastTransferSuccess);
+
+        final reopened = MergeStore(stateDirectory, 'test_device_1');
+        await reopened.load();
+        expect(
+          reopened.document.materialize()[key]!['readingProgress'],
+          normalized.toJson(),
+        );
+        expect(reopened.manualCandidateId(key, 'readingProgress'), isNull);
+        final counter = reopened.document.counterFor('test_device_1');
+        final repeated = await sync.resolveReadingProgressCatalog(
+          key,
+          currentCatalog,
+        );
+        expect(repeated.success, isTrue, reason: repeated.errorMessage);
+        final afterRepeat = MergeStore(stateDirectory, 'test_device_1');
+        await afterRepeat.load();
+        expect(afterRepeat.document.counterFor('test_device_1'), counter);
+
+        final published = await sync.syncNow();
+        expect(published.success, isTrue, reason: published.errorMessage);
+        final cloudView = MergeDocument();
+        for (final entry in await remote.list()) {
+          cloudView.merge((await remote.download(entry)).document);
+        }
+        expect(cloudView.conflicts, isEmpty);
+        expect(
+          ReadingProgress.fromJson(
+            cloudView.materialize()[key]!['readingProgress'],
+          ).resumePosition,
+          normalized.resumePosition,
+        );
+      },
+    );
+
+    test(
+      'cold sync resolves candidates with a provably compatible source catalog',
+      () async {
+        final key = syncRecordKey('history', ['compatible-cold-catalog', 2]);
+        const chapterA = ReadingChapter(id: 'a', ep: 1);
+        const chapterB = ReadingChapter(id: 'b', ep: 2);
+        final localCatalog = ReadingCatalog(const [chapterA, chapterB]);
+        final cloudCatalog = ReadingCatalog(const [
+          ReadingChapter(id: 'intro', ep: 0),
+          chapterA,
+          chapterB,
+        ]);
+        final localProgress = ReadingProgress.seed(
+          const ReadingPosition(ep: 1, page: 4, chapterId: 'a'),
+          catalog: localCatalog,
+        );
+        final cloudProgress = ReadingProgress.seed(
+          const ReadingPosition(ep: 2, page: 7, chapterId: 'b'),
+          catalog: cloudCatalog,
+        );
+        SyncRecords record(ReadingProgress progress) => {
+          key: {'readDurationMs': 0, 'readingProgress': progress.toJson()},
+        };
+        localRecords = record(localProgress);
+        final cloud = MergeDocument()
+          ..captureLocal('compatible-cloud', {}, record(cloudProgress));
+        final remote = MergeRemote(client, deviceName: 'compatible-cloud');
+        await remote.upload(
+          MergeBatch.create(
+            actor: 'compatible-cloud',
+            counter: cloud.counterFor('compatible-cloud'),
+            document: cloud,
+          ),
+        );
+        DataSync.debugStateDirFactory = (_) =>
+            Directory('${tempDir.path}/compatible-cold-state');
+
+        final sync = DataSync();
+        final result = await sync.syncNow();
+        expect(result.success, isTrue, reason: result.errorMessage);
+        final normalized = ReadingProgress.fromJson(
+          localRecords[key]!['readingProgress'],
+        );
+        expect(
+          normalized.resumePosition,
+          const ReadingPosition(ep: 2, page: 7, chapterId: 'b'),
+        );
+        expect(normalized.maximumPositions, const [
+          ReadingPosition(ep: 2, page: 7, chapterId: 'b'),
+        ]);
+        expect(normalized.catalog?.toJson(), cloudCatalog.toJson());
+        expect(sync.automaticallyResolvedProgressCount, 1);
+        expect(sync.pendingProgressRecordKeys, isEmpty);
+        expect(sync.unmappableProgressRecordKeys, isEmpty);
+        expect(sync.conflictCount, 0);
+      },
+    );
+
+    test(
+      'incompatible source catalogs wait for the current directory without a raw conflict',
+      () async {
+        final key = syncRecordKey('history', [
+          'incompatible-source-catalogs',
+          0,
+        ]);
+        final localCatalog = ReadingCatalog(const [
+          ReadingChapter(id: 'shared', ep: 1),
+          ReadingChapter(id: 'left-only', ep: 2),
+        ]);
+        final cloudCatalog = ReadingCatalog(const [
+          ReadingChapter(id: 'right-only', ep: 1),
+          ReadingChapter(id: 'shared', ep: 2),
+        ]);
+        final currentCatalog = ReadingCatalog(const [
+          ReadingChapter(id: 'right-only', ep: 1),
+          ReadingChapter(id: 'shared', ep: 2),
+          ReadingChapter(id: 'left-only', ep: 3),
+        ]);
+        SyncRecords record(ReadingProgress progress) => {
+          key: {'readDurationMs': 0, 'readingProgress': progress.toJson()},
+        };
+        localRecords = record(
+          ReadingProgress.seed(
+            const ReadingPosition(ep: 1, page: 4, chapterId: 'shared'),
+            catalog: localCatalog,
+          ),
+        );
+        final cloud = MergeDocument()
+          ..captureLocal(
+            'incompatible-cloud',
+            {},
+            record(
+              ReadingProgress.seed(
+                const ReadingPosition(ep: 2, page: 8, chapterId: 'shared'),
+                catalog: cloudCatalog,
+              ),
+            ),
+          );
+        final remote = MergeRemote(client, deviceName: 'incompatible-cloud');
+        await remote.upload(
+          MergeBatch.create(
+            actor: 'incompatible-cloud',
+            counter: cloud.counterFor('incompatible-cloud'),
+            document: cloud,
+          ),
+        );
+        DataSync.debugStateDirFactory = (_) =>
+            Directory('${tempDir.path}/incompatible-state');
+
+        final sync = DataSync();
+        await installHistoryExport(sync);
+        final result = await sync.syncNow();
+        expect(result.success, isTrue, reason: result.errorMessage);
+        expect(sync.conflicts, isEmpty);
+        expect(sync.pendingProgressRecordKeys, [key]);
+        expect(sync.pendingProgressCount, 1);
+        expect(sync.conflictCount, 0);
+        expect(sync.automaticallyResolvedProgressCount, 0);
+
+        final resolution = await sync.resolveReadingProgressCatalog(
+          key,
+          currentCatalog,
+        );
+        expect(resolution.success, isTrue, reason: resolution.errorMessage);
+        final normalized = ReadingProgress.fromJson(
+          localRecords[key]!['readingProgress'],
+        );
+        expect(
+          normalized.resumePosition,
+          const ReadingPosition(ep: 2, page: 8, chapterId: 'shared'),
+        );
+        expect(normalized.catalog?.toJson(), currentCatalog.toJson());
+        expect(sync.pendingProgressRecordKeys, isEmpty);
+        expect(sync.conflictCount, 0);
+      },
+    );
+
+    test(
+      'loaded directories classify unlocatable progress without duplicating raw conflicts',
+      () async {
+        final unmappableKey = syncRecordKey('history', [
+          'unmappable-single-candidate',
+          0,
+        ]);
+        final conflictKey = syncRecordKey('history', [
+          'unmappable-progress-conflict',
+          0,
+        ]);
+        ReadingProgress missing(String chapterId, int page) =>
+            ReadingProgress.seed(
+              ReadingPosition(ep: 1, page: page, chapterId: chapterId),
+            );
+        final sourceCatalog = ReadingCatalog(const [
+          ReadingChapter(id: 'still-present', ep: 1),
+        ]);
+        localRecords = {
+          unmappableKey: {
+            'readDurationMs': 0,
+            'readingProgress': ReadingProgress.seed(
+              const ReadingPosition(
+                ep: 1,
+                page: 3,
+                chapterId: 'deleted-chapter',
+              ),
+              catalog: sourceCatalog,
+            ).toJson(),
+          },
+          conflictKey: {
+            'readDurationMs': 0,
+            'readingProgress': missing('deleted-left', 4).toJson(),
+          },
+        };
+        final remoteRecords = {
+          conflictKey: {
+            'readDurationMs': 0,
+            'readingProgress': missing('deleted-right', 6).toJson(),
+          },
+        };
+        final cloud = MergeDocument()
+          ..captureLocal('unmappable-cloud', {}, remoteRecords);
+        final remote = MergeRemote(client, deviceName: 'unmappable-cloud');
+        await remote.upload(
+          MergeBatch.create(
+            actor: 'unmappable-cloud',
+            counter: cloud.counterFor('unmappable-cloud'),
+            document: cloud,
+          ),
+        );
+        DataSync.debugStateDirFactory = (_) =>
+            Directory('${tempDir.path}/unmappable-state');
+
+        final sync = DataSync();
+        await installHistoryExport(sync);
+        final result = await sync.syncNow();
+        expect(result.success, isTrue, reason: result.errorMessage);
+        expect(
+          sync.pendingProgressRecordKeys,
+          unorderedEquals([conflictKey, unmappableKey]),
+        );
+        expect(sync.pendingProgressCount, 2);
+        expect(sync.conflictCount, 0);
+
+        final loadedCatalog = ReadingCatalog(const [
+          ReadingChapter(id: 'still-present', ep: 1),
+        ]);
+        final single = await sync.resolveReadingProgressCatalog(
+          unmappableKey,
+          loadedCatalog,
+        );
+        expect(single.success, isTrue, reason: single.errorMessage);
+        expect(single.data, isTrue);
+        expect(sync.unmappableProgressRecordKeys, [unmappableKey]);
+        expect(sync.unmappableProgressCount, 1);
+        expect(sync.pendingProgressRecordKeys, [conflictKey]);
+        expect(sync.conflictCount, 1);
+        expect(sync.hasConflict, isTrue);
+
+        final conflicted = await sync.resolveReadingProgressCatalog(
+          conflictKey,
+          loadedCatalog,
+        );
+        expect(conflicted.success, isTrue, reason: conflicted.errorMessage);
+        expect(sync.unmappableProgressRecordKeys, [unmappableKey]);
+        expect(sync.pendingProgressRecordKeys, isEmpty);
+        expect(
+          sync.conflicts.where(
+            (conflict) =>
+                conflict.recordKey == conflictKey &&
+                conflict.field == 'readingProgress',
+          ),
+          hasLength(1),
+        );
+        expect(sync.conflictCount, 2);
+        expect(sync.statusSnapshot.unmappableProgressRecordKeys, [
+          unmappableKey,
+        ]);
+        expect(sync.statusSnapshot.unmappableProgressCount, 1);
+        expect(sync.statusSnapshot.hasConflict, isTrue);
+      },
+    );
+
+    test(
+      'cold relocation keeps a non-resuming projection when the loaded directory is incomplete',
+      () async {
+        final key = syncRecordKey('history', ['cold-group-relocation', 0]);
+        ReadingCatalog catalog(String groupId, int group) => ReadingCatalog([
+          ReadingChapter(id: 'start', ep: 1, group: group, groupId: groupId),
+          ReadingChapter(id: 'end', ep: 2, group: group, groupId: groupId),
+        ]);
+        ReadingProgress progress(
+          ReadingCatalog sourceCatalog,
+          String groupId,
+          int group,
+          int cursorPage,
+        ) =>
+            ReadingProgress.seed(
+                  ReadingPosition(
+                    ep: 2,
+                    page: 10,
+                    group: group,
+                    chapterId: 'end',
+                    groupId: groupId,
+                  ),
+                  catalog: sourceCatalog,
+                )
+                .record(
+                  ReadingPosition(
+                    ep: 1,
+                    page: 1,
+                    group: group,
+                    chapterId: 'start',
+                    groupId: groupId,
+                  ),
+                  source: ReadingNavigationSource.userBackward,
+                  newRoundId: 'shared-round',
+                  catalog: sourceCatalog,
+                )
+                .record(
+                  ReadingPosition(
+                    ep: 1,
+                    page: cursorPage,
+                    group: group,
+                    chapterId: 'start',
+                    groupId: groupId,
+                  ),
+                  source: ReadingNavigationSource.userForward,
+                  sessionRoundId: 'shared-round',
+                  catalog: sourceCatalog,
+                );
+
+        final seed = MergeDocument()
+          ..captureLocal('relocation-seed', {}, {
+            key: {'title': 'Moved', 'readDurationMs': 0},
+          });
+        final previous = seed.materialize();
+        final oldCatalog = catalog('old-group', 1);
+        final movedCatalog = catalog('moved-group', 2);
+        final branchA = seed.clone();
+        branchA.captureLocal('relocation-a', previous, {
+          key: {
+            ...previous[key]!,
+            'readingProgress': progress(oldCatalog, 'old-group', 1, 9).toJson(),
+          },
+        });
+        final branchB = seed.clone();
+        branchB.captureLocal('relocation-cloud', previous, {
+          key: {
+            ...previous[key]!,
+            'readingProgress': progress(
+              movedCatalog,
+              'moved-group',
+              2,
+              7,
+            ).toJson(),
+          },
+        });
+        final cloud = branchA.clone()..merge(branchB);
+        final remote = MergeRemote(client, deviceName: 'relocation-cloud');
+        await remote.upload(
+          MergeBatch.create(
+            actor: 'relocation-cloud',
+            counter: cloud.counterFor('relocation-cloud'),
+            document: cloud,
+          ),
+        );
+        DataSync.debugStateDirFactory = (_) =>
+            Directory('${tempDir.path}/cold-relocation-state');
+
+        final sync = DataSync();
+        await installHistoryExport(sync);
+        final result = await sync.syncNow();
+        expect(result.success, isTrue, reason: result.errorMessage);
+        expect(sync.pendingProgressRecordKeys, [key]);
+        expect(sync.conflictCount, 0);
+        final imported = ReadingProgress.fromJson(
+          localRecords[key]!['readingProgress'],
+        );
+        expect(imported.hasOrderConflict, isTrue);
+        expect(imported.resumePosition, isNull);
+        expect(imported.activeRoundIds, ['shared-round']);
+
+        final incompleteCatalog = ReadingCatalog(const [
+          ReadingChapter(
+            id: 'start',
+            ep: 1,
+            group: 3,
+            groupId: 'current-group',
+          ),
+        ]);
+        final resolution = await sync.resolveReadingProgressCatalog(
+          key,
+          incompleteCatalog,
+        );
+        expect(resolution.success, isTrue, reason: resolution.errorMessage);
+        expect(resolution.data, isTrue);
+        final stillBlocked = ReadingProgress.fromJson(
+          localRecords[key]!['readingProgress'],
+        );
+        expect(stillBlocked.hasOrderConflict, isTrue);
+        expect(stillBlocked.resumePosition, isNull);
+        expect(sync.pendingProgressRecordKeys, isEmpty);
+        expect(sync.unmappableProgressRecordKeys, isEmpty);
+        expect(
+          sync.conflicts.any(
+            (conflict) =>
+                conflict.recordKey == key &&
+                conflict.field == 'readingProgress',
+          ),
+          isTrue,
+        );
+        expect(sync.conflictCount, 1);
+      },
+    );
+
+    test(
+      'directory normalization respects upload-only and disabled history',
+      () async {
+        final key = syncRecordKey('history', ['local-only-directory', 0]);
+        final catalog = ReadingCatalog(const [
+          ReadingChapter(id: 'chapter', ep: 1),
+        ]);
+        localRecords = {
+          key: {
+            'readDurationMs': 0,
+            'readingProgress': ReadingProgress.seed(
+              const ReadingPosition(ep: 2, page: 4, chapterId: 'chapter'),
+            ).toJson(),
+          },
+        };
+        final before = cloneSyncRecords(localRecords);
+        appdata.implicitData['webdavSyncDirection'] = 'uploadOnly';
+        final sync = DataSync();
+        final uploadOnly = await sync.resolveReadingProgressCatalog(
+          key,
+          catalog,
+        );
+        expect(uploadOnly.success, isTrue);
+        expect(uploadOnly.data, isFalse);
+        expect(localRecords, before);
+
+        appdata.implicitData['webdavSyncDirection'] = 'downloadOnly';
+        appdata.implicitData['syncExcludedDomains'] = [
+          'history',
+          'historyChapter',
+        ];
+        final disabled = await sync.resolveReadingProgressCatalog(key, catalog);
+        expect(disabled.success, isTrue, reason: disabled.errorMessage);
+        expect(disabled.data, isFalse);
+        expect(localRecords, before);
+      },
+    );
+
+    testWidgets(
+      'ordinary sync does not force deletion conflict choices and review stays available',
+      (tester) async {
+        final key = syncRecordKey('history', ['book', 0]);
+        final baseline = <String, Map<String, Object?>>{
+          key: {
+            'title': 'Progress smoke manga',
+            'readDurationMs': 0,
+            'readingProgress': ReadingProgress.seed(
+              const ReadingPosition(ep: 1, page: 1, chapterId: 'a'),
+            ).toJson(),
+          },
+        };
+        final seed = MergeDocument()..captureLocal('seed', const {}, baseline);
+        final deleted = seed.clone()
+          ..captureLocal('cloud-delete', baseline, {});
+        localRecords = {
+          key: {
+            'title': 'Progress smoke manga',
+            'readDurationMs': 0,
+            'readingProgress': ReadingProgress.seed(
+              const ReadingPosition(ep: 2, page: 5, chapterId: 'b'),
+            ).toJson(),
+          },
+        };
+        final sync = DataSync();
+        addTearDown(() async {
+          await tester.pumpWidget(const SizedBox.shrink());
+          await runWidgetIo(tester, () async {
+            Object? cleanupError;
+            StackTrace? cleanupStack;
+
+            Future<void> attemptCleanup(Future<void> Function() action) async {
+              try {
+                await action();
+              } catch (error, stackTrace) {
+                cleanupError ??= error;
+                cleanupStack ??= stackTrace;
+              }
+            }
+
+            await attemptCleanup(sync.waitForStartupMerge);
+            await attemptCleanup(() async {
+              await sync.waitForSync();
+            });
+            await attemptCleanup(appdata.writeImplicitData);
+            DataSync.resetForTesting();
+            if (cleanupError != null) {
+              Error.throwWithStackTrace(cleanupError!, cleanupStack!);
+            }
+          });
+        });
+        late Res<bool> firstResult;
+        await runWidgetIo(tester, () async {
+          await installHistoryExport(sync);
+          await MergeRemote(client).upload(
+            MergeBatch.create(
+              actor: 'cloud-delete',
+              counter: deleted.counterFor('cloud-delete'),
+              document: deleted,
+            ),
+          );
+          firstResult = await sync.syncNow();
+        });
+        expect(firstResult.success, isTrue, reason: firstResult.errorMessage);
+        expect(sync.hasConflict, isTrue);
+
+        final freshKey = syncRecordKey('history', ['fresh-book', 0]);
+        const incomingPosition = ReadingPosition(
+          ep: 4,
+          page: 9,
+          chapterId: 'chapter-4',
+        );
+        final incoming = MergeDocument()
+          ..captureLocal('late-cloud', const {}, {
+            freshKey: {
+              'title': 'Incoming progress',
+              'readDurationMs': 0,
+              'readingProgress': ReadingProgress.seed(
+                incomingPosition,
+              ).toJson(),
+            },
+          });
+        await runWidgetIo(tester, () async {
+          await MergeRemote(client).upload(
+            MergeBatch.create(
+              actor: 'late-cloud',
+              counter: incoming.counterFor('late-cloud'),
+              document: incoming,
+            ),
+          );
+        });
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(body: SyncActionButton(onConfigure: () async {})),
+          ),
+        );
+        await runWidgetIo(tester, () async {
+          tester
+              .widget<IconButton>(find.byKey(const Key('data-sync-action')))
+              .onPressed!();
+          await sync.waitForSync();
+        });
+        await tester.pumpAndSettle();
+
+        expect(
+          ReadingProgress.fromJson(
+            localRecords[freshKey]!['readingProgress'],
+          ).resumePosition,
+          incomingPosition,
+        );
+        expect(sync.hasConflict, isTrue);
+        expect(find.byType(AlertDialog), findsNothing);
+        expect(find.byType(SyncConflictDialog), findsNothing);
+
+        await tester.longPress(find.byKey(const Key('data-sync-action')));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const Key('data-sync-status-review-conflicts')),
+        );
+        await tester.pumpAndSettle();
+        expect(find.byType(SyncConflictDialog), findsOneWidget);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await runWidgetIo(tester, () async {
+          await appdata.writeImplicitData();
+        });
       },
     );
 
@@ -2021,6 +2715,7 @@ void main() {
           }
           final before = cloneSyncRecords(localRecords);
           final sync = DataSync();
+          addTearDown(DataSync.resetForTesting);
           await expectLater(
             sync.waitForStartupMerge(),
             throwsA(isA<MergeStoreIntegrityException>()),

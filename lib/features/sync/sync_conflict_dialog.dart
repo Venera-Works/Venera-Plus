@@ -176,6 +176,8 @@ Future<void> showSyncConflictDialog(
   List<MergeConflict>? conflicts,
   Future<Res<bool>> Function(List<MergeConflictResolution>)? onResolve,
   DataSync? sync,
+  Set<String>? pendingProgressRecordKeys,
+  Set<String>? unmappableProgressRecordKeys,
 }) async {
   return showDialog<void>(
     context: context,
@@ -184,6 +186,8 @@ Future<void> showSyncConflictDialog(
       conflicts: conflicts,
       onResolve: onResolve,
       sync: sync,
+      pendingProgressRecordKeys: pendingProgressRecordKeys,
+      unmappableProgressRecordKeys: unmappableProgressRecordKeys,
     ),
   );
 }
@@ -195,6 +199,8 @@ class SyncConflictDialog extends StatefulWidget {
     this.onResolve,
     this.sync,
     this.localRecords,
+    this.pendingProgressRecordKeys,
+    this.unmappableProgressRecordKeys,
   });
 
   /// Explicit conflicts list for an isolated dialog or test.
@@ -208,6 +214,12 @@ class SyncConflictDialog extends StatefulWidget {
 
   /// Local snapshot override for isolated widget tests.
   final SyncRecords? localRecords;
+
+  /// Status override for isolating directory-pending progress presentation.
+  final Set<String>? pendingProgressRecordKeys;
+
+  /// Status override for chapter locations needing manual selection.
+  final Set<String>? unmappableProgressRecordKeys;
 
   @override
   State<SyncConflictDialog> createState() => _SyncConflictDialogState();
@@ -245,13 +257,19 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
   @override
   void didUpdateWidget(covariant SyncConflictDialog oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.conflicts == widget.conflicts) return;
+    if (oldWidget.conflicts == widget.conflicts &&
+        oldWidget.pendingProgressRecordKeys ==
+            widget.pendingProgressRecordKeys &&
+        oldWidget.unmappableProgressRecordKeys ==
+            widget.unmappableProgressRecordKeys) {
+      return;
+    }
     if (oldWidget.conflicts == null) _sync.removeListener(_onSyncStateChanged);
     if (widget.conflicts == null) _sync.addListener(_onSyncStateChanged);
     _localConflicts = widget.conflicts == null
         ? null
         : List.of(widget.conflicts!);
-    _retainValidSelections(_activeConflicts);
+    _retainValidSelections(_activeManualConflicts);
   }
 
   @override
@@ -265,12 +283,46 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
 
   void _onSyncStateChanged() {
     if (!mounted) return;
-    _retainValidSelections(_activeConflicts);
+    _retainValidSelections(_activeManualConflicts);
     setState(() {});
   }
 
-  List<MergeConflict> get _activeConflicts =>
-      _localConflicts ?? _sync.conflicts;
+  Set<String> get _pendingProgressKeys {
+    if (widget.pendingProgressRecordKeys != null) {
+      return widget.pendingProgressRecordKeys!;
+    }
+    if (widget.conflicts != null) return const {};
+    return _sync.statusSnapshot.pendingProgressRecordKeys.toSet();
+  }
+
+  Set<String> get _unmappableProgressKeys {
+    final keys =
+        widget.unmappableProgressRecordKeys ??
+        (widget.conflicts == null
+            ? _sync.statusSnapshot.unmappableProgressRecordKeys.toSet()
+            : const <String>{});
+    final manualProgressConflictKeys = _activeManualConflicts
+        .where((conflict) => conflict.field == 'readingProgress')
+        .map((conflict) => conflict.recordKey)
+        .toSet();
+    return keys
+        .where(
+          (key) =>
+              !_pendingProgressKeys.contains(key) &&
+              !manualProgressConflictKeys.contains(key),
+        )
+        .toSet();
+  }
+
+  List<MergeConflict> _manualConflictsFor(Set<String> pendingKeys) => [
+    for (final conflict in _localConflicts ?? _sync.conflicts)
+      if (!(conflict.field == 'readingProgress' &&
+          pendingKeys.contains(conflict.recordKey)))
+        conflict,
+  ];
+
+  List<MergeConflict> get _activeManualConflicts =>
+      _manualConflictsFor(_pendingProgressKeys);
 
   SyncRecords get _localCurrentRecords =>
       widget.localRecords ?? _sync.localObservedRecords;
@@ -375,7 +427,7 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
 
   void _selectFromDevice(String actor) {
     if (_isSubmitting) return;
-    final visible = _visibleConflicts(_activeConflicts);
+    final visible = _visibleConflicts(_activeManualConflicts);
     setState(() {
       for (final conflict in visible) {
         final candidate = _newestCandidate(
@@ -410,7 +462,7 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
     if (_isSubmitting) return;
     final records = _localCurrentRecords;
     setState(() {
-      for (final conflict in _visibleConflicts(_activeConflicts)) {
+      for (final conflict in _visibleConflicts(_activeManualConflicts)) {
         final candidate = _localCandidate(conflict, records);
         if (candidate != null) _rememberCandidate(conflict, candidate);
       }
@@ -419,7 +471,7 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
 
   Future<void> _submitSelections() async {
     if (_isSubmitting) return;
-    final conflicts = _activeConflicts;
+    final conflicts = _activeManualConflicts;
     _retainValidSelections(conflicts);
     final selected = _selectedConflicts(conflicts);
     if (selected.isEmpty) {
@@ -594,6 +646,18 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
     }
   }
 
+  String _pendingProgressIdentity(String recordKey) {
+    try {
+      final label = _formatIdentity(
+        syncRecordDomain(recordKey),
+        syncRecordIdentity(recordKey),
+      );
+      return label.isEmpty ? recordKey : label;
+    } catch (_) {
+      return recordKey;
+    }
+  }
+
   bool _matchesSearch(MergeConflict conflict, String query) {
     final domain = _domainOf(conflict);
     final parts = <String>[
@@ -739,6 +803,32 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
     );
   }
 
+  Widget _buildPendingProgressCard(String recordKey, ThemeData theme) {
+    return Card(
+      key: ValueKey(('sync-conflict-pending-item', recordKey)),
+      elevation: 0,
+      color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+      child: ListTile(
+        leading: Icon(Icons.hourglass_empty, color: theme.colorScheme.tertiary),
+        title: Text(_pendingProgressIdentity(recordKey)),
+        subtitle: Text('Pending reading progress'.tl),
+      ),
+    );
+  }
+
+  Widget _buildUnmappableProgressCard(String recordKey, ThemeData theme) {
+    return Card(
+      key: ValueKey(('sync-conflict-unmappable-progress-item', recordKey)),
+      elevation: 0,
+      color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+      child: ListTile(
+        leading: Icon(Icons.menu_book, color: theme.colorScheme.tertiary),
+        title: Text(_pendingProgressIdentity(recordKey)),
+        subtitle: Text('Chapter selection needed'.tl),
+      ),
+    );
+  }
+
   Widget _buildGroupHeader(String domain, int count, ThemeData theme) {
     return Padding(
       padding: const EdgeInsets.only(top: 4, bottom: 8),
@@ -754,8 +844,15 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final conflicts = _activeConflicts;
+    final pendingKeys = _pendingProgressKeys;
+    final pendingProgressKeys = pendingKeys.toList()..sort();
+    final unmappableProgressKeys = _unmappableProgressKeys.toList()..sort();
+    final conflicts = _manualConflictsFor(pendingKeys);
     final theme = Theme.of(context);
+    final hasReviewItems =
+        conflicts.isNotEmpty ||
+        pendingProgressKeys.isNotEmpty ||
+        unmappableProgressKeys.isNotEmpty;
     final selected = _selectedConflicts(conflicts).length;
     final recordCount = conflicts
         .map((conflict) => conflict.recordKey)
@@ -815,17 +912,21 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
                             Row(
                               children: [
                                 Icon(
-                                  conflicts.isEmpty
-                                      ? Icons.check_circle_outline
-                                      : Icons.sync_problem,
-                                  color: conflicts.isEmpty
-                                      ? theme.colorScheme.primary
-                                      : theme.colorScheme.error,
+                                  conflicts.isNotEmpty
+                                      ? Icons.sync_problem
+                                      : hasReviewItems
+                                      ? Icons.hourglass_empty
+                                      : Icons.check_circle_outline,
+                                  color: conflicts.isNotEmpty
+                                      ? theme.colorScheme.error
+                                      : hasReviewItems
+                                      ? theme.colorScheme.tertiary
+                                      : theme.colorScheme.primary,
                                 ),
                                 const SizedBox(width: 12),
                                 Expanded(
                                   child: Text(
-                                    'Resolve Sync Conflicts'.tl,
+                                    'Review Sync Items'.tl,
                                     style: theme.textTheme.titleLarge,
                                   ),
                                 ),
@@ -838,28 +939,143 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
                               ],
                             ),
                             const SizedBox(height: 8),
-                            Text(
-                              conflicts.isEmpty
-                                  ? 'All conflicts resolved.'.tl
-                                  : '@records records · @fields field conflicts · @selected selected'
-                                        .tlParams({
-                                          'records': recordCount,
-                                          'fields': fieldConflictCount,
-                                          'selected': selected,
-                                        }),
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                color: theme.textTheme.bodySmall?.color,
+                            if (conflicts.isNotEmpty)
+                              Text(
+                                '@records records · @fields field conflicts · @selected selected'
+                                    .tlParams({
+                                      'records': recordCount,
+                                      'fields': fieldConflictCount,
+                                      'selected': selected,
+                                    }),
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: theme.textTheme.bodySmall?.color,
+                                ),
                               ),
-                            ),
+                            if (conflicts.isEmpty &&
+                                pendingProgressKeys.isEmpty &&
+                                unmappableProgressKeys.isEmpty)
+                              Text(
+                                'All conflicts resolved.'.tl,
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: theme.textTheme.bodySmall?.color,
+                                ),
+                              ),
+                            if (conflicts.isEmpty &&
+                                (pendingProgressKeys.isNotEmpty ||
+                                    unmappableProgressKeys.isNotEmpty))
+                              Text(
+                                'No conflicting candidates need a device choice.'
+                                    .tl,
+                                key: const Key('sync-conflict-manual-empty'),
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: theme.textTheme.bodySmall?.color,
+                                ),
+                              ),
+                            if (pendingProgressKeys.isNotEmpty)
+                              Text(
+                                'Reading positions waiting for directory: @count'
+                                    .tlParams({
+                                      'count': pendingProgressKeys.length,
+                                    }),
+                                key: const Key(
+                                  'sync-conflict-pending-progress-count',
+                                ),
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: theme.textTheme.bodySmall?.color,
+                                ),
+                              ),
+                            if (unmappableProgressKeys.isNotEmpty)
+                              Text(
+                                'Reading positions needing chapter selection: @count'
+                                    .tlParams({
+                                      'count': unmappableProgressKeys.length,
+                                    }),
+                                key: const Key(
+                                  'sync-conflict-unmappable-progress-count',
+                                ),
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: theme.textTheme.bodySmall?.color,
+                                ),
+                              ),
                             const SizedBox(height: 12),
                           ],
                         ),
                       ),
+                      if (pendingProgressKeys.isNotEmpty) ...[
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                Text(
+                                  'Pending reading progress'.tl,
+                                  style: theme.textTheme.titleSmall,
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'These reading positions are retained as candidates and will be reconciled automatically after the comic catalog loads. No device choice is needed.'
+                                      .tl,
+                                  key: const Key(
+                                    'sync-conflict-pending-progress-guidance',
+                                  ),
+                                  style: theme.textTheme.bodySmall,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        SliverList.separated(
+                          itemCount: pendingProgressKeys.length,
+                          separatorBuilder: (_, _) => const SizedBox(height: 8),
+                          itemBuilder: (context, index) =>
+                              _buildPendingProgressCard(
+                                pendingProgressKeys[index],
+                                theme,
+                              ),
+                        ),
+                      ],
+                      if (unmappableProgressKeys.isNotEmpty) ...[
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                Text(
+                                  'Chapter selection needed'.tl,
+                                  style: theme.textTheme.titleSmall,
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'These reading positions could not be matched to the loaded comic catalog. The original candidates are retained. Open the comic normally and choose a chapter to set its location; no device choice is available here.'
+                                      .tl,
+                                  key: const Key(
+                                    'sync-conflict-unmappable-progress-guidance',
+                                  ),
+                                  style: theme.textTheme.bodySmall,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        SliverList.separated(
+                          itemCount: unmappableProgressKeys.length,
+                          separatorBuilder: (_, _) => const SizedBox(height: 8),
+                          itemBuilder: (context, index) =>
+                              _buildUnmappableProgressCard(
+                                unmappableProgressKeys[index],
+                                theme,
+                              ),
+                        ),
+                      ],
                       if (conflicts.isNotEmpty)
                         SliverToBoxAdapter(
                           child: _buildConflictTools(groupDomains, actors),
                         ),
-                      if (conflicts.isEmpty)
+                      if (conflicts.isEmpty &&
+                          pendingProgressKeys.isEmpty &&
+                          unmappableProgressKeys.isEmpty)
                         SliverFillRemaining(
                           hasScrollBody: false,
                           child: Center(
@@ -879,41 +1095,48 @@ class _SyncConflictDialogState extends State<SyncConflictDialog> {
                               ],
                             ),
                           ),
-                        )
-                      else if (visibleConflictCount == 0)
+                        ),
+                      if (conflicts.isNotEmpty && visibleConflictCount == 0)
                         SliverFillRemaining(
                           hasScrollBody: false,
                           child: Center(
                             child: Text('No conflicts match these filters'.tl),
                           ),
-                        )
-                      else
-                        for (final group in orderedGroups) ...[
-                          SliverToBoxAdapter(
-                            child: _buildGroupHeader(
-                              group.key,
-                              group.value.length,
-                              theme,
-                            ),
+                        ),
+                      for (final group in orderedGroups) ...[
+                        SliverToBoxAdapter(
+                          child: _buildGroupHeader(
+                            group.key,
+                            group.value.length,
+                            theme,
                           ),
-                          SliverList.separated(
-                            itemCount: group.value.length,
-                            separatorBuilder: (_, _) =>
-                                const SizedBox(height: 12),
-                            itemBuilder: (context, index) =>
-                                _buildConflictCard(group.value[index], theme),
-                          ),
-                        ],
+                        ),
+                        SliverList.separated(
+                          itemCount: group.value.length,
+                          separatorBuilder: (_, _) =>
+                              const SizedBox(height: 12),
+                          itemBuilder: (context, index) =>
+                              _buildConflictCard(group.value[index], theme),
+                        ),
+                      ],
                     ],
                   ),
                 ),
                 const SizedBox(height: 12),
-                if (conflicts.isEmpty)
+                if (conflicts.isEmpty && pendingProgressKeys.isEmpty)
                   FilledButton(
                     onPressed: _isSubmitting
                         ? null
                         : () => Navigator.of(context).pop(),
                     child: Text('Done'.tl),
+                  )
+                else if (conflicts.isEmpty)
+                  OutlinedButton(
+                    key: const ValueKey('sync-conflict-close'),
+                    onPressed: _isSubmitting
+                        ? null
+                        : () => Navigator.of(context).pop(),
+                    child: Text('Close'.tl),
                   )
                 else
                   Wrap(

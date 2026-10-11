@@ -83,6 +83,221 @@ void main() {
         expect(single.resumePosition?.page, 6);
       },
     );
+    test(
+      'catalog normalization maps maximum and reread state without losing rounds',
+      () {
+        final originalCatalog = ReadingCatalog(const [
+          ReadingChapter(id: 'a', ep: 1),
+          ReadingChapter(id: 'b', ep: 2),
+          ReadingChapter(id: 'c', ep: 3),
+        ]);
+        final loadedCatalog = ReadingCatalog(const [
+          ReadingChapter(id: 'c', ep: 1),
+          ReadingChapter(id: 'b', ep: 2),
+          ReadingChapter(id: 'a', ep: 3),
+        ]);
+        final active =
+            ReadingProgress.seed(
+                  const ReadingPosition(ep: 2, page: 12, chapterId: 'b'),
+                  time: 42,
+                  catalog: originalCatalog,
+                )
+                .record(
+                  const ReadingPosition(ep: 1, page: 3, chapterId: 'a'),
+                  source: ReadingNavigationSource.userBackward,
+                  newRoundId: 'active-round',
+                  catalog: originalCatalog,
+                )
+                .record(
+                  const ReadingPosition(ep: 1, page: 7, chapterId: 'a'),
+                  source: ReadingNavigationSource.userForward,
+                  sessionRoundId: 'active-round',
+                  catalog: originalCatalog,
+                );
+        final withMarkers = ReadingProgress.fromJson(
+          active.toJson()
+            ..['retired'] = ['retired-round']
+            ..['ended'] = ['ended-round'],
+        );
+
+        final normalized = withMarkers.normalizeForCatalog(loadedCatalog)!;
+        expect(normalized.maximumPositions, const [
+          ReadingPosition(ep: 2, page: 12, chapterId: 'b'),
+        ]);
+        expect(
+          normalized.resumePosition,
+          const ReadingPosition(ep: 3, page: 7, chapterId: 'a'),
+        );
+        expect(normalized.activeRoundId, 'active-round');
+        expect((normalized.toJson()['rounds'] as Map)['active-round'], {
+          'anchor': const ReadingPosition(
+            ep: 2,
+            page: 12,
+            chapterId: 'b',
+          ).toJson(),
+          'cursor': const ReadingPosition(
+            ep: 3,
+            page: 7,
+            chapterId: 'a',
+          ).toJson(),
+        });
+        expect(normalized.toJson()['retired'], ['retired-round']);
+        expect(normalized.toJson()['ended'], ['ended-round']);
+        expect(normalized.time, 42);
+      },
+    );
+
+    test(
+      'catalog normalization requires a unique identity for every position',
+      () {
+        final duplicateIdCatalog = ReadingCatalog(const [
+          ReadingChapter(id: 'duplicate', ep: 1, group: 1, groupId: 'g1'),
+          ReadingChapter(id: 'duplicate', ep: 2, group: 2, groupId: 'g2'),
+        ]);
+        expect(
+          ReadingProgress.seed(
+            const ReadingPosition(ep: 1, page: 4, chapterId: 'duplicate'),
+          ).normalizeForCatalog(duplicateIdCatalog),
+          isNull,
+        );
+        expect(
+          ReadingProgress.seed(
+            const ReadingPosition(
+              ep: 2,
+              page: 4,
+              group: 2,
+              chapterId: 'duplicate',
+            ),
+          ).normalizeForCatalog(duplicateIdCatalog)?.resumePosition?.ep,
+          2,
+        );
+        expect(
+          ReadingProgress.seed(
+            const ReadingPosition(
+              ep: 1,
+              page: 4,
+              groupId: 'g2',
+              chapterId: 'duplicate',
+            ),
+          ).normalizeForCatalog(duplicateIdCatalog)?.resumePosition?.ep,
+          2,
+        );
+        expect(
+          ReadingProgress.seed(
+            const ReadingPosition(ep: 1, page: 1, chapterId: 'missing'),
+          ).normalizeForCatalog(duplicateIdCatalog),
+          isNull,
+        );
+        expect(
+          ReadingProgress.seed(
+            const ReadingPosition(ep: 1, page: 1),
+          ).normalizeForCatalog(
+            ReadingCatalog(const [
+              ReadingChapter(id: 'first', ep: 1),
+              ReadingChapter(id: 'second', ep: 1),
+            ]),
+          ),
+          isNull,
+        );
+      },
+    );
+    test('stable group identities rebase both maximum and reread cursor', () {
+      final before = ReadingCatalog(const [
+        ReadingChapter(id: 'shared', ep: 1, group: 1, groupId: 'g1'),
+        ReadingChapter(id: 'shared', ep: 1, group: 2, groupId: 'g2'),
+      ]);
+      final after = ReadingCatalog(const [
+        ReadingChapter(id: 'shared', ep: 1, group: 1, groupId: 'g2'),
+        ReadingChapter(id: 'shared', ep: 1, group: 2, groupId: 'g1'),
+      ]);
+      final progress =
+          ReadingProgress.seed(
+                const ReadingPosition(
+                  ep: 1,
+                  page: 8,
+                  group: 2,
+                  chapterId: 'shared',
+                  groupId: 'g2',
+                ),
+                catalog: before,
+              )
+              .record(
+                const ReadingPosition(
+                  ep: 1,
+                  page: 3,
+                  group: 2,
+                  chapterId: 'shared',
+                  groupId: 'g2',
+                ),
+                source: ReadingNavigationSource.userBackward,
+                newRoundId: 'reread',
+                catalog: before,
+              )
+              .normalizeForCatalog(after)!;
+      expect(progress.activeRoundId, 'reread');
+      expect(progress.maximumPositions, const [
+        ReadingPosition(
+          ep: 1,
+          page: 8,
+          group: 1,
+          chapterId: 'shared',
+          groupId: 'g2',
+        ),
+      ]);
+      expect(
+        progress.resumePosition,
+        const ReadingPosition(
+          ep: 1,
+          page: 3,
+          group: 1,
+          chapterId: 'shared',
+          groupId: 'g2',
+        ),
+      );
+    });
+
+    test(
+      'ambiguous rereads require normalization of original cursor sources',
+      () {
+        final catalog = ReadingCatalog(const [
+          ReadingChapter(id: 'a', ep: 1),
+          ReadingChapter(id: 'b', ep: 2),
+          ReadingChapter(id: 'end', ep: 3),
+        ]);
+        final reordered = ReadingCatalog(const [
+          ReadingChapter(id: 'b', ep: 1),
+          ReadingChapter(id: 'a', ep: 2),
+          ReadingChapter(id: 'end', ep: 3),
+        ]);
+        final first =
+            ReadingProgress.seed(
+              const ReadingPosition(ep: 3, page: 1, chapterId: 'end'),
+              catalog: catalog,
+            ).record(
+              const ReadingPosition(ep: 1, page: 1, chapterId: 'a'),
+              source: ReadingNavigationSource.userBackward,
+              newRoundId: 'shared',
+              catalog: catalog,
+            );
+        final second = first
+            .record(
+              const ReadingPosition(ep: 2, page: 9, chapterId: 'b'),
+              source: ReadingNavigationSource.userForward,
+              sessionRoundId: 'shared',
+              catalog: catalog,
+            )
+            .rebaseCatalog(reordered);
+        expect(first.merge(second).normalizeForCatalog(catalog), isNull);
+        final resolved = first
+            .normalizeForCatalog(catalog)!
+            .merge(second.normalizeForCatalog(catalog)!);
+        expect(
+          resolved.resumePosition,
+          const ReadingPosition(ep: 2, page: 9, chapterId: 'b'),
+        );
+        expect(resolved.activeRoundId, 'shared');
+      },
+    );
   });
 
   group('ReadingProgress reread lifecycle', () {

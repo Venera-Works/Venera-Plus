@@ -509,6 +509,348 @@ void main() {
       expect(store.manualCandidateId(key, 'order'), 'device-alpha:3');
     });
     test(
+      'catalog normalization and automatic conflict share one durable restart-safe commit',
+      () async {
+        final store = MergeStore(tempDir, 'device-alpha');
+        await store.load();
+        final key = syncRecordKey('history', ['catalog-resolution']);
+        await store.capture({
+          key: {'title': 'Initial title', 'readDurationMs': 321},
+        });
+        final common = store.document.clone();
+        final previous = common.materialize();
+        final catalogA = ReadingCatalog(const [
+          ReadingChapter(id: 'a', ep: 1),
+          ReadingChapter(id: 'b', ep: 2),
+          ReadingChapter(id: 'c', ep: 3),
+          ReadingChapter(id: 'end', ep: 4),
+        ]);
+        final loadedCatalog = ReadingCatalog(const [
+          ReadingChapter(id: 'c', ep: 1),
+          ReadingChapter(id: 'b', ep: 2),
+          ReadingChapter(id: 'a', ep: 3),
+          ReadingChapter(id: 'end', ep: 4),
+        ]);
+        ReadingProgress sourceProgress({
+          required int maxPage,
+          required int cursorPage,
+          required int time,
+          required ReadingCatalog catalog,
+          required int rereadEp,
+        }) =>
+            ReadingProgress.seed(
+                  const ReadingPosition(ep: 4, page: 1, chapterId: 'end'),
+                  time: time,
+                  catalog: catalog,
+                )
+                .record(
+                  ReadingPosition(ep: rereadEp, page: 2, chapterId: 'a'),
+                  source: ReadingNavigationSource.userBackward,
+                  newRoundId: 'store-round',
+                  catalog: catalog,
+                )
+                .record(
+                  ReadingPosition(
+                    ep: rereadEp,
+                    page: cursorPage,
+                    chapterId: 'a',
+                  ),
+                  source: ReadingNavigationSource.userForward,
+                  sessionRoundId: 'store-round',
+                  catalog: catalog,
+                )
+                .record(
+                  ReadingPosition(ep: 4, page: maxPage, chapterId: 'end'),
+                  source: ReadingNavigationSource.passive,
+                  catalog: catalog,
+                );
+
+        final branchA = common.clone();
+        final branchARecords = cloneSyncRecords(previous)
+          ..[key]!['title'] = 'Title A'
+          ..[key]!['readingProgress'] = sourceProgress(
+            maxPage: 8,
+            cursorPage: 6,
+            time: 100,
+            catalog: catalogA,
+            rereadEp: 1,
+          ).toJson();
+        branchA.captureLocal('cloud-progress-a', previous, branchARecords);
+        final branchB = common.clone();
+        final branchBRecords = cloneSyncRecords(previous)
+          ..[key]!['title'] = 'Title B'
+          ..[key]!['readingProgress'] = sourceProgress(
+            maxPage: 12,
+            cursorPage: 9,
+            time: 200,
+            catalog: loadedCatalog,
+            rereadEp: 3,
+          ).toJson();
+        branchB.captureLocal('cloud-progress-b', previous, branchBRecords);
+        final deleteBranch = common.clone();
+        final deletedRecords = cloneSyncRecords(previous)..remove(key);
+        deleteBranch.captureLocal(
+          'cloud-record-delete',
+          previous,
+          deletedRecords,
+        );
+        store.document
+          ..merge(branchA)
+          ..merge(branchB)
+          ..merge(deleteBranch);
+        await store.save();
+
+        final titleConflict = store.document.conflicts.singleWhere(
+          (conflict) => conflict.recordKey == key && conflict.field == 'title',
+        );
+        final titleA = titleConflict.candidates.singleWhere(
+          (candidate) => candidate.actor == 'cloud-progress-a',
+        );
+        final presenceConflict = store.document.conflicts.singleWhere(
+          (conflict) =>
+              conflict.recordKey == key && conflict.field == 'presence',
+        );
+        final presentCandidate = presenceConflict.candidates.singleWhere(
+          (candidate) =>
+              candidate.actor == 'cloud-progress-a' && !candidate.isDeleted,
+        );
+        final blockedBefore = _databaseSummary(
+          File('${tempDir.path}/merge_store.sqlite3'),
+          store.actor,
+        );
+        expect(await store.resolveReadingProgress(key, loadedCatalog), isFalse);
+        final blockedAfter = _databaseSummary(
+          File('${tempDir.path}/merge_store.sqlite3'),
+          store.actor,
+        );
+        expect(blockedAfter.revision, blockedBefore.revision);
+        expect(blockedAfter.ownCounter, blockedBefore.ownCounter);
+        expect(blockedAfter.outboxCount, blockedBefore.outboxCount);
+        final staleBefore = _databaseSummary(
+          File('${tempDir.path}/merge_store.sqlite3'),
+          store.actor,
+        );
+        final documentBeforeStale = store.document.toJson();
+        await expectLater(
+          store.resolveAll(
+            [
+              MergeConflictResolution(
+                recordKey: key,
+                field: 'title',
+                candidateId: titleA.id,
+                expectedCandidateFingerprint: 'stale-candidate-set',
+              ),
+            ],
+            manual: false,
+            readingProgressCatalogs: {key: loadedCatalog},
+          ),
+          throwsA(isA<StateError>()),
+        );
+        expect(
+          syncValuesEqual(store.document.toJson(), documentBeforeStale),
+          isTrue,
+        );
+        expect(store.pendingApply, isNull);
+        final staleAfter = _databaseSummary(
+          File('${tempDir.path}/merge_store.sqlite3'),
+          store.actor,
+        );
+        expect(staleAfter.revision, staleBefore.revision);
+        expect(staleAfter.ownCounter, staleBefore.ownCounter);
+        expect(staleAfter.outboxCount, staleBefore.outboxCount);
+
+        final resolvedCount = await store.resolveAll(
+          [
+            MergeConflictResolution(
+              recordKey: key,
+              field: 'title',
+              candidateId: titleA.id,
+            ),
+            MergeConflictResolution(
+              recordKey: key,
+              field: 'presence',
+              candidateId: presentCandidate.id,
+            ),
+          ],
+          manual: false,
+          readingProgressCatalogs: {key: loadedCatalog},
+        );
+        expect(resolvedCount, 1);
+        final pending = store.pendingApply!;
+        expect(pending[key]!['title'], 'Title A');
+        final pendingProgress = ReadingProgress.fromJson(
+          pending[key]!['readingProgress'],
+        );
+        expect(pendingProgress.maximumPositions.single.chapterId, 'end');
+        expect(pendingProgress.maximumPositions.single.page, 12);
+        expect(pendingProgress.resumePosition?.chapterId, 'a');
+        expect(pendingProgress.resumePosition?.page, 9);
+        expect(pendingProgress.activeRoundId, 'store-round');
+
+        final reopened = MergeStore(tempDir, 'device-alpha');
+        await reopened.load();
+        expect(syncValuesEqual(reopened.pendingApply, pending), isTrue);
+        expect(
+          reopened.document.conflicts.any(
+            (conflict) =>
+                conflict.recordKey == key &&
+                (conflict.field == 'readingProgress' ||
+                    conflict.field == 'presence'),
+          ),
+          isFalse,
+        );
+        final peer = common.clone()
+          ..merge(branchA)
+          ..merge(branchB)
+          ..merge(deleteBranch);
+        for (final batch in reopened.outbox) {
+          peer.merge(batch.document);
+        }
+        expect(peer.hasHistoryPresenceDeletionConflict(key), isFalse);
+        expect(peer.materialize()[key]!['title'], 'Title A');
+        final publishedProgress = ReadingProgress.fromJson(
+          peer.materialize()[key]!['readingProgress'],
+        );
+        expect(publishedProgress.maximumPositions, const [
+          ReadingPosition(ep: 4, page: 12, chapterId: 'end'),
+        ]);
+        expect(
+          publishedProgress.resumePosition,
+          const ReadingPosition(ep: 3, page: 9, chapterId: 'a'),
+        );
+        final resolvedDocument = reopened.document.toJson();
+        reopened.document
+          ..merge(branchA)
+          ..merge(branchB)
+          ..merge(deleteBranch);
+        expect(
+          syncValuesEqual(reopened.document.toJson(), resolvedDocument),
+          isTrue,
+        );
+        await reopened.completeApply(reopened.pendingApply!);
+
+        final beforeNoOp = _databaseSummary(
+          File('${tempDir.path}/merge_store.sqlite3'),
+          reopened.actor,
+        );
+        final beforeNoOpDocument = reopened.document.toJson();
+        expect(
+          await reopened.resolveReadingProgress(key, loadedCatalog),
+          isFalse,
+        );
+        expect(
+          syncValuesEqual(reopened.document.toJson(), beforeNoOpDocument),
+          isTrue,
+        );
+        final afterNoOp = _databaseSummary(
+          File('${tempDir.path}/merge_store.sqlite3'),
+          reopened.actor,
+        );
+        expect(afterNoOp.revision, beforeNoOp.revision);
+        expect(afterNoOp.ownCounter, beforeNoOp.ownCounter);
+        expect(afterNoOp.outboxCount, beforeNoOp.outboxCount);
+
+        final applied = MergeStore(tempDir, 'device-alpha');
+        await applied.load();
+        expect(
+          ReadingProgress.fromJson(
+            applied.observed[key]!['readingProgress'],
+          ).resumePosition?.page,
+          9,
+        );
+      },
+    );
+    test('catalog-only resolution stages the fresh semantic result', () async {
+      final store = MergeStore(tempDir, 'device-alpha');
+      await store.load();
+      final key = syncRecordKey('history', ['catalog-only-progress']);
+      final sourceCatalog = ReadingCatalog(const [
+        ReadingChapter(id: 'a', ep: 1),
+        ReadingChapter(id: 'b', ep: 2),
+      ]);
+      final loadedCatalog = ReadingCatalog(const [
+        ReadingChapter(id: 'b', ep: 1),
+        ReadingChapter(id: 'a', ep: 2),
+      ]);
+      final source = ReadingProgress.seed(
+        const ReadingPosition(ep: 1, page: 8, chapterId: 'a'),
+        catalog: sourceCatalog,
+        time: 12,
+      );
+      await store.capture({
+        key: {
+          'title': 'Keep title',
+          'readDurationMs': 30,
+          'readingProgress': source.toJson(),
+        },
+      });
+      final beforeUserEdit = store.document.clone();
+      final localEdit = cloneSyncRecords(store.observed)
+        ..[key]!['readingProgress'] = source
+            .record(
+              const ReadingPosition(ep: 1, page: 9, chapterId: 'a'),
+              source: ReadingNavigationSource.userForward,
+              catalog: sourceCatalog,
+            )
+            .toJson();
+      await store.capture(localEdit);
+      expect(store.manualCandidateId(key, 'readingProgress'), isNotNull);
+
+      expect(await store.resolveReadingProgress(key, loadedCatalog), isTrue);
+      final pending = store.pendingApply!;
+      expect(pending[key]!['title'], 'Keep title');
+      expect(pending[key]!['readDurationMs'], 30);
+      final pendingProgress = ReadingProgress.fromJson(
+        pending[key]!['readingProgress'],
+      );
+      expect(
+        pendingProgress.maximumPositions.single,
+        const ReadingPosition(ep: 2, page: 9, chapterId: 'a'),
+      );
+      expect(pendingProgress.time, 12);
+
+      final reopened = MergeStore(tempDir, 'device-alpha');
+      await reopened.load();
+      expect(syncValuesEqual(reopened.pendingApply, pending), isTrue);
+      expect(reopened.manualCandidateId(key, 'readingProgress'), isNull);
+      await reopened.completeApply(reopened.pendingApply!);
+      final deleted = beforeUserEdit.clone();
+      final deleteBefore = deleted.materialize();
+      deleted.captureLocal('deleting-peer', deleteBefore, {});
+      final disputed = reopened.document.clone()..merge(deleted);
+      final decisions = automaticConflictResolutions(
+        document: disputed,
+        localActor: reopened.actor,
+        localRecords: reopened.observed,
+        firstSync: false,
+        manualCandidateId: reopened.manualCandidateId,
+        unverifiedManualCandidateId: reopened.unverifiedHistoryCandidateId,
+        cloudActorModifiedAt: const {},
+      );
+      final presence = disputed.conflicts.singleWhere(
+        (conflict) => conflict.field == 'presence',
+      );
+      expect(
+        decisions.any((resolution) => resolution.field == 'presence'),
+        isFalse,
+      );
+      expect(
+        presence.candidates.any((candidate) => candidate.isDeleted),
+        isTrue,
+      );
+      expect(
+        presence.candidates.any((candidate) => !candidate.isDeleted),
+        isTrue,
+      );
+      expect(
+        disputed.conflicts.any(
+          (conflict) =>
+              conflict.recordKey == key && conflict.field == 'presence',
+        ),
+        isTrue,
+      );
+    });
+    test(
       'reading-progress conflict and pending apply survive restart',
       () async {
         final store = MergeStore(tempDir, 'device-alpha');

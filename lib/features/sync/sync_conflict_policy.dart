@@ -2,8 +2,8 @@ import '../../foundation/sync_records.dart';
 import 'merge_engine.dart';
 
 /// Selects safe, field-level resolutions for conflicts that can be decided
-/// without a user prompt. Reading-progress order conflicts always require an
-/// explicit choice; they are never decided by local actor or cloud time.
+/// without a user prompt. Reading progress uses its catalog-aware semantic
+/// resolution path instead of local actor or cloud publication time.
 List<MergeConflictResolution> automaticConflictResolutions({
   required MergeDocument document,
   required String localActor,
@@ -16,8 +16,16 @@ List<MergeConflictResolution> automaticConflictResolutions({
   Set<String> unavailableDomains = const {},
   bool Function(String recordKey)? shouldObserveRecord,
 }) {
+  final conflicts = document.conflicts;
+  final historyDeleteConflicts = {
+    for (final conflict in conflicts)
+      if (_recordDomain(conflict.recordKey) == 'history' &&
+          conflict.field == 'presence' &&
+          conflict.candidates.any((candidate) => candidate.isDeleted))
+        conflict.recordKey,
+  };
   final resolutions = <MergeConflictResolution>[];
-  for (final conflict in document.conflicts) {
+  for (final conflict in conflicts) {
     final domain = _recordDomain(conflict.recordKey);
     if (unavailableDomains.contains(domain) ||
         (shouldObserveRecord != null &&
@@ -25,7 +33,10 @@ List<MergeConflictResolution> automaticConflictResolutions({
       continue;
     }
     if (domain == 'history' &&
-        (conflict.field == 'progress' || conflict.field == 'readingProgress')) {
+        (conflict.field == 'progress' ||
+            conflict.field == 'readingProgress' ||
+            (conflict.field == 'presence' &&
+                historyDeleteConflicts.contains(conflict.recordKey)))) {
       continue;
     }
 

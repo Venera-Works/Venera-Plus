@@ -195,6 +195,17 @@ ReadingProgress? _readReadingProgress(Object? value) {
   return ReadingProgress.fromJson(value is String ? jsonDecode(value) : value);
 }
 
+typedef HistoryReadingProgressCatalogResolver =
+    Future<bool> Function(String recordKey, ReadingCatalog catalog);
+
+HistoryReadingProgressCatalogResolver? _historyReadingProgressCatalogResolver;
+
+void configureHistoryReadingProgressCatalogResolver(
+  HistoryReadingProgressCatalogResolver? resolver,
+) {
+  _historyReadingProgressCatalogResolver = resolver;
+}
+
 class HistoryManager with ChangeNotifier {
   static HistoryManager? cache;
 
@@ -663,7 +674,14 @@ class HistoryManager with ChangeNotifier {
           .where((entry) => matches(entry.key, entry.value))
           .map((entry) => MapEntry(entry.key, _copyHistory(entry.value)))
           .toList(growable: false);
-      if (batch.isEmpty) break;
+      if (batch.isEmpty) {
+        await waitForAsyncWrites();
+        final pendingRemains = _pendingReadingProgress.entries.any(
+          (entry) => matches(entry.key, entry.value),
+        );
+        if (!pendingRemains) break;
+        continue;
+      }
       _readingProgressTimer?.cancel();
       _readingProgressTimer = null;
       for (final entry in batch) {
@@ -698,7 +716,177 @@ class HistoryManager with ChangeNotifier {
     } else {
       _scheduleReadingProgressFlush();
     }
-    await waitForAsyncWrites();
+  }
+
+  Future<History> resolveReadingProgressCatalog(
+    History fallback,
+    ReadingCatalog catalog,
+  ) async {
+    await flushReadingProgress(id: fallback.id, type: fallback.type);
+    final recordKey = syncRecordKey('history', [
+      fallback.id,
+      fallback.type.value,
+    ]);
+    final resolver = _historyReadingProgressCatalogResolver;
+    final before = _reloadCurrentHistory(fallback);
+    if (resolver != null && await resolver(recordKey, catalog)) {
+      // A reader that was already open can record progress while the sync
+      // resolver is waiting. Drain it after resolution as well, so the
+      // resolver's database result cannot hide a later local write.
+      await flushReadingProgress(id: fallback.id, type: fallback.type);
+      await waitForAsyncWrites();
+      final current = _reloadCurrentHistory(fallback);
+      return current ?? _historyWithoutProgress(before ?? fallback);
+    }
+
+    await flushReadingProgress(id: fallback.id, type: fallback.type);
+    final current = _reloadCurrentHistory(fallback);
+    if (current == null) {
+      return before == null
+          ? _normalizeFallbackHistory(fallback, catalog)
+          : _historyWithoutProgress(before);
+    }
+    if (current.readingProgress == null && current.resumePosition == null) {
+      return current;
+    }
+
+    final progress = current.readingProgress ?? _progressForHistory(current);
+    final normalized = progress.normalizeForCatalog(catalog);
+    if (normalized == null ||
+        jsonEncode(normalized.toJson()) == jsonEncode(progress.toJson())) {
+      return current;
+    }
+
+    final resolved = _copyHistory(current)..readingProgress = normalized;
+    final position = normalized.resumePosition;
+    if (position != null) {
+      resolved
+        ..ep = position.ep
+        ..page = position.page
+        ..group = position.group;
+    }
+    await _writeCatalogNormalizedHistory(current, resolved);
+    return _reloadCurrentHistory(fallback) ?? _historyWithoutProgress(current);
+  }
+
+  History? _reloadCurrentHistory(History identity) {
+    final key = _historyKey(identity.id, identity.type);
+    final current = _readPersistedHistory(_db, identity);
+    final queued = _queuedHistories[key];
+    final pending = _pendingReadingProgress[key];
+    if (current == null) {
+      if (queued == null && pending == null) {
+        updateCache();
+        return null;
+      }
+      final live = _copyHistory(pending ?? queued!);
+      if (queued != null && pending != null && !identical(queued, pending)) {
+        _mergeHistorySnapshot(live, queued);
+      }
+      _cacheHistory(live);
+      return live;
+    }
+    if (queued != null && !identical(queued, current)) {
+      _mergeHistorySnapshot(current, queued);
+    }
+    if (pending != null && !identical(pending, current)) {
+      _mergeHistorySnapshot(current, pending);
+    }
+    _cacheHistory(current);
+    return current;
+  }
+
+  History _historyWithoutProgress(History history) {
+    final copy = _copyHistory(history)
+      ..ep = 0
+      ..page = 0
+      ..group = null
+      ..readingProgress = null;
+    return copy;
+  }
+
+  History _normalizeFallbackHistory(History history, ReadingCatalog catalog) {
+    if (history.readingProgress == null && history.resumePosition == null) {
+      return _copyHistory(history);
+    }
+    final progress = history.readingProgress ?? _progressForHistory(history);
+    final normalized = progress.normalizeForCatalog(catalog);
+    if (normalized == null) return _copyHistory(history);
+    final copy = _copyHistory(history)..readingProgress = normalized;
+    final position = normalized.resumePosition;
+    if (position != null) {
+      copy
+        ..ep = position.ep
+        ..page = position.page
+        ..group = position.group;
+    }
+    return copy;
+  }
+
+  bool _sameReadingProgressInput(History current, History expected) =>
+      current.ep == expected.ep &&
+      current.page == expected.page &&
+      current.group == expected.group &&
+      jsonEncode(current.readingProgress?.toJson()) ==
+          jsonEncode(expected.readingProgress?.toJson());
+
+  Future<void> _writeCatalogNormalizedHistory(
+    History expected,
+    History normalized,
+  ) async {
+    final key = _historyKey(expected.id, expected.type);
+    final revision = _advanceHistoryRevision(key);
+    final generation = _writeGeneration(key);
+    final snapshot = _copyHistory(normalized);
+    _queuedHistories[key] = snapshot;
+    await _enqueueAsyncWrite(() async {
+      var updated = false;
+      try {
+        if (_historyOperationRevision[key] != revision ||
+            _writeGeneration(key) != generation) {
+          return;
+        }
+        _runWriteTransaction(_db, () {
+          final rows = _db.select(
+            'SELECT * FROM history WHERE id = ? AND type = ?;',
+            [expected.id, expected.type.value],
+          );
+          if (rows.isEmpty) return;
+          final current = History.fromRow(rows.first);
+          if (!_sameReadingProgressInput(current, expected)) return;
+          _db.execute(
+            '''
+            UPDATE history
+            SET ep = ?, page = ?, chapter_group = ?, reading_progress = ?,
+                sync_projection = NULL
+            WHERE id = ? AND type = ?;
+            ''',
+            [
+              snapshot.ep,
+              snapshot.page,
+              snapshot.group,
+              jsonEncode(snapshot.readingProgress!.toJson()),
+              snapshot.id,
+              snapshot.type.value,
+            ],
+          );
+          updated = true;
+        });
+        if (updated &&
+            _historyOperationRevision[key] == revision &&
+            _writeGeneration(key) == generation) {
+          final actual = _readPersistedHistory(_db, snapshot);
+          if (actual != null) {
+            _cacheHistory(actual);
+            notifyListeners();
+          }
+        }
+      } finally {
+        if (identical(_queuedHistories[key], snapshot)) {
+          _queuedHistories.remove(key);
+        }
+      }
+    });
   }
 
   void _cacheHistory(History newItem) {

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import '../../foundation/sync_records.dart';
+import '../history/reading_progress.dart';
 import 'merge_engine.dart';
 import 'merge_snapshot.dart';
 import 'merge_store_database.dart';
@@ -835,10 +836,12 @@ class MergeStore {
 
   /// Resolves a batch atomically in one durable state commit. The observed
   /// baseline remains the old business state until completeApply.
-  Future<void> resolveAll(
+  Future<int> resolveAll(
     List<MergeConflictResolution> resolutions, {
     Set<String> unavailableDomains = const {},
     bool manual = true,
+    Map<String, ReadingCatalog> readingProgressCatalogs = const {},
+    Set<String> readingProgressWithoutCatalog = const {},
   }) async {
     _ensureCanAllocate();
     _validateUnavailableDomains(unavailableDomains);
@@ -847,18 +850,43 @@ class MergeStore {
         'Complete or cancel pending business apply before resolve',
       );
     }
-    if (resolutions.isEmpty) {
-      throw ArgumentError.value(
-        resolutions,
-        'resolutions',
-        'Must not be empty',
-      );
+    if (resolutions.isEmpty &&
+        readingProgressCatalogs.isEmpty &&
+        readingProgressWithoutCatalog.isEmpty) {
+      return 0;
     }
 
+    for (final recordKey in {
+      ...readingProgressCatalogs.keys,
+      ...readingProgressWithoutCatalog,
+    }) {
+      if (recordKey.isEmpty || syncRecordDomain(recordKey) != 'history') {
+        throw ArgumentError.value(
+          recordKey,
+          'readingProgressCatalogs',
+          'Progress keys must identify history records',
+        );
+      }
+    }
+    if (resolutions.isEmpty &&
+        !readingProgressCatalogs.entries.any(
+          (entry) =>
+              !unavailableDomains.contains(syncRecordDomain(entry.key)) &&
+              _document.needsReadingProgressResolution(entry.key, entry.value),
+        ) &&
+        !readingProgressWithoutCatalog.any(
+          (recordKey) =>
+              !readingProgressCatalogs.containsKey(recordKey) &&
+              !unavailableDomains.contains(syncRecordDomain(recordKey)) &&
+              _document.needsReadingProgressResolutionWithoutCatalog(recordKey),
+        )) {
+      return 0;
+    }
     final stagedDocument = _document.clone();
     final activeConflicts = {
-      for (final conflict in stagedDocument.conflicts)
-        (conflict.recordKey, conflict.field): conflict,
+      if (resolutions.isNotEmpty)
+        for (final conflict in stagedDocument.conflicts)
+          (conflict.recordKey, conflict.field): conflict,
     };
     final selectedConflicts = <(String, String)>{};
     for (final resolution in resolutions) {
@@ -898,6 +926,22 @@ class MergeStore {
         );
       }
     }
+    final deletingRecords = <String>{
+      for (final resolution in resolutions)
+        if (resolution.field == 'presence' &&
+            activeConflicts[(resolution.recordKey, 'presence')]!.candidates
+                .singleWhere(
+                  (candidate) => candidate.id == resolution.candidateId,
+                )
+                .isDeleted)
+          resolution.recordKey,
+    };
+    final explicitProgressResolutions = {
+      for (final resolution in resolutions)
+        if (resolution.field == 'readingProgress' ||
+            resolution.field == 'progress')
+          resolution.recordKey,
+    };
     final stagedManualCandidates = {
       for (final entry in _localEdits.entries)
         entry.key: Map<String, String>.of(entry.value),
@@ -962,16 +1006,146 @@ class MergeStore {
       }
     }
 
-    // Resolve ordinary cells before presence: a chosen deletion can make the
-    // record inactive, but must not invalidate another selection from this batch.
+    final earlyPresenceRecords = <String>{};
+    for (final resolution in resolutions) {
+      if (resolution.field != 'presence') continue;
+      final selected = activeConflicts[(resolution.recordKey, 'presence')]!
+          .candidates
+          .singleWhere((candidate) => candidate.id == resolution.candidateId);
+      if (!selected.isDeleted) {
+        resolveAndTrack(resolution);
+        earlyPresenceRecords.add(resolution.recordKey);
+      }
+    }
+    final catalogEntries = readingProgressCatalogs.entries.toList()
+      ..sort((left, right) => left.key.compareTo(right.key));
+    final noCatalogRecordKeys =
+        readingProgressWithoutCatalog
+            .where(
+              (recordKey) => !readingProgressCatalogs.containsKey(recordKey),
+            )
+            .toList()
+          ..sort();
+
+    var normalizedProgressCount = 0;
+    final normalizedProgressRecords = <String>{};
+    ({
+      String? manualPresenceId,
+      bool preservesManualPresence,
+      bool presenceSourceVerified,
+    })
+    manualPresenceState(String recordKey) {
+      final manualPresenceId = stagedManualCandidates[recordKey]?['presence'];
+      return (
+        manualPresenceId: manualPresenceId,
+        preservesManualPresence:
+            manualPresenceId != null &&
+            stagedDocument.hasActiveHistoryCandidateValue(
+              recordKey,
+              'presence',
+              manualPresenceId,
+              value: null,
+              present: true,
+            ),
+        presenceSourceVerified:
+            manualPresenceId != null &&
+            stagedVerifiedHistoryEdits[recordKey]?['presence'] ==
+                manualPresenceId,
+      );
+    }
+
+    void trackNormalizedProgress(
+      String recordKey,
+      ({
+        String? manualPresenceId,
+        bool preservesManualPresence,
+        bool presenceSourceVerified,
+      })
+      presenceState,
+    ) {
+      normalizedProgressCount++;
+      normalizedProgressRecords.add(recordKey);
+      for (final field in const ['progress', 'readingProgress']) {
+        stagedManualCandidates[recordKey]?.remove(field);
+        stagedVerifiedHistoryEdits[recordKey]?.remove(field);
+      }
+      if (presenceState.preservesManualPresence) {
+        final resolvedDot = MergeDot(
+          actor,
+          stagedDocument.counterFor(actor),
+        ).toKey();
+        stagedManualCandidates.putIfAbsent(
+          recordKey,
+          () => <String, String>{},
+        )['presence'] = resolvedDot;
+        if (presenceState.presenceSourceVerified) {
+          stagedVerifiedHistoryEdits.putIfAbsent(
+            recordKey,
+            () => <String, String>{},
+          )['presence'] = resolvedDot;
+        } else {
+          stagedVerifiedHistoryEdits[recordKey]?.remove('presence');
+        }
+      } else {
+        stagedManualCandidates[recordKey]?.remove('presence');
+        stagedVerifiedHistoryEdits[recordKey]?.remove('presence');
+      }
+      if (stagedManualCandidates[recordKey]?.isEmpty ?? false) {
+        stagedManualCandidates.remove(recordKey);
+      }
+      if (stagedVerifiedHistoryEdits[recordKey]?.isEmpty ?? false) {
+        stagedVerifiedHistoryEdits.remove(recordKey);
+      }
+    }
+
+    for (final entry in catalogEntries) {
+      final recordKey = entry.key;
+      if (unavailableDomains.contains(syncRecordDomain(recordKey)) ||
+          deletingRecords.contains(recordKey) ||
+          explicitProgressResolutions.contains(recordKey)) {
+        continue;
+      }
+      final presenceState = manualPresenceState(recordKey);
+      if (!stagedDocument.resolveReadingProgress(
+        actor,
+        recordKey,
+        entry.value,
+      )) {
+        continue;
+      }
+      trackNormalizedProgress(recordKey, presenceState);
+    }
+    for (final recordKey in noCatalogRecordKeys) {
+      if (unavailableDomains.contains(syncRecordDomain(recordKey)) ||
+          deletingRecords.contains(recordKey) ||
+          explicitProgressResolutions.contains(recordKey)) {
+        continue;
+      }
+      final presenceState = manualPresenceState(recordKey);
+      if (!stagedDocument.resolveReadingProgressWithoutCatalog(
+        actor,
+        recordKey,
+      )) {
+        continue;
+      }
+      trackNormalizedProgress(recordKey, presenceState);
+    }
+
+    // Resolve remaining ordinary cells before final presence decisions; chosen
+    // deletions must not invalidate another selection from this batch.
     for (final resolution in resolutions) {
       if (resolution.field == 'presence') continue;
       resolveAndTrack(resolution);
     }
     for (final resolution in resolutions) {
-      if (resolution.field != 'presence') continue;
+      if (resolution.field != 'presence' ||
+          earlyPresenceRecords.contains(resolution.recordKey)) {
+        continue;
+      }
       resolveAndTrack(resolution);
     }
+
+    if (resolutions.isEmpty && normalizedProgressCount == 0) return 0;
 
     final checkpoint = MergeBatch.create(
       actor: actor,
@@ -986,6 +1160,7 @@ class MergeStore {
     _addOutbox(
       checkpoint,
       changedRecordKeys: {
+        ...normalizedProgressRecords,
         for (final resolution in resolutions) resolution.recordKey,
       },
     );
@@ -1002,6 +1177,23 @@ class MergeStore {
     } catch (error) {
       throw MergeStorePersistenceException(error);
     }
+    return normalizedProgressCount;
+  }
+
+  /// Derives and stages a single safe catalog normalization from the current
+  /// document; no externally computed reading value can overwrite newer state.
+  Future<bool> resolveReadingProgress(
+    String recordKey,
+    ReadingCatalog catalog, {
+    Set<String> unavailableDomains = const {},
+  }) async {
+    final resolved = await resolveAll(
+      const [],
+      unavailableDomains: unavailableDomains,
+      manual: false,
+      readingProgressCatalogs: {recordKey: catalog},
+    );
+    return resolved > 0;
   }
 
   /// Successful return means primary and backup received the same incremental

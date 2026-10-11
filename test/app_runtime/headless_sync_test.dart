@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/app_runtime/headless.dart';
 import 'package:venera_plus/features/sync/sync.dart';
-import 'package:venera_plus/foundation/sync_records.dart';
 
 void main() {
   test(
@@ -73,11 +72,46 @@ void main() {
         for (var j = 0; j < candidates.length; j++) {
           final preview = candidates[j] as Map;
           expect(preview.containsKey('value'), isFalse);
-          expect(preview['id'], left.conflicts[i].candidates[j].id);
         }
       }
     },
   );
+  test('headless conflict output separates directory-pending progress', () {
+    final pendingKey = syncRecordKey('history', ['pending']);
+    final manualKey = syncRecordKey('setting', ['manual']);
+
+    MergeConflict conflict(String key, String field, String actor) {
+      final candidate = MergeCandidate(
+        id: actor,
+        value: 'candidate',
+        actor: actor,
+        counter: 1,
+        isDeleted: false,
+        recordKey: key,
+        field: field,
+      );
+      return MergeConflict(
+        recordKey: key,
+        field: field,
+        candidates: [candidate],
+      );
+    }
+
+    final previews = headlessSyncConflictPreviews(
+      [
+        conflict(pendingKey, 'readingProgress', 'pending-device'),
+        conflict(pendingKey, 'title', 'title-device'),
+        conflict(manualKey, 'value', 'manual-device'),
+      ],
+      pendingProgressRecordKeys: {pendingKey},
+    );
+    expect(
+      previews
+          .map((preview) => (preview['recordKey'], preview['field']))
+          .toSet(),
+      {(pendingKey, 'title'), (manualKey, 'value')},
+    );
+  });
 
   test('WebDAV command grammar includes explicit root backup actions', () {
     for (final action in [

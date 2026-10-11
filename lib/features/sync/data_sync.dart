@@ -86,6 +86,10 @@ class DataSyncStatusSnapshot {
     required this.lastError,
     this.hasConflict = false,
     this.conflictCount = 0,
+    this.pendingProgressCount = 0,
+    this.pendingProgressRecordKeys = const [],
+    this.unmappableProgressRecordKeys = const [],
+    this.automaticallyResolvedProgressCount = 0,
     this.sourceIssues = const [],
     this.unavailableDomains = const {},
     this.isPartial = false,
@@ -113,6 +117,11 @@ class DataSyncStatusSnapshot {
   final int lastSuccessTime;
   final bool hasConflict;
   final int conflictCount;
+  final int pendingProgressCount;
+  final List<String> pendingProgressRecordKeys;
+  final List<String> unmappableProgressRecordKeys;
+  int get unmappableProgressCount => unmappableProgressRecordKeys.length;
+  final int automaticallyResolvedProgressCount;
   final List<SyncSourceIssue> sourceIssues;
   final Set<String> unavailableDomains;
   final bool isPartial;
@@ -128,6 +137,16 @@ class DataSyncStatusSnapshot {
   String get title => isSyncing ? 'Syncing Data' : 'Sync Data';
 
   String get formattedLastSyncTime => _formatTime(lastSyncTime);
+
+  String get completionSummary => [
+    isPartial ? 'Sync completed partially'.tl : 'Sync completed'.tl,
+    'Auto progress: @automatic · Manual conflicts: @manual · Awaiting catalog: @pending'
+        .tlParams({
+          'automatic': automaticallyResolvedProgressCount,
+          'manual': conflictCount,
+          'pending': pendingProgressCount,
+        }),
+  ].join(' · ');
 
   static String _formatTime(int timestamp) {
     if (timestamp <= 0) return '';
@@ -695,8 +714,16 @@ class DataSync with ChangeNotifier {
   static DateTime Function()? debugNow;
 
   List<MergeConflict> get conflicts => _coordinator?.conflicts ?? const [];
-  int get conflictCount => conflicts.length;
-  bool get hasConflict => conflicts.isNotEmpty;
+  int get conflictCount => _coordinator?.conflictCount ?? 0;
+  bool get hasConflict => conflictCount > 0;
+  int get pendingProgressCount => _coordinator?.pendingProgressCount ?? 0;
+  List<String> get pendingProgressRecordKeys =>
+      _coordinator?.pendingProgressRecordKeys ?? const [];
+  List<String> get unmappableProgressRecordKeys =>
+      _coordinator?.unmappableProgressRecordKeys ?? const [];
+  int get unmappableProgressCount => unmappableProgressRecordKeys.length;
+  int get automaticallyResolvedProgressCount =>
+      _coordinator?.automaticallyResolvedProgressCount ?? 0;
 
   List<SyncSourceIssue> get sourceIssues =>
       _coordinator?.sourceIssues ?? const [];
@@ -1276,35 +1303,43 @@ class DataSync with ChangeNotifier {
     super.dispose();
   }
 
-  DataSyncStatusSnapshot get statusSnapshot => DataSyncStatusSnapshot(
-    isConfigured: hasConfiguration,
-    isEnabled: isEnabled,
-    direction: direction,
-    timing: timing,
-    isUploading: _isUploading,
-    isDownloading: _isDownloading,
-    isSyncing: isSyncing,
-    lastSyncTime:
-        _readTimestamp('webdavSyncLastAttempt')?.millisecondsSinceEpoch ?? 0,
-    lastError: _lastError,
-    hasConflict: hasConflict,
-    conflictCount: conflictCount,
-    sourceIssues: sourceIssues,
-    unavailableDomains: unavailableDomains,
-    isPartial: isPartial,
-    lastTrigger: appdata.implicitData['webdavSyncLastTrigger'] is String
-        ? appdata.implicitData['webdavSyncLastTrigger'] as String
-        : null,
-    lastSuccessTime:
-        _readTimestamp('webdavSyncLastSuccess')?.millisecondsSinceEpoch ?? 0,
-    lastSyncDurationMs: lastSyncDurationMs,
-    pendingChangeCount: pendingChangeCount,
-    changedRecordCounts: changedRecordCounts,
-    uploadedBytes: uploadedBytes,
-    downloadedBytes: downloadedBytes,
-    uploadedObjects: uploadedObjects,
-    downloadedObjects: downloadedObjects,
-  );
+  DataSyncStatusSnapshot get statusSnapshot {
+    final manualConflicts = conflictCount;
+    final pendingProgress = pendingProgressRecordKeys;
+    return DataSyncStatusSnapshot(
+      isConfigured: hasConfiguration,
+      isEnabled: isEnabled,
+      direction: direction,
+      timing: timing,
+      isUploading: _isUploading,
+      isDownloading: _isDownloading,
+      isSyncing: isSyncing,
+      lastSyncTime:
+          _readTimestamp('webdavSyncLastAttempt')?.millisecondsSinceEpoch ?? 0,
+      lastError: _lastError,
+      hasConflict: manualConflicts > 0,
+      conflictCount: manualConflicts,
+      pendingProgressCount: pendingProgress.length,
+      pendingProgressRecordKeys: pendingProgress,
+      unmappableProgressRecordKeys: unmappableProgressRecordKeys,
+      automaticallyResolvedProgressCount: automaticallyResolvedProgressCount,
+      sourceIssues: sourceIssues,
+      unavailableDomains: unavailableDomains,
+      isPartial: isPartial,
+      lastTrigger: appdata.implicitData['webdavSyncLastTrigger'] is String
+          ? appdata.implicitData['webdavSyncLastTrigger'] as String
+          : null,
+      lastSuccessTime:
+          _readTimestamp('webdavSyncLastSuccess')?.millisecondsSinceEpoch ?? 0,
+      lastSyncDurationMs: lastSyncDurationMs,
+      pendingChangeCount: pendingChangeCount,
+      changedRecordCounts: changedRecordCounts,
+      uploadedBytes: uploadedBytes,
+      downloadedBytes: downloadedBytes,
+      uploadedObjects: uploadedObjects,
+      downloadedObjects: downloadedObjects,
+    );
+  }
 
   WebDavEndpoint? _validateConfig() {
     var config = appdata.settings['webdav'];
@@ -1724,6 +1759,34 @@ class DataSync with ChangeNotifier {
     trigger: 'Manual sync',
     checkRemote: true,
   );
+
+  /// Uses an already loaded source directory without forcing a network sync.
+  Future<Res<bool>> resolveReadingProgressCatalog(
+    String recordKey,
+    ReadingCatalog catalog,
+  ) {
+    if (!hasConfiguration || direction == SyncDirection.uploadOnly) {
+      return Future.value(const Res(false));
+    }
+    return _enqueue(_DataSyncTask.resolve, () async {
+      await _ensureCoordinatorLoaded();
+      final coordinator = _coordinator;
+      if (coordinator == null || direction == SyncDirection.uploadOnly) {
+        return const Res(false);
+      }
+      final before = coordinator.store.document.counterFor(coordinator.actor);
+      final result = await coordinator.resolveReadingProgressCatalog(
+        recordKey,
+        catalog,
+      );
+      if (result.success &&
+          result.data &&
+          coordinator.store.document.counterFor(coordinator.actor) != before) {
+        Zone.root.run(() => onDataChanged(domains: {'history'}));
+      }
+      return result;
+    }, trigger: 'Reading progress directory');
+  }
 
   Future<Res<bool>> resolveConflicts(
     List<MergeConflictResolution> resolutions,

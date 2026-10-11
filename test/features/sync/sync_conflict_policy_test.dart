@@ -232,6 +232,146 @@ void main() {
         cloudSecretId,
       );
     });
+    test(
+      'history delete-and-continue leaves presence manual while resolving ordinary fields',
+      () {
+        final deletedKey = syncRecordKey('history', ['delete-read', 0]);
+        final ordinaryKey = syncRecordKey('history', ['ordinary-edit', 0]);
+        final progress = ReadingProgress.seed(
+          const ReadingPosition(ep: 1, page: 1),
+        );
+        final baseRecords = <String, Map<String, Object?>>{
+          deletedKey: {
+            'title': 'Original',
+            'readingProgress': progress.toJson(),
+          },
+          ordinaryKey: {'title': 'Original'},
+        };
+        final base = MergeDocument()..captureLocal('seed', {}, baseRecords);
+        final previous = base.materialize();
+
+        final local = base.clone();
+        final localRecords = cloneSyncRecords(previous)
+          ..[deletedKey]!['title'] = 'Local edit'
+          ..[deletedKey]!['readingProgress'] = progress
+              .record(
+                const ReadingPosition(ep: 1, page: 2),
+                source: ReadingNavigationSource.userForward,
+              )
+              .toJson()
+          ..[ordinaryKey]!['title'] = 'Local edit';
+        local.captureLocal('device', previous, localRecords);
+        final localDot = MergeDot('device', local.counterFor('device')).toKey();
+
+        final deletion = base.clone();
+        deletion.captureLocal('delete-device', previous, {
+          ordinaryKey: previous[ordinaryKey]!,
+        });
+        final cloud = base.clone();
+        final cloudRecords = cloneSyncRecords(previous)
+          ..[deletedKey]!['title'] = 'Cloud edit'
+          ..[ordinaryKey]!['title'] = 'Cloud edit';
+        cloud.captureLocal('cloud-device', previous, cloudRecords);
+        final document = local.clone()
+          ..merge(deletion)
+          ..merge(cloud);
+
+        final deletedFields = document.conflicts
+            .where((conflict) => conflict.recordKey == deletedKey)
+            .map((conflict) => conflict.field)
+            .toSet();
+        expect(deletedFields, containsAll({'presence', 'title'}));
+
+        final choices = automaticConflictResolutions(
+          document: document,
+          localActor: 'device',
+          localRecords: localRecords,
+          firstSync: false,
+          manualCandidateId: (_, _) => localDot,
+          cloudActorModifiedAt: {'cloud-device': DateTime.utc(2030)},
+        );
+        final deletedChoices = choices
+            .where((choice) => choice.recordKey == deletedKey)
+            .toList();
+        expect(deletedChoices.map((choice) => choice.field), ['title']);
+        expect(
+          choices.any(
+            (choice) =>
+                choice.recordKey == ordinaryKey && choice.field == 'title',
+          ),
+          isTrue,
+        );
+        for (final choice in choices) {
+          document.resolve(
+            'device',
+            choice.recordKey,
+            choice.field,
+            choice.candidateId,
+          );
+        }
+        final remainingFields = document.conflicts
+            .where((conflict) => conflict.recordKey == deletedKey)
+            .map((conflict) => conflict.field)
+            .toSet();
+        expect(remainingFields, {'presence'});
+        expect(document.materialize()[deletedKey]!['title'], isNot('Original'));
+        final filtered = document.filterRecords(
+          (recordKey) => recordKey == deletedKey,
+        );
+        final reopened = MergeDocument.fromJson(
+          Map<String, Object?>.from(filtered.toJson()),
+        );
+        expect(
+          reopened.conflicts.any(
+            (conflict) =>
+                conflict.recordKey == deletedKey &&
+                conflict.field == 'presence',
+          ),
+          isTrue,
+        );
+      },
+    );
+
+    test(
+      'ordinary resolutions cannot revive a causally deleted history record',
+      () {
+        final key = syncRecordKey('history', ['causal-delete-title']);
+        final base = MergeDocument()
+          ..captureLocal('seed', {}, {
+            key: {'title': 'Original'},
+          });
+        final previous = base.materialize();
+        final left = base.clone();
+        final leftRecords = cloneSyncRecords(previous)
+          ..[key]!['title'] = 'Left';
+        left.captureLocal('left-device', previous, leftRecords);
+        final right = base.clone();
+        final rightRecords = cloneSyncRecords(previous)
+          ..[key]!['title'] = 'Right';
+        right.captureLocal('right-device', previous, rightRecords);
+        left.merge(right);
+        final beforeDelete = left.materialize();
+        left.captureLocal('delete-device', beforeDelete, {});
+        expect(left.materialize(), isEmpty);
+
+        expect(
+          automaticConflictResolutions(
+            document: left,
+            localActor: 'delete-device',
+            localRecords: beforeDelete,
+            firstSync: false,
+            manualCandidateId: (_, _) => null,
+            cloudActorModifiedAt: const {},
+          ),
+          isEmpty,
+        );
+        expect(left.materialize(), isEmpty);
+        final reopened = MergeDocument.fromJson(
+          Map<String, Object?>.from(left.toJson()),
+        );
+        expect(reopened.materialize(), isEmpty);
+      },
+    );
 
     test('cleared manual local values adopt the cloud candidate', () {
       final key = syncRecordKey('setting', ['homepage']);

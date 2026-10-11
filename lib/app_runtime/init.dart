@@ -176,6 +176,16 @@ Future<void> init() async {
       expectedSubjectId: subject.id,
     );
   });
+  configureHistoryReadingProgressCatalogResolver((recordKey, catalog) async {
+    final result = await DataSync().resolveReadingProgressCatalog(
+      recordKey,
+      catalog,
+    );
+    if (result.error) {
+      throw StateError(result.errorMessage!);
+    }
+    return result.data;
+  });
   configureReaderChapterCompletedHandler(
     (event) => BangumiService().onChapterCompleted(
       sourceKey: event.sourceKey,

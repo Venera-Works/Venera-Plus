@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -558,6 +559,217 @@ void main() {
   );
 
   test(
+    'catalog resolution flushes queued reread state before handler and keeps it',
+    () async {
+      final dataDir = Directory.systemTemp.createTempSync(
+        'venera-history-catalog-data-',
+      );
+      final cacheDir = Directory.systemTemp.createTempSync(
+        'venera-history-catalog-cache-',
+      );
+      addTearDown(() async {
+        configureHistoryReadingProgressCatalogResolver(null);
+        final manager = HistoryManager.cache;
+        if (manager != null && manager.isInitialized) {
+          await manager.flushReadingProgress();
+          await manager.waitForAsyncWrites();
+          manager.close();
+        }
+        HistoryManager.cache = null;
+        if (dataDir.existsSync()) await dataDir.delete(recursive: true);
+        if (cacheDir.existsSync()) await cacheDir.delete(recursive: true);
+      });
+
+      App.dataPath = dataDir.path;
+      App.cachePath = cacheDir.path;
+      HistoryManager.cache = null;
+      final manager = HistoryManager();
+      await manager.init();
+
+      final originalCatalog = ReadingCatalog(const [
+        ReadingChapter(id: 'one', ep: 1),
+        ReadingChapter(id: 'two', ep: 2),
+      ]);
+      final reorderedCatalog = ReadingCatalog(const [
+        ReadingChapter(id: 'two', ep: 1),
+        ReadingChapter(id: 'one', ep: 2),
+      ]);
+      final item = _history('catalog-progress')
+        ..ep = 2
+        ..page = 8
+        ..readingProgress = ReadingProgress.seed(
+          const ReadingPosition(ep: 2, page: 8, chapterId: 'two'),
+          catalog: originalCatalog,
+          time: 1700000000000,
+        );
+      manager.addHistory(item);
+      manager.recordReadingProgress(
+        item,
+        position: const ReadingPosition(ep: 1, page: 2, chapterId: 'one'),
+        source: ReadingNavigationSource.userBackward,
+        commandId: 'same-round',
+        catalog: originalCatalog,
+      );
+      manager.recordReadingProgress(
+        item,
+        position: const ReadingPosition(ep: 1, page: 4, chapterId: 'one'),
+        source: ReadingNavigationSource.automatic,
+        sessionRoundId: 'same-round',
+        catalog: originalCatalog,
+      );
+
+      ReadingProgress? progressSeenByHandler;
+      configureHistoryReadingProgressCatalogResolver((
+        recordKey,
+        catalog,
+      ) async {
+        final db = sqlite3.open('${dataDir.path}/history.db');
+        try {
+          final row = db.select(
+            'SELECT reading_progress FROM history WHERE id = ?;',
+            ['catalog-progress'],
+          ).single;
+          progressSeenByHandler = ReadingProgress.fromJson(
+            jsonDecode(row['reading_progress'] as String),
+          );
+        } finally {
+          db.dispose();
+        }
+        return true;
+      });
+      var resolved = await manager.resolveReadingProgressCatalog(
+        item,
+        reorderedCatalog,
+      );
+      expect(progressSeenByHandler?.activeRoundId, 'same-round');
+      expect(
+        progressSeenByHandler?.resumePosition,
+        const ReadingPosition(ep: 1, page: 4, chapterId: 'one'),
+      );
+      expect(
+        resolved.readingProgress?.catalog?.toJson(),
+        originalCatalog.toJson(),
+      );
+
+      configureHistoryReadingProgressCatalogResolver(null);
+      item
+        ..readingProgress = resolved.readingProgress
+        ..ep = resolved.ep
+        ..page = resolved.page
+        ..group = resolved.group;
+      manager.recordReadingProgress(
+        item,
+        position: const ReadingPosition(ep: 1, page: 6, chapterId: 'one'),
+        source: ReadingNavigationSource.automatic,
+        sessionRoundId: 'same-round',
+        catalog: originalCatalog,
+      );
+      final timeBeforeNormalization = item.readingProgress!.time;
+      resolved = await manager.resolveReadingProgressCatalog(
+        item,
+        reorderedCatalog,
+      );
+      expect(resolved.activeRereadId, 'same-round');
+      expect(
+        resolved.resumePosition,
+        const ReadingPosition(ep: 2, page: 6, chapterId: 'one'),
+      );
+      expect(resolved.readingProgress!.time, timeBeforeNormalization);
+      expect(resolved.readingProgress!.maximumPositions, const [
+        ReadingPosition(ep: 1, page: 8, chapterId: 'two'),
+      ]);
+      expect(
+        manager
+            .find('catalog-progress', ComicType.local)!
+            .readingProgress!
+            .resumePosition,
+        resolved.resumePosition,
+      );
+    },
+    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+  );
+
+  test(
+    'catalog resolution keeps new progress after a concurrent deletion',
+    () async {
+      final dataDir = Directory.systemTemp.createTempSync(
+        'venera-history-catalog-race-data-',
+      );
+      final cacheDir = Directory.systemTemp.createTempSync(
+        'venera-history-catalog-race-cache-',
+      );
+      addTearDown(() async {
+        configureHistoryReadingProgressCatalogResolver(null);
+        final manager = HistoryManager.cache;
+        if (manager != null && manager.isInitialized) {
+          await manager.flushReadingProgress();
+          await manager.waitForAsyncWrites();
+          manager.close();
+        }
+        HistoryManager.cache = null;
+        if (dataDir.existsSync()) await dataDir.delete(recursive: true);
+        if (cacheDir.existsSync()) await cacheDir.delete(recursive: true);
+      });
+
+      App.dataPath = dataDir.path;
+      App.cachePath = cacheDir.path;
+      HistoryManager.cache = null;
+      final manager = HistoryManager();
+      await manager.init();
+      final catalog = ReadingCatalog(const [ReadingChapter(id: 'one', ep: 1)]);
+      final item = _history('catalog-resolution-race')
+        ..ep = 1
+        ..page = 4
+        ..readingProgress = ReadingProgress.seed(
+          const ReadingPosition(ep: 1, page: 4, chapterId: 'one'),
+          catalog: catalog,
+        );
+      manager.addHistory(item);
+
+      final resolverStarted = Completer<void>();
+      final finishResolver = Completer<void>();
+      configureHistoryReadingProgressCatalogResolver((
+        recordKey,
+        currentCatalog,
+      ) async {
+        resolverStarted.complete();
+        await finishResolver.future;
+        return true;
+      });
+      final resolution = manager.resolveReadingProgressCatalog(item, catalog);
+      await resolverStarted.future;
+
+      manager.remove(item.id, item.type);
+      manager.recordReadingProgress(
+        item,
+        position: const ReadingPosition(ep: 1, page: 7, chapterId: 'one'),
+        source: ReadingNavigationSource.automatic,
+        catalog: catalog,
+      );
+      finishResolver.complete();
+
+      final resolved = await resolution;
+      expect(
+        resolved.resumePosition,
+        const ReadingPosition(ep: 1, page: 7, chapterId: 'one'),
+      );
+      expect(
+        manager.find(item.id, item.type)?.resumePosition,
+        resolved.resumePosition,
+      );
+      final persisted = await manager.exportSyncRecords();
+      final persistedProgress = ReadingProgress.fromJson(
+        persisted[syncRecordKey('history', [
+          item.id,
+          item.type.value,
+        ])]!['readingProgress'],
+      );
+      expect(persistedProgress.resumePosition, resolved.resumePosition);
+    },
+    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+  );
+
+  test(
     'clear and close consume pending progress without resurrection or loss',
     () async {
       final dataDir = Directory.systemTemp.createTempSync(
@@ -566,13 +778,16 @@ void main() {
       final cacheDir = Directory.systemTemp.createTempSync(
         'venera-history-progress-close-cache-',
       );
-      addTearDown(() {
-        try {
-          HistoryManager().close();
-        } catch (_) {}
+      addTearDown(() async {
+        final manager = HistoryManager.cache;
+        if (manager != null && manager.isInitialized) {
+          await manager.flushReadingProgress();
+          await manager.waitForAsyncWrites();
+          manager.close();
+        }
         HistoryManager.cache = null;
-        if (dataDir.existsSync()) dataDir.deleteSync(recursive: true);
-        if (cacheDir.existsSync()) cacheDir.deleteSync(recursive: true);
+        if (dataDir.existsSync()) await dataDir.delete(recursive: true);
+        if (cacheDir.existsSync()) await cacheDir.delete(recursive: true);
       });
 
       App.dataPath = dataDir.path;

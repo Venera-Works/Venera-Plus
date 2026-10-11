@@ -34,6 +34,8 @@ Commands wait for startup recovery and existing sync/configuration work. Actual 
 
 A complete successful transfer through `webdav sync` / `sync` outputs `status: success`, with `data.conflictCount` and `data.hasConflict` describing conflicts still requiring attention. **Unresolved candidate conflicts can coexist with success (exit code 0).** Success does not mean every candidate was selected automatically. When source domains are unavailable but other domains transfer successfully, `sync`, `up`, and `down` output `status: partial` (exit code 0), including `data.unavailableDomains` and `data.sourceIssues`; `sync` still includes conflict counts. Source summaries expose only filenames, safe reasons and translations, backup availability, and action hints, never script/session bodies, source identities, or private backup paths. `repairAction` distinguishes in-app replacement, recovery retry, and the prerequisite of restoring a complete journal; damaged backups are not presented as directly restorable data. `up` / `down` do not include conflict lists; query `conflicts` separately.
 
+`sync` and `conflicts` also separate automatic progress handling from catalog status. `data.pendingProgressCount` / `pendingProgressRecordKeys` report records waiting for a catalog; `data.unmappableProgressCount` / `unmappableProgressRecordKeys` report positions unmappable in the loaded catalog without selectable progress-field candidates. `data.automaticallyResolvedProgressCount` reports automatic reconciliations. `conflictCount` includes manual candidate conflicts and those unmappable items, but excludes catalog-pending records; `unresolvedCandidateConflictCount` counts only manual field-candidate conflicts. With only catalog-pending records, `hasConflict` can be `false` while original candidates remain preserved.
+
 Successful backup import reports `data.imported`: `true` means new seed domains were imported; repeated imports return `false`, not an alias for transport success. Partial source problems report `status: partial` (exit code 0), safe source summaries, unavailable domains, and `data.imported`. Actual errors exit nonzero. Valid commands retain ordinary startup recovery/initial automatic-seed behavior; listing backups is not a switch disabling startup synchronization.
 
 **Example:**
@@ -59,7 +61,7 @@ venera-plus --headless webdav conflicts
 venera-plus --headless webdav resolve --record-key "$RECORD_KEY" --field "$FIELD" --candidate-id "$CANDIDATE_ID"
 ```
 
-The successful `conflicts` response has `data.count` and a `data.conflicts` array. Each entry contains:
+The successful `conflicts` response uses `data.count` and `data.conflicts` for manually selectable field-candidate conflicts. Catalog-pending and unmappable items without progress-field candidates use the separate record-key lists above, not guessed device choices. Open a pending comic normally in the app to reconcile its catalog. Each array entry contains:
 
 - `recordKey`: The record-key string. Its contents are a JSON-encoded identity array, **not a dot-separated path**. Extract the string with a JSON parser and pass it intact; do not construct your own key or pass the outer JSON escaping as part of the argument.
 - `field`: The field requiring resolution; copy it directly.

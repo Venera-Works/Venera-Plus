@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -125,6 +126,186 @@ void main() {
       skip: !_sqliteAvailable(),
     );
   }
+  testWidgets(
+    'loaded reordered directory rebases saved chapter before continue',
+    (tester) async {
+      final fixture = await _createFixture(
+        tester,
+        grouped: false,
+        reordered: true,
+      );
+      final originalCatalog = ReadingCatalog(const [
+        ReadingChapter(id: 'c1', ep: 1),
+        ReadingChapter(id: 'c2', ep: 2),
+      ]);
+      final saved = fixture.makeHistory(ep: 2, page: 3)
+        ..readingProgress = ReadingProgress.seed(
+          const ReadingPosition(ep: 2, page: 3, chapterId: 'c2'),
+          catalog: originalCatalog,
+          time: 1700000000000,
+        );
+      fixture.histories.addHistory(saved);
+
+      await tester.pumpWidget(fixture.page);
+      await _waitForText(tester, 'Continue');
+      final normalized = fixture.histories.find(fixture.comicId, fixture.type)!;
+      expect(normalized.resumePosition?.chapterId, 'c2');
+      expect(normalized.resumePosition?.ep, 1);
+
+      await tester.tap(find.text('Continue'));
+      final reader = await _waitForReaderRoute(tester);
+      expect(reader.chapter, 1);
+      expect(reader.pageValue, 3);
+      await _waitForReader(tester, reader, 3);
+      expect(fixture.requestedChapterIds.last, 'c2');
+      expect(
+        find.text(
+          'Saved reading position is ambiguous. Select a chapter to continue.',
+        ),
+        findsNothing,
+      );
+      await _popReader(tester, fixture);
+    },
+    skip: !_sqliteAvailable(),
+  );
+
+  testWidgets(
+    'loaded reordered directory joins same-round reread after mapping candidates',
+    (tester) async {
+      final fixture = await _createFixture(
+        tester,
+        grouped: false,
+        reordered: true,
+        includeThirdChapter: true,
+      );
+      final originalCatalog = ReadingCatalog(const [
+        ReadingChapter(id: 'c1', ep: 1),
+        ReadingChapter(id: 'c2', ep: 2),
+        ReadingChapter(id: 'c3', ep: 3),
+      ]);
+      final firstCandidate =
+          ReadingProgress.seed(
+            const ReadingPosition(ep: 3, page: 1, chapterId: 'c3'),
+            catalog: originalCatalog,
+          ).record(
+            const ReadingPosition(ep: 1, page: 1, chapterId: 'c1'),
+            source: ReadingNavigationSource.userBackward,
+            newRoundId: _testRoundId,
+            catalog: originalCatalog,
+          );
+      final secondCandidate = firstCandidate
+          .record(
+            const ReadingPosition(ep: 2, page: 9, chapterId: 'c2'),
+            source: ReadingNavigationSource.userForward,
+            sessionRoundId: _testRoundId,
+            catalog: originalCatalog,
+          )
+          .rebaseCatalog(fixture.readingCatalog);
+      final joinedCandidates = firstCandidate.merge(secondCandidate);
+      expect(joinedCandidates.hasOrderConflict, isTrue);
+      fixture.histories.addHistory(
+        fixture.makeHistory(ep: 3, page: 1)..readingProgress = joinedCandidates,
+      );
+
+      var resolvedCandidates = false;
+      configureHistoryReadingProgressCatalogResolver((
+        recordKey,
+        catalog,
+      ) async {
+        if (resolvedCandidates) return false;
+        final progress = firstCandidate
+            .normalizeForCatalog(catalog)!
+            .merge(secondCandidate.normalizeForCatalog(catalog)!);
+        fixture.histories.remove(fixture.comicId, fixture.type);
+        fixture.histories.addHistory(
+          fixture.makeHistory(ep: 3, page: 1)..readingProgress = progress,
+        );
+        resolvedCandidates = true;
+        return true;
+      });
+      addTearDown(() => configureHistoryReadingProgressCatalogResolver(null));
+
+      await tester.pumpWidget(fixture.page);
+      await _waitForText(tester, 'Continue');
+      await tester.tap(find.text('Continue'));
+      final reader = await _waitForReaderRoute(tester);
+      expect(reader.chapter, 2);
+      expect(reader.pageValue, 1);
+      expect(
+        reader.history!.resumePosition,
+        const ReadingPosition(ep: 2, page: 1, chapterId: 'c1'),
+      );
+      expect(reader.history!.activeRereadId, _testRoundId);
+      expect(reader.history!.readingProgress!.maximumPositions, const [
+        ReadingPosition(ep: 3, page: 1, chapterId: 'c3'),
+      ]);
+      await _waitForReader(tester, reader, 1);
+      expect(fixture.requestedChapterIds.last, 'c1');
+      await _popReader(tester, fixture);
+    },
+    skip: !_sqliteAvailable(),
+  );
+
+  testWidgets(
+    'duplicate chapter identity still requires an explicit chapter choice',
+    (tester) async {
+      final fixture = await _createFixture(
+        tester,
+        grouped: true,
+        duplicateChapterId: true,
+      );
+      final saved = fixture.makeHistory(ep: 1, page: 2)
+        ..readingProgress = ReadingProgress.seed(
+          const ReadingPosition(ep: 1, page: 2, chapterId: 'duplicate-chapter'),
+        );
+      fixture.histories.addHistory(saved);
+
+      await tester.pumpWidget(fixture.page);
+      await _waitForText(tester, 'Continue');
+      await tester.tap(find.text('Continue'));
+      final reader = await _waitForReaderRoute(tester);
+      await _waitForText(
+        tester,
+        'Saved reading position is ambiguous. Select a chapter to continue.',
+      );
+      expect(fixture.requestedChapterIds, isEmpty);
+      expect(reader.images, isNull);
+      await _popReader(tester, fixture);
+    },
+    skip: !_sqliteAvailable(),
+  );
+
+  testWidgets(
+    'duplicate chapter IDs resume when the saved group uniquely identifies one',
+    (tester) async {
+      final fixture = await _createFixture(
+        tester,
+        grouped: true,
+        duplicateChapterId: true,
+      );
+      final saved = fixture.makeHistory(ep: 1, page: 2, group: 2)
+        ..readingProgress = ReadingProgress.seed(
+          const ReadingPosition(
+            ep: 1,
+            page: 2,
+            group: 2,
+            chapterId: 'duplicate-chapter',
+          ),
+        );
+      fixture.histories.addHistory(saved);
+
+      await tester.pumpWidget(fixture.page);
+      await _waitForText(tester, 'Continue');
+      await tester.tap(find.text('Continue'));
+      final reader = await _waitForReaderRoute(tester);
+      expect(reader.chapter, 3);
+      expect(reader.pageValue, 2);
+      await _waitForReader(tester, reader, 2);
+      expect(fixture.requestedChapterIds.last, 'duplicate-chapter');
+      await _popReader(tester, fixture);
+    },
+    skip: !_sqliteAvailable(),
+  );
 
   testWidgets(
     'explicit chapter and thumbnail selections do not inherit synced group progress',
@@ -189,6 +370,63 @@ void main() {
       expect(fixture.requestedChapterIds.last, 'g1a');
       expect(_visibleReaderPage(2), findsWidgets);
       await _popReader(tester, fixture);
+    },
+    skip: !_sqliteAvailable(),
+  );
+
+  testWidgets(
+    'explicit target stays open while catalog resolution waits and fails',
+    (tester) async {
+      final fixture = await _createFixture(tester, grouped: false);
+      final saved = fixture.makeHistory(ep: 1, page: 1);
+      fixture.histories.addHistory(saved);
+      final resolverStarted = Completer<void>();
+      final finishResolver = Completer<void>();
+      configureHistoryReadingProgressCatalogResolver((
+        recordKey,
+        catalog,
+      ) async {
+        resolverStarted.complete();
+        await finishResolver.future;
+        throw StateError('catalog commit failed');
+      });
+      addTearDown(() => configureHistoryReadingProgressCatalogResolver(null));
+
+      await tester.pumpWidget(
+        MaterialApp(
+          navigatorKey: App.rootNavigatorKey,
+          builder: (context, child) => WindowFrame(child!),
+          home: Reader(
+            type: fixture.type,
+            cid: fixture.comicId,
+            name: fixture.details.title,
+            chapters: fixture.details.chapters,
+            history: saved,
+            initialChapter: 2,
+            initialPage: 3,
+            initialNavigationSource: ReadingNavigationSource.userSeek,
+            author: fixture.details.subTitle ?? '',
+            tags: fixture.details.plainTags,
+          ),
+        ),
+      );
+      await resolverStarted.future;
+      final reader = tester.state<ReaderState>(find.byType(Reader));
+      expect(reader.chapter, 2);
+      expect(reader.pageValue, 3);
+      await _waitForReader(tester, reader, 3);
+      expect(fixture.requestedChapterIds.last, 'c2');
+
+      reader.toChapter(1, source: ReadingNavigationSource.userSeek);
+      await _waitForReader(tester, reader, 1);
+      expect(reader.chapter, 1);
+      finishResolver.complete();
+      await tester.pump();
+      expect(reader.chapter, 1);
+      expect(fixture.requestedChapterIds.last, 'c1');
+      await tester.pumpWidget(const SizedBox.shrink());
+      await _pumpAsyncWork(tester, fixture.histories.flushReadingProgress());
+      await tester.pump();
     },
     skip: !_sqliteAvailable(),
   );
@@ -301,6 +539,38 @@ void main() {
     },
     skip: !_sqliteAvailable(),
   );
+
+  testWidgets(
+    'chapterless comic requires an explicit choice for unmappable history',
+    (tester) async {
+      final fixture = await _createFixture(
+        tester,
+        grouped: false,
+        chapterless: true,
+      );
+      final unmappableProgress = ReadingProgress.seed(
+        const ReadingPosition(ep: 2, page: 2),
+      );
+      fixture.histories.addHistory(
+        fixture.makeHistory(ep: 1, page: 4)
+          ..readingProgress = unmappableProgress,
+      );
+
+      await tester.pumpWidget(fixture.page);
+      await _waitForText(tester, 'Continue');
+      await tester.tap(find.text('Continue'));
+      final reader = await _waitForReaderRoute(tester);
+      await tester.pump();
+      expect(find.byType(ListTile), findsOneWidget);
+      expect(reader.images, isNull);
+      expect(fixture.requestedChapterIds, isEmpty);
+      await tester.tap(find.widgetWithText(ListTile, fixture.details.title));
+      await _waitForReader(tester, reader, 1);
+      expect(fixture.requestedChapterIds, ['single']);
+      await _popReader(tester, fixture);
+    },
+    skip: !_sqliteAvailable(),
+  );
 }
 
 bool _sqliteAvailable() {
@@ -316,6 +586,10 @@ bool _sqliteAvailable() {
 Future<_ComicDetailsFixture> _createFixture(
   WidgetTester tester, {
   required bool grouped,
+  bool reordered = false,
+  bool duplicateChapterId = false,
+  bool chapterless = false,
+  bool includeThirdChapter = false,
 }) async {
   final previousSettings =
       jsonDecode(jsonEncode(appdata.toJson()['settings']))
@@ -341,7 +615,20 @@ Future<_ComicDetailsFixture> _createFixture(
       ..writeAsBytesSync(imageBytes);
     imageUrls.add('file://${imageFile.path}');
   }
-  final chapterData = grouped
+  final chapterData = chapterless
+      ? null
+      : duplicateChapterId
+      ? <String, dynamic>{
+          'Group One': {
+            'duplicate-chapter': 'Duplicate Chapter One',
+            'g1b': 'Group One Chapter B',
+          },
+          'Group Two': {
+            'duplicate-chapter': 'Duplicate Chapter Two',
+            'g2b': 'Group Two Chapter B',
+          },
+        }
+      : grouped
       ? <String, dynamic>{
           'Group One': {
             'g1a': 'Group One Chapter A',
@@ -352,6 +639,20 @@ Future<_ComicDetailsFixture> _createFixture(
             'g2b': 'Group Two Chapter B',
           },
         }
+      : includeThirdChapter
+      ? reordered
+            ? <String, dynamic>{
+                'c2': 'Chapter Two',
+                'c1': 'Chapter One',
+                'c3': 'Chapter Three',
+              }
+            : <String, dynamic>{
+                'c1': 'Chapter One',
+                'c2': 'Chapter Two',
+                'c3': 'Chapter Three',
+              }
+      : reordered
+      ? <String, dynamic>{'c2': 'Chapter Two', 'c1': 'Chapter One'}
       : <String, dynamic>{'c1': 'Chapter One', 'c2': 'Chapter Two'};
   final details = ComicDetails.fromJson({
     'title': 'Fixture Comic',
@@ -444,6 +745,10 @@ Future<_ComicDetailsFixture> _createFixture(
       if (sync != null) {
         await _pumpAsyncWork(tester, sync.flushPendingChanges());
       }
+      // Reader disposal can enqueue read-duration/progress work while sync
+      // flushes; drain the history queue only after that producer has settled.
+      await _pumpAsyncWork(tester, histories.flushReadingProgress());
+      await _pumpAsyncWork(tester, histories.waitForAsyncWrites());
     } finally {
       ComicSourceManager().remove(sourceKey);
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
@@ -457,23 +762,24 @@ Future<_ComicDetailsFixture> _createFixture(
       LocalManager.resetForTesting();
       try {
         histories.close();
-      } catch (_) {}
-      DataSync.resetForTesting();
-      HistoryManager.cache = previousHistory;
-      LocalFavoritesManager.cache = previousFavorites;
-      DataSync.debugDisableWindowCloseHandler =
-          previousDisableWindowCloseHandler;
-      Log.isMuted = previousLogMuted;
-      (appdata.toJson()['settings'] as Map)
-        ..clear()
-        ..addAll(previousSettings);
-      App.dataPath = previousDataPath ?? Directory.systemTemp.path;
-      App.cachePath = previousCachePath ?? Directory.systemTemp.path;
-      appdata.implicitData
-        ..clear()
-        ..addAll(previousImplicit);
-      if (temporary.existsSync()) {
-        temporary.deleteSync(recursive: true);
+      } finally {
+        DataSync.resetForTesting();
+        HistoryManager.cache = previousHistory;
+        LocalFavoritesManager.cache = previousFavorites;
+        DataSync.debugDisableWindowCloseHandler =
+            previousDisableWindowCloseHandler;
+        Log.isMuted = previousLogMuted;
+        (appdata.toJson()['settings'] as Map)
+          ..clear()
+          ..addAll(previousSettings);
+        App.dataPath = previousDataPath ?? Directory.systemTemp.path;
+        App.cachePath = previousCachePath ?? Directory.systemTemp.path;
+        appdata.implicitData
+          ..clear()
+          ..addAll(previousImplicit);
+        if (temporary.existsSync()) {
+          await tester.runAsync(() => temporary.delete(recursive: true));
+        }
       }
     }
   });
@@ -506,7 +812,7 @@ ComicSource _comicSource({
   (id) async => Res(details),
   (id, next) async => const Res(<String>[]),
   (id, ep) async {
-    requestedChapterIds.add(ep!);
+    requestedChapterIds.add(ep ?? 'single');
     return Res(imageUrls);
   },
   null,
@@ -559,33 +865,8 @@ class _ComicDetailsFixture {
         readChapters: <String>{},
       );
 
-  ReadingCatalog get readingCatalog {
-    final chapters = details.chapters!;
-    final entries = <ReadingChapter>[];
-    if (chapters.isGrouped) {
-      for (var groupIndex = 0; groupIndex < chapters.groupCount; groupIndex++) {
-        final group = chapters.getGroupByIndex(groupIndex);
-        final groupId = chapters.groups.elementAt(groupIndex);
-        var ep = 1;
-        for (final id in group.keys) {
-          entries.add(
-            ReadingChapter(
-              id: id,
-              ep: ep++,
-              group: groupIndex + 1,
-              groupId: groupId,
-            ),
-          );
-        }
-      }
-    } else {
-      var ep = 1;
-      for (final id in chapters.allChapters.keys) {
-        entries.add(ReadingChapter(id: id, ep: ep++));
-      }
-    }
-    return ReadingCatalog(entries);
-  }
+  ReadingCatalog get readingCatalog =>
+      readingCatalogFromComicChapters(details.chapters)!;
 
   Widget get page => MaterialApp(
     navigatorKey: App.rootNavigatorKey,
