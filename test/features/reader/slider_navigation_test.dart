@@ -19,6 +19,8 @@ import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/log.dart';
 
+import '../../widget_test_io.dart';
+
 void main() {
   for (final rapid in [false, true]) {
     testWidgets('300-page slider jump preserves touch scrolling (rapid=$rapid)', (
@@ -90,6 +92,13 @@ void main() {
         );
         Future<void> frames(int count) async {
           for (var i = 0; i < count; i++) {
+            await runWidgetIo(
+              tester,
+              () => HistoryManager().flushReadingProgress(
+                id: 'book',
+                type: ComicType.local,
+              ),
+            );
             await tester.pump(const Duration(milliseconds: 20));
             if (i % 10 == 0) {
               await tester.runAsync(
@@ -181,9 +190,12 @@ void main() {
           source: ReadingNavigationSource.userForward,
         );
         await frames(5);
-        await _pumpAsyncWork(
+        await runWidgetIo(
           tester,
-          manager.flushReadingProgress(id: 'book', type: ComicType.local),
+          () => manager.flushReadingProgress(
+            id: 'book',
+            type: ComicType.local,
+          ),
         );
         final flushedRound = manager.find('book', ComicType.local)!;
         expect(flushedRound.activeRereadId, rereadRoundId);
@@ -191,18 +203,22 @@ void main() {
 
         scaffold.openOrClose();
         await frames(15);
-        final flow = reader.imageViewController as ContinuousModeState;
-        final position = flow.scrollController.position;
-        flow.scrollController.jumpTo(
-          (position.minScrollExtent + position.maxScrollExtent) / 2,
+        reader.toPage(
+          200,
+          animated: false,
+          source: ReadingNavigationSource.automatic,
         );
         await frames(15);
+        expect(reader.page, 200);
+        expect(reader.isPageAnimating, isFalse);
+        final flow = reader.imageViewController as ContinuousModeState;
         final before = flow.scrollController.offset;
         await tester.dragFrom(const Offset(400, 400), const Offset(0, -220));
         await frames(15);
         expect(flow.scrollController.offset, greaterThan(before + 50));
         final after = flow.scrollController.offset;
         final pageBeforeBackwardDrag = reader.page;
+        expect(pageBeforeBackwardDrag, greaterThan(2));
         final backwardDrag = await tester.startGesture(const Offset(400, 150));
         const concurrentDragRoundId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
         for (var i = 0; i < 12; i++) {
@@ -269,9 +285,12 @@ void main() {
         expect(reader.imagesPerPage, 1);
         expect(reader.page, sourceBeforeLayout);
         expect(reader.sessionRoundId, sessionBeforeDoublePageSeek);
-        await _pumpAsyncWork(
+        await runWidgetIo(
           tester,
-          manager.flushReadingProgress(id: 'book', type: ComicType.local),
+          () => manager.flushReadingProgress(
+            id: 'book',
+            type: ComicType.local,
+          ),
         );
         final flushed = manager.find('book', ComicType.local)!;
         expect(
@@ -284,9 +303,12 @@ void main() {
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());
         tester.view.resetPhysicalSize();
-        await tester.pump(const Duration(seconds: 3));
-        await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 30)),
+        await runWidgetIo(
+          tester,
+          () => HistoryManager().flushReadingProgress(
+            id: 'book',
+            type: ComicType.local,
+          ),
         );
         LocalManager.resetForTesting();
         if (HistoryManager.cache?.isInitialized == true) {
@@ -304,32 +326,6 @@ void main() {
         });
       }
     });
-  }
-}
-
-Future<void> _pumpAsyncWork(WidgetTester tester, Future<void> work) async {
-  var completed = false;
-  Object? error;
-  StackTrace? errorStack;
-  work.then<void>(
-    (_) => completed = true,
-    onError: (Object failure, StackTrace stack) {
-      error = failure;
-      errorStack = stack;
-      completed = true;
-    },
-  );
-  final clock = Stopwatch()..start();
-  while (!completed && clock.elapsed < const Duration(seconds: 10)) {
-    await tester.pump();
-    await tester.runAsync(
-      () => Future<void>.delayed(const Duration(milliseconds: 5)),
-    );
-  }
-  clock.stop();
-  expect(completed, isTrue, reason: 'Timed out waiting for async history work');
-  if (error != null) {
-    Error.throwWithStackTrace(error!, errorStack!);
   }
 }
 
