@@ -955,6 +955,8 @@ class ComicListState extends State<ComicList> {
   Widget buildPagingMode() {
     if (_error != null) {
       return SmoothCustomScrollView(
+        key: enablePageStorage ? PageStorageKey('scroll$_page') : null,
+        controller: widget.controller,
         physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
           if (widget.errorLeading != null) widget.errorLeading!.toSliver(),
@@ -978,6 +980,8 @@ class ComicListState extends State<ComicList> {
     if (_data[_page] == null) {
       _loadPage(_page);
       return SmoothCustomScrollView(
+        key: enablePageStorage ? PageStorageKey('scroll$_page') : null,
+        controller: widget.controller,
         physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
           if (widget.errorLeading != null) widget.errorLeading!.toSliver(),
@@ -1012,6 +1016,8 @@ class ComicListState extends State<ComicList> {
   Widget buildContinuousMode() {
     if (_error != null && _data.isEmpty) {
       return SmoothCustomScrollView(
+        key: enablePageStorage ? PageStorageKey('scroll$_page') : null,
+        controller: widget.controller,
         physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
           if (widget.errorLeading != null) widget.errorLeading!.toSliver(),
@@ -1035,6 +1041,8 @@ class ComicListState extends State<ComicList> {
     if (_data[1] == null) {
       _loadPage(1);
       return SmoothCustomScrollView(
+        key: enablePageStorage ? PageStorageKey('scroll$_page') : null,
+        controller: widget.controller,
         physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
           if (widget.errorLeading != null) widget.errorLeading!.toSliver(),
