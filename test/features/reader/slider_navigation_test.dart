@@ -192,10 +192,7 @@ void main() {
         await frames(5);
         await runWidgetIo(
           tester,
-          () => manager.flushReadingProgress(
-            id: 'book',
-            type: ComicType.local,
-          ),
+          () => manager.flushReadingProgress(id: 'book', type: ComicType.local),
         );
         final flushedRound = manager.find('book', ComicType.local)!;
         expect(flushedRound.activeRereadId, rereadRoundId);
@@ -287,10 +284,7 @@ void main() {
         expect(reader.sessionRoundId, sessionBeforeDoublePageSeek);
         await runWidgetIo(
           tester,
-          () => manager.flushReadingProgress(
-            id: 'book',
-            type: ComicType.local,
-          ),
+          () => manager.flushReadingProgress(id: 'book', type: ComicType.local),
         );
         final flushed = manager.find('book', ComicType.local)!;
         expect(
