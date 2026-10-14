@@ -606,7 +606,39 @@ class DataSync with ChangeNotifier {
               .toList()
             ..sort((a, b) => _compareSnapshotNames(a.name!, b.name!));
       if (!_isTaskCurrent(epoch)) return const Res(true);
-      await client.writeFromFile(data.path, '$_remoteDirectory$filename');
+      final remotePath = '$_remoteDirectory$filename';
+      final options = await client.c.wdOptions(client, remotePath);
+      if (options.statusCode == null || options.statusCode! >= 400) {
+        throw DioException(
+          requestOptions: options.requestOptions,
+          response: options,
+          type: DioExceptionType.badResponse,
+          error: options.statusMessage,
+        );
+      }
+      // The directory was verified above; writeFromFile would recreate it.
+      final length = await data.length();
+      final response = await client.c.req<Object?>(
+        client,
+        'PUT',
+        remotePath,
+        data: data.openRead(),
+        optionsHandler: (options) {
+          options.headers ??= {};
+          options.headers!['content-length'] = length;
+          options.headers!['content-type'] = 'application/octet-stream';
+        },
+      );
+      if (response.statusCode != 200 &&
+          response.statusCode != 201 &&
+          response.statusCode != 204) {
+        throw DioException(
+          requestOptions: response.requestOptions,
+          response: response,
+          type: DioExceptionType.badResponse,
+          error: response.statusMessage,
+        );
+      }
       if (!_isTaskCurrent(epoch)) return const Res(true);
       files =
           (await client.readDir(_remoteDirectory))
