@@ -146,6 +146,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.1'
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: "stable"
@@ -181,6 +184,8 @@ jobs:
           echo "RUSTUP_REAL_BINARY=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
           echo "RUSTUP_LOCK_FILE=$RUNNER_TEMP/venera-plus-rustup.lock" >> "$GITHUB_ENV"
       - run: flutter pub get --enforce-lockfile
+      - name: 构建嵌入 OpenList iOS 内核
+        run: python3 .github/scripts/build_openlist_core.py ios
       - name: 构建 iOS 应用
         run: |
           APP_VERSION=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | tr -d '\r\n')
@@ -197,6 +202,9 @@ jobs:
             --no-codesign \
             --build-name="$IOS_VERSION" \
             --build-number="$IOS_BUILD"
+      - name: 校验 iOS 包含 OpenList 内核
+        run: |
+          test -f build/ios/iphoneos/Runner.app/Frameworks/Openlistcore.framework/Openlistcore
       - name: 打包 IPA
         run: |
           mkdir -p build/ios/iphoneos/Payload
@@ -259,6 +267,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.1'
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: "stable"
@@ -321,6 +332,8 @@ jobs:
       - name: 检查 rust-toolchain.toml
         run: rustup show
       - run: flutter pub get --enforce-lockfile
+      - name: 构建嵌入 OpenList Android 内核
+        run: python3 .github/scripts/build_openlist_core.py android
       - run: flutter build apk --release
       - name: 校验依赖锁文件未变更
         run: git diff --exit-code -- pubspec.lock
@@ -382,6 +395,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.1'
       - name: 安装 Inno Setup
         run: choco install innosetup --version=6.7.1 --no-progress -y
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
@@ -405,6 +421,14 @@ jobs:
             cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-
       - name: 获取 Flutter 依赖
         run: flutter pub get --enforce-lockfile
+      - name: 构建嵌入 OpenList Windows 内核
+        shell: pwsh
+        run: |
+          $gcc = Get-Command gcc.exe -ErrorAction SilentlyContinue
+          if ($null -eq $gcc) { throw 'Go c-shared requires MinGW gcc on the Windows runner.' }
+          $env:CC = $gcc.Source
+          & $env:CC --version
+          python .github/scripts/build_openlist_core.py windows
       - name: 构建 Windows 安装包
         run: python windows/build.py
       - name: 校验 Windows 构建产物
@@ -412,8 +436,10 @@ jobs:
         run: |
           $zip = @(Get-ChildItem -Path build/windows -File -Filter 'VeneraPlus-*-windows-portable.zip')
           $installer = @(Get-ChildItem -Path build/windows -File -Filter 'VeneraPlus-*-windows-installer.exe')
+          $coreDll = Join-Path (Get-Location) 'build\windows\x64\runner\Release\venera_openlist.dll'
           if ($zip.Count -ne 1) { throw "应当恰好生成一个 Windows zip，实际为 $($zip.Count)。" }
           if ($installer.Count -ne 1) { throw "应当恰好生成一个 Windows 安装包，实际为 $($installer.Count)。" }
+          if (-not (Test-Path $coreDll) -or (Get-Item $coreDll).Length -le 0) { throw "Windows bundle 缺少 OpenList 内核：$coreDll" }
           $artifacts = @($zip + $installer)
           $empty = @($artifacts | Where-Object { $_.Length -le 0 })
           if ($empty.Count -gt 0) {
@@ -432,6 +458,10 @@ jobs:
             $exeEntry = @($archive.Entries | Where-Object { $_.FullName -eq "$expectedRoot/VeneraPlus.exe" })
             if ($exeEntry.Count -ne 1) {
               throw "Windows zip 未包含 $expectedRoot/VeneraPlus.exe"
+            }
+            $coreEntry = @($archive.Entries | Where-Object { $_.FullName -eq "$expectedRoot/venera_openlist.dll" })
+            if ($coreEntry.Count -ne 1 -or $coreEntry[0].Length -le 0) {
+              throw "Windows zip 未包含 OpenList 内核"
             }
           } finally {
             $archive.Dispose()
@@ -495,6 +525,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.1'
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: 'stable'
@@ -519,6 +552,7 @@ jobs:
       - name: 安装 Linux 构建依赖
         run: |
           flutter pub get --enforce-lockfile
+          python3 .github/scripts/build_openlist_core.py linux
           sudo apt-get update -y
           sudo apt-get install -y ninja-build libgtk-3-dev webkit2gtk-4.1
       - name: 构建 Debian x64 软件包
@@ -543,6 +577,9 @@ jobs:
           (( ${#arch_assets[@]} > 0 )) || { echo "没有找到 Arch/AppImage 构建产物。" >&2; exit 1; }
           for file in "${debs[@]}" "${arch_assets[@]}"; do
             [[ -s "$file" ]] || { echo "构建产物为空：$file" >&2; exit 1; }
+          done
+          for deb in "${debs[@]}"; do
+            dpkg-deb -c "$deb" | grep -q 'libvenera_openlist\.so$' || { echo "DEB 未包含 OpenList 内核：$deb" >&2; exit 1; }
           done
       - name: sccache 统计
         if: ${{ always() && steps.sccache.outcome == 'success' }}
@@ -613,6 +650,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.1'
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: 'master'
@@ -641,6 +681,7 @@ jobs:
       - name: 安装 Linux ARM64 构建依赖
         run: |
           flutter pub get --enforce-lockfile
+          python3 .github/scripts/build_openlist_core.py linux
           sudo apt-get update -y
           sudo apt-get install -y ninja-build libgtk-3-dev webkit2gtk-4.1
       - name: 修补字体
@@ -655,6 +696,9 @@ jobs:
           (( ${#debs[@]} > 0 )) || { echo "没有找到 Linux ARM64 DEB。" >&2; exit 1; }
           for file in "${debs[@]}"; do
             [[ -s "$file" ]] || { echo "构建产物为空：$file" >&2; exit 1; }
+          done
+          for deb in "${debs[@]}"; do
+            dpkg-deb -c "$deb" | grep -q 'libvenera_openlist\.so$' || { echo "DEB 未包含 OpenList 内核：$deb" >&2; exit 1; }
           done
       - name: sccache 统计
         if: ${{ always() && steps.sccache.outcome == 'success' }}

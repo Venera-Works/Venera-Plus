@@ -1,0 +1,39 @@
+diff --git a/drivers/115_open/driver.go b/drivers/115_open/driver.go
+index 65fc5ee..920bb57 100644
+--- a/drivers/115_open/driver.go
++++ b/drivers/115_open/driver.go
+@@ -14,6 +14,7 @@ import (
+ 	sdk "github.com/OpenListTeam/115-sdk-go"
+ 	"github.com/OpenListTeam/OpenList/v4/cmd/flags"
+ 	"github.com/OpenListTeam/OpenList/v4/drivers/base"
++	"github.com/OpenListTeam/OpenList/v4/internal/conf"
+ 	"github.com/OpenListTeam/OpenList/v4/internal/driver"
+ 	"github.com/OpenListTeam/OpenList/v4/internal/errs"
+ 	"github.com/OpenListTeam/OpenList/v4/internal/model"
+@@ -31,7 +32,16 @@ type Open115 struct {
+ 	limiter    *rate.Limiter
+ 	parentPath string
+ }
++// embedded115Transport follows base.HttpClient so proxy updates apply to the
++// SDK client without changing its redirect or header behavior.
++type embedded115Transport struct{}
+ 
++func (embedded115Transport) RoundTrip(request *http.Request) (*http.Response, error) {
++	if client := base.HttpClient; client != nil && client.Transport != nil {
++		return client.Transport.RoundTrip(request)
++	}
++	return http.DefaultTransport.RoundTrip(request)
++}
+ func (d *Open115) Config() driver.Config {
+ 	return config
+ }
+@@ -48,6 +58,9 @@ func (d *Open115) Init(ctx context.Context) error {
+ 			d.Addition.RefreshToken = s2
+ 			op.MustSaveDriverStorage(d)
+ 		}))
++	if conf.Embedded {
++		d.client.SetHttpClient(&http.Client{Transport: embedded115Transport{}})
++	}
+ 	if flags.Debug || flags.Dev {
+ 		d.client.SetDebug(true)
+ 	}

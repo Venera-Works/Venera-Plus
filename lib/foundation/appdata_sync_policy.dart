@@ -22,19 +22,27 @@ const appdataDefaultDisabledSyncFields = <String>{
   'backupWebdav',
   'backupWebdavPath',
   'backupWebdavSyncEnabled',
+  'syncRemoteLocation',
+  'backupRemoteLocation',
+  'remoteStorageAccounts',
   'disableSyncFields',
   'deviceId',
   'deviceSpecificSettings',
   'lastSyncTime',
 };
 
-const appdataArchiveSyncFields = {'backupWebdav', 'backupWebdavPath'};
+const appdataArchiveSyncFields = {
+  'backupWebdav',
+  'backupWebdavPath',
+  'backupRemoteLocation',
+};
 
 const appdataComicLibrarySyncFields = {
   'webdavComicLibrary',
   'webdavComicLibraryPath',
   'webdavComicLibraryAutoSync',
   'webdavComicLibrarySyncIntervalMinutes',
+  'remoteLibraries',
 };
 
 const appdataObsoleteSyncSetting = 'readLaterFolder';
@@ -150,4 +158,32 @@ Set<String> getDisabledAppDataSyncFields(Map<String, dynamic> settings) {
   // stale legacy toggles or custom field entries.
   disabled.removeAll(appdataComicLibrarySyncFields);
   return disabled;
+}
+
+/// Exports only credentials referenced by a synced comic library, plus the
+/// opted-in archive destination. Sync destinations stay local.
+List<dynamic> filterRemoteStorageAccountsForSync(
+  Object? rawAccounts,
+  Map<String, dynamic> settings, {
+  bool includeIncomingBackup = false,
+}) {
+  if (rawAccounts is! List) return const [];
+  final ids = <String>{};
+  final libraries = settings['remoteLibraries'];
+  if (libraries is List) {
+    for (final library in libraries) {
+      if (library is Map && library['accountId'] is String) {
+        ids.add(library['accountId'] as String);
+      }
+    }
+  }
+  if (includeIncomingBackup || settings['backupWebdavSyncEnabled'] == true) {
+    final backup = settings['backupRemoteLocation'];
+    if (backup is Map && backup['accountId'] is String) {
+      ids.add(backup['accountId'] as String);
+    }
+  }
+  return rawAccounts.where((account) {
+    return account is Map && ids.contains(account['id']);
+  }).toList();
 }

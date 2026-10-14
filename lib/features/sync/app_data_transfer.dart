@@ -11,7 +11,10 @@ import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/appdata_sync_policy.dart';
 import 'package:venera_plus/network/cookie_jar.dart';
+import 'package:venera_plus/network/remote_storage/remote_storage.dart';
+import 'package:venera_plus/features/webdav_library/webdav_library.dart';
 import 'package:venera_plus/foundation/extensions.dart';
 import 'package:venera_plus/foundation/file_system.dart';
 import 'package:zip_flutter/zip_flutter.dart';
@@ -45,6 +48,10 @@ Future<void> notifyAppDataSettingsChanged() async {
 Future<File> exportAppData([bool sync = true]) async {
   await HistoryManager().flushReadingProgress();
   await HistoryManager().waitForAsyncWrites();
+  // Native drivers may rotate refresh tokens. Persist the latest additions
+  // before placing settings into a snapshot; core failures are isolated by the
+  // account manager so local and WebDAV export still work.
+  await RemoteStorageAccounts.instance.beforeExportSettings();
   var time = DateTime.now().millisecondsSinceEpoch ~/ 1000;
   var cacheFilePath = FilePath.join(App.cachePath, '$time.venera');
   var cacheFile = File(cacheFilePath);
@@ -92,8 +99,11 @@ Future<void> importAppData(File file, {bool checkVersion = false}) async {
   var reloadCookies = false;
   var reloadComicSources = false;
   var success = false;
+  await RemoteStorageAccounts.instance.beforeExportSettings();
   final previousAppData =
       jsonDecode(jsonEncode(appdata.toJson())) as Map<String, dynamic>;
+  final localAccounts = RemoteStorageAccounts.instance.captureLocalAccounts();
+  final localSyncLocation = appdata.settings['syncRemoteLocation'];
   var rolledBack = false;
   if (cacheDir.existsSync()) {
     cacheDir.deleteSync(recursive: true);
@@ -192,7 +202,29 @@ Future<void> importAppData(File file, {bool checkVersion = false}) async {
     }
 
     if (importedAppdata != null) {
+      final importedSettings = importedAppdata['settings'];
+      if (importedSettings is Map &&
+          !importedSettings.containsKey('remoteLibraries') &&
+          importedSettings['webdavComicLibrary'] is List) {
+        appdata.settings.remove(RemoteComicLibraryRegistry.legacyMigrationKey);
+      }
       await appdata.syncData(importedAppdata);
+      if (localSyncLocation == null) {
+        appdata.settings.remove('syncRemoteLocation');
+      } else {
+        appdata.settings['syncRemoteLocation'] = localSyncLocation;
+      }
+      final settings = importedAppdata['settings'];
+      if (settings is Map) {
+        await RemoteStorageAccounts.instance.mergeImportedSettings(
+          filterRemoteStorageAccountsForSync(
+            settings['remoteStorageAccounts'],
+            Map<String, dynamic>.from(settings),
+            includeIncomingBackup: true,
+          ),
+          localBeforeImport: localAccounts,
+        );
+      }
     }
     success = true;
   } catch (error, stackTrace) {

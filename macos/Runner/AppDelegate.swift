@@ -28,6 +28,12 @@ class AppDelegate: FlutterAppDelegate {
         switch call.method {
         case "getSyncDeviceName":
           result(hardwareModelIdentifier())
+        case "isOpenListSupported":
+          if #available(macOS 13.0, *) {
+            result(true)
+          } else {
+            result(false)
+          }
         case "getProxy":
             if let proxySettings = CFNetworkCopySystemProxySettings()?.takeUnretainedValue() as NSDictionary? {
                 if let httpProxy = proxySettings[kCFNetworkProxiesHTTPProxy] as? String,

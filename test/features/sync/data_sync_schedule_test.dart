@@ -8,6 +8,7 @@ import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/file_system.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/res.dart';
+import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 
 const config = ['https://example.com/dav/VeneraNext', 'user', 'password'];
 
@@ -79,6 +80,35 @@ void main() {
     expect(DataSync.intervalMinutes, 30);
     appdata.implicitData['webdavSyncIntervalMinutes'] = 60;
     expect(DataSync.intervalMinutes, 60);
+  });
+
+  scheduleTest('cloud location keeps the selected automatic mode', (
+    clock,
+    calls,
+  ) async {
+    appdata.settings['remoteStorageAccounts'] = [
+      const StorageAccount(
+        id: 'cloud',
+        backend: StorageBackend.openlist,
+        driver: 'BaiduNetdisk',
+        name: 'Cloud',
+        authorization: {},
+      ).toJson(),
+    ];
+    final result = await DataSync().configure(
+      config: const [],
+      remoteLocation: const RemoteLocation(
+        accountId: 'cloud',
+        directory: '/sync/',
+      ),
+      excludedFields: '',
+      syncMode: DataSyncMode.scheduled,
+      minutes: 30,
+      initialUpload: true,
+    );
+    expect(result.success, isTrue);
+    expect(DataSync.mode, DataSyncMode.scheduled);
+    expect(DataSync().hasConfiguration, isTrue);
   });
 
   scheduleTest(

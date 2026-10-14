@@ -1370,6 +1370,7 @@ class _SingleExplorePageState extends AutomaticGlobalState<_SingleExplorePage>
   Object? get key => '${widget.sourceKey}:${widget.title}';
 
   void onDataChanged() {
+    if (mounted) setState(() {});
     reloadHandler?.call();
   }
 
@@ -1460,6 +1461,7 @@ class _SingleExplorePageState extends AutomaticGlobalState<_SingleExplorePage>
         },
       );
     } else if (currentData.loadPage != null || currentData.loadNext != null) {
+      final statusMessage = currentData.statusMessage?.call();
       return ComicList(
         enablePageStorage: true,
         loadPage: currentData.loadPage,
@@ -1472,6 +1474,14 @@ class _SingleExplorePageState extends AutomaticGlobalState<_SingleExplorePage>
         reloadHandlerCallback: (c) {
           reloadHandler = c;
         },
+        leadingSliver: statusMessage == null
+            ? null
+            : SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Text(statusMessage),
+                ),
+              ),
       );
     } else if (currentData.loadMixed != null) {
       return _MixedExplorePage(

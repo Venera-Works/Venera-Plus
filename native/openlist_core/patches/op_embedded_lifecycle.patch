@@ -1,0 +1,49 @@
+diff --git a/internal/op/fs.go b/internal/op/fs.go
+index b356a9f..c6f7e0f 100644
+--- a/internal/op/fs.go
++++ b/internal/op/fs.go
+@@ -199,7 +199,9 @@ func Get(ctx context.Context, storage driver.Driver, path string, excludeTempObj
+ 	if !dirCacheExists || refreshList {
+ 		var obj model.Obj
+-		list(ctx, storage, dir, model.ListArgs{Refresh: refreshList}, func(objs []model.Obj) error {
++		_, listErr := list(ctx, storage, dir, model.ListArgs{Refresh: refreshList}, func(objs []model.Obj) error {
+ 			for _, f := range objs {
+@@ -212,6 +214,9 @@ func Get(ctx context.Context, storage driver.Driver, path string, excludeTempObj
+ 			}
+ 			return nil
+ 		})
++		if listErr != nil {
++			return nil, listErr
++		}
+ 		if obj != nil {
+ 			return obj, nil
+ 		}
+diff --git a/internal/op/storage.go b/internal/op/storage.go
+index 12d7a82..0c1db12 100644
+--- a/internal/op/storage.go
++++ b/internal/op/storage.go
+@@ -34,6 +34,19 @@ func HasStorage(mountPath string) bool {
+ 	return storagesMap.Has(utils.FixAndCleanPath(mountPath))
+ }
+ 
++// ResetEmbeddedStorages drops all loaded drivers and clears their memory and
++// file/link caches. It is intentionally only used by an embedded host that
++// supports close followed by a fresh initialize in the same process.
++func ResetEmbeddedStorages(ctx context.Context) {
++	storagesMap.Range(func(mountPath string, storage driver.Driver) bool {
++		_ = storage.Drop(ctx)
++		storagesMap.Delete(mountPath)
++		return true
++	})
++	Cache.ClearAll()
++}
++
++// InvalidateEmbeddedPath clears cached directory and direct-link state before
++// an embedded read, preventing metadata writes from merging stale bytes.
++func InvalidateEmbeddedPath(storage driver.Driver, path string) {
++	Cache.linkCache.DeleteKey(Key(storage, path))
++	Cache.dirCache.Delete(Key(storage, stdpath.Dir(path)))
++}
++
+ func GetStorageByMountPath(mountPath string) (driver.Driver, error) {
+ 	mountPath = utils.FixAndCleanPath(mountPath)

@@ -8,6 +8,7 @@ import 'package:venera_plus/features/comic_storage/comic_storage.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library_cache.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 
 void main() {
   late _FakeWebDavLibraryOps ops;
@@ -65,6 +66,253 @@ void main() {
     expect(passwordChanged.libraryId, first.libraryId);
     expect(pathChanged.libraryId, isNot(first.libraryId));
   });
+
+  test(
+    'legacy snapshot migrates after its import clears the migration marker',
+    () async {
+      appdata.settings[RemoteComicLibraryRegistry.settingsKey] = const [];
+      appdata.settings[remoteStorageAccountsSetting] = const [];
+      appdata.settings[RemoteComicLibraryRegistry.legacyMigrationKey] = true;
+      appdata.settings['webdavComicLibrary'] = const [];
+      await RemoteComicLibraryRegistry.migrateLegacyWebDavLibrary();
+      expect(RemoteComicLibraryRegistry.read(), isEmpty);
+
+      appdata.settings['webdavComicLibrary'] = const [
+        'https://example.com/dav',
+        'user',
+        'pass',
+      ];
+      appdata.settings['webdavComicLibraryPath'] = '/manga/';
+      appdata.settings[RemoteComicLibraryRegistry.legacyMigrationKey] = false;
+      final oldLibraryId = WebDavLibraryConfig.fromSettings().libraryId;
+
+      await RemoteComicLibraryRegistry.migrateLegacyWebDavLibrary();
+      final library = RemoteComicLibraryRegistry.read().single;
+      expect(library.sourceKey, WebDavLibrarySource.sourceKey);
+      expect(library.id, oldLibraryId);
+      expect(library.directories, const ['/manga/']);
+    },
+  );
+
+  test(
+    'root memberships merge selected directories and retain removed root cache',
+    () {
+      final cache = WebDavLibraryCache.instance;
+      const key = 'multi-root-library';
+      cache.replaceRootDirectoryIndex(
+        key,
+        const WebDavLibraryRootIndex(
+          rootPath: '/A/',
+          directories: [
+            WebDavLibraryRemoteDirectory(id: '/A/Comic/', sortIndex: 0),
+            WebDavLibraryRemoteDirectory(id: '/A/Same/', sortIndex: 1),
+          ],
+        ),
+      );
+      cache.replaceRootDirectoryIndex(
+        key,
+        const WebDavLibraryRootIndex(
+          rootPath: '/B/C/',
+          directories: [
+            WebDavLibraryRemoteDirectory(id: '/B/C/Same/', sortIndex: 0),
+            WebDavLibraryRemoteDirectory(id: '/A/Same/', sortIndex: 1),
+          ],
+        ),
+      );
+
+      expect(cache.count(key, roots: const ['/A/', '/B/C/']), 3);
+      expect(cache.count(key, roots: const ['/B/C/']), 2);
+      expect(
+        cache
+            .page(key, page: 1, pageSize: 10, roots: const ['/B/C/'])
+            .map((item) => item.id),
+        containsAll(const ['/B/C/Same/', '/A/Same/']),
+      );
+
+      cache.removeRootsExcept(key, const {'/B/C/'});
+      expect(cache.count(key, roots: const ['/B/C/']), 2);
+      // Re-adding an unavailable root can still display its last membership.
+      expect(cache.count(key, roots: const ['/A/', '/B/C/']), 3);
+    },
+  );
+
+  test(
+    'two remote libraries synchronize without cancelling each other',
+    () async {
+      final firstStore = _FakeRemoteFileStore('first')
+        ..dirs['/one/'] = const [
+          RemoteEntry(name: 'First', path: '/one/First/', isDirectory: true),
+        ]
+        ..dirs['/one/First/'] = const [
+          RemoteEntry(
+            name: '001.jpg',
+            path: '/one/First/001.jpg',
+            isDirectory: false,
+          ),
+        ];
+      final secondStore = _FakeRemoteFileStore('second')
+        ..dirs['/two/'] = const [
+          RemoteEntry(name: 'Second', path: '/two/Second/', isDirectory: true),
+        ]
+        ..dirs['/two/Second/'] = const [
+          RemoteEntry(
+            name: '001.jpg',
+            path: '/two/Second/001.jpg',
+            isDirectory: false,
+          ),
+        ];
+      final first = WebDavLibraryEngine(
+        library: const RemoteLibrary(
+          id: 'first',
+          sourceKey: 'first',
+          accountId: 'first',
+          directories: ['/one/'],
+          name: 'First',
+        ),
+        store: firstStore,
+      );
+      final second = WebDavLibraryEngine(
+        library: const RemoteLibrary(
+          id: 'second',
+          sourceKey: 'second',
+          accountId: 'second',
+          directories: ['/two/'],
+          name: 'Second',
+        ),
+        store: secondStore,
+      );
+
+      await Future.wait([first.synchronize(), second.synchronize()]);
+      expect(
+        (await first.create().explorePages.single.loadPage!(1)).data.single.id,
+        '/one/First/',
+      );
+      expect(
+        (await second.create().explorePages.single.loadPage!(1)).data.single.id,
+        '/two/Second/',
+      );
+      first.cancel();
+      second.cancel();
+      expect(firstStore.cancelAllCalls, 1);
+      expect(secondStore.cancelAllCalls, 1);
+    },
+  );
+
+  test(
+    'legacy multi-root IDs retain the anchor only for its original root',
+    () async {
+      final store = _FakeRemoteFileStore('legacy')
+        ..dirs['/manga/'] = const [
+          RemoteEntry(name: 'Old', path: '/manga/Old/', isDirectory: true),
+        ]
+        ..dirs['/other/'] = const [
+          RemoteEntry(name: 'New', path: '/other/New/', isDirectory: true),
+        ]
+        ..dirs['/manga/Old/'] = const [
+          RemoteEntry(
+            name: '001.jpg',
+            path: '/manga/Old/001.jpg',
+            isDirectory: false,
+          ),
+        ]
+        ..dirs['/other/New/'] = const [
+          RemoteEntry(
+            name: '001.jpg',
+            path: '/other/New/001.jpg',
+            isDirectory: false,
+          ),
+        ];
+      final engine = WebDavLibraryEngine(
+        library: const RemoteLibrary(
+          id: 'legacy',
+          sourceKey: WebDavLibrarySource.sourceKey,
+          accountId: 'legacy',
+          directories: ['/manga/', '/other/'],
+          name: 'Legacy',
+        ),
+        store: store,
+      );
+
+      await engine.synchronize();
+      final ids = (await engine.create().explorePages.single.loadPage!(
+        1,
+      )).data.map((comic) => comic.id);
+      expect(ids, containsAll(['Old', '/other/New/']));
+      engine.cancel();
+    },
+  );
+
+  test(
+    'failed root keeps the available union and exposes its warning',
+    () async {
+      final store = _FakeRemoteFileStore('partial')
+        ..dirs['/available/'] = const [
+          RemoteEntry(
+            name: 'Comic',
+            path: '/available/Comic/',
+            isDirectory: true,
+          ),
+        ]
+        ..dirs['/available/Comic/'] = const [
+          RemoteEntry(
+            name: '001.jpg',
+            path: '/available/Comic/001.jpg',
+            isDirectory: false,
+          ),
+        ];
+      final engine = WebDavLibraryEngine(
+        library: const RemoteLibrary(
+          id: 'partial',
+          sourceKey: 'partial',
+          accountId: 'partial',
+          directories: ['/available/', '/missing/'],
+          name: 'Partial',
+        ),
+        store: store,
+      );
+
+      await engine.synchronize();
+      store.errors['/missing/'] = StateError('missing root');
+      expect((await engine.synchronize()).error, isTrue);
+      expect(
+        (await engine.create().explorePages.single.loadPage!(1)).data.single.id,
+        '/available/Comic/',
+      );
+      expect(engine.statusMessage, contains('/missing/'));
+      engine.cancel();
+    },
+  );
+
+  test(
+    'legacy engine writes anchor-external Bangumi metadata by full path',
+    () async {
+      final store = _FakeRemoteFileStore('legacy-write')
+        ..dirs['/other/New/'] = const [
+          RemoteEntry(
+            name: '001.jpg',
+            path: '/other/New/001.jpg',
+            isDirectory: false,
+          ),
+        ];
+      final engine = WebDavLibraryEngine(
+        library: const RemoteLibrary(
+          id: 'legacy-write',
+          sourceKey: WebDavLibrarySource.sourceKey,
+          accountId: 'legacy-write',
+          directories: ['/manga/', '/other/'],
+          name: 'Legacy',
+        ),
+        store: store,
+      );
+
+      await engine.writeMetadata(
+        '/other/New/',
+        const ComicMetaData(title: 'New', author: '', tags: []),
+      );
+      expect(store.writtenPaths, contains('/other/New/metadata.json'));
+      engine.cancel();
+    },
+  );
 
   test('malformed synchronized connection tuples are rejected', () {
     appdata.settings['webdavComicLibrary'] = [
@@ -2305,6 +2553,86 @@ void main() {
     expect(snapshot['metadataScrapeError'], contains('scraper unavailable'));
     expect(ops.writeRequests, isEmpty);
   });
+}
+
+class _FakeRemoteFileStore implements RemoteFileStore {
+  _FakeRemoteFileStore(String id)
+    : _account = StorageAccount(
+        id: id,
+        backend: StorageBackend.webdav,
+        driver: 'webdav',
+        name: id,
+        authorization: const {},
+      );
+
+  final StorageAccount _account;
+  final dirs = <String, List<RemoteEntry>>{};
+  final errors = <String, Object>{};
+  final writtenPaths = <String>[];
+  var cancelAllCalls = 0;
+
+  @override
+  StorageAccount get account => _account;
+
+  @override
+  Future<void> cancel(String taskId) async {}
+
+  @override
+  Future<void> cancelAll() async {
+    cancelAllCalls++;
+  }
+
+  @override
+  Future<void> delete(String path) async {}
+
+  @override
+  Future<void> download(
+    String remotePath,
+    String localPath, {
+    void Function(RemoteTransferProgress progress)? onProgress,
+  }) async {}
+
+  @override
+  Future<RemoteLink> link(String path) async => RemoteLink(url: path);
+
+  @override
+  Future<List<RemoteEntry>> list(String directory) async {
+    final error = errors[directory];
+    if (error != null) throw error;
+    return dirs[directory] ?? const [];
+  }
+
+  @override
+  Future<void> mkdir(String path) async {}
+
+  @override
+  Future<RemoteTextFile> readText(String path) =>
+      Future.error(StateError('Missing text file: $path'));
+
+  @override
+  Future<RemoteEntry> stat(String path) => Future.error(StateError(path));
+
+  @override
+  Future<void> test() async {}
+
+  @override
+  Future<void> upload(
+    String localPath,
+    String remotePath, {
+    void Function(RemoteTransferProgress progress)? onProgress,
+  }) async {}
+
+  @override
+  Future<RemoteWriteResult> writeText(
+    String path,
+    String content, {
+    bool createOnly = false,
+    String? ifMatch,
+    int? ifUnmodifiedSince,
+  }) async {
+    writtenPaths.add(path);
+    return const RemoteWriteResult();
+  }
 }
 
 class _FakeWebDavLibraryOps implements WebDavLibraryOps {

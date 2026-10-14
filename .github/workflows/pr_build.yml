@@ -47,6 +47,9 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.1'
       - name: 清理运行器空间以确保原生执行可靠
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost
@@ -105,6 +108,8 @@ jobs:
             'storeFile=../debug.keystore' \
             > android/key.properties
       - run: flutter pub get --enforce-lockfile
+      - name: 构建嵌入 OpenList Android 内核
+        run: python3 .github/scripts/build_openlist_core.py android
       - name: 构建 Android Debug APK (arm64)
         run: flutter build apk --debug --target-platform android-arm64
       - name: 运行 Android 平台冒烟与数据库原生验证
@@ -136,6 +141,9 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.1'
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -143,8 +151,23 @@ jobs:
           architecture: x64
           cache: true
       - run: flutter pub get --enforce-lockfile
+      - name: 构建嵌入 OpenList Windows 内核
+        shell: pwsh
+        run: |
+          $gcc = Get-Command gcc.exe -ErrorAction SilentlyContinue
+          if ($null -eq $gcc) { throw 'Go c-shared requires MinGW gcc on the Windows runner.' }
+          $env:CC = $gcc.Source
+          & $env:CC --version
+          python .github/scripts/build_openlist_core.py windows
       - name: 构建 Windows Debug 应用
         run: flutter build windows --debug
+      - name: 校验 Windows 包含 OpenList 内核
+        shell: pwsh
+        run: |
+          $coreDll = Join-Path (Get-Location) 'build\windows\x64\runner\Debug\venera_openlist.dll'
+          if (-not (Test-Path $coreDll) -or (Get-Item $coreDll).Length -le 0) {
+            throw "Windows Debug bundle 缺少 OpenList 内核：$coreDll"
+          }
       - name: 执行 QuickJS、原生 ZIP64 与原版备份恢复测试
         shell: pwsh
         run: |

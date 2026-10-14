@@ -32,6 +32,7 @@
 
 - [本地漫画导入](user/import_comic.zh.md) / [Import Comic](user/import_comic.en.md)
 - [应用数据同步](user/data_sync.zh.md) / [App Data Synchronization](user/data_sync.en.md)
+- [多网盘存储](user/multi_cloud.zh.md) / [Multi-cloud Storage](user/multi_cloud.en.md)
 - [条漫左右边距](user/reader_width.zh.md) / [Reader Side Margins](user/reader_width.en.md)
 - [无头命令模式](user/headless.zh.md) / [Headless Mode](user/headless.en.md)
 ## 实验和任务跟踪

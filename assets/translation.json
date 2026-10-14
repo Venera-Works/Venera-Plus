@@ -1052,7 +1052,20 @@
     "Source file was saved; repair completion is still pending.": "源文件已保存；修复流程仍待完成。",
     "Source repair could not complete because local storage or runtime access failed.": "由于无法访问本地存储或运行环境，源修复未能完成。",
     "Sync coordinator is not configured or available": "同步协调器尚未配置或不可用",
-    "Path copied to clipboard": "路径已复制到剪贴板"
+    "Path copied to clipboard": "路径已复制到剪贴板",
+    "Comic Libraries": "漫画库",
+    "Cloud Storage Accounts": "网盘账号",
+    "Manage WebDAV and OpenList cloud accounts.": "管理 WebDAV 和 OpenList 网盘账号。",
+    "Cloud Storage Account": "网盘账号",
+    "Remote Directory": "远端目录",
+    "Archive to Remote Storage": "归档到网盘存储",
+    "Add Comic Library": "添加漫画库",
+    "Edit Comic Library": "编辑漫画库",
+    "Storage Account": "存储账号",
+    "Recognition Directories": "识别目录",
+    "None selected": "未选择",
+    "Failed": "失败",
+    "WebDAV (legacy)": "WebDAV（旧版）"
   },
   "zh_TW": {
     "SYNC_STATE_CHANGED: Synchronization state changed. Retry synchronization; details are in the log.": "SYNC_STATE_CHANGED：同步狀態已變更，請重試同步；詳細診斷見日誌。",
@@ -2107,6 +2120,19 @@
     "Source file was saved; repair completion is still pending.": "來源檔案已儲存；修復流程仍待完成。",
     "Source repair could not complete because local storage or runtime access failed.": "因本機儲存或執行階段無法存取，來源修復未能完成。",
     "Sync coordinator is not configured or available": "同步協調器尚未設定或無法使用",
-    "Path copied to clipboard": "路徑已複製到剪貼簿"
+    "Path copied to clipboard": "路徑已複製到剪貼簿",
+    "Comic Libraries": "漫畫庫",
+    "Cloud Storage Accounts": "網盤帳號",
+    "Manage WebDAV and OpenList cloud accounts.": "管理 WebDAV 和 OpenList 網盤帳號。",
+    "Cloud Storage Account": "網盤帳號",
+    "Remote Directory": "遠端目錄",
+    "Archive to Remote Storage": "封存到網盤儲存",
+    "Add Comic Library": "新增漫畫庫",
+    "Edit Comic Library": "編輯漫畫庫",
+    "Storage Account": "儲存帳號",
+    "Recognition Directories": "識別目錄",
+    "None selected": "未選取",
+    "Failed": "失敗",
+    "WebDAV (legacy)": "WebDAV（舊版）"
   }
 }

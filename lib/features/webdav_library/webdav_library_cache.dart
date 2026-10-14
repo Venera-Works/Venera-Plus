@@ -83,6 +83,21 @@ class WebDavLibraryRemoteDirectory {
   final int? modifiedAt;
 }
 
+/// The result of discovering one configured recognition directory.
+///
+/// `id` is intentionally the complete remote comic path for new libraries.
+/// It is therefore independent of the directory through which it was found;
+/// selecting both a parent and one of its children cannot create two comics.
+class WebDavLibraryRootIndex {
+  const WebDavLibraryRootIndex({
+    required this.rootPath,
+    required this.directories,
+  });
+
+  final String rootPath;
+  final List<WebDavLibraryRemoteDirectory> directories;
+}
+
 class WebDavLibraryCache {
   WebDavLibraryCache._();
 
@@ -94,7 +109,7 @@ class WebDavLibraryCache {
   Database get _database {
     final path = '${App.dataPath}/webdav_library.db';
     if (_db != null && _dbPath == path) return _db!;
-    _db?.dispose();
+    _db?.close();
     _dbPath = path;
     final db = openSqliteDatabase(path);
     db.execute('''
@@ -111,6 +126,27 @@ class WebDavLibraryCache {
         remote_modified_at INTEGER,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (config_key, id)
+      );
+    ''');
+    db.execute('''
+      CREATE TABLE IF NOT EXISTS webdav_library_root_membership (
+        config_key TEXT NOT NULL,
+        root_path TEXT NOT NULL,
+        comic_id TEXT NOT NULL,
+        PRIMARY KEY (config_key, root_path, comic_id)
+      );
+    ''');
+    db.execute('''
+      CREATE INDEX IF NOT EXISTS webdav_library_root_membership_comic
+      ON webdav_library_root_membership(config_key, comic_id);
+    ''');
+    db.execute('''
+      CREATE TABLE IF NOT EXISTS webdav_library_root_state (
+        config_key TEXT NOT NULL,
+        root_path TEXT NOT NULL,
+        last_successful_sync INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        PRIMARY KEY (config_key, root_path)
       );
     ''');
     db.execute('''
@@ -134,10 +170,19 @@ class WebDavLibraryCache {
     return db;
   }
 
-  int count(String configKey) {
+  int count(String configKey, {Iterable<String>? roots}) {
+    final rootList = roots?.toList(growable: false);
+    if (rootList != null && rootList.isEmpty) return 0;
+    final hasRoots = rootList != null || _hasRootMembership(configKey);
     return _database.select(
-          'SELECT COUNT(*) AS count FROM webdav_library_comics WHERE config_key = ?;',
-          [configKey],
+          hasRoots
+              ? '''
+                SELECT COUNT(DISTINCT comic_id) AS count
+                FROM webdav_library_root_membership
+                WHERE config_key = ?${rootList == null ? '' : ' AND root_path IN (${List.filled(rootList.length, '?').join(', ')})'};
+                '''
+              : 'SELECT COUNT(*) AS count FROM webdav_library_comics WHERE config_key = ?;',
+          [configKey, ...?rootList],
         ).single['count']
         as int;
   }
@@ -146,17 +191,24 @@ class WebDavLibraryCache {
     String configKey, {
     required int page,
     required int pageSize,
+    Iterable<String>? roots,
   }) {
     final offset = (page - 1) * pageSize;
+    final rootList = roots?.toList(growable: false);
+    if (rootList != null && rootList.isEmpty) return const [];
+    final hasRoots = rootList != null || _hasRootMembership(configKey);
     return _database
         .select(
           '''
-          SELECT * FROM webdav_library_comics
-          WHERE config_key = ?
-          ORDER BY sort_index
+          SELECT ${hasRoots ? 'DISTINCT c.*' : '*'}
+          FROM webdav_library_comics c
+          ${hasRoots ? 'INNER JOIN webdav_library_root_membership m ON m.config_key = c.config_key AND m.comic_id = c.id' : ''}
+          WHERE c.config_key = ?
+          ${rootList == null ? '' : 'AND m.root_path IN (${List.filled(rootList.length, '?').join(', ')})'}
+          ORDER BY c.sort_index
           LIMIT ? OFFSET ?;
           ''',
-          [configKey, pageSize, offset],
+          [configKey, ...?rootList, pageSize, offset],
         )
         .map(WebDavLibraryCachedComic.fromRow)
         .toList();
@@ -245,6 +297,107 @@ class WebDavLibraryCache {
     }
   }
 
+  /// Replaces only one recognition directory's membership.  Cached comic rows
+  /// are deliberately retained when a root is removed or fails: this keeps
+  /// old comic ids, history and bindings available if the root is added back.
+  void replaceRootDirectoryIndex(
+    String configKey,
+    WebDavLibraryRootIndex index,
+  ) {
+    final db = _database;
+    db.execute('BEGIN IMMEDIATE;');
+    try {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      db.execute(
+        'DELETE FROM webdav_library_root_membership WHERE config_key = ? AND root_path = ?;',
+        [configKey, index.rootPath],
+      );
+      for (final directory in index.directories) {
+        db.execute(
+          '''
+          INSERT INTO webdav_library_comics (
+            config_key, id, sort_index, title, author, tags, cover,
+            snapshot_json, remote_etag, remote_modified_at, updated_at
+          ) VALUES (?, ?, ?, ?, '', '[]', '', NULL, ?, ?, ?)
+          ON CONFLICT(config_key, id) DO UPDATE SET
+            sort_index = excluded.sort_index,
+            remote_etag = excluded.remote_etag,
+            remote_modified_at = excluded.remote_modified_at,
+            updated_at = excluded.updated_at;
+          ''',
+          [
+            configKey,
+            directory.id,
+            directory.sortIndex,
+            directory.id,
+            directory.eTag,
+            directory.modifiedAt,
+            now,
+          ],
+        );
+        db.execute(
+          '''
+          INSERT INTO webdav_library_root_membership(config_key, root_path, comic_id)
+          VALUES (?, ?, ?);
+          ''',
+          [configKey, index.rootPath, directory.id],
+        );
+      }
+      db.execute(
+        '''
+        INSERT INTO webdav_library_root_state(
+          config_key, root_path, last_successful_sync, last_error
+        ) VALUES (?, ?, ?, NULL)
+        ON CONFLICT(config_key, root_path) DO UPDATE SET
+          last_successful_sync = excluded.last_successful_sync,
+          last_error = NULL;
+        ''',
+        [configKey, index.rootPath, now],
+      );
+      db.execute('COMMIT;');
+    } catch (_) {
+      db.execute('ROLLBACK;');
+      rethrow;
+    }
+  }
+
+  void markRootFailure(String configKey, String rootPath, String error) {
+    _database.execute(
+      '''
+      INSERT INTO webdav_library_root_state(
+        config_key, root_path, last_successful_sync, last_error
+      ) VALUES (?, ?, 0, ?)
+      ON CONFLICT(config_key, root_path) DO UPDATE SET
+        last_error = excluded.last_error;
+      ''',
+      [configKey, rootPath, error],
+    );
+  }
+
+  Map<String, String> rootFailures(String configKey) {
+    return {
+      for (final row in _database.select(
+        '''
+        SELECT root_path, last_error FROM webdav_library_root_state
+        WHERE config_key = ? AND last_error IS NOT NULL;
+        ''',
+        [configKey],
+      ))
+        row['root_path'] as String: row['last_error'] as String,
+    };
+  }
+
+  /// Membership is intentionally not deleted for a removed root.  It is not
+  /// visible unless the caller selects that root, and makes a later re-add
+  /// immediately recover the former identity/cache even if its first refresh
+  /// fails.
+  void removeRootsExcept(String configKey, Set<String> selectedRoots) {}
+
+  bool _hasRootMembership(String configKey) => _database.select(
+    'SELECT 1 FROM webdav_library_root_membership WHERE config_key = ? LIMIT 1;',
+    [configKey],
+  ).isNotEmpty;
+
   void upsertSnapshot(String configKey, WebDavLibraryCachedComic comic) {
     _database.execute(
       '''
@@ -325,7 +478,7 @@ class WebDavLibraryCache {
   }
 
   void resetForTesting() {
-    _db?.dispose();
+    _db?.close();
     _db = null;
     _dbPath = null;
   }

@@ -15,6 +15,7 @@ import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/foundation/throttled_task_runner.dart';
 import 'package:venera_plus/network/webdav.dart';
+import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 import 'package:webdav_client/webdav_client.dart' hide File;
 
 typedef WebDavLibraryMetadataScraper =
@@ -22,6 +23,167 @@ typedef WebDavLibraryMetadataScraper =
 
 typedef WebDavLibraryMetadataWriteGuard =
     FutureOr<bool> Function(String libraryId, String comicId, int? subjectId);
+
+const _webDavLibraryContextKey = #webDavLibraryContext;
+
+/// Reserved operation context for the instance migration. Existing static
+/// calls run without it and therefore continue to use the legacy settings.
+class _WebDavLibraryContext {
+  const _WebDavLibraryContext({
+    required this.config,
+    required this.state,
+    required this.ops,
+  });
+
+  final WebDavLibraryConfig config;
+  final _WebDavLibraryEngineState state;
+  final WebDavLibraryOps ops;
+}
+
+/// Persistent library configuration.  The storage account itself is managed
+/// by `remote_storage`; this registry owns only the comic-library relation.
+/// Keeping this relation separate lets one account back several libraries.
+class RemoteComicLibraryRegistry {
+  RemoteComicLibraryRegistry._();
+
+  static const settingsKey = 'remoteLibraries';
+
+  /// Importers reset this only for snapshots containing a valid legacy WebDAV
+  /// configuration and no `remoteLibraries` field.
+  static const legacyMigrationKey = 'remoteComicLibraryLegacyMigrated';
+
+  static List<RemoteLibrary> read() {
+    final value = appdata.settings[settingsKey];
+    if (value is! List) return const [];
+    return value
+        .whereType<Map>()
+        .map((item) => RemoteLibrary.fromJson(item))
+        .where(
+          (item) =>
+              item.id.isNotEmpty &&
+              item.sourceKey.isNotEmpty &&
+              item.accountId.isNotEmpty &&
+              item.directories.isNotEmpty,
+        )
+        .toList(growable: false);
+  }
+
+  static RemoteLibrary? findBySourceKey(String sourceKey) {
+    for (final library in read()) {
+      if (library.sourceKey == sourceKey) return library;
+    }
+    return null;
+  }
+
+  static Future<void> save(RemoteLibrary library) async {
+    final normalized = library.normalized();
+    if (normalized.id.isEmpty ||
+        normalized.sourceKey.isEmpty ||
+        normalized.accountId.isEmpty ||
+        normalized.directories.isEmpty) {
+      throw ArgumentError(
+        'A comic library needs an id, source key, account and directory',
+      );
+    }
+    final libraries = read().toList();
+    final index = libraries.indexWhere((item) => item.id == normalized.id);
+    if (index >= 0) {
+      // IDs and source keys are immutable once a library exists.
+      final existing = libraries[index];
+      if (existing.sourceKey != normalized.sourceKey ||
+          existing.accountId != normalized.accountId) {
+        throw ArgumentError(
+          'A library cannot change source or account identity',
+        );
+      }
+      libraries[index] = normalized;
+    } else {
+      if (libraries.any((item) => item.sourceKey == normalized.sourceKey)) {
+        throw ArgumentError('Comic library source key already exists');
+      }
+      libraries.add(normalized);
+    }
+    appdata.settings[settingsKey] = [
+      for (final item in libraries) item.toJson(),
+    ];
+    await appdata.saveData(false);
+  }
+
+  static Future<void> remove(String libraryId) async {
+    final libraries = read().where((item) => item.id != libraryId).toList();
+    appdata.settings[settingsKey] = [
+      for (final item in libraries) item.toJson(),
+    ];
+    await appdata.saveData(false);
+  }
+
+  /// Creates stable values once. Directory reordering and later edits only
+  /// use [RemoteLibrary.copyWith], so they never create new comic identities.
+  static RemoteLibrary create({
+    required String accountId,
+    required List<String> directories,
+    required String name,
+  }) {
+    final seed = '${DateTime.now().microsecondsSinceEpoch}:$accountId:$name';
+    final digest = sha256.convert(utf8.encode(seed)).toString();
+    return RemoteLibrary(
+      id: 'remote-library-$digest',
+      sourceKey: 'remote_library_$digest',
+      accountId: accountId,
+      directories: directories,
+      name: name,
+    ).normalized();
+  }
+
+  /// Imports the old singleton WebDAV configuration as a library relation.
+  /// The legacy source still serves it so its historical comic ids stay
+  /// untouched; the stored relation makes it manageable beside new libraries.
+  static Future<void> migrateLegacyWebDavLibrary() async {
+    if (appdata.settings[legacyMigrationKey] == true) return;
+    final legacy = WebDavLibraryConfig.fromSettings();
+    if (!legacy.isValid ||
+        RemoteStorageAccounts.instance.libraries.any(
+          (item) => item.sourceKey == WebDavLibrarySource.sourceKey,
+        )) {
+      appdata.settings[legacyMigrationKey] = true;
+      await appdata.saveData(false);
+      return;
+    }
+    final accountId =
+        'legacy-${sha256.convert(utf8.encode(jsonEncode([legacy.url, legacy.user.trim()])))}';
+    if (RemoteStorageAccounts.instance.account(accountId) == null) {
+      await RemoteStorageAccounts.instance.save(
+        StorageAccount(
+          id: accountId,
+          backend: StorageBackend.webdav,
+          driver: 'webdav',
+          name: 'WebDAV',
+          authorization: {
+            'url': legacy.url,
+            'user': legacy.user,
+            'password': legacy.pass,
+          },
+        ),
+      );
+    }
+    await RemoteStorageAccounts.instance.saveLibrary(
+      RemoteLibrary(
+        id: legacy.libraryId,
+        sourceKey: WebDavLibrarySource.sourceKey,
+        accountId: accountId,
+        directories: [legacy.remotePath],
+        name: WebDavLibrarySource.explorePageTitle,
+        autoRefresh: appdata.settings['webdavComicLibraryAutoSync'] != false,
+        refreshIntervalMinutes:
+            (appdata.settings['webdavComicLibrarySyncIntervalMinutes'] as num?)
+                ?.toInt() ??
+            360,
+      ),
+    );
+    appdata.settings[legacyMigrationKey] = true;
+    await appdata.saveData(false);
+  }
+}
 
 enum WebDavLibraryFailureKind {
   preconditionFailed,
@@ -119,6 +281,10 @@ class WebDavLibraryConfig {
     required String user,
     required String pass,
     required String remotePath,
+    this.remoteLibrary,
+    this.remoteStore,
+    this.legacyAnchor,
+    this.legacyCacheKey,
   }) : endpoint = WebDavEndpoint(url: url, user: user, password: pass),
        remotePath = normalizeWebDavDirectoryPath(
          remotePath,
@@ -127,6 +293,10 @@ class WebDavLibraryConfig {
 
   final WebDavEndpoint endpoint;
   final String remotePath;
+  final RemoteLibrary? remoteLibrary;
+  final RemoteFileStore? remoteStore;
+  final String? legacyAnchor;
+  final String? legacyCacheKey;
 
   String get url => endpoint.url;
 
@@ -134,20 +304,49 @@ class WebDavLibraryConfig {
 
   String get pass => endpoint.password;
 
-  bool get isValid => endpoint.isValid;
+  bool get isValid => endpoint.isValid || remoteStore != null;
+
+  List<String> get directories => remoteLibrary?.directories ?? [remotePath];
 
   Map<String, String> get authHeaders => endpoint.authHeaders;
 
-  String get cacheKey => jsonEncode([url, user, remotePath]);
+  String get cacheKey =>
+      legacyCacheKey ??
+      (remoteLibrary == null
+          ? jsonEncode([url, user, remotePath])
+          : 'remote-library:${remoteLibrary!.id}');
 
   String get libraryId {
+    if (remoteLibrary != null) return remoteLibrary!.id;
     final identity = jsonEncode([url, user.trim(), remotePath]);
     return 'webdav:${sha256.convert(utf8.encode(identity))}';
   }
 
+  String get configuredSourceKey =>
+      remoteLibrary?.sourceKey ?? WebDavLibrarySource.sourceKey;
+
+  factory WebDavLibraryConfig.forRemoteLibrary(
+    RemoteLibrary library,
+    RemoteFileStore store, {
+    required String root,
+    String? legacyAnchor,
+    String? legacyCacheKey,
+  }) => WebDavLibraryConfig(
+    url: '',
+    user: '',
+    pass: '',
+    remotePath: root,
+    remoteLibrary: library,
+    remoteStore: store,
+    legacyAnchor: legacyAnchor,
+    legacyCacheKey: legacyCacheKey,
+  );
+
   String get connectionKey => jsonEncode([url, user, pass, remotePath]);
 
   static WebDavLibraryConfig fromSettings() {
+    final current = Zone.current[_webDavLibraryContextKey];
+    if (current is _WebDavLibraryContext) return current.config;
     final config = appdata.settings['webdavComicLibrary'];
     final path = appdata.settings['webdavComicLibraryPath'];
     try {
@@ -197,6 +396,12 @@ class WebDavLibraryConfig {
   }
 
   String childDirectoryPath(String name) {
+    if (name.startsWith('/')) {
+      return normalizeWebDavDirectoryPath(name, fallback: '/');
+    }
+    if (legacyAnchor != null) {
+      return childDirectoryPathFrom(legacyAnchor!, name);
+    }
     return childDirectoryPathFrom(remotePath, name);
   }
 
@@ -429,6 +634,67 @@ class _WebDavLibraryOps implements WebDavLibraryOps {
   }
 }
 
+class _RemoteFileStoreLibraryOps implements WebDavLibraryOps {
+  const _RemoteFileStoreLibraryOps();
+
+  RemoteFileStore _store(WebDavLibraryConfig config) {
+    final store = config.remoteStore;
+    if (store == null) throw StateError('Remote library store is unavailable');
+    return store;
+  }
+
+  @override
+  Future<void> test(WebDavLibraryConfig config) => _store(config).test();
+
+  @override
+  Future<List<WebDavLibraryEntry>> readDir(
+    WebDavLibraryConfig config,
+    String remotePath,
+  ) async => (await _store(config).list(remotePath))
+      .map(
+        (entry) => WebDavLibraryEntry(
+          name: entry.name,
+          isDirectory: entry.isDirectory,
+          eTag: entry.eTag,
+          modifiedAt: entry.modifiedAt,
+        ),
+      )
+      .toList();
+
+  @override
+  Future<WebDavTextFile> readText(
+    WebDavLibraryConfig config,
+    String remotePath,
+  ) async {
+    final file = await _store(config).readText(remotePath);
+    return WebDavTextFile(
+      content: file.content,
+      eTag: file.eTag,
+      modifiedAt: file.modifiedAt,
+    );
+  }
+
+  @override
+  Future<WebDavWriteResult> writeText(
+    WebDavLibraryConfig config,
+    String remotePath,
+    String content, {
+    bool createOnly = false,
+    String? ifMatch,
+    int? ifUnmodifiedSince,
+  }) async {
+    final isWebDav = _store(config).account.backend == StorageBackend.webdav;
+    final result = await _store(config).writeText(
+      remotePath,
+      content,
+      createOnly: isWebDav && createOnly,
+      ifMatch: isWebDav ? ifMatch : null,
+      ifUnmodifiedSince: isWebDav ? ifUnmodifiedSince : null,
+    );
+    return WebDavWriteResult(eTag: result.eTag, modifiedAt: result.modifiedAt);
+  }
+}
+
 enum WebDavMetadataPendingFailure {
   none,
   authentication,
@@ -513,10 +779,33 @@ class _WebDavSynchronizationObsoleteException implements Exception {
   const _WebDavSynchronizationObsoleteException();
 }
 
+class _WebDavLibraryEngineState {
+  final snapshotCache = <String, _WebDavComicSnapshot>{};
+  final snapshotInFlight = <String, Future<_WebDavComicSnapshot>>{};
+  final contentVersion = ValueNotifier<int>(0);
+  final syncStatus = ValueNotifier<WebDavLibrarySyncStatus>(
+    const WebDavLibrarySyncStatus(isSyncing: false, lastSuccessfulSync: 0),
+  );
+  final metadataPendingVersion = ValueNotifier<int>(0);
+  _WebDavLibrarySyncRun? syncRun;
+  int syncGeneration = 0;
+  Timer? autoSyncTimer;
+  Timer? metadataRetryTimer;
+  final metadataWriteTails = <String, Future<void>>{};
+  int metadataPayloadSequence = 0;
+  bool disposed = false;
+}
+
 class WebDavLibrarySource {
   const WebDavLibrarySource._();
 
   static const sourceKey = 'webdav_library';
+  static String get _activeSourceKey =>
+      (Zone.current[_webDavLibraryContextKey] as _WebDavLibraryContext?)
+          ?.config
+          .configuredSourceKey ??
+      sourceKey;
+  static String get activeSourceKey => _activeSourceKey;
   static const explorePageTitle = 'WebDAV Library';
   static const pageSize = 20;
   static const rootChapterId = '__root__';
@@ -534,27 +823,54 @@ class WebDavLibrarySource {
   static const _maxMetadataRetryAttempts = 4;
   static const _defaultScraperVersion = '1';
   static const _metadataPendingKey = 'webdavMetadataPending';
+  static String get _metadataPendingStorageKey {
+    final config = WebDavLibraryConfig.fromSettings();
+    return config.configuredSourceKey == sourceKey
+        ? _metadataPendingKey
+        : '$_metadataPendingKey:${config.libraryId}';
+  }
+
   static const _autoSyncCheckInterval = Duration(minutes: 15);
 
-  static final _snapshotCache = <String, _WebDavComicSnapshot>{};
-  static final _snapshotInFlight = <String, Future<_WebDavComicSnapshot>>{};
-  static final contentVersion = ValueNotifier<int>(0);
-  static final syncStatus = ValueNotifier<WebDavLibrarySyncStatus>(
-    const WebDavLibrarySyncStatus(isSyncing: false, lastSuccessfulSync: 0),
-  );
-  static final metadataPendingVersion = ValueNotifier<int>(0);
+  static final _legacyState = _WebDavLibraryEngineState();
+  static _WebDavLibraryEngineState get _state =>
+      (Zone.current[_webDavLibraryContextKey] as _WebDavLibraryContext?)
+          ?.state ??
+      _legacyState;
+  static bool get _isEngineContext =>
+      Zone.current[_webDavLibraryContextKey] is _WebDavLibraryContext;
+  static Map<String, _WebDavComicSnapshot> get _snapshotCache =>
+      _state.snapshotCache;
+  static Map<String, Future<_WebDavComicSnapshot>> get _snapshotInFlight =>
+      _state.snapshotInFlight;
+  static ValueNotifier<int> get contentVersion => _state.contentVersion;
+  static ValueNotifier<WebDavLibrarySyncStatus> get syncStatus =>
+      _state.syncStatus;
+  static ValueNotifier<int> get metadataPendingVersion =>
+      _state.metadataPendingVersion;
   static final _cache = WebDavLibraryCache.instance;
   static WebDavLibraryOps _ops = _WebDavLibraryOps();
-  static _WebDavLibrarySyncRun? _syncRun;
-  static int _syncGeneration = 0;
-  static Timer? _autoSyncTimer;
-  static Timer? _metadataRetryTimer;
-  static final _metadataWriteTails = <String, Future<void>>{};
+  static WebDavLibraryOps get _activeOps =>
+      (Zone.current[_webDavLibraryContextKey] as _WebDavLibraryContext?)?.ops ??
+      _ops;
+  static _WebDavLibrarySyncRun? get _syncRun => _state.syncRun;
+  static set _syncRun(_WebDavLibrarySyncRun? value) => _state.syncRun = value;
+  static int get _syncGeneration => _state.syncGeneration;
+  static set _syncGeneration(int value) => _state.syncGeneration = value;
+  static Timer? get _autoSyncTimer => _state.autoSyncTimer;
+  static set _autoSyncTimer(Timer? value) => _state.autoSyncTimer = value;
+  static Timer? get _metadataRetryTimer => _state.metadataRetryTimer;
+  static set _metadataRetryTimer(Timer? value) =>
+      _state.metadataRetryTimer = value;
+  static Map<String, Future<void>> get _metadataWriteTails =>
+      _state.metadataWriteTails;
   static WebDavLibraryMetadataScraper? _metadataScraper;
   static bool Function()? _metadataScrapingEnabled;
   static String _metadataScraperVersion = _defaultScraperVersion;
   static WebDavLibraryMetadataWriteGuard? _metadataWriteGuard;
-  static int _metadataPayloadSequence = 0;
+  static int get _metadataPayloadSequence => _state.metadataPayloadSequence;
+  static set _metadataPayloadSequence(int value) =>
+      _state.metadataPayloadSequence = value;
 
   static String get currentLibraryId =>
       WebDavLibraryConfig.fromSettings().libraryId;
@@ -711,7 +1027,7 @@ class WebDavLibrarySource {
   static ComicSource create() {
     return ComicSource(
       'WebDAV Library',
-      sourceKey,
+      _activeSourceKey,
       null,
       null,
       null,
@@ -764,7 +1080,7 @@ class WebDavLibrarySource {
       return const Res.error('Invalid WebDAV comic library configuration');
     }
     try {
-      await ops.test(config);
+      await _activeOps.test(config);
       return const Res(true);
     } catch (e) {
       return Res.error(e.toString());
@@ -782,11 +1098,12 @@ class WebDavLibrarySource {
       if (indexResult.error) {
         return Res.error(indexResult.errorMessage!);
       }
-      final count = _cache.count(config.cacheKey);
+      final roots = config.remoteLibrary?.directories;
+      final count = _cache.count(config.cacheKey, roots: roots);
       final maxPage = count == 0 ? 1 : (count + pageSize - 1) ~/ pageSize;
       if (page > maxPage) return Res([], subData: maxPage);
       final comics = _cache
-          .page(config.cacheKey, page: page, pageSize: pageSize)
+          .page(config.cacheKey, page: page, pageSize: pageSize, roots: roots)
           .map(
             (comic) => Comic(
               comic.title,
@@ -795,13 +1112,13 @@ class WebDavLibrarySource {
               null,
               comic.tags,
               '',
-              sourceKey,
+              _activeSourceKey,
               null,
               null,
             ),
           )
           .toList();
-      checkForAutomaticSync();
+      if (!_isEngineContext) checkForAutomaticSync();
       return Res(comics, subData: maxPage);
     } catch (e) {
       return Res.error(e.toString());
@@ -809,14 +1126,20 @@ class WebDavLibrarySource {
   }
 
   static Future<Res<bool>> _ensureIndex(WebDavLibraryConfig config) async {
+    if (_state.disposed) {
+      return const Res.error('Remote comic library is closed');
+    }
     if (_cache.hasDirectoryIndex(config.cacheKey)) {
-      checkForAutomaticSync();
+      if (!_isEngineContext) checkForAutomaticSync();
       return const Res(true);
     }
     return (await _startSynchronization(config: config).indexReady);
   }
 
   static Future<Res<bool>> synchronize({bool force = false}) {
+    if (_state.disposed) {
+      return Future.value(const Res.error('Remote comic library is closed'));
+    }
     final config = WebDavLibraryConfig.fromSettings();
     if (!config.isValid) {
       return Future.value(
@@ -863,6 +1186,36 @@ class WebDavLibrarySource {
   static String _configurationIdentity(WebDavLibraryConfig config) =>
       jsonEncode([config.url, config.user, config.pass, config.remotePath]);
 
+  static String _stableComicPath(WebDavLibraryConfig config, String id) {
+    if (config.remoteLibrary == null) return id;
+    final fullPath = id.startsWith('/')
+        ? normalizeWebDavDirectoryPath(id, fallback: '/')
+        : config.childDirectoryPathFrom(config.remotePath, id);
+    final anchor = config.legacyAnchor;
+    if (anchor == null) return fullPath;
+    if (fullPath.startsWith(anchor)) {
+      return fullPath.substring(anchor.length).replaceFirst(RegExp(r'/$'), '');
+    }
+    return fullPath;
+  }
+
+  static void _replaceRootAwareIndex(
+    WebDavLibraryConfig config,
+    List<WebDavLibraryRemoteDirectory> directories,
+  ) {
+    if (config.remoteLibrary == null) {
+      _cache.replaceDirectoryIndex(config.cacheKey, directories);
+      return;
+    }
+    _cache.replaceRootDirectoryIndex(
+      config.cacheKey,
+      WebDavLibraryRootIndex(
+        rootPath: config.remotePath,
+        directories: directories,
+      ),
+    );
+  }
+
   static bool _isSynchronizationCurrent(_WebDavLibrarySyncRun run) {
     if (!identical(_syncRun, run) || run.generation != _syncGeneration) {
       return false;
@@ -902,21 +1255,22 @@ class WebDavLibrarySource {
         lastSuccessfulSync: previousLastSync,
       );
       final rootEntries = List<WebDavLibraryEntry>.from(
-        await ops.readDir(config, config.remotePath),
+        await _activeOps.readDir(config, config.remotePath),
       );
       _throwIfSynchronizationObsolete(run);
       final previous = _cache.all(configKey);
       final provisionalDirectories = _sortedDirectories(rootEntries);
       if (!hadDirectoryIndex) {
-        _cache.replaceDirectoryIndex(configKey, [
+        final provisionalIndex = [
           for (var index = 0; index < provisionalDirectories.length; index++)
             WebDavLibraryRemoteDirectory(
-              id: provisionalDirectories[index].name,
+              id: _stableComicPath(config, provisionalDirectories[index].name),
               sortIndex: index,
               eTag: provisionalDirectories[index].eTag,
               modifiedAt: provisionalDirectories[index].modifiedAt,
             ),
-        ]);
+        ];
+        _replaceRootAwareIndex(config, provisionalIndex);
       }
       _throwIfSynchronizationObsolete(run);
       if (!indexReady.isCompleted) {
@@ -932,13 +1286,13 @@ class WebDavLibrarySource {
       final remoteDirectories = <WebDavLibraryRemoteDirectory>[
         for (var index = 0; index < discovered.length; index++)
           WebDavLibraryRemoteDirectory(
-            id: discovered[index].id,
+            id: _stableComicPath(config, discovered[index].id),
             sortIndex: index,
             eTag: discovered[index].eTag,
             modifiedAt: discovered[index].modifiedAt,
           ),
       ];
-      _cache.replaceDirectoryIndex(configKey, remoteDirectories);
+      _replaceRootAwareIndex(config, remoteDirectories);
       contentVersion.value++;
 
       final scrapeCheckTime = metadataNowProvider();
@@ -978,7 +1332,8 @@ class WebDavLibrarySource {
           try {
             _throwIfSynchronizationObsolete(run);
             final discoveredDirectory = discovered.firstWhere(
-              (candidate) => candidate.id == directory.id,
+              (candidate) =>
+                  _stableComicPath(config, candidate.id) == directory.id,
             );
             await _loadSnapshot(
               config,
@@ -1036,8 +1391,12 @@ class WebDavLibrarySource {
       }
       Log.error('WebDAV Library Sync', e, s);
       final result = Res<bool>.error(e.toString());
-      if (!hadDirectoryIndex) {
-        _cache.replaceDirectoryIndex(configKey, const []);
+      if (config.remoteLibrary != null) {
+        _cache.markRootFailure(configKey, config.remotePath, e.toString());
+      } else if (!hadDirectoryIndex) {
+        if (config.remoteLibrary == null) {
+          _cache.replaceDirectoryIndex(configKey, const []);
+        }
       }
       if (!indexReady.isCompleted) {
         indexReady.complete(result);
@@ -1070,7 +1429,7 @@ class WebDavLibrarySource {
                   snapshot.chapters.containsKey(rootChapterId)
               ? null
               : snapshot.chapters,
-          'sourceKey': sourceKey,
+          'sourceKey': _activeSourceKey,
           'comicId': id,
           'externalIds': {
             if (snapshot.bangumiSubjectId != null)
@@ -1107,7 +1466,7 @@ class WebDavLibrarySource {
           !ep.startsWith(_metadataChapterPrefix)) {
         final path = config.childDirectoryPathFrom(comicPath, ep);
         final entries = List<WebDavLibraryEntry>.from(
-          await ops.readDir(config, path),
+          await _activeOps.readDir(config, path),
         );
         final files = _imageEntries(entries)
             .where((entry) => !isNamedComicCover(entry.name))
@@ -1221,7 +1580,7 @@ class WebDavLibrarySource {
   }) async {
     final comicPath = config.childDirectoryPath(id);
     final entries = List<WebDavLibraryEntry>.from(
-      rootEntries ?? await ops.readDir(config, comicPath),
+      rootEntries ?? await _activeOps.readDir(config, comicPath),
     );
     if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
     final rootImages = _imageEntries(
@@ -1293,7 +1652,7 @@ class WebDavLibrarySource {
           );
           try {
             chapterEntries = List<WebDavLibraryEntry>.from(
-              await ops.readDir(config, chapterPath),
+              await _activeOps.readDir(config, chapterPath),
             );
             if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
             inspectedChapterEntries[directory.name] = chapterEntries;
@@ -1353,7 +1712,7 @@ class WebDavLibrarySource {
         if (chapterEntries == null) {
           try {
             chapterEntries = List<WebDavLibraryEntry>.from(
-              await ops.readDir(config, chapterPath),
+              await _activeOps.readDir(config, chapterPath),
             );
             if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
             inspectedChapterEntries[directory.name] = chapterEntries;
@@ -1448,7 +1807,7 @@ class WebDavLibrarySource {
       for (var attempt = 0; attempt < _maxMetadataMergeAttempts; attempt++) {
         await _ensureMetadataWriteCurrent(config, pending);
         final entries = List<WebDavLibraryEntry>.from(
-          await ops.readDir(config, comicPath),
+          await _activeOps.readDir(config, comicPath),
         );
         final pageCount = _metadataPageCount(entries);
         final metadataEntry = entries.firstWhereOrNull(
@@ -1469,14 +1828,14 @@ class WebDavLibrarySource {
               pageCount: pageCount,
             );
             await _ensureMetadataWriteCurrent(config, pending);
-            await ops.writeText(
+            await _activeOps.writeText(
               config,
               metadataPath,
               _encodeMetadataDocument(document),
               createOnly: true,
             );
           } else {
-            final current = await ops.readText(config, metadataPath);
+            final current = await _activeOps.readText(config, metadataPath);
             final document = _mergeMetadataDocument(
               _decodeMetadataDocument(current.content),
               pending.metadata,
@@ -1493,7 +1852,7 @@ class WebDavLibrarySource {
               );
             }
             await _ensureMetadataWriteCurrent(config, pending);
-            await ops.writeText(
+            await _activeOps.writeText(
               config,
               metadataPath,
               _encodeMetadataDocument(document),
@@ -1523,6 +1882,7 @@ class WebDavLibrarySource {
     WebDavLibraryConfig config,
     _WebDavPendingMetadataWrite pending,
   ) async {
+    _ensureMetadataContextActive();
     if (config.libraryId != pending.libraryId ||
         WebDavLibraryConfig.fromSettings().libraryId != pending.libraryId) {
       throw const WebDavMetadataWriteRejectedException();
@@ -1532,6 +1892,12 @@ class WebDavLibrarySource {
         !await Future.sync(
           () => guard(pending.libraryId, pending.comicId, pending.subjectId),
         )) {
+      throw const WebDavMetadataWriteRejectedException();
+    }
+  }
+
+  static void _ensureMetadataContextActive() {
+    if (_state.disposed) {
       throw const WebDavMetadataWriteRejectedException();
     }
   }
@@ -1604,6 +1970,7 @@ class WebDavLibrarySource {
     WebDavLibraryConfig config,
     String id,
   ) async {
+    if (_state.disposed) return;
     final memoryKey = jsonEncode([config.cacheKey, id]);
     final inFlight = _snapshotInFlight[memoryKey];
     if (inFlight != null) {
@@ -1665,7 +2032,7 @@ class WebDavLibrarySource {
       scraped.validateChapterRanges(pageCount: pageCount);
       return await _runMetadataWrite(config, id, () async {
         final latestEntries = List<WebDavLibraryEntry>.from(
-          await ops.readDir(config, comicPath),
+          await _activeOps.readDir(config, comicPath),
         );
         if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
         if (_hasMetadataFile(latestEntries)) {
@@ -1685,7 +2052,7 @@ class WebDavLibrarySource {
         }
         try {
           if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
-          await ops.writeText(
+          await _activeOps.writeText(
             config,
             config.childFilePath(comicPath, _metadataFileName),
             _encodeMetadata(scraped),
@@ -1702,7 +2069,7 @@ class WebDavLibrarySource {
           );
         } on WebDavPreconditionFailedException {
           final refreshedEntries = List<WebDavLibraryEntry>.from(
-            await ops.readDir(config, comicPath),
+            await _activeOps.readDir(config, comicPath),
           );
           if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
           if (!_hasMetadataFile(refreshedEntries)) rethrow;
@@ -1754,6 +2121,7 @@ class WebDavLibrarySource {
           await previous;
         } catch (_) {}
       }
+      _ensureMetadataContextActive();
       return await action();
     } finally {
       done.complete();
@@ -1794,7 +2162,7 @@ class WebDavLibrarySource {
 
     final metadataPath = config.childFilePath(comicPath, metadataEntry.name);
     try {
-      final file = await ops.readText(config, metadataPath);
+      final file = await _activeOps.readText(config, metadataPath);
       final metadata = ComicMetaData.fromJson(
         _decodeMetadataDocument(file.content),
       );
@@ -1814,6 +2182,7 @@ class WebDavLibrarySource {
   }
 
   static Future<void> retryPendingMetadata({bool force = false}) async {
+    if (_state.disposed) return;
     _metadataRetryTimer?.cancel();
     _metadataRetryTimer = null;
     final config = WebDavLibraryConfig.fromSettings();
@@ -1841,7 +2210,7 @@ class WebDavLibrarySource {
   }
 
   static List<_WebDavPendingMetadataWrite> _pendingMetadataWrites() {
-    final raw = appdata.implicitData[_metadataPendingKey];
+    final raw = appdata.implicitData[_metadataPendingStorageKey];
     if (raw is! Map) return const [];
     final result = <_WebDavPendingMetadataWrite>[];
     for (final value in raw.values) {
@@ -1865,7 +2234,7 @@ class WebDavLibrarySource {
   ) async {
     final failure = _metadataPendingFailure(error);
     final key = _pendingMetadataKey(pending.libraryId, pending.comicId);
-    final raw = appdata.implicitData[_metadataPendingKey];
+    final raw = appdata.implicitData[_metadataPendingStorageKey];
     final entries = <String, dynamic>{
       if (raw is Map)
         for (final entry in raw.entries)
@@ -1902,7 +2271,7 @@ class WebDavLibrarySource {
       errorMessage: error.toString(),
     );
     entries[key] = updated.toJson();
-    appdata.implicitData[_metadataPendingKey] = entries;
+    appdata.implicitData[_metadataPendingStorageKey] = entries;
     await appdata.writeImplicitData();
     metadataPendingVersion.value++;
     _scheduleMetadataRetry();
@@ -1911,7 +2280,7 @@ class WebDavLibrarySource {
   static Future<void> _removePendingMetadataWrite(
     _WebDavPendingMetadataWrite pending,
   ) async {
-    final raw = appdata.implicitData[_metadataPendingKey];
+    final raw = appdata.implicitData[_metadataPendingStorageKey];
     if (raw is! Map) return;
     final key = _pendingMetadataKey(pending.libraryId, pending.comicId);
     final current = raw[key];
@@ -1928,7 +2297,7 @@ class WebDavLibrarySource {
         if (entry.key is String) entry.key as String: entry.value,
     };
     if (entries.remove(key) == null) return;
-    appdata.implicitData[_metadataPendingKey] = entries;
+    appdata.implicitData[_metadataPendingStorageKey] = entries;
     await appdata.writeImplicitData();
     metadataPendingVersion.value++;
     _scheduleMetadataRetry();
@@ -2114,7 +2483,7 @@ class WebDavLibrarySource {
         final childId = _joinRelativeDirectoryPath(id, child.name);
         final childPath = config.childDirectoryPath(childId);
         final childEntries = List<WebDavLibraryEntry>.from(
-          await ops.readDir(config, childPath),
+          await _activeOps.readDir(config, childPath),
         );
         _throwIfSynchronizationObsolete(syncRun);
         children.add((directory: child, id: childId, entries: childEntries));
@@ -2187,7 +2556,7 @@ class WebDavLibrarySource {
       final id = directory.name;
       final path = config.childDirectoryPath(id);
       final entries = List<WebDavLibraryEntry>.from(
-        await ops.readDir(config, path),
+        await _activeOps.readDir(config, path),
       );
       _throwIfSynchronizationObsolete(syncRun);
 
@@ -2256,8 +2625,9 @@ class WebDavLibrarySource {
   }
 
   static String _directoryName(String id) {
-    final separator = id.lastIndexOf('/');
-    return separator < 0 ? id : id.substring(separator + 1);
+    final normalized = id.endsWith('/') ? id.substring(0, id.length - 1) : id;
+    final separator = normalized.lastIndexOf('/');
+    return separator < 0 ? normalized : normalized.substring(separator + 1);
   }
 
   static Future<Map<String, dynamic>> getImageLoadingConfig(
@@ -2267,6 +2637,10 @@ class WebDavLibrarySource {
     ComicImageLoadTarget? target,
   }) async {
     final config = WebDavLibraryConfig.fromSettings();
+    if (config.remoteStore != null) {
+      final link = await config.remoteStore!.link(imageKey);
+      return {'url': link.url, 'headers': link.headers};
+    }
     return {'url': config.fileUrl(imageKey), 'headers': config.authHeaders};
   }
 
@@ -2297,6 +2671,259 @@ class WebDavLibrarySource {
   static bool _isIgnoredEntry(String name) {
     return isIgnoredComicStorageEntry(name) || isComicArchiveFileName(name);
   }
+}
+
+/// Per-library owner for the established directory/metadata engine.  The
+/// legacy static API remains a facade over its implicit legacy state, while
+/// each remote library has isolated synchronization, snapshot and write tails.
+class WebDavLibraryEngine {
+  factory WebDavLibraryEngine({
+    required RemoteLibrary library,
+    required RemoteFileStore store,
+  }) {
+    final legacy = library.sourceKey == WebDavLibrarySource.sourceKey
+        ? WebDavLibraryConfig.fromSettings()
+        : null;
+    final context = _WebDavLibraryContext(
+      config: WebDavLibraryConfig.forRemoteLibrary(
+        library,
+        store,
+        root: library.directories.first,
+        legacyAnchor: legacy?.remotePath,
+        legacyCacheKey: legacy?.cacheKey,
+      ),
+      state: _WebDavLibraryEngineState(),
+      ops: const _RemoteFileStoreLibraryOps(),
+    );
+    return WebDavLibraryEngine._(library, context, store);
+  }
+
+  WebDavLibraryEngine._(this.library, this._context, this._store);
+
+  final RemoteLibrary library;
+  final _WebDavLibraryContext _context;
+  final RemoteFileStore _store;
+  Timer? _autoRefreshTimer;
+  bool _cancelled = false;
+  late final _contexts = <String, _WebDavLibraryContext>{
+    _context.config.remotePath: _context,
+  };
+
+  T _run<T>(T Function() action) =>
+      runZoned(action, zoneValues: {_webDavLibraryContextKey: _context});
+
+  _WebDavLibraryContext _contextFor(String root) => _contexts.putIfAbsent(
+    root,
+    () => _WebDavLibraryContext(
+      config: WebDavLibraryConfig.forRemoteLibrary(
+        library,
+        _context.config.remoteStore!,
+        root: root,
+        legacyAnchor: _context.config.legacyAnchor,
+        legacyCacheKey: _context.config.legacyCacheKey,
+      ),
+      state: _context.state,
+      ops: const _RemoteFileStoreLibraryOps(),
+    ),
+  );
+
+  T _runFor<T>(String root, T Function() action) => runZoned(
+    action,
+    zoneValues: {_webDavLibraryContextKey: _contextFor(root)},
+  );
+
+  ValueNotifier<int> get contentVersion => _context.state.contentVersion;
+  ValueNotifier<WebDavLibrarySyncStatus> get syncStatus =>
+      _context.state.syncStatus;
+  String get libraryId => library.id;
+  Map<String, String> get failedRoots =>
+      WebDavLibraryCache.instance.rootFailures(_context.config.cacheKey);
+
+  bool matches(RemoteLibrary other, StorageAccount account) =>
+      library.id == other.id &&
+      library.accountId == other.accountId &&
+      library.name == other.name &&
+      library.directories.toString() == other.directories.toString() &&
+      library.autoRefresh == other.autoRefresh &&
+      library.refreshIntervalMinutes == other.refreshIntervalMinutes &&
+      _store.account.backend == account.backend &&
+      _store.account.driver == account.driver &&
+      jsonEncode(_store.account.authorization) ==
+          jsonEncode(account.authorization);
+
+  String? get statusMessage {
+    final failed = failedRoots.keys.toList()..sort();
+    if (failed.isEmpty) return null;
+    return 'Failed directories: ${failed.join(', ')}';
+  }
+
+  void cancel() {
+    if (_cancelled) return;
+    _cancelled = true;
+    _autoRefreshTimer?.cancel();
+    _autoRefreshTimer = null;
+    _run(() {
+      _context.state.disposed = true;
+      WebDavLibrarySource._invalidateSynchronization();
+      WebDavLibrarySource._metadataRetryTimer?.cancel();
+      WebDavLibrarySource._metadataRetryTimer = null;
+    });
+    unawaited(() async {
+      try {
+        await _store.cancelAll();
+      } catch (error, stackTrace) {
+        Log.warning('Remote library cancellation', '$error\n$stackTrace');
+      }
+    }());
+    RemoteStorageAccounts.instance.release(_store);
+  }
+
+  void initializeAutoRefresh() {
+    _autoRefreshTimer?.cancel();
+    _autoRefreshTimer = null;
+    if (!library.autoRefresh) return;
+    final interval = Duration(
+      minutes: library.refreshIntervalMinutes.clamp(5, 24 * 60),
+    );
+    _autoRefreshTimer = Timer.periodic(interval, (_) {
+      unawaited(synchronize());
+    });
+  }
+
+  void checkForAutomaticSync() {
+    if (_cancelled || !library.autoRefresh) return;
+    final lastSync = WebDavLibraryCache.instance.lastSuccessfulSync(
+      _context.config.cacheKey,
+    );
+    final elapsed = DateTime.now().millisecondsSinceEpoch - lastSync;
+    if (lastSync == 0 ||
+        elapsed >=
+            Duration(
+              minutes: library.refreshIntervalMinutes.clamp(5, 24 * 60),
+            ).inMilliseconds) {
+      unawaited(synchronize());
+    }
+  }
+
+  void initializeMetadataRetry() =>
+      _run(WebDavLibrarySource.initializeMetadataRetry);
+
+  ComicSource create() {
+    initializeAutoRefresh();
+    return ComicSource(
+      library.name,
+      library.sourceKey,
+      null,
+      null,
+      null,
+      null,
+      [
+        ExplorePageData(
+          library.name,
+          ExplorePageType.multiPageComicList,
+          (page) => _run(() => WebDavLibrarySource.loadComics(page)),
+          null,
+          null,
+          null,
+          changeListenable: contentVersion,
+          statusMessage: () => statusMessage,
+          onRefresh: () async => synchronize(force: true),
+        ),
+      ],
+      null,
+      null,
+      (id) => _run(() => WebDavLibrarySource.loadComicInfo(id)),
+      null,
+      (id, episode) =>
+          _run(() => WebDavLibrarySource.loadComicPages(id, episode)),
+      (key, comicId, episode, {target}) => _run(
+        () => WebDavLibrarySource.getImageLoadingConfig(
+          key,
+          comicId,
+          episode,
+          target: target,
+        ),
+      ),
+      null,
+      '',
+      '',
+      '',
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      false,
+      false,
+      null,
+      null,
+    );
+  }
+
+  Future<Res<bool>> synchronize({bool force = false}) async {
+    Res<bool>? failure;
+    for (final root in library.directories) {
+      final result = await _runFor(
+        root,
+        () => WebDavLibrarySource.synchronize(force: force),
+      );
+      if (result.error) failure ??= result;
+    }
+    if (failure != null) contentVersion.value++;
+    return failure ?? const Res(true);
+  }
+
+  Future<void> writeMetadata(String comicId, ComicMetaData metadata) =>
+      _run(() => WebDavLibrarySource.writeMetadata(comicId, metadata));
+}
+
+class WebDavLibraryEngines {
+  WebDavLibraryEngines._();
+
+  static final _bySourceKey = <String, WebDavLibraryEngine>{};
+
+  static WebDavLibraryEngine? find(String sourceKey) => _bySourceKey[sourceKey];
+
+  static Future<void> refreshAll() async {
+    for (final engine in _bySourceKey.values) {
+      await engine.synchronize();
+    }
+  }
+
+  static void checkAllAutomaticSync() {
+    for (final engine in _bySourceKey.values) {
+      engine.checkForAutomaticSync();
+    }
+  }
+
+  static void initializeAllMetadataRetry() {
+    for (final engine in _bySourceKey.values) {
+      engine.initializeMetadataRetry();
+    }
+  }
+
+  static void cancelAll() {
+    for (final engine in _bySourceKey.values) {
+      engine.cancel();
+    }
+    _bySourceKey.clear();
+  }
+
+  static void replace(WebDavLibraryEngine engine) {
+    final old = _bySourceKey[engine.library.sourceKey];
+    if (!identical(old, engine)) old?.cancel();
+    _bySourceKey[engine.library.sourceKey] = engine;
+  }
+
+  static void remove(String sourceKey) =>
+      _bySourceKey.remove(sourceKey)?.cancel();
 }
 
 class _WebDavDiscoveredDirectory {

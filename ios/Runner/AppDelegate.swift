@@ -3,6 +3,7 @@ import UIKit
 import UniformTypeIdentifiers
 import Foundation // 添加此行
 import Darwin
+import Openlistcore
 
 private func hardwareModelIdentifier() -> String? {
   var size: size_t = 0
@@ -72,6 +73,23 @@ private func hardwareModelIdentifier() -> String? {
         self.directoryPicker?.selectDirectory(result: result)
       } else {
         result(FlutterMethodNotImplemented)
+      }
+    }
+
+    let openListChannel = FlutterMethodChannel(name: "venera/openlist", binaryMessenger: controller.binaryMessenger)
+    openListChannel.setMethodCallHandler { call, result in
+      guard call.method == "invoke" else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      guard let request = call.arguments as? String else {
+        result(FlutterError(code: "invalid_request", message: "request is required", details: nil))
+        return
+      }
+      DispatchQueue.global(qos: .userInitiated).async {
+        // The gomobile generated XCFramework exports OpenlistcoreInvoke.
+        let response = OpenlistcoreInvoke(request)
+        DispatchQueue.main.async { result(response) }
       }
     }
 

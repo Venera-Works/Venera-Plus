@@ -16,6 +16,7 @@ import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/settings/data_sync_schedule_fields.dart';
 import 'package:venera_plus/features/settings/setting_components.dart';
 import 'package:venera_plus/features/settings/webdav_connection_fields.dart';
+import 'package:venera_plus/features/storage/storage.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library.dart';
 import 'package:venera_plus/foundation/app.dart';
@@ -24,6 +25,8 @@ import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/file_interaction.dart';
 import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/res.dart';
+import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 
@@ -62,12 +65,12 @@ class _SourcesAndServicesSettingsState
           icon: Icons.cloud_outlined,
         ),
         CallbackSetting(
-          title: "WebDAV Comic Library".tl,
+          title: "Comic Libraries".tl,
           subtitle:
               "Online reading uses directory image structure only; CBZ is kept for archive backup and restore."
                   .tl,
           callback: () async {
-            showPopUpWidget(context, const _WebDavComicLibrarySetting());
+            context.to(() => const RemoteLibrarySettingsPage());
           },
           actionTitle: 'Set'.tl,
         ).toSliver(),
@@ -83,7 +86,7 @@ class _SourcesAndServicesSettingsState
               BangumiSettingsPage(
                 onConnectionChanged: () {
                   if (BangumiService().isConnected) {
-                    unawaited(WebDavLibrarySource.synchronize());
+                    unawaited(WebDavLibraryEngines.refreshAll());
                   }
                   if (mounted) setState(() {});
                 },
@@ -112,6 +115,12 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
       slivers: [
         SliverAppbar(title: Text("Storage and Sync".tl)),
         SettingPartTitle(title: "Storage".tl, icon: Icons.storage),
+        CallbackSetting(
+          title: 'Cloud Storage Accounts'.tl,
+          subtitle: 'Manage WebDAV and OpenList cloud accounts.'.tl,
+          actionTitle: 'Open'.tl,
+          callback: () => context.to(() => StorageAccountsPage()),
+        ).toSliver(),
         ListTile(
           title: Text("Storage Path for local comics".tl),
           subtitle: Text(LocalManager().path, softWrap: false),
@@ -350,6 +359,8 @@ class _WebdavSettingState extends State<_WebdavSetting> {
   late final TextEditingController fieldsController;
 
   bool isTesting = false;
+  StorageAccount? remoteAccount;
+  String remoteDirectory = '/VeneraPlus/';
 
   @override
   void initState() {
@@ -375,6 +386,15 @@ class _WebdavSettingState extends State<_WebdavSetting> {
       remotePath: '/',
     );
     fieldsController = TextEditingController(text: disableSync);
+    final raw = appdata.settings['syncRemoteLocation'];
+    if (raw is Map) {
+      final location = RemoteLocation.fromJson(raw);
+      remoteAccount = RemoteStorageAccounts.instance.account(
+        location.accountId,
+      );
+      remoteDirectory = location.directory;
+      syncMode = DataSync.mode;
+    }
   }
 
   @override
@@ -387,18 +407,65 @@ class _WebdavSettingState extends State<_WebdavSetting> {
   @override
   Widget build(BuildContext context) {
     return PopUpWidgetScaffold(
-      title: "Webdav",
+      title: "Data Sync".tl,
       body: AbsorbPointer(
         absorbing: isTesting,
         child: SingleChildScrollView(
           child: Column(
             children: [
               const SizedBox(height: 12),
-              WebDavConnectionFields(
-                controllers: _connectionControllers,
-                remotePathHint: '/',
-                showRemotePath: false,
+              DropdownButtonFormField<String?>(
+                initialValue: remoteAccount?.id,
+                decoration: InputDecoration(
+                  labelText: 'Cloud Storage Account'.tl,
+                ),
+                items: [
+                  const DropdownMenuItem<String?>(
+                    value: null,
+                    child: Text('WebDAV (legacy)'),
+                  ),
+                  for (final account in RemoteStorageAccounts.instance.accounts)
+                    DropdownMenuItem(
+                      value: account.id,
+                      child: Text(account.name),
+                    ),
+                ],
+                onChanged: (value) => setState(
+                  () => remoteAccount = value == null
+                      ? null
+                      : RemoteStorageAccounts.instance.account(value),
+                ),
               ),
+              if (remoteAccount != null)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text('Remote Directory'.tl),
+                  subtitle: Text(remoteDirectory),
+                  onTap: () async {
+                    final accounts = RemoteStorageAccounts.instance;
+                    final store = accounts.storeFor(remoteAccount!.id);
+                    final selected = await Navigator.of(context)
+                        .push<List<String>>(
+                          MaterialPageRoute(
+                            builder: (_) => RemoteDirectoryPicker(
+                              store: store,
+                              disposeStore: true,
+                              onDisposeStore: accounts.release,
+                            ),
+                          ),
+                        );
+                    if (selected?.isNotEmpty == true) {
+                      setState(() => remoteDirectory = selected!.single);
+                    }
+                  },
+                ),
+              if (remoteAccount != null) const SizedBox(height: 8),
+              if (remoteAccount == null)
+                WebDavConnectionFields(
+                  controllers: _connectionControllers,
+                  remotePathHint: '/',
+                  showRemotePath: false,
+                ),
               const SizedBox(height: 12),
               Align(
                 alignment: Alignment.centerLeft,
@@ -550,11 +617,19 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                         pass.trim().isEmpty;
                     if (!mounted) return;
                     final testResult = await DataSync().configure(
-                      config: clear ? [] : [url, user, pass],
+                      config: remoteAccount == null && !clear
+                          ? [url, user, pass]
+                          : [],
                       excludedFields: disableSync,
                       syncMode: syncMode,
                       minutes: syncInterval,
                       initialUpload: initialUpload,
+                      remoteLocation: remoteAccount == null
+                          ? null
+                          : RemoteLocation(
+                              accountId: remoteAccount!.id,
+                              directory: remoteDirectory,
+                            ),
                     );
                     if (!mounted) return;
                     setState(() => isTesting = false);
@@ -591,7 +666,22 @@ class _WebdavSettingState extends State<_WebdavSetting> {
     setState(() {
       isTesting = true;
     });
-    final result = await ComicBackupManager.testConnection(currentConfig);
+    Res<bool> result;
+    final account = remoteAccount;
+    if (account == null) {
+      result = await ComicBackupManager.testConnection(currentConfig);
+    } else {
+      final accounts = RemoteStorageAccounts.instance;
+      final store = accounts.storeFor(account.id);
+      try {
+        await store.list(remoteDirectory);
+        result = const Res(true);
+      } catch (error) {
+        result = Res.error(error.toString());
+      } finally {
+        accounts.release(store);
+      }
+    }
     if (!mounted) return;
     setState(() {
       isTesting = false;
@@ -615,6 +705,8 @@ class _BackupWebdavSettingState extends State<_BackupWebdavSetting> {
   late final WebDavConnectionControllers _connectionControllers;
   bool syncEnabled = false;
   bool isTesting = false;
+  StorageAccount? remoteAccount;
+  String remoteDirectory = '/venera_backup/';
 
   @override
   void initState() {
@@ -627,6 +719,14 @@ class _BackupWebdavSettingState extends State<_BackupWebdavSetting> {
       remotePath: config.remotePath,
     );
     syncEnabled = appdata.settings['backupWebdavSyncEnabled'] == true;
+    final raw = appdata.settings['backupRemoteLocation'];
+    if (raw is Map) {
+      final location = RemoteLocation.fromJson(raw);
+      remoteAccount = RemoteStorageAccounts.instance.account(
+        location.accountId,
+      );
+      remoteDirectory = location.directory;
+    }
   }
 
   @override
@@ -643,10 +743,56 @@ class _BackupWebdavSettingState extends State<_BackupWebdavSetting> {
         child: Column(
           children: [
             const SizedBox(height: 12),
-            WebDavConnectionFields(
-              controllers: _connectionControllers,
-              remotePathHint: '/venera_backup/',
+            DropdownButtonFormField<String?>(
+              initialValue: remoteAccount?.id,
+              decoration: InputDecoration(
+                labelText: 'Cloud Storage Account'.tl,
+              ),
+              items: [
+                const DropdownMenuItem<String?>(
+                  value: null,
+                  child: Text('WebDAV (legacy)'),
+                ),
+                for (final account in RemoteStorageAccounts.instance.accounts)
+                  DropdownMenuItem(
+                    value: account.id,
+                    child: Text(account.name),
+                  ),
+              ],
+              onChanged: (value) => setState(
+                () => remoteAccount = value == null
+                    ? null
+                    : RemoteStorageAccounts.instance.account(value),
+              ),
             ),
+            if (remoteAccount != null)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text('Remote Directory'.tl),
+                subtitle: Text(remoteDirectory),
+                onTap: () async {
+                  final accounts = RemoteStorageAccounts.instance;
+                  final store = accounts.storeFor(remoteAccount!.id);
+                  final selected = await Navigator.of(context)
+                      .push<List<String>>(
+                        MaterialPageRoute(
+                          builder: (_) => RemoteDirectoryPicker(
+                            store: store,
+                            disposeStore: true,
+                            onDisposeStore: accounts.release,
+                          ),
+                        ),
+                      );
+                  if (selected?.isNotEmpty == true) {
+                    setState(() => remoteDirectory = selected!.single);
+                  }
+                },
+              ),
+            if (remoteAccount == null)
+              WebDavConnectionFields(
+                controllers: _connectionControllers,
+                remotePathHint: '/venera_backup/',
+              ),
             const SizedBox(height: 16),
             Container(
               padding: const EdgeInsets.all(8),
@@ -727,7 +873,22 @@ class _BackupWebdavSettingState extends State<_BackupWebdavSetting> {
     setState(() {
       isTesting = true;
     });
-    final result = await ComicBackupManager.testConnection(currentConfig);
+    Res<bool> result;
+    final account = remoteAccount;
+    if (account == null) {
+      result = await ComicBackupManager.testConnection(currentConfig);
+    } else {
+      final accounts = RemoteStorageAccounts.instance;
+      final store = accounts.storeFor(account.id);
+      try {
+        await store.list(remoteDirectory);
+        result = const Res(true);
+      } catch (error) {
+        result = Res.error(error.toString());
+      } finally {
+        accounts.release(store);
+      }
+    }
     if (!mounted) return;
     setState(() {
       isTesting = false;
@@ -741,9 +902,39 @@ class _BackupWebdavSettingState extends State<_BackupWebdavSetting> {
 
   Future<void> save() async {
     if (isTesting) return;
-    appdata.settings['backupWebdavSyncEnabled'] = syncEnabled;
+    await ComicBackupManager.cancelActiveTasks();
+    final account = remoteAccount;
+    if (account != null) {
+      final location = RemoteLocation(
+        accountId: account.id,
+        directory: remoteDirectory,
+      );
+      setState(() => isTesting = true);
+      final accounts = RemoteStorageAccounts.instance;
+      final store = accounts.storeFor(location.accountId);
+      try {
+        await store.list(location.directory);
+      } catch (error) {
+        if (mounted) {
+          setState(() => isTesting = false);
+          context.showMessage(message: error.toString());
+        }
+        return;
+      } finally {
+        accounts.release(store);
+      }
+      appdata.settings['backupWebdavSyncEnabled'] = syncEnabled;
+      appdata.settings['backupRemoteLocation'] = location.toJson();
+      await appdata.saveData(false);
+      if (!mounted) return;
+      context.showMessage(message: 'Saved'.tl);
+      App.rootPop();
+      return;
+    }
     final config = currentConfig;
     if (!config.isValid && config.user.trim().isEmpty && config.pass.isEmpty) {
+      appdata.settings['backupWebdavSyncEnabled'] = syncEnabled;
+      appdata.settings.remove('backupRemoteLocation');
       await BackupConfig.saveToSettings(config);
       if (!mounted) return;
       context.showMessage(message: "Saved".tl);
@@ -762,332 +953,12 @@ class _BackupWebdavSettingState extends State<_BackupWebdavSetting> {
       context.showMessage(message: result.errorMessage!);
       context.showMessage(message: "Saved Failed".tl);
     } else {
+      appdata.settings['backupWebdavSyncEnabled'] = syncEnabled;
+      appdata.settings.remove('backupRemoteLocation');
       await BackupConfig.saveToSettings(config);
       if (!mounted) return;
       context.showMessage(message: "Saved".tl);
       App.rootPop();
     }
-  }
-}
-
-class _WebDavComicLibrarySetting extends StatefulWidget {
-  const _WebDavComicLibrarySetting();
-
-  @override
-  State<_WebDavComicLibrarySetting> createState() =>
-      _WebDavComicLibrarySettingState();
-}
-
-class _WebDavComicLibrarySettingState
-    extends State<_WebDavComicLibrarySetting> {
-  late final WebDavConnectionControllers _connectionControllers;
-  bool isTesting = false;
-  bool isSyncing = false;
-  late bool autoSyncEnabled;
-  late int syncIntervalMinutes;
-
-  @override
-  void initState() {
-    super.initState();
-    final config = WebDavLibraryConfig.fromSettings();
-    _connectionControllers = WebDavConnectionControllers(
-      url: config.url,
-      user: config.user,
-      password: config.pass,
-      remotePath: config.remotePath,
-    );
-    WebDavLibrarySource.updateSyncStatusFromCache();
-    autoSyncEnabled =
-        appdata.settings['webdavComicLibraryAutoSync'] as bool? ?? true;
-    syncIntervalMinutes =
-        (appdata.settings['webdavComicLibrarySyncIntervalMinutes'] as num?)
-            ?.round() ??
-        360;
-  }
-
-  @override
-  void dispose() {
-    _connectionControllers.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return PopUpWidgetScaffold(
-      title: "WebDAV Comic Library".tl,
-      body: SingleChildScrollView(
-        child: Column(
-          children: [
-            const SizedBox(height: 12),
-            WebDavConnectionFields(
-              controllers: _connectionControllers,
-              remotePathHint: '/venera_comics/',
-            ),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.primaryContainer,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.info_outline, size: 20),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      "Online reading uses directory image structure only; CBZ is kept for archive backup and restore."
-                          .tl,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.secondaryContainer,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.cloud_upload_outlined, size: 20),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Sync the WebDAV comic library URL, username, password, remote path, automatic updates and update interval. Credentials will be stored in remote sync storage.'
-                          .tl,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: Text('Automatic library updates'.tl),
-              subtitle: Text(
-                'Refresh the cached WebDAV library while the app is running.'
-                    .tl,
-              ),
-              value: autoSyncEnabled,
-              onChanged: (value) {
-                setState(() {
-                  autoSyncEnabled = value;
-                });
-              },
-            ),
-            if (autoSyncEnabled) ...[
-              const SizedBox(height: 8),
-              DropdownButtonFormField<int>(
-                initialValue: syncIntervalMinutes,
-                decoration: InputDecoration(
-                  labelText: 'Update interval'.tl,
-                  border: const OutlineInputBorder(),
-                ),
-                items: [
-                  DropdownMenuItem(
-                    value: 15,
-                    child: Text('Every 15 minutes'.tl),
-                  ),
-                  DropdownMenuItem(value: 60, child: Text('Every hour'.tl)),
-                  DropdownMenuItem(value: 360, child: Text('Every 6 hours'.tl)),
-                  DropdownMenuItem(value: 1440, child: Text('Every day'.tl)),
-                ],
-                onChanged: (value) {
-                  if (value != null) {
-                    setState(() {
-                      syncIntervalMinutes = value;
-                    });
-                  }
-                },
-              ),
-            ],
-            const SizedBox(height: 16),
-            ValueListenableBuilder<WebDavLibrarySyncStatus>(
-              valueListenable: WebDavLibrarySource.syncStatus,
-              builder: (context, status, _) {
-                final text = switch (status) {
-                  WebDavLibrarySyncStatus(isSyncing: true, total: > 0) =>
-                    'Updating WebDAV library: @current/@total'.tlParams({
-                      'current': status.processed,
-                      'total': status.total,
-                    }),
-                  WebDavLibrarySyncStatus(isSyncing: true) =>
-                    'Updating WebDAV library'.tl,
-                  WebDavLibrarySyncStatus(errorMessage: != null) =>
-                    'Last sync failed'.tl,
-                  WebDavLibrarySyncStatus(lastSuccessfulSync: > 0) =>
-                    '${'Last synced'.tl}: '
-                        '${status.formattedLastSuccessfulSync}',
-                  _ => 'Not synced yet'.tl,
-                };
-                return Row(
-                  children: [
-                    Icon(
-                      status.errorMessage == null
-                          ? Icons.sync_outlined
-                          : Icons.sync_problem_outlined,
-                      size: 20,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text(text)),
-                  ],
-                );
-              },
-            ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: Button.outlined(
-                    isLoading: isTesting,
-                    onPressed: testConnection,
-                    child: Text("Test Connection".tl),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            if (WebDavLibraryConfig.fromSettings().isValid) ...[
-              Row(
-                children: [
-                  Expanded(
-                    child: Button.outlined(
-                      isLoading: isSyncing,
-                      onPressed: syncNow,
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const Icon(Icons.sync, size: 18),
-                          const SizedBox(width: 8),
-                          Text('Sync now'.tl),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-            ],
-            Row(
-              children: [
-                Expanded(
-                  child: Button.filled(
-                    isLoading: isTesting && !isSyncing,
-                    onPressed: save,
-                    child: Text('Save and sync'.tl),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ).paddingHorizontal(16),
-      ),
-    );
-  }
-
-  WebDavLibraryConfig get currentConfig => WebDavLibraryConfig(
-    url: _connectionControllers.url.text,
-    user: _connectionControllers.user.text,
-    pass: _connectionControllers.password.text,
-    remotePath: _connectionControllers.remotePath.text,
-  );
-
-  Future<void> testConnection() async {
-    if (isTesting || isSyncing) return;
-    setState(() {
-      isTesting = true;
-    });
-    final result = await WebDavLibrarySource.testConnection(currentConfig);
-    if (!mounted) return;
-    setState(() {
-      isTesting = false;
-    });
-    if (result.error) {
-      context.showMessage(message: result.errorMessage!.tl);
-    } else {
-      context.showMessage(message: "Connection successful".tl);
-    }
-  }
-
-  Future<void> save() async {
-    if (isTesting || isSyncing) return;
-    if (!await _persistConfiguration()) return;
-    final config = WebDavLibraryConfig.fromSettings();
-    if (config.isValid) {
-      unawaited(WebDavLibrarySource.synchronize(force: true));
-    }
-    if (!mounted) return;
-    context.showMessage(message: 'Saved'.tl);
-    App.rootPop();
-  }
-
-  Future<void> syncNow() async {
-    if (isTesting || isSyncing) return;
-    if (!await _persistConfiguration()) return;
-    if (!WebDavLibraryConfig.fromSettings().isValid) return;
-    setState(() {
-      isSyncing = true;
-    });
-    final result = await WebDavLibrarySource.synchronize(force: true);
-    if (!mounted) return;
-    setState(() {
-      isSyncing = false;
-    });
-    if (result.error) {
-      context.showMessage(message: result.errorMessage!);
-    } else {
-      context.showMessage(message: 'WebDAV library updated'.tl);
-    }
-  }
-
-  Future<bool> _persistConfiguration() async {
-    final config = currentConfig;
-    Future<void> persist() async {
-      appdata.settings['webdavComicLibraryAutoSync'] = autoSyncEnabled;
-      appdata.settings['webdavComicLibrarySyncIntervalMinutes'] =
-          syncIntervalMinutes;
-      await WebDavLibraryConfig.saveToSettings(config);
-    }
-
-    if (!config.isValid && config.user.isEmpty && config.pass.isEmpty) {
-      await persist();
-      await _refreshWebDavLibrarySource(enabled: false);
-      return true;
-    }
-    setState(() {
-      isTesting = true;
-    });
-    final result = await WebDavLibrarySource.testConnection(config);
-    if (!mounted) return false;
-    setState(() {
-      isTesting = false;
-    });
-    if (result.error) {
-      context.showMessage(message: result.errorMessage!);
-      context.showMessage(message: "Saved Failed".tl);
-      return false;
-    }
-    await persist();
-    await _refreshWebDavLibrarySource(enabled: true);
-    return true;
-  }
-
-  Future<void> _refreshWebDavLibrarySource({required bool enabled}) async {
-    final manager = ComicSourceManager();
-    if (enabled && manager.find(WebDavLibrarySource.sourceKey) != null) return;
-    final pages = List<String>.from(appdata.settings['explore_pages']);
-    if (enabled) {
-      manager.add(WebDavLibrarySource.create());
-      pages.removeWhere((page) => page == WebDavLibrarySource.explorePageTitle);
-      pages.add(WebDavLibrarySource.explorePageTitle);
-    } else {
-      manager.remove(WebDavLibrarySource.sourceKey);
-      pages.removeWhere((page) => page == WebDavLibrarySource.explorePageTitle);
-    }
-    appdata.settings['explore_pages'] = pages;
-    await appdata.saveData(false);
   }
 }

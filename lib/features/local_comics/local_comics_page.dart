@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/button.dart';
@@ -169,7 +171,7 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
         if (selectedComics.isNotEmpty)
           MenuEntry(
             icon: Icons.cloud_upload_outlined,
-            text: "Archive to WebDAV".tl,
+            text: "Archive to Remote Storage".tl,
             onClick: () {
               archiveComics(selectedComics.keys.toList()).then((value) {
                 if (value) {
@@ -523,7 +525,7 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
                     ),
                     MenuEntry(
                       icon: Icons.cloud_upload_outlined,
-                      text: "Archive to WebDAV".tl,
+                      text: "Archive to Remote Storage".tl,
                       onClick: () {
                         archiveComics([c]);
                       },
@@ -636,10 +638,11 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
     var loadingController = showLoadingDialog(
       context,
       allowCancel: true,
-      message: "${"Archive to WebDAV".tl} 0/${comics.length}",
+      message: "${"Archive to Remote Storage".tl} 0/${comics.length}",
       withProgress: true,
       onCancel: () {
         canceled = true;
+        unawaited(ComicBackupManager.cancelActiveTasks());
       },
     );
     try {
@@ -647,7 +650,7 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
         comics,
         onProgress: (current, total, title) {
           loadingController.setMessage(
-            "${"Archive to WebDAV".tl} $current/$total\n$title",
+            "${"Archive to Remote Storage".tl} $current/$total\n$title",
           );
           loadingController.setProgress(current / total);
         },

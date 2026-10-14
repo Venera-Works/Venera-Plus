@@ -130,6 +130,11 @@ foreach(bundled_library ${PLUGIN_BUNDLED_LIBRARIES})
     COMPONENT Runtime)
 endforeach(bundled_library)
 
+set(OPENLIST_CORE_SO "${CMAKE_SOURCE_DIR}/../native/openlist_core/artifacts/linux/libvenera_openlist.so")
+if(EXISTS "${OPENLIST_CORE_SO}")
+  install(FILES "${OPENLIST_CORE_SO}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
+endif()
+
 # Copy the native assets provided by the build.dart from all packages.
 set(NATIVE_ASSETS_DIR "${PROJECT_BUILD_DIR}native_assets/linux/")
 install(DIRECTORY "${NATIVE_ASSETS_DIR}"

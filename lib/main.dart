@@ -18,7 +18,6 @@ import 'foundation/app.dart';
 import 'foundation/appdata.dart';
 import 'foundation/context.dart';
 import 'foundation/js_engine.dart';
-import 'features/webdav_library/webdav_library.dart';
 import 'features/sync/sync.dart';
 
 void main(List<String> args) {
@@ -98,9 +97,12 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.detached) {
+      unawaited(shutdownRemoteComicLibraryRuntime());
+    }
     if (state == AppLifecycleState.resumed) {
       DataSync().checkForAutomaticSync();
-      WebDavLibrarySource.checkForAutomaticSync();
+      checkRemoteComicLibrariesForAutomaticSync();
     }
     if (!App.isMobile || !appdata.settings['authorizationRequired']) {
       return;
@@ -137,6 +139,13 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       );
     }
     super.didChangeAppLifecycleState(state);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    unawaited(shutdownRemoteComicLibraryRuntime());
+    super.dispose();
   }
 
   void forceRebuild() {

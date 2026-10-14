@@ -283,6 +283,12 @@ class Appdata with Init {
     for (final entry in settings._data.entries) {
       if (disabled.contains(entry.key) ||
           entry.key == appdataObsoleteSyncSetting) {
+        if (entry.key == 'remoteStorageAccounts') {
+          result[entry.key] = filterRemoteStorageAccountsForSync(
+            entry.value,
+            settings._data,
+          );
+        }
         continue;
       }
       result[entry.key] = entry.value;
@@ -416,6 +422,13 @@ class Appdata with Init {
           if (isSettingSyncAllowed(key)) {
             this.settings[key] = settings[key];
           }
+          continue;
+        }
+        if (key == 'remoteStorageAccounts') {
+          this.settings[key] = filterRemoteStorageAccountsForSync(
+            settings[key],
+            settings,
+          );
           continue;
         }
         if (!appdataDefaultDisabledSyncFields.contains(key) &&

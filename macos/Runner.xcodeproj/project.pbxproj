@@ -240,6 +240,7 @@
 				33CC10EB2044A3C60003C045 /* Resources */,
 				33CC110E2044A8840003C045 /* Bundle Framework */,
 				3399D490228B24CF009A79C7 /* ShellScript */,
+				8A7E501F3D4A4FA7B9C65212 /* Embed OpenList core */,
 				9635D3A6D08BF5053750BABC /* [CP] Embed Pods Frameworks */,
 			);
 			buildRules = (
@@ -323,6 +324,23 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		8A7E501F3D4A4FA7B9C65212 /* Embed OpenList core */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../native/openlist_core/artifacts/macos/libvenera_openlist.dylib",
+			);
+			name = "Embed OpenList core";
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libvenera_openlist.dylib",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nsource=\"$SRCROOT/../native/openlist_core/artifacts/macos/libvenera_openlist.dylib\"\ndestination=\"$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH/libvenera_openlist.dylib\"\ntest -f \"$source\" || { echo \"error: missing embedded OpenList core: $source\" >&2; exit 1; }\nmkdir -p \"$(dirname \"$destination\")\"\ncp -f \"$source\" \"$destination\"\nif [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ]; then\n  codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" --timestamp=none \"$destination\"\nfi\n";
+			showEnvVarsInLog = 0;
+		};
 		3399D490228B24CF009A79C7 /* ShellScript */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
