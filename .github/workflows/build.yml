@@ -65,9 +65,6 @@ on:
         required: true
         type: boolean
         default: false
-  push:
-    branches:
-      - beta/3.oplist
 
 concurrency:
   group: build-${{ github.workflow }}-${{ github.repository }}-${{ github.ref }}
