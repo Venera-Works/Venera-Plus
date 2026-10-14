@@ -72,6 +72,9 @@ void main() {
     // Accessing App also initializes appdata's write queue in this real zone.
     App.dataPath = fallbackRoot.path;
     App.cachePath = fallbackRoot.path;
+    // Keep the manager's mutation queue out of an earlier widget test's fake
+    // async zone, which cannot be pumped by later tests.
+    ComicSourceManager();
   });
 
   tearDownAll(() async {
@@ -362,6 +365,7 @@ void main() {
       ).map((source) => source.key).toList();
 
       await addLibrary('Remote Comics');
+      expect(tester.takeException(), isNull);
       expect(storage.libraries, hasLength(1));
       final original = storage.libraries.single;
       await reloadSources();

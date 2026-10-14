@@ -248,7 +248,7 @@ class _RemoteLibrarySettingsPageState extends State<RemoteLibrarySettingsPage> {
             ),
             isThreeLine: library.directories.length > 1 || failures.isNotEmpty,
             onTap: () => _edit(library),
-            trailing: Column(
+            trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 IconButton(
