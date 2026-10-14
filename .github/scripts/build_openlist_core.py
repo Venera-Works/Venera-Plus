@@ -92,8 +92,8 @@ def verify_macos_architectures(library: Path) -> None:
 
 
 def install_gomobile(source: Path) -> None:
-    run("go", "mod", "edit", f"-require=golang.org/x/mobile@{GOMOBILE}", cwd=source)
-    run("go", "mod", "download", f"golang.org/x/mobile@{GOMOBILE}", cwd=source)
+    run("go", "get", "-tool", f"golang.org/x/mobile/cmd/gomobile@{GOMOBILE}", cwd=source)
+    run("go", "get", "-tool", f"golang.org/x/mobile/cmd/gobind@{GOMOBILE}", cwd=source)
     run("go", "install", f"golang.org/x/mobile/cmd/gomobile@{GOMOBILE}", cwd=source)
     run("go", "install", f"golang.org/x/mobile/cmd/gobind@{GOMOBILE}", cwd=source)
     run("gomobile", "init", cwd=source)

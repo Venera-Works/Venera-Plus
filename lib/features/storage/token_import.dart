@@ -42,24 +42,6 @@ Map<String, dynamic> normalizeOpenListAuthorization(
   if (callbackDriver is String && callbackDriver.isNotEmpty) {
     value['driver_txt'] = callbackDriver;
   }
-  if (driver == '123 Open') {
-    _move(value, 'access_token', 'AccessToken');
-    _move(value, 'refresh_token', 'RefreshToken');
-    _move(value, 'client_id', 'ClientID');
-    _move(value, 'client_secret', 'ClientSecret');
-    _move(value, 'client_uid', 'ClientID');
-    _move(value, 'client_key', 'ClientSecret');
-    value['driver_txt'] ??= '123cloud_oa';
-    value['server_use'] ??= true;
-    return value;
-  }
-  if (driver == 'BaiduNetdisk') {
-    // Baidu's AccessToken has no JSON tag in the pinned driver; keep its
-    // Pascal spelling while RefreshToken remains the driver's snake field.
-    _move(value, 'access_token', 'AccessToken');
-    _move(value, 'RefreshToken', 'refresh_token');
-    return value;
-  }
   _move(value, 'AccessToken', 'access_token');
   _move(value, 'RefreshToken', 'refresh_token');
   _move(value, 'ClientID', 'client_id');
@@ -69,6 +51,21 @@ Map<String, dynamic> normalizeOpenListAuthorization(
   if (driver == 'QuarkOpen') {
     _move(value, 'AppID', 'app_id');
     _move(value, 'SignKey', 'sign_key');
+  }
+  if (driver == '123 Open') {
+    _move(value, 'access_token', 'AccessToken');
+    _move(value, 'refresh_token', 'RefreshToken');
+    _move(value, 'client_id', 'ClientID');
+    _move(value, 'client_secret', 'ClientSecret');
+    value['driver_txt'] ??= '123cloud_oa';
+    value['server_use'] ??= true;
+    return value;
+  }
+  if (driver == 'BaiduNetdisk') {
+    // Baidu's AccessToken has no JSON tag in the pinned driver; keep its
+    // Pascal spelling while RefreshToken remains the driver's snake field.
+    _move(value, 'access_token', 'AccessToken');
+    return value;
   }
   return value;
 }
@@ -99,5 +96,9 @@ void _move(Map<String, dynamic> value, String source, String destination) {
     return;
   }
   final token = value.remove(source);
-  if (token != null && token != '') value[destination] = token;
+  if (token != null &&
+      token != '' &&
+      (value[destination] == null || value[destination] == '')) {
+    value[destination] = token;
+  }
 }

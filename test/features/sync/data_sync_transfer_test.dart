@@ -17,12 +17,29 @@ const _account = StorageAccount(
 );
 
 void main() {
+  late Directory fallbackRoot;
   late Directory directory;
   late String previousDataPath;
   late String previousCachePath;
   late Map<String, dynamic> previousSettings;
   late Map<String, dynamic> previousImplicit;
   late _SyncRpc rpc;
+
+  setUpAll(() async {
+    // App paths are late until application startup. Keep a suite-owned fallback
+    // so each test can snapshot and restore them safely.
+    fallbackRoot = await Directory.systemTemp.createTemp(
+      'venera-sync-transfer-fallback-',
+    );
+    App.dataPath = fallbackRoot.path;
+    App.cachePath = fallbackRoot.path;
+  });
+
+  tearDownAll(() async {
+    if (await fallbackRoot.exists()) {
+      await fallbackRoot.delete(recursive: true);
+    }
+  });
 
   setUp(() {
     directory = Directory.systemTemp.createTempSync('venera-sync-transfer-');
@@ -56,17 +73,20 @@ void main() {
     };
   });
 
-  tearDown(() {
+  tearDown(() async {
     DataSync.resetForTesting();
     appdata.settings.replaceAll(previousSettings);
     appdata.implicitData
       ..clear()
       ..addAll(previousImplicit);
+    // Await the queued write while the per-test paths still exist. This keeps a
+    // completed test from writing into a later test's temporary directory.
+    await appdata.saveData(false);
     App.dataPath = previousDataPath;
     App.cachePath = previousCachePath;
     Log.clear();
     Log.isMuted = false;
-    if (directory.existsSync()) directory.deleteSync(recursive: true);
+    if (await directory.exists()) await directory.delete(recursive: true);
   });
 
   test(

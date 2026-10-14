@@ -258,7 +258,8 @@ void main() {
     test('stops before next comic when cancelled', () async {
       appdata.settings['backupWebdav'] = ['https://example.com/dav', 'u', 'p'];
       var exportCount = 0;
-      ComicBackupManager.ops = _FakeBackupOps();
+      var uploadCount = 0;
+      ComicBackupManager.ops = _FakeBackupOps(onUpload: () => uploadCount++);
       ComicBackupManager.exportComic = (comic, path) async {
         exportCount++;
         File(path).writeAsStringSync(comic.title);
@@ -267,7 +268,7 @@ void main() {
       final result = await ComicBackupManager.backup([
         _comic('One'),
         _comic('Two'),
-      ], isCancelled: () => exportCount > 0);
+      ], isCancelled: () => uploadCount > 0);
 
       expect(result.success, 1);
       expect(result.skipped, 0);
@@ -471,9 +472,10 @@ class _CloudBackupRpc implements OpenListRpcClient {
 }
 
 class _FakeBackupOps implements ComicBackupWebDavOps {
-  _FakeBackupOps({this.listResult = const []});
+  _FakeBackupOps({this.listResult = const [], this.onUpload});
 
   final List<BackupFile> listResult;
+  final void Function()? onUpload;
   String? listedPath;
   String? testedPath;
   final uploadedRemotePaths = <String>[];
@@ -505,6 +507,7 @@ class _FakeBackupOps implements ComicBackupWebDavOps {
     String remotePath,
   ) async {
     uploadedRemotePaths.add(remotePath);
+    onUpload?.call();
   }
 
   @override

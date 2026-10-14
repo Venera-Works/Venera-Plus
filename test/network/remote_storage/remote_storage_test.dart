@@ -37,22 +37,21 @@ void main() {
   test(
     'canonicalizes Pascal tokens and keeps incomplete Quark configuration',
     () {
-      expect(
-        normalizeOpenListAuthorization({
-          'AccessToken': 'old',
-          'access_token': 'rotated',
-          'RefreshToken': 'refresh',
-        }, driver: 'GoogleDrive')['access_token'],
-        'rotated',
-      );
-      expect(
-        normalizeOpenListAuthorization({
-          'access_token': 'new',
-          'AccessToken': 'old',
-          'refresh_token': 'refresh',
-        }, driver: 'BaiduNetdisk')['AccessToken'],
-        'new',
-      );
+      final google = normalizeOpenListAuthorization({
+        'AccessToken': 'old',
+        'access_token': 'rotated',
+        'RefreshToken': 'refresh',
+      }, driver: 'GoogleDrive');
+      expect(google['access_token'], 'rotated');
+      expect(google.containsKey('AccessToken'), isFalse);
+
+      final baidu = normalizeOpenListAuthorization({
+        'access_token': 'new',
+        'AccessToken': 'old',
+        'refresh_token': 'refresh',
+      }, driver: 'BaiduNetdisk');
+      expect(baidu['AccessToken'], 'new');
+      expect(baidu.containsKey('access_token'), isFalse);
       expect(
         buildOpenListAuthorization(
           driver: 'QuarkOpen',

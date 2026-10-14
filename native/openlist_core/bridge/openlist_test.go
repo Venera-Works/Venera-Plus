@@ -77,8 +77,35 @@ func TestNormalizeAdditionKeepsValuesAndAddsDefaults(t *testing.T) {
 
 func TestInvokeInitializeCloseAndReopen(t *testing.T) {
 	directory := t.TempDir()
+	initializeRequest := func(dataDir string) string {
+		arguments, err := json.Marshal(map[string]string{"dataDir": dataDir, "proxy": ""})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(request{Method: "initialize", Arguments: arguments})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+	assertRequestRoundTrip := func(dataDir string) {
+		var decoded request
+		if err := json.Unmarshal([]byte(initializeRequest(dataDir)), &decoded); err != nil {
+			t.Fatal(err)
+		}
+		var arguments struct {
+			DataDir string `json:"dataDir"`
+		}
+		if err := json.Unmarshal(decoded.Arguments, &arguments); err != nil {
+			t.Fatal(err)
+		}
+		if arguments.DataDir != dataDir {
+			t.Fatalf("data directory changed during JSON encoding: %q", arguments.DataDir)
+		}
+	}
+	assertRequestRoundTrip(`C:\\OpenList\\quoted"directory`)
 	initialize := func() map[string]any {
-		raw := Invoke(`{"method":"initialize","arguments":{"dataDir":"` + directory + `","proxy":""}}`)
+		raw := Invoke(initializeRequest(directory))
 		var response response
 		if err := json.Unmarshal([]byte(raw), &response); err != nil {
 			t.Fatal(err)

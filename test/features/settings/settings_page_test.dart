@@ -314,6 +314,8 @@ void main() {
         await tester.pumpAndSettle();
         await tester.tap(find.byType(FloatingActionButton));
         await tester.pumpAndSettle();
+        await tester.tap(find.text('..'));
+        await tester.pumpAndSettle();
         await tester.tap(find.text('B'));
         await tester.pumpAndSettle();
         await tester.tap(find.text('C'));
