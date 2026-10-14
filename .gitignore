@@ -13,6 +13,7 @@ migrate_working_dir/
 */*/Generated*
 .worktrees/
 docs/
+cache/
 
 # IntelliJ 相关
 *.iml
