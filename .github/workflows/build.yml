@@ -88,6 +88,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.27.1'
+          cache: false
       - uses: subosito/flutter-action@v2
         with:
           channel: "stable"
@@ -211,6 +212,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.27.1'
+          cache: false
       - name: 安装 Inno Setup
         run: choco install innosetup --version=6.7.1 --no-progress -y
       - uses: subosito/flutter-action@v2
@@ -306,6 +308,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.27.1'
+          cache: false
       - uses: subosito/flutter-action@v2
         with:
           channel: "stable"
@@ -386,6 +389,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.27.1'
+          cache: false
       - uses: subosito/flutter-action@v2
         with:
           channel: "stable"
@@ -475,6 +479,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.27.1'
+          cache: false
       - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
@@ -538,6 +543,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.27.1'
+          cache: false
       - uses: subosito/flutter-action@v2
         with:
           channel: 'master'
