@@ -115,6 +115,9 @@ void main() {
     'cloud upload removes every prior same-day snapshot before count cleanup',
     () async {
       final day = DateTime.now().millisecondsSinceEpoch ~/ 86400000;
+      // The next upload must have a distinct name so the retention code can
+      // protect it while removing all older snapshots from the same day.
+      appdata.settings['dataVersion'] = 3;
       rpc.files.addAll([
         '/sync/$day-1.venera',
         '/sync/$day-2.venera',
@@ -126,6 +129,7 @@ void main() {
 
       expect(result.success, isTrue);
       expect(rpc.snapshotPaths, hasLength(10));
+      expect(rpc.snapshotPaths, contains('/sync/$day-4.venera'));
       expect(
         rpc.deleted,
         containsAll([

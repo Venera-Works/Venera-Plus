@@ -67,7 +67,7 @@ class _RemoteLibrarySettingsPageState extends State<RemoteLibrarySettingsPage> {
   Future<void> _edit(RemoteLibrary? initial) async {
     final accounts = _storage.accounts;
     if (accounts.isEmpty) return;
-    final name = TextEditingController(text: initial?.name ?? '');
+    var name = initial?.name ?? '';
     final existingAccount = initial == null
         ? null
         : _storage.account(initial.accountId);
@@ -87,8 +87,9 @@ class _RemoteLibrarySettingsPageState extends State<RemoteLibrarySettingsPage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextField(
-                  controller: name,
+                TextFormField(
+                  initialValue: name,
+                  onChanged: (value) => name = value,
                   decoration: InputDecoration(labelText: 'Name'.tl),
                 ),
                 if (initial == null)
@@ -191,7 +192,7 @@ class _RemoteLibrarySettingsPageState extends State<RemoteLibrarySettingsPage> {
             ),
             FilledButton(
               onPressed: () {
-                final trimmed = name.text.trim();
+                final trimmed = name.trim();
                 if (trimmed.isEmpty || directories.isEmpty) return;
                 final library = initial == null
                     ? RemoteComicLibraryRegistry.create(
@@ -216,7 +217,6 @@ class _RemoteLibrarySettingsPageState extends State<RemoteLibrarySettingsPage> {
         ),
       ),
     );
-    name.dispose();
     if (result == null) return;
     _updatePageVisibility(result, initial);
     await _storage.saveLibrary(result);

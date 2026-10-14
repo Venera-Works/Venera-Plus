@@ -595,10 +595,16 @@ void main() {
       () async {
         final port = server.port;
         final logs1 = <({LogLevel level, String content})>[];
+        final remoteClose1 = Completer<void>();
         final bridge1 = JsWebSocketBridge(
           proxyResolver: () async => null,
-          lifecycleLogger: (level, content) =>
-              logs1.add((level: level, content: content)),
+          lifecycleLogger: (level, content) {
+            logs1.add((level: level, content: content));
+            if (content.contains('direction=remote') &&
+                !remoteClose1.isCompleted) {
+              remoteClose1.complete();
+            }
+          },
         );
         final s1 = Completer<WebSocket>();
         unawaited(() async {
@@ -606,19 +612,19 @@ void main() {
         }());
         final c1 = await _connect(bridge1, port);
         await (await s1.future).close(1000, 'normal_done_reason');
-        await pumpEventQueue();
+        await remoteClose1.future.timeout(const Duration(seconds: 1));
         await bridge1.dispose();
 
         final expectedEndpoint = 'ws://127.0.0.1:$port/socket';
-        expect(
-          logs1.any(
-            (l) =>
-                l.level == LogLevel.info &&
-                l.content ==
-                    'Closed id=${c1['id']} endpoint=$expectedEndpoint direction=remote code=1000 reasonPresent=true',
-          ),
-          isTrue,
-        );
+        final closeLogs1 = logs1
+            .where((l) => l.content.startsWith('Closed'))
+            .toList();
+        expect(closeLogs1, hasLength(1));
+        expect(closeLogs1.single, (
+          level: LogLevel.info,
+          content:
+              'Closed id=${c1['id']} endpoint=$expectedEndpoint direction=remote code=1000 reasonPresent=true',
+        ));
         expect(
           logs1.any((l) => l.content.contains('normal_done_reason')),
           isFalse,
@@ -628,10 +634,16 @@ void main() {
         final port2 = server2.port;
         try {
           final logs2 = <({LogLevel level, String content})>[];
+          final remoteClose2 = Completer<void>();
           final bridge2 = JsWebSocketBridge(
             proxyResolver: () async => null,
-            lifecycleLogger: (level, content) =>
-                logs2.add((level: level, content: content)),
+            lifecycleLogger: (level, content) {
+              logs2.add((level: level, content: content));
+              if (content.contains('direction=remote') &&
+                  !remoteClose2.isCompleted) {
+                remoteClose2.complete();
+              }
+            },
           );
           final s2 = Completer<WebSocket>();
           unawaited(() async {
@@ -641,19 +653,19 @@ void main() {
           }());
           final c2 = await _connect(bridge2, port2);
           await (await s2.future).close(1001, 'going_away_reason');
-          await pumpEventQueue();
+          await remoteClose2.future.timeout(const Duration(seconds: 1));
           await bridge2.dispose();
 
           final endpoint2 = 'ws://127.0.0.1:$port2/socket';
-          expect(
-            logs2.any(
-              (l) =>
-                  l.level == LogLevel.info &&
-                  l.content ==
-                      'Closed id=${c2['id']} endpoint=$endpoint2 direction=remote code=1001 reasonPresent=true',
-            ),
-            isTrue,
-          );
+          final closeLogs2 = logs2
+              .where((l) => l.content.startsWith('Closed'))
+              .toList();
+          expect(closeLogs2, hasLength(1));
+          expect(closeLogs2.single, (
+            level: LogLevel.info,
+            content:
+                'Closed id=${c2['id']} endpoint=$endpoint2 direction=remote code=1001 reasonPresent=true',
+          ));
           expect(
             logs2.any((l) => l.content.contains('going_away_reason')),
             isFalse,
@@ -666,10 +678,16 @@ void main() {
         final port3 = server3.port;
         try {
           final logs3 = <({LogLevel level, String content})>[];
+          final remoteClose3 = Completer<void>();
           final bridge3 = JsWebSocketBridge(
             proxyResolver: () async => null,
-            lifecycleLogger: (level, content) =>
-                logs3.add((level: level, content: content)),
+            lifecycleLogger: (level, content) {
+              logs3.add((level: level, content: content));
+              if (content.contains('direction=remote') &&
+                  !remoteClose3.isCompleted) {
+                remoteClose3.complete();
+              }
+            },
           );
           final s3 = Completer<WebSocket>();
           unawaited(() async {
@@ -679,19 +697,19 @@ void main() {
           }());
           final c3 = await _connect(bridge3, port3);
           await (await s3.future).close(1002, '');
-          await pumpEventQueue();
+          await remoteClose3.future.timeout(const Duration(seconds: 1));
           await bridge3.dispose();
 
           final endpoint3 = 'ws://127.0.0.1:$port3/socket';
-          expect(
-            logs3.any(
-              (l) =>
-                  l.level == LogLevel.warning &&
-                  l.content ==
-                      'Closed id=${c3['id']} endpoint=$endpoint3 direction=remote code=1002 reasonPresent=false',
-            ),
-            isTrue,
-          );
+          final closeLogs3 = logs3
+              .where((l) => l.content.startsWith('Closed'))
+              .toList();
+          expect(closeLogs3, hasLength(1));
+          expect(closeLogs3.single, (
+            level: LogLevel.warning,
+            content:
+                'Closed id=${c3['id']} endpoint=$endpoint3 direction=remote code=1002 reasonPresent=false',
+          ));
         } finally {
           await server3.close(force: true);
         }

@@ -16,6 +16,7 @@ from pathlib import Path
 
 PIN = "482464c2affc5eeba5d4a25bb272aeb352ec5918"
 GOMOBILE = "v0.0.0-20260908204917-8b95e45f8d3e"
+ANDROID_API = "24"
 ROOT = Path(__file__).resolve().parents[2]
 OVERLAY = ROOT / "native" / "openlist_core"
 WORK = ROOT / "build" / "openlist-core"
@@ -99,6 +100,19 @@ def install_gomobile(source: Path) -> None:
     run("gomobile", "init", cwd=source)
 
 
+def bind_android(source: Path, archive: Path) -> None:
+    run(
+        "gomobile",
+        "bind",
+        "-target=android/arm,android/arm64,android/amd64",
+        f"-androidapi={ANDROID_API}",
+        "-o",
+        str(archive),
+        "./native/openlist_core",
+        cwd=source,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("platform", choices=("android", "ios", "windows", "macos", "linux"))
@@ -111,7 +125,7 @@ def main() -> None:
         output = ROOT / "android" / "app" / "libs"
         output.mkdir(parents=True, exist_ok=True)
         archive = output / "openlistcore.aar"
-        run("gomobile", "bind", "-target=android/arm,android/arm64,android/amd64", "-o", str(archive), "./native/openlist_core", cwd=source)
+        bind_android(source, archive)
         verify_android_binding(archive)
     elif args.platform == "ios":
         output = ROOT / "ios" / "Frameworks"
@@ -119,7 +133,7 @@ def main() -> None:
         framework = output / "Openlistcore.xcframework"
         run("gomobile", "bind", "-target=ios", "-o", str(framework), "./native/openlist_core", cwd=source)
         verify_ios_binding(framework)
-        shutil.copyfile(source / "LICENSE", output / "LICENSE.OpenList")
+        shutil.copyfile(source / "LICENSE", output / "LICENSE.OpenList.txt")
     else:
         filename = {
             "windows": "venera_openlist.dll",
