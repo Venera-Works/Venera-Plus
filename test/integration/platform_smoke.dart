@@ -632,10 +632,12 @@ void main() {
           expect(find.byType(MainPage), findsOneWidget);
           expect(find.byType(HomePage), findsOneWidget);
           // Real users navigate to Library from the main navigation bar to access Reading Records
-          final libraryNavFinder = find.descendant(
-            of: find.byType(MainPage),
-            matching: find.byIcon(Icons.local_library_outlined),
-          );
+          final libraryNavFinder = find
+              .descendant(
+                of: find.byType(MainPage),
+                matching: find.byIcon(Icons.local_library_outlined),
+              )
+              .hitTestable();
           expect(libraryNavFinder, findsOneWidget);
 
           await tester.tap(libraryNavFinder);
