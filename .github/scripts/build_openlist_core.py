@@ -72,7 +72,7 @@ def verify_android_binding(archive: Path) -> None:
                 ("javap", "-classpath", str(classes), "openlistcore.Openlistcore"),
                 text=True,
             )
-    if "public static java.lang.String invoke(java.lang.String);" not in output:
+    if "public static native java.lang.String invoke(java.lang.String);" not in output:
         raise RuntimeError("gomobile Android binding did not export Openlistcore.invoke")
 
 

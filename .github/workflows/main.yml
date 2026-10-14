@@ -204,7 +204,9 @@ jobs:
             --build-number="$IOS_BUILD"
       - name: 校验 iOS 包含 OpenList 内核
         run: |
-          test -f build/ios/iphoneos/Runner.app/Frameworks/Openlistcore.framework/Openlistcore
+          # 静态框架由 AppDelegate 的 OpenlistcoreInvoke 强引用链接进 Runner。
+          test -s ios/Frameworks/Openlistcore.xcframework/ios-arm64/Openlistcore.framework/Openlistcore
+          test -s build/ios/iphoneos/Runner.app/Runner
       - name: 打包 IPA
         run: |
           mkdir -p build/ios/iphoneos/Payload
