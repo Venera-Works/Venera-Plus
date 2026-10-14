@@ -1,9 +1,9 @@
 Pod::Spec.new do |spec|
   spec.name = 'OpenListCore'
-  spec.version = '0.1.0'
+  spec.version = '0.1.0-beta.2'
   spec.summary = 'VeneraPlus embedded OpenList core'
-  spec.homepage = 'https://github.com/Venera-Works/Venera-Plus'
-  spec.source = { :git => 'https://github.com/OpenListTeam/OpenList.git', :commit => '482464c2affc5eeba5d4a25bb272aeb352ec5918' }
+  spec.homepage = 'https://github.com/Venera-Works/Venera-OpenList-Core'
+  spec.source = { :git => 'https://github.com/Venera-Works/Venera-OpenList-Core.git', :tag => 'core-v0.1.0-beta.2' }
   spec.license = { :type => 'AGPL-3.0-or-later', :file => 'Frameworks/LICENSE.OpenList.txt' }
   spec.author = { 'VeneraPlus' => 'noreply@example.invalid' }
   spec.platform = :ios, '13.0'

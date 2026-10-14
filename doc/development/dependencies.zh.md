@@ -17,6 +17,7 @@ English version: [dependencies.en.md](dependencies.en.md)
 
 - `sqlite3`: 迁移至 3.5.2（sqlite3 v3 架构）。v3 改由 Dart build hooks 负责原生二进制分发与构建绑定，移除了旧有插件 `sqlite3_flutter_libs` 及生成的原生注册逻辑。原生执行依赖预编译产物与 build hook，不使用系统全局或自行编译覆盖。
 - `dynamic_color`: 保留 1.8.1。1.9.0 存在 AGP 8 构建回归问题；2.0.2 引入 `material_ui ^1.0.0`，其 SDK 约束要求 Flutter >= 3.44 / Dart >= 3.12，与本项目固定的 Flutter 3.41.4 / Dart 3.11.1 不兼容，因此暂不升级并保持 1.8.1 版本边界。
+- OpenList 内核由 `Venera-Works/Venera-OpenList-Core` 独立发布。`native/openlist_core/core.lock.json` 固定 GitHub Release tag、源码提交和每个平台资产摘要；应用只下载锁定资产，不在应用工作流中安装 Go 或编译内核。升级必须先发布内核版本，再完整更新锁文件中的资产与许可证信息。
 
 ## 当前 Git 依赖
 

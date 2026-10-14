@@ -1,8 +1,9 @@
 # OpenList 嵌入内核
 
-此目录保存 VeneraPlus 的 OpenList 嵌入层，而不是一个 OpenList HTTP 服务。准备脚本把固定上游源码
-`482464c2affc5eeba5d4a25bb272aeb352ec5918` 复制到构建目录，应用本目录的最小补丁后再复制 bridge。
-因此 `cache/OpenList` 只是开发缓存，发布构建不依赖对该缓存的未跟踪修改。
+此目录保存 VeneraPlus 使用的 OpenList 内核锁定信息和运行时接口，而不是一个 OpenList HTTP 服务。
+内核由独立的 `Venera-Works/Venera-OpenList-Core` 仓库构建并发布；应用构建通过
+`.github/scripts/fetch_openlist_core.py` 下载 `core.lock.json` 固定版本的对应平台产物。
+`cache/Venera-OpenList-Core` 是内核仓库的开发工作区，发布内核时应在该仓库中构建。
 
 ## RPC ABI
 
@@ -17,9 +18,9 @@
 
 ## 构建
 
-CI 运行 `scripts/prepare_openlist_core.py`，其输出目录内执行以下目标：Android AAR、iOS
-XCFramework，以及 Windows、macOS、Linux 的 C ABI 动态库。本地不运行这些编译命令。Go 版本固定为
-`1.27.1`，gomobile 固定为 `v0.0.0-20260908204917-8b95e45f8d3e`。
+应用 CI 下载 Android AAR、iOS XCFramework，以及 Windows、macOS、Linux 的 C ABI 动态库；不再在
+VeneraPlus 工作流中安装 Go 或编译内核。升级内核时只更新 `core.lock.json` 中已发布的版本、源码提交和
+各资产摘要，再运行对应平台 CI。许可证随下载的内核产物安装到各平台打包目录。
 
 Go 1.27 仅支持 macOS 13 及以上。应用本身继续支持 macOS 12；原生
 `venera/method_channel` 的 `isOpenListSupported` 在 macOS 12 返回 `false`，Dart

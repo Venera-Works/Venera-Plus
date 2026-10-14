@@ -3,6 +3,7 @@ run-name: "PR 平台冒烟构建 #${{ github.event.pull_request.number }}"
 
 on:
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: pr-platform-${{ github.event.pull_request.number || github.ref }}
@@ -21,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
       - name: 判断是否需要平台构建
         id: changed
@@ -29,14 +30,18 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          git fetch --no-tags --depth=1 origin "$BASE_SHA"
-          changed_files="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" --)"
-          printf '%s\n' "$changed_files"
-          if printf '%s\n' "$changed_files" | grep -Eq \
-            '^(test/integration/|test/driver/|test/features/comic_source/(source_parser_test\.dart|source_lifecycle_test\.dart|source_files_test\.dart)$|test/features/sync/app_data_transfer_test\.dart$|lib/|assets/|android/|windows/|ios/|macos/|linux/|debian/|patch/|\.github/workflows/|\.github/scripts/|pubspec\.yaml$|pubspec\.lock$|rust-toolchain\.toml$|analysis_options\.yaml$)'; then
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "platform=true" >> "$GITHUB_OUTPUT"
           else
-            echo "platform=false" >> "$GITHUB_OUTPUT"
+            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+            changed_files="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" --)"
+            printf '%s\n' "$changed_files"
+            if printf '%s\n' "$changed_files" | grep -Eq \
+              '^(test/integration/|test/driver/|test/features/comic_source/(source_parser_test\.dart|source_lifecycle_test\.dart|source_files_test\.dart)$|test/features/sync/app_data_transfer_test\.dart$|lib/|assets/|android/|windows/|ios/|macos/|linux/|debian/|patch/|native/openlist_core/core\.lock\.json$|\.github/workflows/|\.github/scripts/|pubspec\.yaml$|pubspec\.lock$|rust-toolchain\.toml$|analysis_options\.yaml$)'; then
+              echo "platform=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "platform=false" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
   android:
@@ -47,9 +52,6 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.27.1'
       - name: 清理运行器空间以确保原生执行可靠
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost
@@ -108,8 +110,8 @@ jobs:
             'storeFile=../debug.keystore' \
             > android/key.properties
       - run: flutter pub get --enforce-lockfile
-      - name: 构建嵌入 OpenList Android 内核
-        run: python3 .github/scripts/build_openlist_core.py android
+      - name: 下载 OpenList Android 内核
+        run: python3 .github/scripts/fetch_openlist_core.py android
       - name: 构建 Android Debug APK (arm64)
         run: flutter build apk --debug --target-platform android-arm64
       - name: 运行 Android 平台冒烟与数据库原生验证
@@ -141,9 +143,6 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.27.1'
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -151,14 +150,9 @@ jobs:
           architecture: x64
           cache: true
       - run: flutter pub get --enforce-lockfile
-      - name: 构建嵌入 OpenList Windows 内核
+      - name: 下载 OpenList Windows 内核
         shell: pwsh
-        run: |
-          $gcc = Get-Command gcc.exe -ErrorAction SilentlyContinue
-          if ($null -eq $gcc) { throw 'Go c-shared requires MinGW gcc on the Windows runner.' }
-          $env:CC = $gcc.Source
-          & $env:CC --version
-          python .github/scripts/build_openlist_core.py windows
+        run: python .github/scripts/fetch_openlist_core.py windows-x64
       - name: 构建 Windows Debug 应用
         run: flutter build windows --debug
       - name: 校验 Windows 包含 OpenList 内核

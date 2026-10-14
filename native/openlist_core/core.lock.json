@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "repository": "Venera-Works/Venera-OpenList-Core",
+  "version": "0.1.0-beta.2",
+  "tag": "core-v0.1.0-beta.2",
+  "sourceCommit": "879ff0f4b3a0fd488bcc061e64a94cfaca34b7e6",
+  "rpcAbi": 1,
+  "assets": {
+    "android": {
+      "name": "openlist-core-android.zip",
+      "sha256": "f91bc270e6ecbb72e3da6eaf34fbc2783d80139bf81f9e6ba854071f5ce70d04"
+    },
+    "ios": {
+      "name": "openlist-core-ios.zip",
+      "sha256": "bf78d91802dfb5d9f3c838f7559351854306817fb70a163e1f27a1f4dc002590"
+    },
+    "linux-arm64": {
+      "name": "openlist-core-linux-arm64.zip",
+      "sha256": "c8afe23471f0db226b2d1d340039dc810313e00ae068c828a4cf09ba35efaf7e"
+    },
+    "linux-x64": {
+      "name": "openlist-core-linux-x64.zip",
+      "sha256": "217c1f73e9b008a48a0eac6e6327583d4cac9f8209fffb6b90d6381e0999db3c"
+    },
+    "macos-universal": {
+      "name": "openlist-core-macos-universal.zip",
+      "sha256": "6198f19e9fec564ee62085a3f0157704fa48eea5efcea83617f9473eda7a9700"
+    },
+    "windows-x64": {
+      "name": "openlist-core-windows-x64.zip",
+      "sha256": "41060921a3731f9212d6f81a541c9c7e70c57f21e576874fc177551e0a5c04af"
+    }
+  }
+}

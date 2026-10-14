@@ -134,6 +134,10 @@ set(OPENLIST_CORE_SO "${CMAKE_SOURCE_DIR}/../native/openlist_core/artifacts/linu
 if(EXISTS "${OPENLIST_CORE_SO}")
   install(FILES "${OPENLIST_CORE_SO}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
 endif()
+set(OPENLIST_CORE_LICENSE "${CMAKE_SOURCE_DIR}/../native/openlist_core/artifacts/linux/LICENSE.OpenList.txt")
+if(EXISTS "${OPENLIST_CORE_LICENSE}")
+  install(FILES "${OPENLIST_CORE_LICENSE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}/licenses" COMPONENT Runtime)
+endif()
 
 # Copy the native assets provided by the build.dart from all packages.
 set(NATIVE_ASSETS_DIR "${PROJECT_BUILD_DIR}native_assets/linux/")

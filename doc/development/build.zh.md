@@ -37,6 +37,14 @@ flutter pub get --enforce-lockfile
 
 不要在不了解依赖影响的情况下删除或重新生成 `pubspec.lock`。
 
+## OpenList 内核
+
+应用不再在本仓库编译 OpenList。各平台构建在 `flutter pub get` 后运行
+`python3 .github/scripts/fetch_openlist_core.py <platform>` 下载固定内核；平台参数为
+`android`、`ios`、`macos-universal`、`windows-x64`、`linux-x64` 或 `linux-arm64`。
+版本、源码提交和资产摘要均保存在 `native/openlist_core/core.lock.json`。先在
+Venera-OpenList-Core 发布新版本，确认全部资产与许可证存在后再更新锁文件并运行应用 CI。
+
 Git fork 的来源、固定 commit 和升级要求见[依赖治理](dependencies.zh.md)。
 
 ### 关键依赖锁定
@@ -210,7 +218,7 @@ python .github/scripts/release_version.py --check --tag v1.2.3
 
 `pubspec.yaml`、发布 tag 和 `CHANGELOG.md` 版本章节必须与 `release.json` 一致。
 
-`代码分析` 工作流会运行版本与结构检查、Python 脚本测试、Dart 格式检查（`lib` 与 `test`，覆盖子目录）、`flutter analyze`、完整 Dart 测试及覆盖率汇总。`依赖安全审查` 会检查 PR 新增或升级的依赖，`PR 平台冒烟构建` 会按改动范围验证 Android 和 Windows 的编译与原生数据库集成测试场景。`完整构建` 在开始多平台构建前会复用同一质量工作流；手动平台构建和 tag 发布则共同复用 `.github/workflows/build.yml`，避免两套构建定义产生差异。
+`代码分析` 工作流会运行版本与结构检查、Python 脚本测试、Dart 格式检查（`lib` 与 `test`，覆盖子目录）、`flutter analyze`、完整 Dart 测试及覆盖率汇总。`依赖安全审查` 会检查 PR 新增或升级的依赖，`PR 平台冒烟构建` 会按改动范围验证 Android 和 Windows 的编译与原生数据库集成测试场景，也可通过手动触发验证已发布的内核。`完整构建` 在开始多平台构建前会复用同一质量工作流；手动平台构建和 tag 发布则共同复用 `.github/workflows/build.yml`，避免两套构建定义产生差异。
 
 原生平台 CI 构建任务配置了编译与依赖缓存：使用 `sccache` 缓存原生任务中的 Rust 编译及受支持的 Linux CMake 生成器路径下的 C/C++ 编译（未保留 Windows C/C++ 包装器），使用 Cargo 注册表与 Git 下载缓存，以及 Android Gradle 构建缓存。构建步骤在结束时通过 `sccache --show-stats` 打印统计信息，用于确认热缓存命中情况。最终发布包与安装包等产物始终重新构建生成，不会从缓存复用。
 

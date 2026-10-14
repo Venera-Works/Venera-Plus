@@ -2,6 +2,8 @@
 
 VeneraPlus 可通过内置 OpenList 内核连接百度网盘、夸克网盘、115 网盘、123 云盘、OneDrive 和 Google Drive；WebDAV 仍可作为一个独立账号使用。
 
+内置内核由 Venera-OpenList-Core 独立构建并随应用打包；应用只使用已发布的固定内核版本，不会在设备上下载或运行 OpenList 服务。
+
 在“存储与同步”中先添加账号。OpenList 账号使用 [OpenList Token 页面](https://api.oplist.org/) 获取的授权数据手动导入；应用不会把 OpenList HTTP 服务暴露到网络。
 
 “来源与服务 → 漫画库”可为每个漫画库选择一个账号和一个或多个识别目录。目录会合并展示；相同完整远端路径的漫画只显示一次，不同目录下的同名漫画会分别显示。同步数据和漫画备份各自只能选择一个账号和一个目录。
