@@ -6,7 +6,7 @@ This guide is for developers building, testing, or maintaining VeneraPlus (repos
 
 ## Prerequisites
 > [!IMPORTANT]
-> **Build Permission Notice**: Application builds (including `flutter build`, `flutter run`, Gradle/CMake/MSBuild compilation, packaging entry points, and tests that implicitly compile) are prohibited without explicit user permission. Only code modifications and non-building static checks are permitted without authorization.
+> **Build Permission Notice**: Application builds are prohibited without explicit user permission. 
 
 
 - Flutter `3.41.4`
