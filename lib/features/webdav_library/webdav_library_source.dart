@@ -2644,10 +2644,16 @@ class WebDavLibrarySource {
     return {'url': config.fileUrl(imageKey), 'headers': config.authHeaders};
   }
 
-  static Map<String, dynamic> getThumbnailLoadingConfig(String imageKey) {
+  static Future<Map<String, dynamic>> getThumbnailLoadingConfig(
+    String imageKey,
+  ) async {
     final config = WebDavLibraryConfig.fromSettings();
     if (imageKey.startsWith('cover.')) {
       return {'headers': config.authHeaders};
+    }
+    if (config.remoteStore != null) {
+      final link = await config.remoteStore!.link(imageKey);
+      return {'url': link.url, 'headers': link.headers};
     }
     return {'url': config.fileUrl(imageKey), 'headers': config.authHeaders};
   }
@@ -2844,7 +2850,7 @@ class WebDavLibraryEngine {
           target: target,
         ),
       ),
-      null,
+      (key) => _run(() => WebDavLibrarySource.getThumbnailLoadingConfig(key)),
       '',
       '',
       '',

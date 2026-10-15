@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library.dart';
 import 'package:venera_plus/features/comic_storage/comic_storage.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library_cache.dart';
@@ -197,6 +198,44 @@ void main() {
       expect(secondStore.cancelAllCalls, 1);
     },
   );
+
+  test('remote library thumbnails resolve their own account links', () async {
+    const imageKey = '/娱乐/漫画 [A] 100%/cover.jpg';
+    final sources = <String, ComicSource>{};
+    final stores = <String, _FakeRemoteFileStore>{};
+    for (final id in ['first', 'second']) {
+      final store = _FakeRemoteFileStore(id)
+        ..links[imageKey] = RemoteLink(
+          url: 'https://$id.example.com/cover.jpg?sign=$id',
+          headers: {'Referer': 'https://$id.example.com/'},
+        );
+      final engine = WebDavLibraryEngine(
+        library: RemoteLibrary(
+          id: id,
+          sourceKey: id,
+          accountId: id,
+          directories: const ['/娱乐/'],
+          name: id,
+          autoRefresh: false,
+        ),
+        store: store,
+      );
+      addTearDown(engine.cancel);
+      sources[id] = engine.create();
+      stores[id] = store;
+    }
+
+    for (final id in sources.keys) {
+      final config = await sources[id]!.getThumbnailLoadingConfig?.call(
+        imageKey,
+      );
+      expect(config, {
+        'url': 'https://$id.example.com/cover.jpg?sign=$id',
+        'headers': {'Referer': 'https://$id.example.com/'},
+      });
+      expect(stores[id]!.linkedPaths, [imageKey]);
+    }
+  });
 
   test(
     'legacy multi-root IDs retain the anchor only for its original root',
@@ -1096,6 +1135,22 @@ void main() {
       expect(config['headers'], {'authorization': 'Basic dXNlcjpwYXNz'});
     },
   );
+  test('legacy thumbnails retain encoded URLs and basic auth headers', () async {
+    final config = await WebDavLibrarySource.getThumbnailLoadingConfig(
+      '/manga/Cat Eye/第01卷/cover.jpg',
+    );
+    expect(config, {
+      'url':
+          'https://example.com/dav/manga/Cat%20Eye/%E7%AC%AC01%E5%8D%B7/cover.jpg',
+      'headers': {'authorization': 'Basic dXNlcjpwYXNz'},
+    });
+    expect(
+      await WebDavLibrarySource.getThumbnailLoadingConfig('cover.Cat Eye'),
+      {
+        'headers': {'authorization': 'Basic dXNlcjpwYXNz'},
+      },
+    );
+  });
   test('missing metadata is scraped and written back to WebDAV', () async {
     ops.dirs['/manga/'] = const [
       WebDavLibraryEntry(name: 'Cat Eye[Tsukasa Hojo]', isDirectory: true),
@@ -2569,6 +2624,8 @@ class _FakeRemoteFileStore implements RemoteFileStore {
   final dirs = <String, List<RemoteEntry>>{};
   final errors = <String, Object>{};
   final writtenPaths = <String>[];
+  final links = <String, RemoteLink>{};
+  final linkedPaths = <String>[];
   var cancelAllCalls = 0;
 
   @override
@@ -2593,7 +2650,10 @@ class _FakeRemoteFileStore implements RemoteFileStore {
   }) async {}
 
   @override
-  Future<RemoteLink> link(String path) async => RemoteLink(url: path);
+  Future<RemoteLink> link(String path) async {
+    linkedPaths.add(path);
+    return links[path] ?? RemoteLink(url: path);
+  }
 
   @override
   Future<List<RemoteEntry>> list(String directory) async {

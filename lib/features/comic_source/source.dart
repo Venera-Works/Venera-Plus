@@ -105,8 +105,7 @@ class ComicSource {
 
   final GetImageLoadingConfigFunc? getImageLoadingConfig;
 
-  final Map<String, dynamic> Function(String imageKey)?
-  getThumbnailLoadingConfig;
+  final GetThumbnailLoadingConfigFunc? getThumbnailLoadingConfig;
 
   _SourceSession _session = _SourceSession();
 
