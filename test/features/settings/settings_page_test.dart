@@ -6,7 +6,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/discovery/explore_page.dart';
+import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/settings/settings.dart';
+import 'package:venera_plus/features/storage/storage.dart';
+import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
@@ -82,6 +85,8 @@ void main() {
   });
 
   setUp(() async {
+    DataSync.resetForTesting();
+    DataSync.debugDisableWindowCloseHandler = true;
     originalDataPath = App.dataPath;
     originalCachePath = App.cachePath;
     settingsSnapshot =
@@ -95,6 +100,7 @@ void main() {
   });
 
   tearDown(() async {
+    DataSync.resetForTesting();
     try {
       try {
         WebDavLibrarySource.resetCacheForTesting();
@@ -245,6 +251,166 @@ void main() {
     },
   );
   testWidgets(
+    'purpose overview shows destinations and opens account-based sync settings on narrow screens',
+    (tester) async {
+      _setupTestView(tester, const Size(390, 1000));
+      appdata.implicitData['webdavSyncMode'] = 'manual';
+      appdata.settings[remoteStorageAccountsSetting] = [
+        const StorageAccount(
+          id: 'cloud',
+          backend: StorageBackend.openlist,
+          driver: 'GoogleDrive',
+          name: 'Personal Drive',
+          authorization: {},
+        ).toJson(),
+      ];
+      appdata.settings['syncRemoteLocation'] = const RemoteLocation(
+        accountId: 'cloud',
+        directory: '/Sync/',
+      ).toJson();
+      appdata.settings['backupRemoteLocation'] = const RemoteLocation(
+        accountId: 'cloud',
+        directory: '/Backups/',
+      ).toJson();
+      await tester.pumpWidget(
+        const MaterialApp(home: Scaffold(body: StorageAndSyncSettings())),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Cloud Storage Uses'), findsOneWidget);
+      expect(find.text('Online Comic Libraries'), findsOneWidget);
+      expect(find.textContaining('Personal Drive · /Sync/'), findsOneWidget);
+      expect(find.textContaining('Personal Drive · /Backups/'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('data-sync-entry')));
+      await tester.pumpAndSettle();
+      expect(find.byType(RemoteLocationFields), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(RemoteLocationFields),
+          matching: find.text('Personal Drive'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('/Sync/'), findsOneWidget);
+      expect(find.text('URL'), findsNothing);
+      expect(find.text('WebDAV (legacy)'), findsNothing);
+      expect(find.text('Skip Setting Fields (Optional)'), findsNothing);
+      await tester.ensureVisible(find.text('Advanced field exclusions'));
+      await tester.tap(find.text('Advanced field exclusions'));
+      await tester.pumpAndSettle();
+      expect(find.text('Skip Setting Fields (Optional)'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'overview opens shared backup settings and the two local settings pages',
+    (tester) async {
+      _setupTestView(tester, const Size(390, 1200));
+      CacheManager.debugDisableInitialScan = true;
+      LocalManager().path = App.dataPath;
+      appdata.implicitData['webdavSyncMode'] = 'manual';
+      appdata.settings[remoteStorageAccountsSetting] = [
+        const StorageAccount(
+          id: 'backup-drive',
+          backend: StorageBackend.openlist,
+          driver: 'GoogleDrive',
+          name: 'Backup Drive',
+          authorization: {},
+        ).toJson(),
+      ];
+      appdata.settings['backupRemoteLocation'] = const RemoteLocation(
+        accountId: 'backup-drive',
+        directory: '/Archive/',
+      ).toJson();
+      await tester.pumpWidget(
+        MaterialApp(
+          navigatorKey: App.rootNavigatorKey,
+          home: const Scaffold(body: StorageAndSyncSettings()),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('comic-backup-entry')));
+      await tester.pumpAndSettle();
+      expect(find.byType(RemoteLocationFields), findsOneWidget);
+      expect(find.text('/Archive/'), findsOneWidget);
+      expect(find.text('URL'), findsNothing);
+      expect(find.text('Browse Backed-up Comics'), findsOneWidget);
+      App.rootPop();
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(find.text('Local Storage and Downloads'));
+      await tester.tap(find.text('Local Storage and Downloads'));
+      await tester.pumpAndSettle();
+      expect(find.text('Storage Path for local comics'), findsOneWidget);
+      App.rootPop();
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('App Data Import and Export'));
+      await tester.tap(find.text('App Data Import and Export'));
+      await tester.pumpAndSettle();
+      expect(find.text('Export App Data'), findsOneWidget);
+      expect(find.text('Import App Data'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'empty comic libraries allow adding an account without losing the library name',
+    (tester) async {
+      _setupTestView(tester, const Size(390, 1000));
+      final storage = RemoteStorageAccounts.instance;
+      storage.configureOpenList(_LibraryPickerRpc());
+      appdata.settings[remoteStorageAccountsSetting] = [];
+      appdata.settings[remoteLibrariesSetting] = [];
+      await tester.pumpWidget(
+        const MaterialApp(home: RemoteLibrarySettingsPage()),
+      );
+      await tester.tap(find.byType(FloatingActionButton));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'My library');
+      await tester.tap(find.byType(DropdownButton<String>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Add Cloud Storage Account').last);
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(AlertDialog).last,
+          matching: find.widgetWithText(TextField, 'Name'),
+        ),
+        'New Account',
+      );
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Refresh Token'),
+        'refresh',
+      );
+      final connected = Completer<void>();
+      void onSaved() {
+        if (storage.accounts.any(
+              (a) => a.status == StorageAuthorizationStatus.valid,
+            ) &&
+            !connected.isCompleted) {
+          connected.complete();
+        }
+      }
+
+      storage.addListener(onSaved);
+      try {
+        await tester.tap(find.text('Save').last);
+        await runWidgetIo(tester, () => connected.future);
+        await tester.pumpAndSettle();
+      } finally {
+        storage.removeListener(onSaved);
+      }
+      expect(find.text('My library'), findsOneWidget);
+      expect(find.text('New Account'), findsOneWidget);
+      expect(find.text('Recognition Directories'), findsOneWidget);
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      await runWidgetIo(tester, () => appdata.saveData(false));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'comic libraries create, edit, delete and recreate without changing manual page order',
     (tester) async {
       _setupTestView(tester, const Size(1000, 1600));
@@ -304,10 +470,10 @@ void main() {
       );
 
       await tester.pumpWidget(
-        const MaterialApp(home: Scaffold(body: SourcesAndServicesSettings())),
+        const MaterialApp(home: Scaffold(body: StorageAndSyncSettings())),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Comic Libraries'));
+      await tester.tap(find.text('Online Comic Libraries'));
       await tester.pumpAndSettle();
 
       Future<void> selectDirectories() async {

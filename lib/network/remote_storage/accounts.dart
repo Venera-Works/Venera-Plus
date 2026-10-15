@@ -8,6 +8,7 @@ import 'models.dart';
 import 'openlist_rpc.dart';
 import 'remote_file_store.dart';
 import 'webdav_file_store.dart';
+import '../webdav.dart';
 
 const remoteStorageAccountsSetting = 'remoteStorageAccounts';
 const remoteLibrariesSetting = 'remoteLibraries';
@@ -71,6 +72,75 @@ class RemoteStorageAccounts with ChangeNotifier {
       if (value.id == id) return value;
     }
     return null;
+  }
+
+  Future<void> migrateLegacyWebDavLocations() async {
+    final values = accounts;
+    var changed = false;
+    for (final (setting, locationKey, directory) in [
+      ('webdav', 'syncRemoteLocation', '/VeneraPlus/'),
+      (
+        'backupWebdav',
+        'backupRemoteLocation',
+        appdata.settings['backupWebdavPath'] as String? ?? '/venera_backup/',
+      ),
+    ]) {
+      if (appdata.settings[locationKey] is Map) continue;
+      final raw = appdata.settings[setting];
+      if (raw is! List ||
+          raw.length != 3 ||
+          raw.any((item) => item is! String)) {
+        continue;
+      }
+      final endpoint = WebDavEndpoint(
+        url: raw[0] as String,
+        user: raw[1] as String,
+        password: setting == 'backupWebdav'
+            ? (raw[2] as String).trim()
+            : raw[2] as String,
+      );
+      if (!endpoint.isValid) continue;
+      StorageAccount? selected;
+      for (final value in values.where(
+        (a) => a.backend == StorageBackend.webdav,
+      )) {
+        final existing = WebDavEndpoint(
+          url: value.authorization['url'] as String? ?? '',
+          user: value.authorization['user'] as String? ?? '',
+          password: value.authorization['password'] as String? ?? '',
+        );
+        if (existing.url == endpoint.url &&
+            existing.user == endpoint.user &&
+            existing.password == endpoint.password) {
+          selected = value;
+          break;
+        }
+      }
+      selected ??= StorageAccount(
+        id: _uuid.v4(),
+        backend: StorageBackend.webdav,
+        driver: 'webdav',
+        name: 'WebDAV',
+        authorization: {
+          'url': endpoint.url,
+          'user': endpoint.user,
+          'password': endpoint.password,
+        },
+      );
+      if (!values.any((a) => a.id == selected!.id)) values.add(selected);
+      appdata.settings[locationKey] = RemoteLocation(
+        accountId: selected.id,
+        directory: directory,
+      ).toJson();
+      appdata.settings[setting] = const [];
+      changed = true;
+    }
+    if (!changed) return;
+    appdata.settings[remoteStorageAccountsSetting] = values
+        .map((value) => value.toJson())
+        .toList();
+    await appdata.saveData(false);
+    notifyListeners();
   }
 
   Future<StorageAccount> save(StorageAccount value) async {

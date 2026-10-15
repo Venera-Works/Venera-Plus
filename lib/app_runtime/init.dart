@@ -212,6 +212,7 @@ Future<void> init() async {
     Log.error('OpenList', error, stackTrace);
   }
   await RemoteComicLibraryRegistry.migrateLegacyWebDavLibrary();
+  await remoteStorage.migrateLegacyWebDavLocations();
   _watchRemoteLibraryConfiguration(remoteStorage);
   var proxySetting = appdata.settings['proxy'];
   appdata.settings.addListener(() {

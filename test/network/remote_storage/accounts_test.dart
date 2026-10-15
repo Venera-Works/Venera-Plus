@@ -59,6 +59,75 @@ void main() {
       _account.toJson(),
     ]);
   });
+
+  test(
+    'legacy WebDAV locations reuse accounts and preserve remote paths',
+    () async {
+      const account = StorageAccount(
+        id: 'shared-webdav',
+        backend: StorageBackend.webdav,
+        driver: 'webdav',
+        name: 'Shared WebDAV',
+        authorization: {
+          'url': 'https://example.com/dav',
+          'user': 'user',
+          'password': 'password',
+        },
+      );
+      await storage.save(account);
+      for (final key in ['webdav', 'backupWebdav']) {
+        appdata.settings[key] = [
+          'https://example.com/dav/',
+          ' user ',
+          'password',
+        ];
+      }
+      appdata.settings['backupWebdavPath'] = '/漫画 100%/CBZ/';
+      await storage.migrateLegacyWebDavLocations();
+      expect(storage.accounts.single.toJson(), account.toJson());
+      expect(appdata.settings['syncRemoteLocation'], {
+        'accountId': account.id,
+        'directory': '/VeneraPlus/',
+      });
+      expect(appdata.settings['backupRemoteLocation'], {
+        'accountId': account.id,
+        'directory': '/漫画 100%/CBZ/',
+      });
+      await storage.migrateLegacyWebDavLocations();
+      await appdata.loadDataForTesting(dataDir.path);
+      expect(storage.accounts.single.toJson(), account.toJson());
+      expect(
+        appdata.settings['backupRemoteLocation']['directory'],
+        '/漫画 100%/CBZ/',
+      );
+      await storage.remove(account.id);
+      await storage.migrateLegacyWebDavLocations();
+      expect(storage.accounts, isEmpty);
+      expect(appdata.settings['webdav'], isEmpty);
+      expect(appdata.settings['backupWebdav'], isEmpty);
+    },
+  );
+
+  test(
+    'legacy migration keeps distinct credentials and explicit destinations',
+    () async {
+      appdata.settings['webdav'] = ['https://example.com/dav', 'user', 'one'];
+      appdata.settings['backupWebdav'] = [
+        'https://example.com/dav',
+        'user',
+        'two',
+      ];
+      await storage.migrateLegacyWebDavLocations();
+      expect(storage.accounts, hasLength(2));
+      final destination = Map<String, dynamic>.from(
+        appdata.settings['syncRemoteLocation'],
+      );
+      appdata.settings['webdav'] = ['https://other.example.com', 'new', 'new'];
+      await storage.migrateLegacyWebDavLocations();
+      expect(storage.accounts, hasLength(2));
+      expect(appdata.settings['syncRemoteLocation'], destination);
+    },
+  );
 }
 
 const _account = StorageAccount(

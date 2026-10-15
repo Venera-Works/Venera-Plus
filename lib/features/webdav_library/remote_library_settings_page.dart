@@ -1,16 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
-import 'package:venera_plus/features/storage/remote_directory_picker.dart';
+import 'package:venera_plus/features/storage/storage.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library_source.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 
-/// Management page for independent remote comic libraries.  Account management
-/// remains in Storage & Sync; this page only binds an account to recognition
-/// directories and never deletes remote files or cached history.
+/// Binds remote comic libraries to shared storage accounts and directories.
 class RemoteLibrarySettingsPage extends StatefulWidget {
-  const RemoteLibrarySettingsPage({super.key});
+  const RemoteLibrarySettingsPage({super.key, this.initialAccountId});
+  final String? initialAccountId;
 
   @override
   State<RemoteLibrarySettingsPage> createState() =>
@@ -19,6 +18,16 @@ class RemoteLibrarySettingsPage extends StatefulWidget {
 
 class _RemoteLibrarySettingsPageState extends State<RemoteLibrarySettingsPage> {
   final _storage = RemoteStorageAccounts.instance;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.initialAccountId != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _edit(null);
+      });
+    }
+  }
 
   bool _isPageTitleUsedElsewhere(String title, RemoteLibrary library) =>
       _storage.libraries.any(
@@ -65,14 +74,16 @@ class _RemoteLibrarySettingsPageState extends State<RemoteLibrarySettingsPage> {
   }
 
   Future<void> _edit(RemoteLibrary? initial) async {
-    final accounts = _storage.accounts;
-    if (accounts.isEmpty) return;
     var name = initial?.name ?? '';
     final existingAccount = initial == null
         ? null
         : _storage.account(initial.accountId);
-    var account = existingAccount ?? accounts.first;
-    var accountId = account.id;
+    StorageAccount? account =
+        existingAccount ??
+        (initial == null
+            ? _storage.account(widget.initialAccountId ?? '') ??
+                  _storage.accounts.firstOrNull
+            : null);
     var directories = initial?.directories ?? const <String>[];
     var autoRefresh = initial?.autoRefresh ?? true;
     var refreshIntervalMinutes = initial?.refreshIntervalMinutes ?? 360;
@@ -92,61 +103,15 @@ class _RemoteLibrarySettingsPageState extends State<RemoteLibrarySettingsPage> {
                   onChanged: (value) => name = value,
                   decoration: InputDecoration(labelText: 'Name'.tl),
                 ),
-                if (initial == null)
-                  DropdownButtonFormField<String>(
-                    initialValue: accountId,
-                    decoration: InputDecoration(
-                      labelText: 'Storage Account'.tl,
-                    ),
-                    items: [
-                      for (final value in accounts)
-                        DropdownMenuItem(
-                          value: value.id,
-                          child: Text(value.name),
-                        ),
-                    ],
-                    onChanged: (value) => setDialogState(() {
-                      accountId = value!;
-                      account = accounts.firstWhere((item) => item.id == value);
-                      directories = const [];
-                    }),
-                  )
-                else
-                  InputDecorator(
-                    decoration: InputDecoration(
-                      labelText: 'Storage Account'.tl,
-                    ),
-                    child: Text(existingAccount?.name ?? initial.accountId),
-                  ),
-                ListTile(
-                  title: Text('Recognition Directories'.tl),
-                  subtitle: Text(
-                    directories.isEmpty
-                        ? 'None selected'.tl
-                        : directories.join('\n'),
-                  ),
-                  onTap:
-                      (initial != null && existingAccount == null) ||
-                          !account.isConfigured
-                      ? null
-                      : () async {
-                          final store = _storage.storeFor(account.id);
-                          final selected = await Navigator.of(context)
-                              .push<List<String>>(
-                                MaterialPageRoute(
-                                  builder: (_) => RemoteDirectoryPicker(
-                                    store: store,
-                                    initialDirectories: directories,
-                                    multiSelect: true,
-                                    disposeStore: true,
-                                    onDisposeStore: _storage.release,
-                                  ),
-                                ),
-                              );
-                          if (selected != null) {
-                            setDialogState(() => directories = selected);
-                          }
-                        },
+                RemoteLocationFields(
+                  accountId: account?.id ?? initial?.accountId,
+                  directories: directories,
+                  multiSelect: true,
+                  accountLocked: initial != null,
+                  onChanged: (value, selected) => setDialogState(() {
+                    account = value;
+                    directories = selected;
+                  }),
                 ),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
@@ -157,6 +122,7 @@ class _RemoteLibrarySettingsPageState extends State<RemoteLibrarySettingsPage> {
                 ),
                 if (autoRefresh)
                   DropdownButtonFormField<int>(
+                    isExpanded: true,
                     initialValue: refreshIntervalMinutes,
                     decoration: InputDecoration(
                       labelText: 'Update interval'.tl,
@@ -193,10 +159,12 @@ class _RemoteLibrarySettingsPageState extends State<RemoteLibrarySettingsPage> {
             FilledButton(
               onPressed: () {
                 final trimmed = name.trim();
-                if (trimmed.isEmpty || directories.isEmpty) return;
+                if (trimmed.isEmpty || directories.isEmpty || account == null) {
+                  return;
+                }
                 final library = initial == null
                     ? RemoteComicLibraryRegistry.create(
-                        accountId: account.id,
+                        accountId: account!.id,
                         directories: directories,
                         name: trimmed,
                       ).copyWith(
@@ -227,7 +195,7 @@ class _RemoteLibrarySettingsPageState extends State<RemoteLibrarySettingsPage> {
   Widget build(BuildContext context) {
     final libraries = _storage.libraries;
     return Scaffold(
-      appBar: AppBar(title: Text('Comic Libraries'.tl)),
+      appBar: AppBar(title: Text('Online Comic Libraries'.tl)),
       floatingActionButton: FloatingActionButton(
         onPressed: () => _edit(null),
         child: const Icon(Icons.add),

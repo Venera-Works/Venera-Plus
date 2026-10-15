@@ -1,19 +1,78 @@
 import 'package:flutter/material.dart';
 import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'token_import.dart';
 
+enum StorageAccountPurpose { library, sync, archive }
+
+Future<StorageAccount?> showStorageAccountEditor(
+  BuildContext context, {
+  StorageAccount? initial,
+  RemoteStorageAccounts? accounts,
+}) async {
+  final storage = accounts ?? RemoteStorageAccounts.instance;
+  final result = await showDialog<StorageAccount>(
+    context: context,
+    builder: (_) => _StorageAccountDialog(initial: initial),
+  );
+  if (result == null) return null;
+  var saved = await storage.save(result);
+  if (saved.statusMessage != null) return saved;
+  final store = storage.storeFor(saved.id);
+  try {
+    await store.test();
+    saved = saved.copyWith(
+      status: StorageAuthorizationStatus.valid,
+      clearStatusMessage: true,
+    );
+  } on RemoteStorageException catch (error) {
+    saved = saved.copyWith(
+      status: error.isAuthorizationFailure
+          ? StorageAuthorizationStatus.invalid
+          : StorageAuthorizationStatus.unknown,
+      statusMessage: error.message,
+    );
+  } finally {
+    storage.release(store);
+  }
+  await storage.updateStatus(saved);
+  return saved;
+}
+
 class StorageAccountsPage extends StatefulWidget {
-  StorageAccountsPage({super.key, RemoteStorageAccounts? accounts})
-    : accounts = accounts ?? RemoteStorageAccounts.instance;
+  StorageAccountsPage({
+    super.key,
+    RemoteStorageAccounts? accounts,
+    this.selectPurposeOnAdd = false,
+  }) : accounts = accounts ?? RemoteStorageAccounts.instance;
   final RemoteStorageAccounts accounts;
+  final bool selectPurposeOnAdd;
   @override
   State<StorageAccountsPage> createState() => _StorageAccountsPageState();
 }
 
 class _StorageAccountsPageState extends State<StorageAccountsPage> {
+  String _usage(StorageAccount account) {
+    final libraries = widget.accounts.libraries
+        .where((library) => library.accountId == account.id)
+        .length;
+    final uses = <String>[
+      if (libraries > 0)
+        '@count comic libraries'.tlParams({'count': libraries}),
+      for (final (key, title) in [
+        ('syncRemoteLocation', 'App Data Sync'),
+        ('backupRemoteLocation', 'Comic Archive Backup'),
+      ])
+        if (appdata.settings[key] is Map &&
+            appdata.settings[key]['accountId'] == account.id)
+          title.tl,
+    ];
+    return uses.isEmpty ? 'Not in use'.tl : uses.join(' · ');
+  }
+
   Future<void> _test(StorageAccount account) async {
     var result = account;
     final store = widget.accounts.storeFor(account.id);
@@ -38,35 +97,37 @@ class _StorageAccountsPageState extends State<StorageAccountsPage> {
   }
 
   Future<void> _edit([StorageAccount? initial]) async {
-    final result = await showDialog<StorageAccount>(
-      context: context,
-      builder: (_) => _StorageAccountDialog(initial: initial),
+    final saved = await showStorageAccountEditor(
+      context,
+      initial: initial,
+      accounts: widget.accounts,
     );
-    if (result == null) return;
-    var saved = await widget.accounts.save(result);
-    if (saved.statusMessage != null) {
-      if (mounted) setState(() {});
+    if (mounted) setState(() {});
+    if (!mounted ||
+        initial != null ||
+        saved == null ||
+        saved.status != StorageAuthorizationStatus.valid ||
+        !widget.selectPurposeOnAdd) {
       return;
     }
-    final store = widget.accounts.storeFor(saved.id);
-    try {
-      await store.test();
-      saved = saved.copyWith(
-        status: StorageAuthorizationStatus.valid,
-        clearStatusMessage: true,
-      );
-    } on RemoteStorageException catch (error) {
-      saved = saved.copyWith(
-        status: error.isAuthorizationFailure
-            ? StorageAuthorizationStatus.invalid
-            : StorageAuthorizationStatus.unknown,
-        statusMessage: error.message,
-      );
-    } finally {
-      widget.accounts.release(store);
-    }
-    await widget.accounts.updateStatus(saved);
-    if (mounted) setState(() {});
+    final purpose = await showDialog<StorageAccountPurpose>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: Text('Use this account for'.tl),
+        children: [
+          for (final (value, label) in [
+            (StorageAccountPurpose.library, 'Online Comic Libraries'),
+            (StorageAccountPurpose.sync, 'App Data Sync'),
+            (StorageAccountPurpose.archive, 'Comic Archive Backup'),
+          ])
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, value),
+              child: Text(label.tl),
+            ),
+        ],
+      ),
+    );
+    if (mounted && purpose != null) Navigator.pop(context, (saved, purpose));
   }
 
   @override
@@ -81,9 +142,19 @@ class _StorageAccountsPageState extends State<StorageAccountsPage> {
         for (final account in widget.accounts.accounts)
           ListTile(
             title: Text(account.name),
-            subtitle: Text(
-              account.statusMessage ??
-                  '${account.driver} · ${account.status.name}',
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  account.statusMessage ??
+                      '${account.driver} · ${switch (account.status) {
+                        StorageAuthorizationStatus.valid => 'Connected'.tl,
+                        StorageAuthorizationStatus.invalid => 'Authorization invalid'.tl,
+                        StorageAuthorizationStatus.unknown => 'Connection not verified'.tl,
+                      }}',
+                ),
+                Text(_usage(account)),
+              ],
             ),
             trailing: IconButton(
               icon: const Icon(Icons.delete_outline),

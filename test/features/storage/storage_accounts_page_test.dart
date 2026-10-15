@@ -4,6 +4,106 @@ import 'package:venera_plus/features/storage/storage.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 
 void main() {
+  testWidgets('first connection can continue to a selected purpose', (
+    tester,
+  ) async {
+    final accounts = _Accounts();
+    (StorageAccount, StorageAccountPurpose)? selected;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: TextButton(
+              onPressed: () async => selected = await Navigator.of(context)
+                  .push<(StorageAccount, StorageAccountPurpose)>(
+                    MaterialPageRoute(
+                      builder: (_) => StorageAccountsPage(
+                        accounts: accounts,
+                        selectPurposeOnAdd: true,
+                      ),
+                    ),
+                  ),
+              child: const Text('Accounts'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Accounts'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.add));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Refresh Token'),
+      'refresh',
+    );
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+    expect(find.text('Use this account for'), findsOneWidget);
+    await tester.tap(find.text('App Data Sync'));
+    await tester.pumpAndSettle();
+    expect(selected?.$1.id, 'new-account');
+    expect(selected?.$2, StorageAccountPurpose.sync);
+    expect(find.byType(StorageAccountsPage), findsNothing);
+  });
+
+  testWidgets('adding an account returns to the current location form', (
+    tester,
+  ) async {
+    final accounts = _Accounts();
+    final name = TextEditingController(text: 'Unfinished library');
+    addTearDown(name.dispose);
+    StorageAccount? selected;
+    var directories = <String>['/previous/'];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: StatefulBuilder(
+            builder: (context, setState) => Column(
+              children: [
+                TextField(controller: name),
+                RemoteLocationFields(
+                  accounts: accounts,
+                  accountId: selected?.id,
+                  directories: directories,
+                  onChanged: (account, paths) => setState(() {
+                    selected = account;
+                    directories = paths;
+                  }),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.byType(DropdownButton<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add Cloud Storage Account').last);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextField, 'Name'), 'New Drive');
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Refresh Token'),
+      'refresh',
+    );
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+    expect(selected?.name, 'New Drive');
+    expect(find.text('New Drive'), findsOneWidget);
+    expect(name.text, 'Unfinished library');
+    expect(directories, isEmpty);
+    expect(find.byType(AlertDialog), findsNothing);
+
+    await tester.tap(find.byType(DropdownButton<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add Cloud Storage Account').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(selected?.name, 'New Drive');
+    expect(name.text, 'Unfinished library');
+  });
+
   testWidgets('default login shows required tokens and validates them', (
     tester,
   ) async {
@@ -147,7 +247,15 @@ class _Accounts extends RemoteStorageAccounts {
 
   @override
   Future<StorageAccount> save(StorageAccount value) async {
-    final result = value.copyWith(statusMessage: saveError);
+    final result = StorageAccount(
+      id: value.id.isEmpty ? 'new-account' : value.id,
+      backend: value.backend,
+      driver: value.driver,
+      name: value.name,
+      authorization: value.authorization,
+      status: value.status,
+      statusMessage: saveError,
+    );
     saved = result;
     return result;
   }
