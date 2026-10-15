@@ -466,7 +466,7 @@ List<T> _readList<T>(
   Object? raw,
   T Function(Map<Object?, Object?> value) converter,
 ) {
-  if (raw is! List) return const [];
+  if (raw is! List) return <T>[];
   final values = <T>[];
   for (final item in raw) {
     if (item is Map) values.add(converter(item));
