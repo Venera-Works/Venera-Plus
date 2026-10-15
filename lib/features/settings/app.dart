@@ -133,11 +133,7 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
     return '${account?.name ?? 'Account unavailable'.tl} · ${location.directory}';
   }
 
-  Widget _group(List<Widget> children) => Card(
-    margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-    clipBehavior: Clip.antiAlias,
-    child: Column(children: children),
-  ).toSliver();
+  Widget _group(List<Widget> children) => SliverList.list(children: children);
 
   @override
   Widget build(BuildContext context) {
