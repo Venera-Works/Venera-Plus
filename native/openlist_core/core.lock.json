@@ -1,34 +1,34 @@
 {
   "schema": 1,
   "repository": "Venera-Works/Venera-OpenList-Core",
-  "version": "0.1.0-beta.3",
-  "tag": "core-v0.1.0-beta.3",
-  "sourceCommit": "977bbdb7b28646f017689c7fe34025cd34cd27e5",
+  "version": "0.1.0-beta.4",
+  "tag": "core-v0.1.0-beta.4",
+  "sourceCommit": "6c8af0bc1c8ddf7c6d44a47d4a86f21ac8034111",
   "rpcAbi": 1,
   "assets": {
     "android": {
       "name": "openlist-core-android.zip",
-      "sha256": "93bc0d0bdfd94bc80feba671f55bedd790f31a7f19c5fff5d5450fe35dc86f5c"
+      "sha256": "4d913f64d019dda8ffdd1e549ea27a2e80c9efd439296bca3181084be6b85acf"
     },
     "ios": {
       "name": "openlist-core-ios.zip",
-      "sha256": "943b70ac96bff3b2ed45b437225baa6b055b5b484c8c5a1867b95511dff03c96"
+      "sha256": "a88a1bf3a4d67b1078ef3aa8ebb788c1904df60c8c105f6e04bc901776c00c94"
     },
     "linux-arm64": {
       "name": "openlist-core-linux-arm64.zip",
-      "sha256": "4e136697d524aa360a24782d47bcab05eea08fa16167762d99db848eb1358c5c"
+      "sha256": "2c21255c66aef4883117f7cccfa6db935b45ab396bbe6959d69485b712209636"
     },
     "linux-x64": {
       "name": "openlist-core-linux-x64.zip",
-      "sha256": "b9023a82f72372c68b8cc2b37ae8b777d3b06007a010a63b70ceeeba7e091f79"
+      "sha256": "36395213bc0a3cd3a80b9802249bc8c2d205f3b7c0a538880a2f1f9194b851a9"
     },
     "macos-universal": {
       "name": "openlist-core-macos-universal.zip",
-      "sha256": "179e072a1008aace1908831808a5058adaceea77611d0cdf6216e189e4a8ab1c"
+      "sha256": "94c7be168c1c59df00cc56c6b382832a7c571f55a5d34817ae351bf98012963e"
     },
     "windows-x64": {
       "name": "openlist-core-windows-x64.zip",
-      "sha256": "ea03a8c1b5a6f0b0371806d845c709be021c01815aa6a5a832f85cea2de160a9"
+      "sha256": "62cfbf658cff7f2e53a24a4a989760288fdabda71fab70c3f9722a4e1a76e722"
     }
   }
 }
