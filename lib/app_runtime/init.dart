@@ -200,6 +200,7 @@ Future<ComicMetaData?> scrapeBangumiMetadataForWebDav(
 
 Future<void> init() async {
   await App.init().wait();
+  await appdata.init();
   final remoteStorage = RemoteStorageAccounts.instance;
   remoteStorage.configureOpenList(EmbeddedOpenListRpc());
   try {
