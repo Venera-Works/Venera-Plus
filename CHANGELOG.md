@@ -4,6 +4,7 @@
 
 ## 未发布
 
+- **网盘登录简化**：默认使用 OpenList 在线 API，仅展示各网盘必需的授权字段；JSON/回调改为可选导入并填充表单，修复编辑 Token 被旧 JSON 覆盖的问题，补齐夸克官方回调的 AppID、SignKey 映射。
 - **OpenList 内核拆分**：应用构建改为下载 Venera-OpenList-Core 发布的固定平台内核；内核源码和 Go 工具链构建迁至独立仓库。
   Android 内核使用已有 CGO SQLite，避开 seccomp 限制导致的初始化崩溃。
   平台冒烟测试仅点击可交互的书库主导航，避免紧凑布局中屏外侧栏图标重复命中。

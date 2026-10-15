@@ -21,12 +21,19 @@ Map<String, dynamic> buildOpenListAuthorization({
   required String refreshToken,
   String? appId,
   String? signKey,
-}) => normalizeOpenListAuthorization({
-  'access_token': accessToken.trim(),
-  'refresh_token': refreshToken.trim(),
-  if (appId != null) 'app_id': appId.trim(),
-  if (signKey != null) 'sign_key': signKey.trim(),
-}, driver: driver);
+  Map<String, dynamic> authorization = const {},
+}) {
+  final value = <String, dynamic>{...authorization}
+    ..remove('AccessToken')
+    ..remove('RefreshToken');
+  return normalizeOpenListAuthorization({
+    ...value,
+    'access_token': accessToken.trim(),
+    'refresh_token': refreshToken.trim(),
+    if (appId != null) 'app_id': appId.trim(),
+    if (signKey != null) 'sign_key': signKey.trim(),
+  }, driver: driver);
+}
 
 /// Maps api.oplist.org callback fields and pasted token JSON to OpenList's
 /// actual driver addition field names, with a single canonical token per key.
@@ -51,7 +58,10 @@ Map<String, dynamic> normalizeOpenListAuthorization(
   if (driver == 'QuarkOpen') {
     _move(value, 'AppID', 'app_id');
     _move(value, 'SignKey', 'sign_key');
+    _move(value, 'client_id', 'app_id');
+    _move(value, 'client_secret', 'sign_key');
   }
+  if (driver != '115 Open') value['use_online_api'] ??= true;
   if (driver == '123 Open') {
     _move(value, 'access_token', 'AccessToken');
     _move(value, 'refresh_token', 'RefreshToken');

@@ -63,6 +63,63 @@ void main() {
     },
   );
 
+  test('official online API accounts only need a refresh token', () {
+    for (final driver in [
+      'BaiduNetdisk',
+      '123 Open',
+      'Onedrive',
+      'GoogleDrive',
+    ]) {
+      final value = buildOpenListAuthorization(
+        driver: driver,
+        accessToken: '',
+        refreshToken: ' refresh ',
+      );
+      expect(value['use_online_api'], isTrue);
+      expect(
+        value[driver == '123 Open' ? 'RefreshToken' : 'refresh_token'],
+        'refresh',
+      );
+      expect(value.containsKey('client_id'), isFalse);
+      expect(value.containsKey('ClientID'), isFalse);
+    }
+  });
+
+  test('imports Quark client fields from the official API callback', () {
+    final value = parseOpenListAuthorization(
+      '{"refresh_token":"refresh","client_uid":"app","client_key":"sign"}',
+      driver: 'QuarkOpen',
+    );
+    expect(value['app_id'], 'app');
+    expect(value['sign_key'], 'sign');
+    expect(value.containsKey('client_id'), isFalse);
+    expect(value.containsKey('client_secret'), isFalse);
+  });
+
+  test('edited tokens replace old aliases and retain account settings', () {
+    for (final driver in ['BaiduNetdisk', '123 Open']) {
+      final value = buildOpenListAuthorization(
+        driver: driver,
+        accessToken: '',
+        refreshToken: 'new-refresh',
+        authorization: const {
+          'AccessToken': 'old-access',
+          'RefreshToken': 'old-refresh',
+          'root_folder_id': 'folder',
+          'use_online_api': false,
+        },
+      );
+      expect(value.values, isNot(contains('old-access')));
+      expect(value.values, isNot(contains('old-refresh')));
+      expect(value['root_folder_id'], 'folder');
+      expect(value['use_online_api'], isFalse);
+      expect(
+        value[driver == '123 Open' ? 'RefreshToken' : 'refresh_token'],
+        'new-refresh',
+      );
+    }
+  });
+
   test('only explicit authentication errors invalidate an authorization', () {
     expect(
       const RemoteStorageException(

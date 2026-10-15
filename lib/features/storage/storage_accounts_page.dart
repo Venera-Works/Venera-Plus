@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
@@ -113,13 +111,10 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
   late final TextEditingController _name = TextEditingController(
     text: widget.initial?.name,
   );
-  late final TextEditingController _token = TextEditingController(
-    text: widget.initial == null
-        ? ''
-        : const JsonEncoder.withIndent(
-            '  ',
-          ).convert(widget.initial!.authorization),
-  );
+  final TextEditingController _token = TextEditingController();
+  late Map<String, dynamic> _authorization = {
+    ...?widget.initial?.authorization,
+  };
   late final TextEditingController _url = TextEditingController(
     text: widget.initial?.authorization['url'] as String?,
   );
@@ -201,12 +196,16 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
                 decoration: InputDecoration(labelText: 'Password'.tl),
               ),
             ] else ...[
-              TextField(
-                controller: _accessToken,
-                decoration: InputDecoration(labelText: 'Access Token'.tl),
-              ),
+              if (_driver == '115 Open')
+                TextField(
+                  controller: _accessToken,
+                  decoration: InputDecoration(labelText: 'Access Token'.tl),
+                ),
               TextField(
                 controller: _refreshToken,
+                onChanged: _driver == '115 Open'
+                    ? null
+                    : (_) => _accessToken.clear(),
                 decoration: InputDecoration(labelText: 'Refresh Token'.tl),
               ),
               if (_driver == 'QuarkOpen') ...[
@@ -223,31 +222,40 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ],
-              TextField(
-                controller: _token,
-                minLines: 3,
-                maxLines: 6,
-                decoration: InputDecoration(
-                  labelText: 'Token JSON or callback'.tl,
-                  hintText: 'Paste the token JSON from api.oplist.org'.tl,
-                  errorText: _error,
+              Text(
+                'Use parameters provided by OpenList on the token page, then fill in the required tokens.'
+                    .tl,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              TextButton.icon(
+                onPressed: () => launchUrl(
+                  Uri.parse('https://api.oplist.org/'),
+                  mode: LaunchMode.externalApplication,
                 ),
+                icon: const Icon(Icons.open_in_new),
+                label: Text('Open OpenList token page'.tl),
               ),
+              ExpansionTile(
+                title: Text('Import token JSON or callback'.tl),
+                children: [
+                  TextField(
+                    controller: _token,
+                    minLines: 3,
+                    maxLines: 6,
+                    decoration: InputDecoration(
+                      labelText: 'Token JSON or callback'.tl,
+                      hintText: 'Paste the token JSON from api.oplist.org'.tl,
+                    ),
+                  ),
+                  TextButton(onPressed: _importToken, child: Text('Import'.tl)),
+                ],
+              ),
+              if (_error != null)
+                Text(
+                  _error!.tl,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
             ],
-            const SizedBox(height: 8),
-            Text(
-              'Open api.oplist.org to obtain a token, then paste its JSON or callback payload here.'
-                  .tl,
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            TextButton.icon(
-              onPressed: () => launchUrl(
-                Uri.parse('https://api.oplist.org/'),
-                mode: LaunchMode.externalApplication,
-              ),
-              icon: const Icon(Icons.open_in_new),
-              label: Text('Open OpenList token page'.tl),
-            ),
           ],
         ),
       ),
@@ -259,20 +267,46 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
         FilledButton(
           onPressed: () {
             try {
+              if (!webdav) {
+                final clientId =
+                    _authorization['ClientID'] ?? _authorization['client_id'];
+                final clientSecret =
+                    _authorization['ClientSecret'] ??
+                    _authorization['client_secret'];
+                final uses123ClientCredentials =
+                    _driver == '123 Open' &&
+                    clientId is String &&
+                    clientId.isNotEmpty &&
+                    clientSecret is String &&
+                    clientSecret.isNotEmpty;
+                if (_refreshToken.text.trim().isEmpty &&
+                    !uses123ClientCredentials) {
+                  throw const FormatException('Refresh Token is required');
+                }
+                if (_driver == '115 Open' && _accessToken.text.trim().isEmpty) {
+                  throw const FormatException('Access Token is required');
+                }
+                if (_driver == 'QuarkOpen' &&
+                    (_appId.text.trim().isEmpty ||
+                        _signKey.text.trim().isEmpty)) {
+                  throw const FormatException(
+                    'Quark requires AppID and SignKey before it can connect.',
+                  );
+                }
+              }
               final auth = webdav
                   ? <String, dynamic>{
                       'url': _url.text.trim(),
                       'user': _user.text.trim(),
                       'password': _password.text,
                     }
-                  : _token.text.trim().isNotEmpty
-                  ? parseOpenListAuthorization(_token.text, driver: _driver)
                   : buildOpenListAuthorization(
                       driver: _driver,
                       accessToken: _accessToken.text,
                       refreshToken: _refreshToken.text,
-                      appId: _appId.text,
-                      signKey: _signKey.text,
+                      appId: _driver == 'QuarkOpen' ? _appId.text : null,
+                      signKey: _driver == 'QuarkOpen' ? _signKey.text : null,
+                      authorization: _authorization,
                     );
               Navigator.pop(
                 context,
@@ -294,6 +328,32 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
         ),
       ],
     );
+  }
+
+  void _importToken() {
+    try {
+      final authorization = parseOpenListAuthorization(
+        _token.text,
+        driver: _driver,
+      );
+      setState(() {
+        _authorization = authorization;
+        _accessToken.text =
+            authorization['access_token'] as String? ??
+            authorization['AccessToken'] as String? ??
+            '';
+        _refreshToken.text =
+            authorization['refresh_token'] as String? ??
+            authorization['RefreshToken'] as String? ??
+            '';
+        _appId.text = authorization['app_id'] as String? ?? '';
+        _signKey.text = authorization['sign_key'] as String? ?? '';
+        _token.clear();
+        _error = null;
+      });
+    } on FormatException catch (error) {
+      setState(() => _error = error.message);
+    }
   }
 
   String _tokenValue(String primary, String alternate) =>
