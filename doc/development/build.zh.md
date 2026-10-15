@@ -6,7 +6,7 @@ English version: [build.en.md](build.en.md)
 
 ## 环境要求
 > [!IMPORTANT]
-> **构建权限须知**：未经用户明确允许，禁止运行任何应用构建（包括 `flutter build`、`flutter run`、Gradle/CMake/MSBuild 编译、内部调用构建的打包入口及可能隐式编译的测试）；未经许可仅可进行代码修正和不触发构建的静态检查。
+> **构建权限须知**：未经用户明确允许，禁止运行任何应用构建
 
 
 - Flutter `3.41.4`
