@@ -105,6 +105,7 @@ class RemoteStorageAccounts with ChangeNotifier {
           name: account.name,
           status: account.status,
           statusMessage: account.statusMessage,
+          clearStatusMessage: account.statusMessage == null,
         );
       }
     }

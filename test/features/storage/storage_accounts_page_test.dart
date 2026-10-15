@@ -100,32 +100,82 @@ void main() {
     expect(accounts.saved!.authorization['ClientID'], 'client');
     expect(accounts.saved!.authorization['ClientSecret'], 'secret');
   });
+
+  testWidgets('account initialization errors are not replaced by list errors', (
+    tester,
+  ) async {
+    const originalError =
+        'failed init storage: init get access token error: refresh request failed';
+    final accounts = _Accounts()..saveError = originalError;
+    accounts.rpc.testError = 'failed to list objs: Authentication expired';
+    await tester.pumpWidget(
+      MaterialApp(home: StorageAccountsPage(accounts: accounts)),
+    );
+    await tester.tap(find.byIcon(Icons.add));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Refresh Token'),
+      'refresh',
+    );
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    expect(find.text(originalError), findsOneWidget);
+    expect(accounts.rpc.testCalls, 0);
+    expect(accounts.saved!.statusMessage, originalError);
+    expect(accounts.saved!.status, StorageAuthorizationStatus.unknown);
+
+    accounts.saveError = null;
+    accounts.rpc.testError = null;
+    await tester.tap(find.text('BaiduNetdisk'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+    expect(accounts.rpc.testCalls, 1);
+    expect(accounts.saved!.statusMessage, isNull);
+    expect(accounts.saved!.status, StorageAuthorizationStatus.valid);
+  });
 }
 
 class _Accounts extends RemoteStorageAccounts {
   StorageAccount? saved;
+  String? saveError;
+  final rpc = _Rpc();
 
   @override
   List<StorageAccount> get accounts => [?saved];
 
   @override
   Future<StorageAccount> save(StorageAccount value) async {
-    saved = value;
-    return value;
+    final result = value.copyWith(statusMessage: saveError);
+    saved = result;
+    return result;
   }
 
   @override
-  RemoteFileStore storeFor(String accountId) =>
-      OpenListFileStore(saved!, _Rpc());
+  RemoteFileStore storeFor(String accountId) => OpenListFileStore(saved!, rpc);
 
   @override
   Future<void> updateStatus(StorageAccount value) async => saved = value;
 }
 
 class _Rpc implements OpenListRpcClient {
+  String? testError;
+  var testCalls = 0;
+
   @override
   Future<Map<String, dynamic>> invoke(
     String method,
     Map<String, dynamic> request,
-  ) async => const {'data': {}};
+  ) async {
+    if (method == 'test') {
+      testCalls++;
+      if (testError != null) {
+        return {
+          'error': {'code': 'operation_failed', 'message': testError},
+        };
+      }
+    }
+    return const {'data': {}};
+  }
 }

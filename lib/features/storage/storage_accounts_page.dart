@@ -44,6 +44,10 @@ class _StorageAccountsPageState extends State<StorageAccountsPage> {
     );
     if (result == null) return;
     var saved = await widget.accounts.save(result);
+    if (saved.statusMessage != null) {
+      if (mounted) setState(() {});
+      return;
+    }
     final store = widget.accounts.storeFor(saved.id);
     try {
       await store.test();
