@@ -217,6 +217,46 @@ void main() {
       },
     );
 
+    testWidgets('changelog lazily renders versions while scrolling', (
+      tester,
+    ) async {
+      final changelog = StringBuffer('# 更新日志\n\n');
+      for (var version = 60; version >= 1; version--) {
+        changelog.writeln('## v$version.0.0\n');
+        for (var item = 0; item < 6; item++) {
+          changelog.writeln('- **功能 $item**：这是该版本的更新说明。');
+        }
+        changelog.writeln();
+      }
+      setupMockChangelog(tester, changelog.toString());
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      await tester.pumpWidget(const MaterialApp(home: ChangelogPage()));
+      await tester.pumpAndSettle();
+
+      expect(findRichTextContaining('v60.0.0'), findsOneWidget);
+      expect(findRichTextContaining('v1.0.0'), findsNothing);
+      expect(find.byType(RichText).evaluate().length, lessThan(80));
+
+      await tester.scrollUntilVisible(
+        findRichTextContaining('v1.0.0'),
+        800,
+        scrollable: find.byType(Scrollable),
+        maxScrolls: 100,
+      );
+      await tester.pumpAndSettle();
+
+      expect(findRichTextContaining('v1.0.0'), findsOneWidget);
+      expect(findRichTextContaining('v60.0.0'), findsNothing);
+      expect(find.byType(RichText).evaluate().length, lessThan(80));
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets(
       'changelog adapts inline code styling to light and dark theme',
       (tester) async {
@@ -304,7 +344,10 @@ void main() {
     testWidgets(
       'changelog supports full page selection and copy through SelectionArea and clipboard',
       (tester) async {
-        setupMockChangelog(tester, changelogFixture);
+        setupMockChangelog(
+          tester,
+          '$changelogFixture\n## Venera 2.2.0\n\n历史版本的说明。\n',
+        );
         String? copiedText;
         tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
           SystemChannels.platform,
@@ -355,6 +398,8 @@ void main() {
         expect(copiedText, contains('一级功能列表项'));
         expect(copiedText, contains('三级深层列表项'));
         expect(copiedText, contains('package:venera_plus'));
+        expect(copiedText, contains('Venera 2.2.0'));
+        expect(copiedText, contains('历史版本的说明。'));
         expect(copiedText, isNot(contains('**')));
         expect(copiedText, isNot(contains('`')));
       },
