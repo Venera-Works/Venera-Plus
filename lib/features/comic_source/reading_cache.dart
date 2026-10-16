@@ -54,21 +54,22 @@ extension ComicSourceReadingCache on ComicSource {
     bool refresh = false,
   }) async {
     if (filePath.isEmpty) return loadComicInfo!(id);
-    if (!refresh) {
-      final cached = await _readReadingCache(
-        _readingCacheKey('info', id),
-        (value) => ComicDetails.fromJson(Map<String, dynamic>.from(value)),
-      );
-      if (cached != null) return Res(cached);
-    }
+    final cached = await _readReadingCache(
+      _readingCacheKey('info', id),
+      (value) => ComicDetails.fromJson(Map<String, dynamic>.from(value)),
+    );
+    if (!refresh && cached != null) return Res(cached);
     final result = await loadComicInfo!(id);
     if (result.success) {
       final comic = result.data;
-      // A fresh details load also refreshes page lists, including chapters
-      // whose contents changed without changing their IDs.
       try {
-        for (final chapter in <String?>{null, ...?comic.chapters?.ids}) {
-          await CacheManager().delete(_readingCacheKey('pages', id, chapter));
+        // Reopening details alone does not mean chapter contents changed.
+        if (cached != null &&
+            (cached.updateTime != comic.updateTime ||
+                cached.maxPage != comic.maxPage)) {
+          for (final chapter in <String?>{null, ...?comic.chapters?.ids}) {
+            await CacheManager().delete(_readingCacheKey('pages', id, chapter));
+          }
         }
         await _writeReadingCache(_readingCacheKey('info', id), {
           ...comic.toJson(),

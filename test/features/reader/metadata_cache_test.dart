@@ -58,6 +58,7 @@ void main() {
             'sourceKey': _key,
             'comicId': id,
             'maxPage': 20,
+            'updateTime': 'revision-$revision',
           }),
         );
       },
@@ -138,6 +139,21 @@ void main() {
       expect(pageCalls, 1);
     },
   );
+
+  test('unchanged fresh details keep page lists across reopenings', () async {
+    await source.loadComicInfoForReading('book');
+    final pages = await load();
+    for (var opening = 0; opening < 2; opening++) {
+      reopenCache();
+      expect(
+        (await source.loadComicInfoForReading('book', refresh: true)).success,
+        isTrue,
+      );
+      expect(await load(), pages);
+    }
+    expect(infoCalls, 3);
+    expect(pageCalls, 1);
+  });
 
   test(
     'fresh details invalidate page lists even when chapter IDs stay the same',

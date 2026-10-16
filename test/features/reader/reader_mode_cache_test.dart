@@ -79,6 +79,57 @@ void main() {
   final galleryTarget = targetForMode(ReaderMode.galleryLeftToRight);
   final flowTarget = targetForMode(ReaderMode.continuousTopToBottom);
 
+  test(
+    'reopened decoded image skips source configuration and download',
+    () async {
+      var configs = 0;
+      var downloads = 0;
+      var restarted = false;
+      final callbacks = <_ResponseCallback>[];
+      ImageDownloader.configureSourceImageLoading(
+        comicImageLoadingConfig: (source, image, comic, chapter, {target}) {
+          configs++;
+          if (restarted) {
+            throw StateError('Source is unavailable after restart');
+          }
+          final callback = _ResponseCallback(
+            base64Decode(
+              'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==',
+            ),
+          );
+          callbacks.add(callback);
+          return {
+            'url': 'https://example.invalid/image.png?token=$configs',
+            'onResponse': callback,
+          };
+        },
+      );
+      ImageDownloader.debugComicImageTransport = (url, config) {
+        downloads++;
+        return Uint8List.fromList([0]);
+      };
+      ReaderImageProvider provider() => ReaderImageProvider(
+        'stable-image',
+        'source',
+        'comic',
+        'chapter',
+        1,
+        target: galleryTarget,
+      );
+
+      expect(await _resolveImage(provider()), isNull);
+      ImageDownloader.cancelAllLoadingImages();
+      CacheManager.resetForTesting();
+      // Include the real startup scan, while retaining only the disk files.
+      await CacheManager().debugInitialScanTask;
+      restarted = true;
+      expect(await _resolveImage(provider()), isNull);
+      expect(configs, 1);
+      expect(downloads, 1);
+      expect(callbacks.single.destroyCount, 1);
+    },
+  );
+
   test('reader modes reuse a completed identical image request', () async {
     var requests = 0;
     ImageDownloader.debugComicImageTransport = (url, configs) {
@@ -235,8 +286,10 @@ void main() {
         target: galleryTarget,
       );
 
+      final processedCacheKey = provider.diskCacheKey;
       expect(await _resolveImage(provider), isNotNull);
       expect(await CacheManager().findCache(provider.diskCacheKey), isNull);
+      expect(await CacheManager().findCache(processedCacheKey), isNull);
       expect(await _resolveImage(provider), isNull);
       expect(requests, 2);
     },

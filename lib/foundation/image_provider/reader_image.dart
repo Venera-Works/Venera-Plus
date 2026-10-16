@@ -2,8 +2,10 @@ import 'dart:async' show Future;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_qjs/flutter_qjs.dart';
+import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/file_system.dart';
 import 'package:venera_plus/foundation/js_engine.dart';
+import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/network/images.dart';
 import 'base_image_provider.dart';
 import 'reader_image.dart' as image_provider;
@@ -60,6 +62,7 @@ class ReaderImageProvider
   });
 
   static final _diskCacheKeys = Expando<String>();
+  static final _pendingCacheBytes = Expando<Uint8List>();
 
   final String imageKey;
 
@@ -82,6 +85,7 @@ class ReaderImageProvider
   bool get retryFileSystemErrors => !imageKey.startsWith('file://');
   @override
   Future<Uint8List> load(chunkEvents, checkStop) async {
+    _pendingCacheBytes[this] = null;
     Uint8List? imageBytes;
     if (imageKey.startsWith('file://')) {
       var file = File(imageKey.substring(7));
@@ -113,6 +117,14 @@ class ReaderImageProvider
         if (event.imageBytes != null) {
           _diskCacheKeys[this] = event.diskCacheKey;
           imageBytes = event.imageBytes;
+          if (event.diskCacheKey != _processedCacheKey) {
+            // Keep the source-processed bytes before applying the user's
+            // processing script, which still runs on subsequent cache hits.
+            _pendingCacheBytes[this] =
+                appdata.settings['enableCustomImageProcessing'] == true
+                ? Uint8List.fromList(imageBytes!)
+                : imageBytes;
+          }
           break;
         }
       }
@@ -179,18 +191,31 @@ class ReaderImageProvider
   }
 
   @override
+  Future<void> cacheImageAfterDecoding() async {
+    final bytes = _pendingCacheBytes[this];
+    _pendingCacheBytes[this] = null;
+    if (bytes == null) return;
+    try {
+      await CacheManager().writeCache(_processedCacheKey, bytes);
+      _diskCacheKeys[this] = _processedCacheKey;
+    } catch (error, stack) {
+      Log.warning('Reader image cache', '$error\n$stack');
+    }
+  }
+
+  @override
   String get key => target != null
       ? "$imageKey@$sourceKey@$cid@$eid@$enableResize@${target!.cacheIdentity}"
       : "$imageKey@$sourceKey@$cid@$eid@$enableResize";
 
   @override
-  String get diskCacheKey =>
-      _diskCacheKeys[this] ??
-      ImageDownloader.getComicImageCacheKey(
-        imageKey,
-        sourceKey,
-        cid,
-        eid,
-        target: target,
-      );
+  String get diskCacheKey => _diskCacheKeys[this] ?? _processedCacheKey;
+
+  String get _processedCacheKey => ImageDownloader.getComicImageCacheKey(
+    imageKey,
+    sourceKey,
+    cid,
+    eid,
+    target: target,
+  );
 }
