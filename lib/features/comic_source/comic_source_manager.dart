@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:async';
-import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
@@ -182,6 +181,14 @@ class ComicSourceManager with ChangeNotifier, Init {
         }),
       );
     }
+    unawaited(
+      SourceRepositories.instance.migrateLegacyOrigins(loaded).catchError((
+        Object error,
+        StackTrace stack,
+      ) {
+        Log.error('ComicSource', error, stack);
+      }),
+    );
   }
 
   Future<void> _mutationTail = Future.value();
@@ -273,6 +280,14 @@ class ComicSourceManager with ChangeNotifier, Init {
         }
       }
       notifyListeners();
+      unawaited(
+        SourceRepositories.instance.migrateLegacyOrigins(loaded).catchError((
+          Object error,
+          StackTrace stack,
+        ) {
+          Log.error('ComicSource', error, stack);
+        }),
+      );
     } catch (_) {
       for (final parser in parsers.reversed) {
         parser.rollback();

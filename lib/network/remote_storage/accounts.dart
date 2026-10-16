@@ -76,6 +76,10 @@ class RemoteStorageAccounts with ChangeNotifier {
 
   Future<void> migrateLegacyWebDavLocations() async {
     final values = accounts;
+    final legacyLibraryAccounts = libraries
+        .where((library) => library.accountId.startsWith('legacy-'))
+        .map((library) => library.accountId)
+        .toSet();
     var changed = false;
     for (final (setting, locationKey, directory) in [
       ('webdav', 'syncRemoteLocation', '/VeneraPlus/'),
@@ -104,6 +108,9 @@ class RemoteStorageAccounts with ChangeNotifier {
       for (final value in values.where(
         (a) => a.backend == StorageBackend.webdav,
       )) {
+        if (setting == 'webdav' && legacyLibraryAccounts.contains(value.id)) {
+          continue;
+        }
         final existing = WebDavEndpoint(
           url: value.authorization['url'] as String? ?? '',
           user: value.authorization['user'] as String? ?? '',
@@ -120,7 +127,7 @@ class RemoteStorageAccounts with ChangeNotifier {
         id: _uuid.v4(),
         backend: StorageBackend.webdav,
         driver: 'webdav',
-        name: 'WebDAV',
+        name: setting == 'webdav' ? 'WebDAV同步' : 'WebDAV',
         authorization: {
           'url': endpoint.url,
           'user': endpoint.user,
@@ -133,6 +140,42 @@ class RemoteStorageAccounts with ChangeNotifier {
         directory: directory,
       ).toJson();
       appdata.settings[setting] = const [];
+      changed = true;
+    }
+    if (appdata.settings['legacyWebDavAccountNamesMigrated'] != true) {
+      final syncLocation = appdata.settings['syncRemoteLocation'];
+      for (var index = 0; index < values.length; index++) {
+        final value = values[index];
+        if (value.backend != StorageBackend.webdav || value.name != 'WebDAV') {
+          continue;
+        }
+        final isLibrary = legacyLibraryAccounts.contains(value.id);
+        final isSync =
+            syncLocation is Map && syncLocation['accountId'] == value.id;
+        if (!isLibrary && !isSync) continue;
+        values[index] = value.copyWith(
+          name: isLibrary ? 'WebDAV漫画库' : 'WebDAV同步',
+        );
+        if (isLibrary && isSync) {
+          // The previous migration reused the library account for sync. Keep
+          // the library identity and give the sync destination its own account.
+          final syncAccount = StorageAccount(
+            id: _uuid.v4(),
+            backend: value.backend,
+            driver: value.driver,
+            name: 'WebDAV同步',
+            authorization: value.authorization,
+            status: value.status,
+            statusMessage: value.statusMessage,
+          );
+          values.add(syncAccount);
+          appdata.settings['syncRemoteLocation'] = {
+            ...syncLocation,
+            'accountId': syncAccount.id,
+          };
+        }
+      }
+      appdata.settings['legacyWebDavAccountNamesMigrated'] = true;
       changed = true;
     }
     if (!changed) return;

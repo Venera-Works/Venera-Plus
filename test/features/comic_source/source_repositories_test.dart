@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_source/source_repositories.dart';
@@ -16,6 +17,7 @@ void main() {
   late dynamic originalRepositories;
   late dynamic originalOrigins;
   late dynamic originalMigrated;
+  late dynamic originalOriginsMigrated;
 
   setUp(() async {
     dataDir = Directory.systemTemp.createTempSync(
@@ -26,10 +28,12 @@ void main() {
     originalRepositories = appdata.settings['comicSourceRepositories'];
     originalOrigins = appdata.settings['comicSourceOrigins'];
     originalMigrated = appdata.settings['comicSourceRepositoriesMigrated'];
+    originalOriginsMigrated = appdata.settings['comicSourceOriginsMigrated'];
     appdata.settings['comicSourceListUrl'] = '';
     appdata.settings['comicSourceRepositories'] = <Map<String, dynamic>>[];
     appdata.settings['comicSourceOrigins'] = <String, dynamic>{};
     appdata.settings['comicSourceRepositoriesMigrated'] = false;
+    appdata.settings['comicSourceOriginsMigrated'] = false;
     // Initialize the singleton against the temporary directory so that no test
     // touches the real application data.
     await appdata.init();
@@ -40,6 +44,7 @@ void main() {
     appdata.settings['comicSourceRepositories'] = originalRepositories;
     appdata.settings['comicSourceOrigins'] = originalOrigins;
     appdata.settings['comicSourceRepositoriesMigrated'] = originalMigrated;
+    appdata.settings['comicSourceOriginsMigrated'] = originalOriginsMigrated;
     if (dataDir.existsSync()) {
       dataDir.deleteSync(recursive: true);
     }
@@ -336,6 +341,183 @@ void main() {
       );
       expect(settings['comicSourceRepositoriesMigrated'], isTrue);
     });
+  });
+
+  group('legacy origin migration', () {
+    late Dio client;
+    late SourceRepositories store;
+    late List<Map<String, dynamic>> entries;
+    late bool offline;
+    late int requests;
+
+    setUp(() {
+      appdata.settings['comicSourceListUrl'] =
+          'https://legacy.example.com/index.json';
+      appdata.settings['comicSourceRepositories'] = [
+        _repoMap('legacy', 'Legacy', 'https://legacy.example.com/index.json'),
+      ];
+      appdata.settings['comicSourceRepositoriesMigrated'] = true;
+      entries = [
+        {
+          'key': 'source',
+          'name': 'Source',
+          'version': '2.0.0',
+          'fileName': 'source.js',
+        },
+      ];
+      offline = false;
+      requests = 0;
+      client = Dio()
+        ..interceptors.add(
+          InterceptorsWrapper(
+            onRequest: (options, handler) {
+              requests++;
+              if (offline) {
+                handler.reject(
+                  DioException(
+                    requestOptions: options,
+                    type: DioExceptionType.connectionError,
+                  ),
+                );
+              } else {
+                handler.resolve(
+                  Response<String>(
+                    requestOptions: options,
+                    statusCode: 200,
+                    data: jsonEncode(entries),
+                  ),
+                );
+              }
+            },
+          ),
+        );
+      store = SourceRepositories.forTesting(client);
+    });
+
+    tearDown(() {
+      store.dispose();
+      client.close();
+    });
+
+    for (final alreadyMigrated in [false, true]) {
+      test(
+        'links legacy installed sources, repository migrated=$alreadyMigrated',
+        () async {
+          if (!alreadyMigrated) {
+            appdata.settings['comicSourceRepositories'] =
+                <Map<String, dynamic>>[];
+            appdata.settings['comicSourceRepositoriesMigrated'] = false;
+          }
+          await store.migrate();
+          await store.migrateLegacyOrigins([_source('source')]);
+
+          final origin = store.originFor('source')!;
+          expect(origin.kind, 'repository');
+          expect(origin.repositoryId, store.all.single.id);
+          expect(origin.repositoryName, store.all.single.name);
+          expect(origin.url, 'https://legacy.example.com/source.js');
+          final settings = _persistedSettings(dataDir);
+          expect(settings['comicSourceOriginsMigrated'], isTrue);
+          expect(
+            (settings['comicSourceOrigins'] as Map)['source'],
+            origin.toJson(),
+          );
+
+          // An explicit unlink after migration must not be undone on restart.
+          await store.setOrigin('source', null);
+          await store.migrateLegacyOrigins([_source('source')]);
+          expect(store.originFor('source'), isNull);
+          expect(requests, 1);
+        },
+      );
+    }
+
+    test(
+      'preserves existing origins and resolves only unambiguous variants',
+      () async {
+        appdata.settings['comicSourceOrigins'] = {
+          'file': {'kind': 'file', 'url': '/tmp/file.js'},
+          'url': {'kind': 'url', 'url': 'https://other.example.com/url.js'},
+          'linked': {'kind': 'repository', 'repositoryId': 'other'},
+        };
+        final before = Map<String, dynamic>.from(
+          appdata.settings['comicSourceOrigins'],
+        );
+        for (final key in ['file', 'url', 'linked', 'variant', 'ambiguous']) {
+          entries.add({
+            'key': key,
+            'name': key,
+            'version': '1.0.0',
+            'fileName': '$key.js',
+          });
+        }
+        for (final key in ['variant', 'ambiguous']) {
+          entries.add({
+            'key': key,
+            'name': key,
+            'version': '1.0.0',
+            'fileName': '$key-alt.js',
+          });
+        }
+
+        await store.migrateLegacyOrigins([
+          _source('file'),
+          _source('url'),
+          _source('linked'),
+          _source('missing'),
+          _source(
+            'variant',
+            url: 'https://legacy.example.com/variant-alt.js#fragment',
+          ),
+          _source('ambiguous'),
+        ]);
+
+        for (final key in before.keys) {
+          expect(
+            store.originFor(key)?.toJson(),
+            SourceOrigin(
+              kind: before[key]['kind'],
+              repositoryId: before[key]['repositoryId'],
+              url: before[key]['url'],
+            ).toJson(),
+          );
+        }
+        expect(
+          store.originFor('variant')?.url,
+          'https://legacy.example.com/variant-alt.js',
+        );
+        expect(store.originFor('missing'), isNull);
+        expect(store.originFor('ambiguous'), isNull);
+      },
+    );
+
+    test('retries an offline migration when checking updates', () async {
+      offline = true;
+      final sources = [_source('source')];
+      await store.migrateLegacyOrigins(sources);
+      expect(store.originFor('source'), isNull);
+      expect(appdata.settings['comicSourceOriginsMigrated'], isFalse);
+
+      offline = false;
+      final result = await store.checkUpdates(sources);
+      expect(store.originFor('source')?.repositoryId, 'legacy');
+      expect(result.checked, 1);
+      expect(result.skipped, 0);
+      expect(result.updates, {'source': '2.0.0'});
+    });
+
+    test(
+      'does not recreate a removed legacy repository or bind another one',
+      () async {
+        appdata.settings['comicSourceRepositories'] = [
+          _repoMap('other', 'Other', 'https://other.example.com/index.json'),
+        ];
+        await store.migrateLegacyOrigins([_source('source')]);
+        expect(store.all.single.id, 'other');
+        expect(store.originFor('source'), isNull);
+        expect(requests, 0);
+      },
+    );
   });
 
   group('setOrigin', () {

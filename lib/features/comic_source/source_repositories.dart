@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/extensions.dart';
+import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/network/app_dio.dart';
 
@@ -176,6 +177,56 @@ class SourceRepositories extends ChangeNotifier {
     }
     appdata.settings['comicSourceRepositoriesMigrated'] = true;
     await appdata.saveData(false);
+  }
+
+  Future<void> migrateLegacyOrigins(List<ComicSource> sources) async {
+    if (appdata.settings['comicSourceOriginsMigrated'] == true) return;
+    final legacy =
+        appdata.settings['comicSourceListUrl']?.toString().trim() ?? '';
+    final repository = all.firstWhereOrNull(
+      (repository) => repository.url == legacy,
+    );
+    if (repository == null || sources.isEmpty) return;
+    late SourceCatalog catalog;
+    try {
+      catalog = await load(repository);
+    } catch (error) {
+      // Leave the migration pending so offline upgrades can retry later.
+      Log.warning('ComicSource', 'Unable to migrate source origins: $error');
+      return;
+    }
+    if (appdata.settings['comicSourceOriginsMigrated'] == true ||
+        find(repository.id)?.url != repository.url) {
+      return;
+    }
+    final current = appdata.settings['comicSourceOrigins'];
+    final origins = current is Map
+        ? Map<String, dynamic>.from(current)
+        : <String, dynamic>{};
+    for (final source in sources) {
+      if (origins.containsKey(source.key) || source.filePath.isEmpty) continue;
+      final candidates = catalog.entries
+          .where((entry) => entry.key == source.key)
+          .toList();
+      final url = Uri.tryParse(source.url.trim())?.removeFragment().toString();
+      final exact = candidates.where((entry) => entry.url == url).toList();
+      final entry = exact.length == 1
+          ? exact.single
+          : candidates.length == 1
+          ? candidates.single
+          : null;
+      if (entry == null) continue;
+      origins[source.key] = SourceOrigin(
+        kind: 'repository',
+        repositoryId: repository.id,
+        repositoryName: repository.name,
+        url: entry.url,
+      ).toJson();
+    }
+    appdata.settings['comicSourceOrigins'] = origins;
+    appdata.settings['comicSourceOriginsMigrated'] = true;
+    await appdata.saveData(false);
+    notifyListeners();
   }
 
   static String normalizeUrl(String value) {
@@ -406,6 +457,7 @@ class SourceRepositories extends ChangeNotifier {
   }
 
   Future<SourceUpdateCheck> checkUpdates(List<ComicSource> sources) async {
+    await migrateLegacyOrigins(sources);
     final repositories = all;
     final updates = <String, String>{};
     final failures = <String>[];

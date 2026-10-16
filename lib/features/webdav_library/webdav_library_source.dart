@@ -157,7 +157,7 @@ class RemoteComicLibraryRegistry {
           id: accountId,
           backend: StorageBackend.webdav,
           driver: 'webdav',
-          name: 'WebDAV',
+          name: 'WebDAV漫画库',
           authorization: {
             'url': legacy.url,
             'user': legacy.user,
