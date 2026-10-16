@@ -210,7 +210,7 @@ class _RepositoryEditorState extends State<_RepositoryEditor> {
     canPop: !saving,
     child: AlertDialog(
       title: Text(
-        (widget.repository == null ? 'Add repository' : 'Edit repository').tl,
+        widget.repository == null ? 'Add repository'.tl : 'Edit repository'.tl,
       ),
       content: SizedBox(
         width: 440,
@@ -279,7 +279,7 @@ class _RepositoryEditorState extends State<_RepositoryEditor> {
         ),
         FilledButton(
           onPressed: saving ? null : save,
-          child: Text((saving ? 'Validating repository' : 'Save').tl),
+          child: Text(saving ? 'Validating repository'.tl : 'Save'.tl),
         ),
       ],
     ),
@@ -510,11 +510,9 @@ class _SourceRepositoryCatalogPageState
                   if (!loading && error == null && visible.isEmpty)
                     SourceManagementEmptyState(
                       icon: Icons.search_off,
-                      title:
-                          (widget.sourceToLink != null
-                                  ? 'This source is not listed in this repository.'
-                                  : 'No sources found')
-                              .tl,
+                      title: widget.sourceToLink != null
+                          ? 'This source is not listed in this repository.'.tl
+                          : 'No sources found'.tl,
                       description: 'Try another search or refresh the list.'.tl,
                     ),
                   for (final entry in visible) _entry(context, entry),
@@ -609,9 +607,9 @@ class _SourceRepositoryCatalogPageState
                       ),
                     )
                   : Tooltip(
-                      message:
-                          (installed ? 'Use this repository' : 'Install source')
-                              .tl,
+                      message: installed
+                          ? 'Use this repository'.tl
+                          : 'Install source'.tl,
                       child: FilledButton.tonal(
                         onPressed: linkingUrls.contains(entry.url) || loading
                             ? null
@@ -624,10 +622,9 @@ class _SourceRepositoryCatalogPageState
                                 ),
                               )
                             : Text(
-                                (installed
-                                        ? 'Use this repository'
-                                        : 'Install source')
-                                    .tl,
+                                installed
+                                    ? 'Use this repository'.tl
+                                    : 'Install source'.tl,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                               ),

@@ -294,7 +294,7 @@ class _SourceInstallationAction extends StatelessWidget {
       );
     }
     final failed = task.phase == SourceInstallPhase.failed;
-    final retryLabel = (failed ? 'Retry' : 'Install again').tl;
+    final retryLabel = failed ? 'Retry'.tl : 'Install again'.tl;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [

@@ -9,7 +9,9 @@ void main() {
   );
 
   test('all literal translation keys used by Dart code are defined', () {
-    final literalPattern = RegExp(r'''(["'])([^"']+)\1\.(?:tl|tlParams)\b''');
+    final literalPattern = RegExp(
+      r'''(["'])((?:(?!\1).)+)\1\s*\.(?:tl|tlParams)\b''',
+    );
     final keys = <String>{};
     final sourceFiles = Directory('lib')
         .listSync(recursive: true)

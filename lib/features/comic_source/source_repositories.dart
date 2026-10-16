@@ -436,9 +436,9 @@ class SourceRepositories extends ChangeNotifier {
     if (exact != null) return exact;
     if (candidates.length == 1) return candidates.single;
     throw (candidates.isEmpty
-            ? 'This source is no longer listed in its repository.'
-            : 'Multiple variants found. Choose a source in the repository again.')
-        .tl;
+        ? 'This source is no longer listed in its repository.'.tl
+        : 'Multiple variants found. Choose a source in the repository again.'
+              .tl);
   }
 
   Future<String> updateUrl(
