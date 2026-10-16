@@ -27,12 +27,14 @@ import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
+import openlistcore.Openlistcore
 import io.flutter.plugins.GeneratedPluginRegistrant
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.util.UUID
 import java.util.Locale
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
 class MainActivity : FlutterFragmentActivity() {
@@ -47,6 +49,7 @@ class MainActivity : FlutterFragmentActivity() {
     private val sharedTexts = ArrayList<String>()
 
     private var textShareHandler: ((String) -> Unit)? = null
+    private val openListExecutor = Executors.newCachedThreadPool()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -216,6 +219,27 @@ class MainActivity : FlutterFragmentActivity() {
                 else -> res.notImplemented()
             }
         }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "venera/openlist")
+            .setMethodCallHandler { call, result ->
+                if (call.method != "invoke") {
+                    result.notImplemented()
+                    return@setMethodCallHandler
+                }
+                val request = call.arguments as? String
+                if (request == null) {
+                    result.error("invalid_request", "request is required", null)
+                    return@setMethodCallHandler
+                }
+                openListExecutor.execute {
+                    try {
+                        val response = Openlistcore.invoke(request)
+                        runOnUiThread { result.success(response) }
+                    } catch (error: Exception) {
+                        runOnUiThread { result.error("openlist", error.message, null) }
+                    }
+                }
+            }
 
         val channel = EventChannel(flutterEngine.dartExecutor.binaryMessenger, "venera/volume")
         channel.setStreamHandler(

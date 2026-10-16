@@ -21,6 +21,7 @@ import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/main.dart';
 import 'package:venera_plus/network/cookie_jar.dart';
+import 'package:venera_plus/network/remote_storage/openlist_bridge.dart';
 
 const bool _isCiNativeSmoke = bool.fromEnvironment('CI_NATIVE_SMOKE');
 
@@ -78,6 +79,33 @@ void main() {
   });
 
   group('SQLite Native Assets and Database Runtime Verification', () {
+    test(
+      'embedded OpenList core initializes, exposes drivers, and closes',
+      () async {
+        final coreData = Directory('${suiteTempDir.path}/openlist')
+          ..createSync(recursive: true);
+        final rpc = EmbeddedOpenListRpc();
+        final initialized = await rpc.invoke('initialize', {
+          'dataDir': coreData.path,
+          'proxy': '',
+        });
+        expect(initialized['error'], isNull);
+        final data = initialized['data'] as Map;
+        expect(data['drivers'], [
+          'BaiduNetdisk',
+          'QuarkOpen',
+          '115 Open',
+          '123 Open',
+          'Onedrive',
+          'GoogleDrive',
+        ]);
+        final accounts = await rpc.invoke('accounts', const {});
+        expect(accounts['data'], {'accounts': <Object>[]});
+        final closed = await rpc.invoke('close', const {});
+        expect(closed['error'], isNull);
+      },
+    );
+
     test(
       'native assets load sqlite3 3.53.4 and enforce transaction rollback semantics',
       () {
@@ -604,10 +632,12 @@ void main() {
           expect(find.byType(MainPage), findsOneWidget);
           expect(find.byType(HomePage), findsOneWidget);
           // Real users navigate to Library from the main navigation bar to access Reading Records
-          final libraryNavFinder = find.descendant(
-            of: find.byType(MainPage),
-            matching: find.byIcon(Icons.local_library_outlined),
-          );
+          final libraryNavFinder = find
+              .descendant(
+                of: find.byType(MainPage),
+                matching: find.byIcon(Icons.local_library_outlined),
+              )
+              .hitTestable();
           expect(libraryNavFinder, findsOneWidget);
 
           await tester.tap(libraryNavFinder);

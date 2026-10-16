@@ -14,6 +14,7 @@ import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/reader/auto_reading.dart';
 import 'package:venera_plus/features/reader/images.dart';
 import 'package:venera_plus/features/reader/reader_page.dart';
+import 'package:venera_plus/features/reader/scaffold.dart';
 import 'package:venera_plus/features/sync/data_sync.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
@@ -43,6 +44,7 @@ void main() {
         final previousLogMuted = Log.isMuted;
         final directory = Directory.systemTemp.createTempSync('auto-reader-');
         final key = GlobalKey<_TestReaderState>();
+        addTearDown(tester.view.resetPadding);
         try {
           App.dataPath = directory.path;
           App.cachePath = directory.path;
@@ -124,20 +126,58 @@ void main() {
             }
           }
 
-          for (var i = 0; i < 30; i++) {
-            await pumpFrames(5);
-            if (reader.imageViewController case AutoReadingViewport viewport
-                when viewport.autoReadingReady) {
-              break;
+          Future<void> waitForImages() async {
+            for (var i = 0; i < 30; i++) {
+              await pumpFrames(5);
+              if (reader.imageViewController case AutoReadingViewport viewport
+                  when viewport.autoReadingReady) {
+                break;
+              }
+            }
+            expect(reader.imageViewController, isA<AutoReadingViewport>());
+            expect(
+              (reader.imageViewController as AutoReadingViewport)
+                  .autoReadingReady,
+              isTrue,
+            );
+          }
+
+          await waitForImages();
+          if (mode.isGallery) {
+            final imageFinder = find.byType(RawImage).hitTestable();
+            expect(imageFinder, findsOneWidget);
+            final image = tester.widget<RawImage>(imageFinder).image;
+            final page = reader.page;
+            final scaffold = tester.state<ReaderScaffoldState>(
+              find.byType(ReaderScaffold),
+            );
+            for (final padding in [
+              const FakeViewPadding(top: 24, bottom: 24),
+              FakeViewPadding.zero,
+            ]) {
+              scaffold.openOrClose();
+              tester.view.padding = padding;
+              await pumpFrames(12);
+              expect(imageFinder, findsOneWidget);
+              expect(tester.widget<RawImage>(imageFinder).image, same(image));
+              expect(reader.page, page);
             }
           }
-          expect(reader.imageViewController, isA<AutoReadingViewport>());
-          expect(
-            (reader.imageViewController as AutoReadingViewport)
-                .autoReadingReady,
-            isTrue,
+          final imagesState = tester.state<ReaderImagesState>(
+            find.byType(ReaderImages),
           );
-          settings['longPressAction'] = 'zoom';
+          final retryChapter = reader.chapter;
+          final retryPage = mode.isGallery ? 2 : 1;
+          imagesState.retryImage(retryChapter, retryPage);
+          await waitForImages();
+          expect(reader.chapter, retryChapter);
+          expect(reader.page, retryPage);
+          if (retryPage != 1) {
+            imagesState.retryImage(retryChapter, 1);
+            await waitForImages();
+          }
+          settings['longPressAction'] = null;
+          settings['enableLongPressToZoom'] = true;
           if (!mode.isGallery) {
             PhotoView flowPhoto() => tester.widget<PhotoView>(
               find.byWidgetPredicate(

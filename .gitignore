@@ -43,6 +43,11 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+/android/app/libs/openlistcore.aar
+/android/app/src/main/assets/licenses/LICENSE.OpenList.txt
+/ios/Frameworks/Openlistcore.xcframework/
+/ios/Frameworks/LICENSE.OpenList.txt
+/native/openlist_core/artifacts/
 /android/build
 
 # Agent 相关目录

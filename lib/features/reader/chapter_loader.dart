@@ -28,6 +28,7 @@ Future<List<String>> loadReaderChapterImages({
   required int chapter,
   required ComicChapters? chapters,
   void Function()? onOnlineFallback,
+  bool forceRefresh = false,
 }) async {
   final chapterId = chapters?.ids.elementAtOrNull(chapter - 1);
   if (chapters != null && chapterId == null) {
@@ -76,7 +77,11 @@ Future<List<String>> loadReaderChapterImages({
   if (source?.loadComicPages == null) {
     throw 'Comic source is unavailable'.tl;
   }
-  final result = await source!.loadComicPages!(comicId, chapterId);
+  final result = await source!.loadComicPagesForReading(
+    comicId,
+    chapterId,
+    refresh: forceRefresh,
+  );
   if (result.error) throw result.errorMessage!;
   if (missingLocalFiles) onOnlineFallback?.call();
   return result.data;

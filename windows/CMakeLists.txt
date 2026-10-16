@@ -88,6 +88,15 @@ if(PLUGIN_BUNDLED_LIBRARIES)
     COMPONENT Runtime)
 endif()
 
+set(OPENLIST_CORE_DLL "${CMAKE_SOURCE_DIR}/../native/openlist_core/artifacts/windows/venera_openlist.dll")
+if(EXISTS "${OPENLIST_CORE_DLL}")
+  install(FILES "${OPENLIST_CORE_DLL}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
+endif()
+set(OPENLIST_CORE_LICENSE "${CMAKE_SOURCE_DIR}/../native/openlist_core/artifacts/windows/LICENSE.OpenList.txt")
+if(EXISTS "${OPENLIST_CORE_LICENSE}")
+  install(FILES "${OPENLIST_CORE_LICENSE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}/licenses" COMPONENT Runtime)
+endif()
+
 # Copy the native assets provided by the build.dart from all packages.
 set(NATIVE_ASSETS_DIR "${PROJECT_BUILD_DIR}native_assets/windows/")
 install(DIRECTORY "${NATIVE_ASSETS_DIR}"

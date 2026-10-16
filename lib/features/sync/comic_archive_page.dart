@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/loading.dart';
@@ -283,6 +285,7 @@ class _ComicArchivePageState extends State<ComicArchivePage> {
                     setState(() {
                       cancelled = true;
                     });
+                    unawaited(ComicBackupManager.cancelActiveTasks());
                   },
                   child: Text("Cancel".tl),
                 ),

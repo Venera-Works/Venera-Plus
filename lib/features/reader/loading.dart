@@ -93,7 +93,7 @@ class _ReaderWithLoadingState
         ),
       );
     }
-    final comic = await comicSource.loadComicInfo!(widget.id);
+    final comic = await comicSource.loadComicInfoForReading(widget.id);
     if (comic.error) {
       return Res.fromErrorRes(comic);
     }

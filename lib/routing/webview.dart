@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 
 import 'package:desktop_webview_window/desktop_webview_window.dart';
@@ -61,11 +62,16 @@ class AppWebview extends StatefulWidget {
     this.onNavigation,
     this.singlePage = false,
     this.onStarted,
+    this.onLoadStart,
     this.onLoadStop,
+    this.initialScripts = const [],
+    this.userAgent,
     super.key,
   });
 
   final String initialUrl;
+
+  final String? userAgent;
 
   final void Function(String title, InAppWebViewController controller)?
   onTitleChange;
@@ -75,7 +81,12 @@ class AppWebview extends StatefulWidget {
 
   final void Function(InAppWebViewController controller)? onStarted;
 
+  final void Function(String url, InAppWebViewController controller)?
+  onLoadStart;
+
   final void Function(InAppWebViewController controller)? onLoadStop;
+
+  final List<String> initialScripts;
 
   final bool singlePage;
 
@@ -194,8 +205,18 @@ class _AppWebviewState extends State<AppWebview> {
   Widget createWebviewWithEnvironment(WebViewEnvironment? e) {
     return InAppWebView(
       webViewEnvironment: e,
-      initialSettings: InAppWebViewSettings(isInspectable: true),
+      initialSettings: InAppWebViewSettings(
+        isInspectable: true,
+        userAgent: widget.userAgent,
+      ),
       initialUrlRequest: URLRequest(url: WebUri(widget.initialUrl)),
+      initialUserScripts: UnmodifiableListView([
+        for (final script in widget.initialScripts)
+          UserScript(
+            source: script,
+            injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+          ),
+      ]),
       onTitleChanged: (c, t) {
         if (mounted) {
           setState(() {
@@ -217,6 +238,9 @@ class _AppWebviewState extends State<AppWebview> {
       onWebViewCreated: (c) {
         controller = c;
         widget.onStarted?.call(c);
+      },
+      onLoadStart: (c, url) {
+        widget.onLoadStart?.call(url?.toString() ?? '', c);
       },
       onLoadStop: (c, r) {
         widget.onLoadStop?.call(c);
@@ -245,12 +269,15 @@ class DesktopWebview {
 
   final void Function()? onClose;
 
+  final List<String> initialScripts;
+
   DesktopWebview({
     required this.initialUrl,
     this.onTitleChange,
     this.onNavigation,
     this.onStarted,
     this.onClose,
+    this.initialScripts = const [],
   });
 
   Webview? _webview;
@@ -299,7 +326,7 @@ class DesktopWebview {
     });
   }
 
-  void open() async {
+  Future<void> open() async {
     _webview = await WebviewWindow.create(
       configuration: CreateConfiguration(
         useWindowPositionAndSize: true,
@@ -313,6 +340,9 @@ class DesktopWebview {
       s = s.substring(1, s.length - 1);
       return onNavigation?.call(s, this);
     });
+    for (final script in initialScripts) {
+      _webview!.addScriptToExecuteOnDocumentCreated(script);
+    }
     _webview!.launch(initialUrl, triggerOnUrlRequestEvent: false);
     _runTimer();
     _webview!.onClose.then((value) {

@@ -3,11 +3,13 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library.dart';
 import 'package:venera_plus/features/comic_storage/comic_storage.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library_cache.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 
 void main() {
   late _FakeWebDavLibraryOps ops;
@@ -65,6 +67,291 @@ void main() {
     expect(passwordChanged.libraryId, first.libraryId);
     expect(pathChanged.libraryId, isNot(first.libraryId));
   });
+
+  test(
+    'legacy snapshot migrates after its import clears the migration marker',
+    () async {
+      appdata.settings[RemoteComicLibraryRegistry.settingsKey] = const [];
+      appdata.settings[remoteStorageAccountsSetting] = const [];
+      appdata.settings[RemoteComicLibraryRegistry.legacyMigrationKey] = true;
+      appdata.settings['webdavComicLibrary'] = const [];
+      await RemoteComicLibraryRegistry.migrateLegacyWebDavLibrary();
+      expect(RemoteComicLibraryRegistry.read(), isEmpty);
+
+      appdata.settings['webdavComicLibrary'] = const [
+        'https://example.com/dav',
+        'user',
+        'pass',
+      ];
+      appdata.settings['webdavComicLibraryPath'] = '/manga/';
+      appdata.settings[RemoteComicLibraryRegistry.legacyMigrationKey] = false;
+      final oldLibraryId = WebDavLibraryConfig.fromSettings().libraryId;
+
+      await RemoteComicLibraryRegistry.migrateLegacyWebDavLibrary();
+      final library = RemoteComicLibraryRegistry.read().single;
+      expect(library.sourceKey, WebDavLibrarySource.sourceKey);
+      expect(library.id, oldLibraryId);
+      expect(library.directories, const ['/manga/']);
+    },
+  );
+
+  test(
+    'root memberships merge selected directories and retain removed root cache',
+    () {
+      final cache = WebDavLibraryCache.instance;
+      const key = 'multi-root-library';
+      cache.replaceRootDirectoryIndex(
+        key,
+        const WebDavLibraryRootIndex(
+          rootPath: '/A/',
+          directories: [
+            WebDavLibraryRemoteDirectory(id: '/A/Comic/', sortIndex: 0),
+            WebDavLibraryRemoteDirectory(id: '/A/Same/', sortIndex: 1),
+          ],
+        ),
+      );
+      cache.replaceRootDirectoryIndex(
+        key,
+        const WebDavLibraryRootIndex(
+          rootPath: '/B/C/',
+          directories: [
+            WebDavLibraryRemoteDirectory(id: '/B/C/Same/', sortIndex: 0),
+            WebDavLibraryRemoteDirectory(id: '/A/Same/', sortIndex: 1),
+          ],
+        ),
+      );
+
+      expect(cache.count(key, roots: const ['/A/', '/B/C/']), 3);
+      expect(cache.count(key, roots: const ['/B/C/']), 2);
+      expect(
+        cache
+            .page(key, page: 1, pageSize: 10, roots: const ['/B/C/'])
+            .map((item) => item.id),
+        containsAll(const ['/B/C/Same/', '/A/Same/']),
+      );
+
+      cache.removeRootsExcept(key, const {'/B/C/'});
+      expect(cache.count(key, roots: const ['/B/C/']), 2);
+      // Re-adding an unavailable root can still display its last membership.
+      expect(cache.count(key, roots: const ['/A/', '/B/C/']), 3);
+    },
+  );
+
+  test(
+    'two remote libraries synchronize without cancelling each other',
+    () async {
+      final firstStore = _FakeRemoteFileStore('first')
+        ..dirs['/one/'] = const [
+          RemoteEntry(name: 'First', path: '/one/First/', isDirectory: true),
+        ]
+        ..dirs['/one/First/'] = const [
+          RemoteEntry(
+            name: '001.jpg',
+            path: '/one/First/001.jpg',
+            isDirectory: false,
+          ),
+        ];
+      final secondStore = _FakeRemoteFileStore('second')
+        ..dirs['/two/'] = const [
+          RemoteEntry(name: 'Second', path: '/two/Second/', isDirectory: true),
+        ]
+        ..dirs['/two/Second/'] = const [
+          RemoteEntry(
+            name: '001.jpg',
+            path: '/two/Second/001.jpg',
+            isDirectory: false,
+          ),
+        ];
+      final first = WebDavLibraryEngine(
+        library: const RemoteLibrary(
+          id: 'first',
+          sourceKey: 'first',
+          accountId: 'first',
+          directories: ['/one/'],
+          name: 'First',
+        ),
+        store: firstStore,
+      );
+      final second = WebDavLibraryEngine(
+        library: const RemoteLibrary(
+          id: 'second',
+          sourceKey: 'second',
+          accountId: 'second',
+          directories: ['/two/'],
+          name: 'Second',
+        ),
+        store: secondStore,
+      );
+
+      await Future.wait([first.synchronize(), second.synchronize()]);
+      expect(
+        (await first.create().explorePages.single.loadPage!(1)).data.single.id,
+        '/one/First/',
+      );
+      expect(
+        (await second.create().explorePages.single.loadPage!(1)).data.single.id,
+        '/two/Second/',
+      );
+      first.cancel();
+      second.cancel();
+      expect(firstStore.cancelAllCalls, 1);
+      expect(secondStore.cancelAllCalls, 1);
+    },
+  );
+
+  test('remote library thumbnails resolve their own account links', () async {
+    const imageKey = '/娱乐/漫画 [A] 100%/cover.jpg';
+    final sources = <String, ComicSource>{};
+    final stores = <String, _FakeRemoteFileStore>{};
+    for (final id in ['first', 'second']) {
+      final store = _FakeRemoteFileStore(id)
+        ..links[imageKey] = RemoteLink(
+          url: 'https://$id.example.com/cover.jpg?sign=$id',
+          headers: {'Referer': 'https://$id.example.com/'},
+        );
+      final engine = WebDavLibraryEngine(
+        library: RemoteLibrary(
+          id: id,
+          sourceKey: id,
+          accountId: id,
+          directories: const ['/娱乐/'],
+          name: id,
+          autoRefresh: false,
+        ),
+        store: store,
+      );
+      addTearDown(engine.cancel);
+      sources[id] = engine.create();
+      stores[id] = store;
+    }
+
+    for (final id in sources.keys) {
+      final config = await sources[id]!.getThumbnailLoadingConfig?.call(
+        imageKey,
+      );
+      expect(config, {
+        'url': 'https://$id.example.com/cover.jpg?sign=$id',
+        'headers': {'Referer': 'https://$id.example.com/'},
+      });
+      expect(stores[id]!.linkedPaths, [imageKey]);
+    }
+  });
+
+  test(
+    'legacy multi-root IDs retain the anchor only for its original root',
+    () async {
+      final store = _FakeRemoteFileStore('legacy')
+        ..dirs['/manga/'] = const [
+          RemoteEntry(name: 'Old', path: '/manga/Old/', isDirectory: true),
+        ]
+        ..dirs['/other/'] = const [
+          RemoteEntry(name: 'New', path: '/other/New/', isDirectory: true),
+        ]
+        ..dirs['/manga/Old/'] = const [
+          RemoteEntry(
+            name: '001.jpg',
+            path: '/manga/Old/001.jpg',
+            isDirectory: false,
+          ),
+        ]
+        ..dirs['/other/New/'] = const [
+          RemoteEntry(
+            name: '001.jpg',
+            path: '/other/New/001.jpg',
+            isDirectory: false,
+          ),
+        ];
+      final engine = WebDavLibraryEngine(
+        library: const RemoteLibrary(
+          id: 'legacy',
+          sourceKey: WebDavLibrarySource.sourceKey,
+          accountId: 'legacy',
+          directories: ['/manga/', '/other/'],
+          name: 'Legacy',
+        ),
+        store: store,
+      );
+
+      await engine.synchronize();
+      final ids = (await engine.create().explorePages.single.loadPage!(
+        1,
+      )).data.map((comic) => comic.id);
+      expect(ids, containsAll(['Old', '/other/New/']));
+      engine.cancel();
+    },
+  );
+
+  test(
+    'failed root keeps the available union and exposes its warning',
+    () async {
+      final store = _FakeRemoteFileStore('partial')
+        ..dirs['/available/'] = const [
+          RemoteEntry(
+            name: 'Comic',
+            path: '/available/Comic/',
+            isDirectory: true,
+          ),
+        ]
+        ..dirs['/available/Comic/'] = const [
+          RemoteEntry(
+            name: '001.jpg',
+            path: '/available/Comic/001.jpg',
+            isDirectory: false,
+          ),
+        ];
+      final engine = WebDavLibraryEngine(
+        library: const RemoteLibrary(
+          id: 'partial',
+          sourceKey: 'partial',
+          accountId: 'partial',
+          directories: ['/available/', '/missing/'],
+          name: 'Partial',
+        ),
+        store: store,
+      );
+
+      await engine.synchronize();
+      store.errors['/missing/'] = StateError('missing root');
+      expect((await engine.synchronize()).error, isTrue);
+      expect(
+        (await engine.create().explorePages.single.loadPage!(1)).data.single.id,
+        '/available/Comic/',
+      );
+      expect(engine.statusMessage, contains('/missing/'));
+      engine.cancel();
+    },
+  );
+
+  test(
+    'legacy engine writes anchor-external Bangumi metadata by full path',
+    () async {
+      final store = _FakeRemoteFileStore('legacy-write')
+        ..dirs['/other/New/'] = const [
+          RemoteEntry(
+            name: '001.jpg',
+            path: '/other/New/001.jpg',
+            isDirectory: false,
+          ),
+        ];
+      final engine = WebDavLibraryEngine(
+        library: const RemoteLibrary(
+          id: 'legacy-write',
+          sourceKey: WebDavLibrarySource.sourceKey,
+          accountId: 'legacy-write',
+          directories: ['/manga/', '/other/'],
+          name: 'Legacy',
+        ),
+        store: store,
+      );
+
+      await engine.writeMetadata(
+        '/other/New/',
+        const ComicMetaData(title: 'New', author: '', tags: []),
+      );
+      expect(store.writtenPaths, contains('/other/New/metadata.json'));
+      engine.cancel();
+    },
+  );
 
   test('malformed synchronized connection tuples are rejected', () {
     appdata.settings['webdavComicLibrary'] = [
@@ -178,6 +465,259 @@ void main() {
       expect(updated.data.single.cover, '/manga/Slow Book/cover.jpg');
     },
   );
+
+  test(
+    'comic covers update while other directories are still being scanned',
+    () async {
+      final names = ['A', 'B', 'C', 'D', 'E', 'F'];
+      ops.dirs['/manga/'] = [
+        for (final name in names)
+          WebDavLibraryEntry(name: name, isDirectory: true),
+      ];
+      for (final name in names) {
+        ops.dirs['/manga/$name/'] = const [
+          WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        ];
+        ops.blockers['/manga/$name/'] = Completer<void>();
+        ops.readStarted['/manga/$name/'] = Completer<void>();
+      }
+      final cacheKey = WebDavLibraryConfig.fromSettings().cacheKey;
+      final coverReady = Completer<void>();
+      void onChanged() {
+        if (!coverReady.isCompleted &&
+            WebDavLibraryCache.instance.find(cacheKey, 'A')?.cover.isNotEmpty ==
+                true) {
+          coverReady.complete();
+        }
+      }
+
+      WebDavLibrarySource.contentVersion.addListener(onChanged);
+      final sync = WebDavLibrarySource.synchronize();
+      try {
+        await Future.wait([
+          for (final name in names.take(4))
+            ops.readStarted['/manga/$name/']!.future,
+        ]).timeout(const Duration(seconds: 2));
+        expect(ops.readStarted['/manga/E/']!.isCompleted, isFalse);
+        ops.blockers['/manga/A/']!.complete();
+        await coverReady.future.timeout(const Duration(seconds: 2));
+        await ops.readStarted['/manga/E/']!.future.timeout(
+          const Duration(seconds: 2),
+        );
+        expect(ops.readStarted['/manga/F/']!.isCompleted, isFalse);
+        final comics = await WebDavLibrarySource.loadComics(1);
+        expect(comics.data.first.cover, '/manga/A/001.jpg');
+        expect(WebDavLibrarySource.syncStatus.value.isSyncing, isTrue);
+      } finally {
+        WebDavLibrarySource.contentVersion.removeListener(onChanged);
+        for (final blocker in ops.blockers.values) {
+          if (!blocker.isCompleted) blocker.complete();
+        }
+        await sync;
+      }
+      expect(
+        (await WebDavLibrarySource.loadComics(1)).data.map((comic) => comic.id),
+        names,
+      );
+    },
+  );
+
+  test(
+    'nested remote comics appear before their category finishes scanning',
+    () async {
+      final store = _FakeRemoteFileStore('account');
+      store.dirs['/manga/'] = const [
+        RemoteEntry(
+          name: 'Category',
+          path: '/manga/Category/',
+          isDirectory: true,
+        ),
+      ];
+      store.dirs['/manga/Category/'] = const [
+        RemoteEntry(
+          name: 'Book A',
+          path: '/manga/Category/Book A/',
+          isDirectory: true,
+        ),
+        RemoteEntry(
+          name: 'Book B',
+          path: '/manga/Category/Book B/',
+          isDirectory: true,
+        ),
+      ];
+      for (final name in ['Book A', 'Book B']) {
+        store.dirs['/manga/Category/$name/'] = [
+          RemoteEntry(
+            name: '001.jpg',
+            path: '/manga/Category/$name/001.jpg',
+            isDirectory: false,
+          ),
+        ];
+      }
+      final blocker = Completer<void>();
+      store.blockers['/manga/Category/Book B/'] = blocker;
+      final engine = WebDavLibraryEngine(
+        library: const RemoteLibrary(
+          id: 'library',
+          sourceKey: 'library',
+          accountId: 'account',
+          directories: ['/manga/'],
+          name: 'Library',
+          autoRefresh: false,
+        ),
+        store: store,
+      );
+      final source = engine.create();
+      final coverReady = Completer<void>();
+      void onChanged() {
+        if (!coverReady.isCompleted &&
+            WebDavLibraryCache.instance
+                    .find('remote-library:library', '/manga/Category/Book A/')
+                    ?.cover
+                    .isNotEmpty ==
+                true) {
+          coverReady.complete();
+        }
+      }
+
+      engine.contentVersion.addListener(onChanged);
+      final sync = engine.synchronize();
+      try {
+        await coverReady.future.timeout(const Duration(seconds: 2));
+        final comics = await source.explorePages.single.loadPage!(1);
+        expect(
+          comics.data.any(
+            (comic) => comic.cover == '/manga/Category/Book A/001.jpg',
+          ),
+          isTrue,
+        );
+        expect(engine.syncStatus.value.isSyncing, isTrue);
+      } finally {
+        engine.contentVersion.removeListener(onChanged);
+        blocker.complete();
+        await sync;
+        engine.cancel();
+      }
+    },
+  );
+
+  for (final rootCover in [true, false]) {
+    test(
+      'comic listing defers chapter inspection (root cover: $rootCover)',
+      () async {
+        ops.dirs['/manga/'] = const [
+          WebDavLibraryEntry(name: 'Comic', isDirectory: true),
+        ];
+        ops.dirs['/manga/Comic/'] = [
+          const WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
+          if (rootCover)
+            const WebDavLibraryEntry(name: 'cover.jpg', isDirectory: false),
+          const WebDavLibraryEntry(name: '第01卷', isDirectory: true),
+          const WebDavLibraryEntry(name: '第02卷', isDirectory: true),
+          const WebDavLibraryEntry(name: '临时目录', isDirectory: true),
+        ];
+        ops.textFiles['/manga/Comic/metadata.json'] = jsonEncode({
+          'title': 'Comic title',
+          'author': 'Author',
+          'tags': ['Tag'],
+        });
+        for (final name in ['第01卷', '第02卷']) {
+          ops.dirs['/manga/Comic/$name/'] = const [
+            WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+          ];
+        }
+        final blocker = Completer<void>();
+        final chapterStarted = Completer<void>();
+        ops.blockers['/manga/Comic/第02卷/'] = blocker;
+        ops.readStarted['/manga/Comic/第02卷/'] = chapterStarted;
+        final sync = WebDavLibrarySource.synchronize();
+        try {
+          expect(
+            (await sync.timeout(const Duration(seconds: 2))).success,
+            isTrue,
+          );
+          final comics = await WebDavLibrarySource.loadComics(1);
+          expect(comics.data.single.title, 'Comic title');
+          expect(
+            comics.data.single.cover,
+            rootCover ? '/manga/Comic/cover.jpg' : '/manga/Comic/第01卷/001.jpg',
+          );
+          expect(chapterStarted.isCompleted, isFalse);
+          // Reopen the persistent summary before loading complete reader details.
+          WebDavLibrarySource.ops = ops;
+          final firstDetails = WebDavLibrarySource.loadComicInfo('Comic');
+          final secondDetails = WebDavLibrarySource.loadComicInfo('Comic');
+          await chapterStarted.future.timeout(const Duration(seconds: 2));
+          blocker.complete();
+          final details = await Future.wait([firstDetails, secondDetails]);
+          for (final result in details) {
+            expect(result.data.chapters!.allChapters.keys, ['第01卷', '第02卷']);
+          }
+          expect(
+            ops.readPaths.where((path) => path == '/manga/Comic/第02卷/'),
+            hasLength(1),
+          );
+        } finally {
+          if (!blocker.isCompleted) blocker.complete();
+          await sync;
+        }
+      },
+    );
+  }
+
+  for (final rootCover in [true, false]) {
+    test('chapter-only comic previews its cover before discovery completes '
+        '(root cover: $rootCover)', () async {
+      ops.dirs['/manga/'] = const [
+        WebDavLibraryEntry(name: 'Comic', isDirectory: true),
+      ];
+      ops.dirs['/manga/Comic/'] = [
+        if (rootCover)
+          const WebDavLibraryEntry(name: 'cover.jpg', isDirectory: false),
+        const WebDavLibraryEntry(name: '第01卷', isDirectory: true),
+        const WebDavLibraryEntry(name: '第02卷', isDirectory: true),
+      ];
+      for (final name in ['第01卷', '第02卷']) {
+        ops.dirs['/manga/Comic/$name/'] = const [
+          WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        ];
+      }
+      final blocker = Completer<void>();
+      ops.blockers['/manga/Comic/${rootCover ? '第01卷' : '第02卷'}/'] = blocker;
+      final coverReady = Completer<void>();
+      final cacheKey = WebDavLibraryConfig.fromSettings().cacheKey;
+      void onChanged() {
+        if (!coverReady.isCompleted &&
+            WebDavLibraryCache.instance
+                    .find(cacheKey, 'Comic')
+                    ?.cover
+                    .isNotEmpty ==
+                true) {
+          coverReady.complete();
+        }
+      }
+
+      WebDavLibrarySource.contentVersion.addListener(onChanged);
+      final sync = WebDavLibrarySource.synchronize();
+      try {
+        await coverReady.future.timeout(const Duration(seconds: 2));
+        final comics = await WebDavLibrarySource.loadComics(1);
+        expect(
+          comics.data.single.cover,
+          rootCover ? '/manga/Comic/cover.jpg' : '/manga/Comic/第01卷/001.jpg',
+        );
+        expect(WebDavLibrarySource.syncStatus.value.isSyncing, isTrue);
+        blocker.complete();
+        expect((await sync).success, isTrue);
+        final details = await WebDavLibrarySource.loadComicInfo('Comic');
+        expect(details.data.chapters!.allChapters.keys, ['第01卷', '第02卷']);
+      } finally {
+        WebDavLibrarySource.contentVersion.removeListener(onChanged);
+        if (!blocker.isCompleted) blocker.complete();
+        await sync;
+      }
+    });
+  }
 
   test('cached comic list is paged without additional WebDAV reads', () async {
     ops.dirs['/manga/'] = [
@@ -662,6 +1202,50 @@ void main() {
     ]);
   });
 
+  test(
+    'reopening reuses persisted chapter pages and library refresh updates them',
+    () async {
+      ops.dirs['/manga/'] = const [
+        WebDavLibraryEntry(name: 'Book', isDirectory: true),
+      ];
+      ops.dirs['/manga/Book/'] = const [
+        WebDavLibraryEntry(name: '第01卷', isDirectory: true),
+      ];
+      ops.dirs['/manga/Book/第01卷/'] = const [
+        WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
+        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      ];
+      expect((await WebDavLibrarySource.loadComicInfo('Book')).success, isTrue);
+      final initial = await WebDavLibrarySource.loadComicPages('Book', '第01卷');
+      expect(initial.data, [
+        '/manga/Book/第01卷/001.jpg',
+        '/manga/Book/第01卷/002.jpg',
+      ]);
+      expect(ops.readPaths, ['/manga/Book/', '/manga/Book/第01卷/']);
+
+      // Close the database and clear the source's memory cache, retaining files.
+      WebDavLibrarySource.resetCacheForTesting();
+      ops.readPaths.clear();
+      expect((await WebDavLibrarySource.loadComicInfo('Book')).success, isTrue);
+      expect(
+        (await WebDavLibrarySource.loadComicPages('Book', '第01卷')).data,
+        initial.data,
+      );
+      expect(ops.readPaths, isEmpty);
+
+      ops.dirs['/manga/Book/第01卷/'] = const [
+        WebDavLibraryEntry(name: '003.jpg', isDirectory: false),
+      ];
+      expect(
+        (await WebDavLibrarySource.synchronize(force: true)).success,
+        isTrue,
+      );
+      expect((await WebDavLibrarySource.loadComicPages('Book', '第01卷')).data, [
+        '/manga/Book/第01卷/003.jpg',
+      ]);
+    },
+  );
+
   test('loadComicPages handles Chinese directory paths', () async {
     ops.dirs['/manga/猫之眼[北条司]/第01卷/'] = List.unmodifiable([
       const WebDavLibraryEntry(name: '010.jpg', isDirectory: false),
@@ -848,6 +1432,22 @@ void main() {
       expect(config['headers'], {'authorization': 'Basic dXNlcjpwYXNz'});
     },
   );
+  test('legacy thumbnails retain encoded URLs and basic auth headers', () async {
+    final config = await WebDavLibrarySource.getThumbnailLoadingConfig(
+      '/manga/Cat Eye/第01卷/cover.jpg',
+    );
+    expect(config, {
+      'url':
+          'https://example.com/dav/manga/Cat%20Eye/%E7%AC%AC01%E5%8D%B7/cover.jpg',
+      'headers': {'authorization': 'Basic dXNlcjpwYXNz'},
+    });
+    expect(
+      await WebDavLibrarySource.getThumbnailLoadingConfig('cover.Cat Eye'),
+      {
+        'headers': {'authorization': 'Basic dXNlcjpwYXNz'},
+      },
+    );
+  });
   test('missing metadata is scraped and written back to WebDAV', () async {
     ops.dirs['/manga/'] = const [
       WebDavLibraryEntry(name: 'Cat Eye[Tsukasa Hojo]', isDirectory: true),
@@ -2305,6 +2905,93 @@ void main() {
     expect(snapshot['metadataScrapeError'], contains('scraper unavailable'));
     expect(ops.writeRequests, isEmpty);
   });
+}
+
+class _FakeRemoteFileStore implements RemoteFileStore {
+  _FakeRemoteFileStore(String id)
+    : _account = StorageAccount(
+        id: id,
+        backend: StorageBackend.webdav,
+        driver: 'webdav',
+        name: id,
+        authorization: const {},
+      );
+
+  final StorageAccount _account;
+  final dirs = <String, List<RemoteEntry>>{};
+  final errors = <String, Object>{};
+  final writtenPaths = <String>[];
+  final links = <String, RemoteLink>{};
+  final linkedPaths = <String>[];
+  final blockers = <String, Completer<void>>{};
+  var cancelAllCalls = 0;
+
+  @override
+  StorageAccount get account => _account;
+
+  @override
+  Future<void> cancel(String taskId) async {}
+
+  @override
+  Future<void> cancelAll() async {
+    cancelAllCalls++;
+  }
+
+  @override
+  Future<void> delete(String path) async {}
+
+  @override
+  Future<void> download(
+    String remotePath,
+    String localPath, {
+    void Function(RemoteTransferProgress progress)? onProgress,
+  }) async {}
+
+  @override
+  Future<RemoteLink> link(String path) async {
+    linkedPaths.add(path);
+    return links[path] ?? RemoteLink(url: path);
+  }
+
+  @override
+  Future<List<RemoteEntry>> list(String directory) async {
+    await blockers[directory]?.future;
+    final error = errors[directory];
+    if (error != null) throw error;
+    return dirs[directory] ?? const [];
+  }
+
+  @override
+  Future<void> mkdir(String path) async {}
+
+  @override
+  Future<RemoteTextFile> readText(String path) =>
+      Future.error(StateError('Missing text file: $path'));
+
+  @override
+  Future<RemoteEntry> stat(String path) => Future.error(StateError(path));
+
+  @override
+  Future<void> test() async {}
+
+  @override
+  Future<void> upload(
+    String localPath,
+    String remotePath, {
+    void Function(RemoteTransferProgress progress)? onProgress,
+  }) async {}
+
+  @override
+  Future<RemoteWriteResult> writeText(
+    String path,
+    String content, {
+    bool createOnly = false,
+    String? ifMatch,
+    int? ifUnmodifiedSince,
+  }) async {
+    writtenPaths.add(path);
+    return const RemoteWriteResult();
+  }
 }
 
 class _FakeWebDavLibraryOps implements WebDavLibraryOps {

@@ -75,7 +75,7 @@ permissions:
 
 jobs:
   Build_Android:
-    if: ${{ inputs.build_android }}
+    if: ${{ github.event_name == 'push' || inputs.build_android }}
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     env:
@@ -104,13 +104,29 @@ jobs:
           key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('pubspec.lock') }}-${{ hashFiles('rust-toolchain.toml') }}
           restore-keys: |
             cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-
-      - name: 解码并安装 Android 证书
+      - name: 准备 Android 签名
         env:
           STORE_FILE: ${{ secrets.ANDROID_KEYSTORE }}
           PROPERTY_FILE: ${{ secrets.ANDROID_KEY_PROPERTIES }}
         run: |
-          echo "$STORE_FILE" | base64 --decode > android/keystore.jks
-          echo "$PROPERTY_FILE" > android/key.properties
+          if [ -n "$STORE_FILE" ] && [ -n "$PROPERTY_FILE" ]; then
+            echo "$STORE_FILE" | base64 --decode > android/keystore.jks
+            echo "$PROPERTY_FILE" > android/key.properties
+          else
+            keytool -genkeypair -noprompt \
+              -keystore android/debug.keystore \
+              -storepass android \
+              -keypass android \
+              -alias androiddebugkey \
+              -dname 'CN=Android Debug,O=Android,C=US' \
+              -keyalg RSA -keysize 2048 -validity 10000
+            printf '%s\n' \
+              'storePassword=android' \
+              'keyPassword=android' \
+              'keyAlias=androiddebugkey' \
+              'storeFile=../debug.keystore' \
+              > android/key.properties
+          fi
       - uses: actions/setup-java@v6
         with:
           distribution: 'oracle'
@@ -141,6 +157,8 @@ jobs:
       - name: 检查 rust-toolchain.toml
         run: rustup show
       - run: flutter pub get --enforce-lockfile
+      - name: 下载 OpenList Android 内核
+        run: python3 .github/scripts/fetch_openlist_core.py android
       - run: flutter build apk --release
       - name: 校验依赖锁文件未变更
         run: git diff --exit-code -- pubspec.lock
@@ -177,7 +195,7 @@ jobs:
           retention-days: 7
 
   Build_Windows:
-    if: ${{ inputs.build_windows }}
+    if: ${{ github.event_name == 'push' || inputs.build_windows }}
     runs-on: windows-2025
     timeout-minutes: 45
     env:
@@ -210,6 +228,9 @@ jobs:
             cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-
       - name: 获取 Flutter 依赖
         run: flutter pub get --enforce-lockfile
+      - name: 下载 OpenList Windows 内核
+        shell: pwsh
+        run: python .github/scripts/fetch_openlist_core.py windows-x64
       - name: 构建 Windows 安装包
         run: python windows/build.py
       - name: 校验 Windows 构建产物
@@ -217,8 +238,10 @@ jobs:
         run: |
           $zip = @(Get-ChildItem -Path build/windows -File -Filter 'VeneraPlus-*-windows-portable.zip')
           $installer = @(Get-ChildItem -Path build/windows -File -Filter 'VeneraPlus-*-windows-installer.exe')
+          $coreDll = Join-Path (Get-Location) 'build\windows\x64\runner\Release\venera_openlist.dll'
           if ($zip.Count -ne 1) { throw "应当恰好生成一个 Windows zip，实际为 $($zip.Count)。" }
           if ($installer.Count -ne 1) { throw "应当恰好生成一个 Windows 安装包，实际为 $($installer.Count)。" }
+          if (-not (Test-Path $coreDll) -or (Get-Item $coreDll).Length -le 0) { throw "Windows bundle 缺少 OpenList 内核：$coreDll" }
           $artifacts = @($zip + $installer)
           $empty = @($artifacts | Where-Object { $_.Length -le 0 })
           if ($empty.Count -gt 0) {
@@ -238,6 +261,10 @@ jobs:
             if ($exeEntry.Count -ne 1) {
               throw "Windows zip 未包含 $expectedRoot/VeneraPlus.exe"
             }
+            $coreEntry = @($archive.Entries | Where-Object { $_.FullName -eq "$expectedRoot/venera_openlist.dll" })
+            if ($coreEntry.Count -ne 1 -or $coreEntry[0].Length -le 0) {
+              throw "Windows zip 未包含 OpenList 内核"
+            }
           } finally {
             $archive.Dispose()
           }
@@ -255,7 +282,7 @@ jobs:
           retention-days: 7
 
   Build_MacOS:
-    if: ${{ inputs.build_macos }}
+    if: ${{ github.event_name == 'push' || inputs.build_macos }}
     runs-on: macos-15
     timeout-minutes: 45
     env:
@@ -299,10 +326,15 @@ jobs:
           echo "RUSTUP_REAL_BINARY=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
           echo "RUSTUP_LOCK_FILE=$RUNNER_TEMP/venera-plus-rustup.lock" >> "$GITHUB_ENV"
       - run: flutter pub get --enforce-lockfile
+      - name: 下载 OpenList macOS 内核
+        run: python3 .github/scripts/fetch_openlist_core.py macos-universal
       - name: 检查 rust-toolchain.toml
         run: rustup show
       - name: 构建 Flutter macOS 应用
         run: flutter build macos --release --no-pub
+      - name: 校验 macOS 包含 OpenList 内核
+        run: |
+          test -s build/macos/Build/Products/Release/VeneraPlus.app/Contents/Frameworks/libvenera_openlist.dylib
       - name: 创建 DMG
         run: |
           mkdir -p dist
@@ -327,7 +359,7 @@ jobs:
           retention-days: 7
 
   Build_IOS:
-    if: ${{ inputs.build_ios }}
+    if: ${{ github.event_name == 'push' || inputs.build_ios }}
     runs-on: macos-15
     timeout-minutes: 45
     env:
@@ -372,6 +404,8 @@ jobs:
           echo "RUSTUP_REAL_BINARY=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
           echo "RUSTUP_LOCK_FILE=$RUNNER_TEMP/venera-plus-rustup.lock" >> "$GITHUB_ENV"
       - run: flutter pub get --enforce-lockfile
+      - name: 下载 OpenList iOS 内核
+        run: python3 .github/scripts/fetch_openlist_core.py ios
       - name: 构建 iOS 应用
         run: |
           APP_VERSION=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | tr -d '\r\n')
@@ -386,6 +420,11 @@ jobs:
           trap 'mv pubspec.yaml.release pubspec.yaml' EXIT
           perl -0pi -e "s/^version:.*/version: ${IOS_VERSION}+${IOS_BUILD}/m" pubspec.yaml
           flutter build ios --release --no-codesign --no-pub
+      - name: 校验 iOS 包含 OpenList 内核
+        run: |
+          # 静态框架由 AppDelegate 的 OpenlistcoreInvoke 强引用链接进 Runner。
+          test -s ios/Frameworks/Openlistcore.xcframework/ios-arm64/Openlistcore.framework/Openlistcore
+          test -s build/ios/iphoneos/Runner.app/Runner
       - name: 创建 IPA
         run: |
           mkdir -p build/ios/iphoneos/Payload
@@ -408,7 +447,7 @@ jobs:
           retention-days: 7
 
   Build_Linux_x64:
-    if: ${{ inputs.build_linux_x64 }}
+    if: ${{ github.event_name == 'push' || inputs.build_linux_x64 }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     env:
@@ -440,6 +479,8 @@ jobs:
       - name: 准备 Rust 工具链
         run: python3 .github/scripts/prepare_rust_toolchain.py
       - run: flutter pub get --enforce-lockfile
+      - name: 下载 OpenList Linux x64 内核
+        run: python3 .github/scripts/fetch_openlist_core.py linux-x64
       - name: 安装 Linux 构建依赖
         run: |
           sudo apt-get update -y
@@ -466,7 +507,7 @@ jobs:
           retention-days: 7
 
   Build_Linux_ARM64:
-    if: ${{ inputs.build_linux_arm64 }}
+    if: ${{ github.event_name == 'push' || inputs.build_linux_arm64 }}
     runs-on: ubuntu-22.04-arm
     timeout-minutes: 30
     env:
@@ -502,6 +543,8 @@ jobs:
       - name: 准备 Rust 工具链
         run: python3 .github/scripts/prepare_rust_toolchain.py
       - run: flutter pub get --enforce-lockfile
+      - name: 下载 OpenList Linux ARM64 内核
+        run: python3 .github/scripts/fetch_openlist_core.py linux-arm64
       - name: 安装 Linux 构建依赖
         run: |
           sudo apt-get update -y

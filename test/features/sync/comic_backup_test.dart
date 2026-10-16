@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -6,12 +7,16 @@ import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/sync/sync.dart';
+import 'package:venera_plus/foundation/appdata_sync_policy.dart';
+import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 
 void main() {
   setUp(() {
     appdata.settings['backupWebdav'] = [];
     appdata.settings['backupWebdavPath'] = '/venera_backup/';
     appdata.settings['backupWebdavSyncEnabled'] = false;
+    appdata.settings['backupRemoteLocation'] = null;
+    appdata.settings[remoteStorageAccountsSetting] = const [];
     App.dataPath = Directory.systemTemp.createTempSync('venera_data').path;
     App.cachePath = Directory.systemTemp.createTempSync('venera_cache').path;
     ComicBackupManager.exportComic = null;
@@ -53,6 +58,22 @@ void main() {
   });
 
   group('archive WebDAV config sync setting', () {
+    test('exports only accounts used by libraries and opted-in backup', () {
+      final accounts = [
+        {'id': 'library'},
+        {'id': 'backup'},
+        {'id': 'sync-only'},
+      ];
+      final result = filterRemoteStorageAccountsForSync(accounts, {
+        'remoteLibraries': [
+          {'accountId': 'library'},
+        ],
+        'backupWebdavSyncEnabled': true,
+        'backupRemoteLocation': {'accountId': 'backup'},
+      });
+      expect(result.map((item) => (item as Map)['id']), ['library', 'backup']);
+    });
+
     test('does not sync archive WebDAV config when disabled', () async {
       appdata.settings['backupWebdavSyncEnabled'] = false;
       appdata.settings['backupWebdav'] = [
@@ -111,6 +132,24 @@ void main() {
   });
 
   group('ComicBackupManager.listBackups', () {
+    test('does not delete a file listed for an old backup target', () async {
+      appdata.settings['backupWebdav'] = ['https://one.example/dav', 'u', 'p'];
+      final fake = _FakeBackupOps();
+      ComicBackupManager.ops = fake;
+      final listed = await ComicBackupManager.listBackups();
+      final file = BackupFile(
+        name: 'old.cbz',
+        size: 1,
+        modified: DateTime(2024),
+        targetIdentity: 'https://one.example/dav|u|/venera_backup/',
+      );
+      appdata.settings['backupWebdav'] = ['https://two.example/dav', 'u', 'p'];
+      final result = await ComicBackupManager.deleteBackup(file);
+      expect(listed.success, isTrue);
+      expect(result.error, isTrue);
+      expect(fake.deletedRemotePaths, isEmpty);
+    });
+
     test('lists only cbz files sorted by modified time desc', () async {
       appdata.settings['backupWebdav'] = ['https://example.com/dav', 'u', 'p'];
       appdata.settings['backupWebdavPath'] = 'archive';
@@ -132,6 +171,32 @@ void main() {
         (ComicBackupManager.ops as _FakeBackupOps).listedPath,
         '/archive/',
       );
+    });
+
+    test('refuses restore and delete from a stale cloud backup list', () async {
+      final rpc = _CloudBackupRpc()
+        ..files.add(_CloudFile('/old/old.cbz', DateTime(2024)));
+      _configureCloudBackup(rpc, directory: '/old/');
+      final listed = await ComicBackupManager.listBackups();
+      appdata.settings['backupRemoteLocation'] = const RemoteLocation(
+        accountId: _cloudAccountId,
+        directory: '/new/',
+      ).toJson();
+      var imported = false;
+      ComicBackupManager.importComic = (_) async {
+        imported = true;
+        return _comic('unexpected');
+      };
+
+      final restored = await ComicBackupManager.restore(listed.data);
+      final deleted = await ComicBackupManager.deleteBackup(listed.data.single);
+
+      expect(listed.success, isTrue);
+      expect(restored.failed, 1);
+      expect(deleted.error, isTrue);
+      expect(rpc.downloaded, isEmpty);
+      expect(rpc.deleted, isEmpty);
+      expect(imported, isFalse);
     });
 
     test('tests connection through configured WebDAV path', () async {
@@ -177,7 +242,7 @@ void main() {
         final result = await ComicBackupManager.backup([
           dupComic,
           freshComic,
-        ], onProgress: (_, _, __) {});
+        ], onProgress: (_, _, _) {});
         uploadedPaths.addAll(fakeOps.uploadedRemotePaths);
 
         expect(result.success, 1);
@@ -193,7 +258,8 @@ void main() {
     test('stops before next comic when cancelled', () async {
       appdata.settings['backupWebdav'] = ['https://example.com/dav', 'u', 'p'];
       var exportCount = 0;
-      ComicBackupManager.ops = _FakeBackupOps();
+      var uploadCount = 0;
+      ComicBackupManager.ops = _FakeBackupOps(onUpload: () => uploadCount++);
       ComicBackupManager.exportComic = (comic, path) async {
         exportCount++;
         File(path).writeAsStringSync(comic.title);
@@ -202,13 +268,63 @@ void main() {
       final result = await ComicBackupManager.backup([
         _comic('One'),
         _comic('Two'),
-      ], isCancelled: () => exportCount > 0);
+      ], isCancelled: () => uploadCount > 0);
 
       expect(result.success, 1);
       expect(result.skipped, 0);
       expect(result.failed, 0);
       expect(exportCount, 1);
     });
+
+    test(
+      'cancels an active cloud upload and does not upload the next comic',
+      () async {
+        final rpc = _CloudBackupRpc();
+        _configureCloudBackup(rpc);
+        ComicBackupManager.exportComic = (comic, path) async {
+          await File(path).writeAsString(comic.title);
+        };
+
+        final backup = ComicBackupManager.backup([
+          _comic('One'),
+          _comic('Two'),
+        ]);
+        await rpc.uploadStarted.future;
+        await ComicBackupManager.cancelActiveTasks();
+        final result = await backup;
+
+        expect(rpc.cancelled, isNotEmpty);
+        expect(rpc.uploaded, hasLength(1));
+        expect(result.success, 0);
+      },
+    );
+
+    test(
+      'does not upload after cancellation while CBZ export is pending',
+      () async {
+        final rpc = _CloudBackupRpc();
+        _configureCloudBackup(rpc);
+        final exportStarted = Completer<void>();
+        final exportGate = Completer<void>();
+        ComicBackupManager.exportComic = (comic, path) async {
+          exportStarted.complete();
+          await exportGate.future;
+          await File(path).writeAsString(comic.title);
+        };
+
+        final backup = ComicBackupManager.backup([
+          _comic('One'),
+          _comic('Two'),
+        ]);
+        await exportStarted.future;
+        await ComicBackupManager.cancelActiveTasks();
+        exportGate.complete();
+        final result = await backup;
+
+        expect(rpc.uploaded, isEmpty);
+        expect(result.success, 0);
+      },
+    );
   });
 
   group('ComicBackupManager.restore', () {
@@ -268,10 +384,98 @@ LocalComic _comic(String title) {
   );
 }
 
+const _cloudAccountId = 'backup-cloud';
+
+void _configureCloudBackup(
+  _CloudBackupRpc rpc, {
+  String directory = '/backup/',
+}) {
+  RemoteStorageAccounts.instance.configureOpenList(rpc);
+  appdata.settings[remoteStorageAccountsSetting] = const [
+    {
+      'id': _cloudAccountId,
+      'backend': 'openlist',
+      'driver': 'GoogleDrive',
+      'name': 'Backup cloud',
+      'authorization': <String, dynamic>{},
+    },
+  ];
+  appdata.settings['backupRemoteLocation'] = RemoteLocation(
+    accountId: _cloudAccountId,
+    directory: directory,
+  ).toJson();
+}
+
+class _CloudFile {
+  const _CloudFile(this.path, this.modified);
+
+  final String path;
+  final DateTime modified;
+}
+
+class _CloudBackupRpc implements OpenListRpcClient {
+  final files = <_CloudFile>[];
+  final uploaded = <String>[];
+  final downloaded = <String>[];
+  final deleted = <String>[];
+  final cancelled = <String>[];
+  final uploadStarted = Completer<void>();
+
+  @override
+  Future<Map<String, dynamic>> invoke(
+    String method,
+    Map<String, dynamic> request,
+  ) async {
+    switch (method) {
+      case 'list':
+        return {
+          'data': {
+            'entries': [
+              for (final file in files)
+                {
+                  'name': file.path.split('/').last,
+                  'path': file.path,
+                  'isDirectory': false,
+                  'size': 1,
+                  'modifiedAt': file.modified.millisecondsSinceEpoch,
+                },
+            ],
+          },
+        };
+      case 'upload':
+        final path = request['path'] as String;
+        uploaded.add(path);
+        if (!uploadStarted.isCompleted) uploadStarted.complete();
+        return const {'data': {}};
+      case 'download':
+        downloaded.add(request['path'] as String);
+        await File(request['localPath'] as String).writeAsString('backup');
+        return const {'data': {}};
+      case 'delete':
+        deleted.add(request['path'] as String);
+        return const {'data': {}};
+      case 'taskStatus':
+        return const {
+          'data': {'done': false},
+        };
+      case 'cancel':
+        final taskId = request['taskId'] as String;
+        cancelled.add(taskId);
+        return const {'data': {}};
+      case 'mkdir':
+      case 'releaseTask':
+        return const {'data': {}};
+      default:
+        return const {'data': {}};
+    }
+  }
+}
+
 class _FakeBackupOps implements ComicBackupWebDavOps {
-  _FakeBackupOps({this.listResult = const []});
+  _FakeBackupOps({this.listResult = const [], this.onUpload});
 
   final List<BackupFile> listResult;
+  final void Function()? onUpload;
   String? listedPath;
   String? testedPath;
   final uploadedRemotePaths = <String>[];
@@ -303,6 +507,7 @@ class _FakeBackupOps implements ComicBackupWebDavOps {
     String remotePath,
   ) async {
     uploadedRemotePaths.add(remotePath);
+    onUpload?.call();
   }
 
   @override

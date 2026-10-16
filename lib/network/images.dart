@@ -1,6 +1,9 @@
 import 'dart:async';
+import 'dart:collection';
+import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart' show immutable, visibleForTesting;
 import 'package:flutter_qjs/flutter_qjs.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
@@ -208,7 +211,7 @@ abstract class ImageDownloader {
   }
 
   /// Generate a stable cache key for comic images.
-  /// Used for active deduplication and disk cache.
+  /// Used for active deduplication and existing target-specific disk entries.
   static String getComicImageCacheKey(
     String imageKey,
     String? sourceKey,
@@ -567,6 +570,7 @@ abstract class ImageDownloader {
         currentBytes: data.length,
         totalBytes: data.length,
         imageBytes: data,
+        diskCacheKey: cacheKey,
       );
       return;
     }
@@ -587,6 +591,7 @@ abstract class ImageDownloader {
     }
     var retriesRemaining = 5;
     while (true) {
+      String? requestCacheKey;
       try {
         final headers = _resolveImageHeaders(configs['headers']);
         final effectiveConfigs = <String, dynamic>{
@@ -599,55 +604,80 @@ abstract class ImageDownloader {
             ? onLoadFailedConfig
             : null;
 
-        Stream<List<int>> stream;
-        int? expectedBytes;
-
-        final transport = _debugComicImageTransport;
-        if (transport != null) {
-          final transportResult = await transport(
+        try {
+          final request = jsonEncode([
             effectiveConfigs['url'] ?? imageKey,
-            effectiveConfigs,
-          );
-          if (transportResult is Stream<List<int>>) {
-            stream = transportResult;
-            expectedBytes = null;
-          } else if (transportResult is List<int>) {
-            stream = Stream.value(transportResult);
-            expectedBytes = transportResult.length;
-          } else if (transportResult is ResponseBody) {
-            stream = transportResult.stream;
-            expectedBytes = transportResult.contentLength == -1
-                ? null
-                : transportResult.contentLength;
-          } else {
-            throw StateError('Unsupported transport result: $transportResult');
-          }
-        } else {
-          var dio = AppDio(
-            BaseOptions(
-              headers: headers,
-              method: effectiveConfigs['method'] ?? 'GET',
-              responseType: ResponseType.stream,
-            ),
-          );
-
-          var req = await dio.request<ResponseBody>(
-            effectiveConfigs['url'] ?? imageKey,
-            data: effectiveConfigs['data'],
-          );
-          stream = req.data?.stream ?? (throw "Error: Empty response body.");
-          expectedBytes = req.data!.contentLength;
-          if (expectedBytes == -1) {
-            expectedBytes = null;
-          }
+            effectiveConfigs['method'] ?? 'GET',
+            SplayTreeMap<String, dynamic>.from(headers),
+            effectiveConfigs['data'],
+          ]);
+          final base = getComicImageCacheKey(imageKey, sourceKey, cid, eid);
+          requestCacheKey =
+              '$base@request:${sha256.convert(utf8.encode(request))}';
+        } on JsonUnsupportedObjectError {
+          // Streamed request bodies retain their target-specific cache.
         }
+        final cached = requestCacheKey == null
+            ? null
+            : await CacheManager().findCache(requestCacheKey);
         var buffer = <int>[];
-        await for (var data in stream) {
-          buffer.addAll(data);
-          yield ImageDownloadProgress(
-            currentBytes: buffer.length,
-            totalBytes: expectedBytes,
-          );
+        if (cached != null) {
+          buffer = await cached.readAsBytes();
+        } else {
+          Stream<List<int>> stream;
+          int? expectedBytes;
+
+          final transport = _debugComicImageTransport;
+          if (transport != null) {
+            final transportResult = await transport(
+              effectiveConfigs['url'] ?? imageKey,
+              effectiveConfigs,
+            );
+            if (transportResult is Stream<List<int>>) {
+              stream = transportResult;
+              expectedBytes = null;
+            } else if (transportResult is List<int>) {
+              stream = Stream.value(transportResult);
+              expectedBytes = transportResult.length;
+            } else if (transportResult is ResponseBody) {
+              stream = transportResult.stream;
+              expectedBytes = transportResult.contentLength == -1
+                  ? null
+                  : transportResult.contentLength;
+            } else {
+              throw StateError(
+                'Unsupported transport result: $transportResult',
+              );
+            }
+          } else {
+            var dio = AppDio(
+              BaseOptions(
+                headers: headers,
+                method: effectiveConfigs['method'] ?? 'GET',
+                responseType: ResponseType.stream,
+              ),
+            );
+
+            var req = await dio.request<ResponseBody>(
+              effectiveConfigs['url'] ?? imageKey,
+              data: effectiveConfigs['data'],
+            );
+            stream = req.data?.stream ?? (throw "Error: Empty response body.");
+            expectedBytes = req.data!.contentLength;
+            if (expectedBytes == -1) {
+              expectedBytes = null;
+            }
+          }
+          await for (var data in stream) {
+            buffer.addAll(data);
+            yield ImageDownloadProgress(
+              currentBytes: buffer.length,
+              totalBytes: expectedBytes,
+            );
+          }
+          if (requestCacheKey != null) {
+            await CacheManager().writeCache(requestCacheKey, buffer);
+          }
         }
 
         if (effectiveConfigs['onResponse'] is JSInvokable) {
@@ -673,14 +703,20 @@ abstract class ImageDownloader {
           data = newData;
         }
 
-        await CacheManager().writeCache(cacheKey, data);
+        if (requestCacheKey == null) {
+          await CacheManager().writeCache(cacheKey, data);
+        }
         yield ImageDownloadProgress(
           currentBytes: data.length,
           totalBytes: data.length,
           imageBytes: data,
+          diskCacheKey: requestCacheKey ?? cacheKey,
         );
         return;
       } catch (e) {
+        if (requestCacheKey != null) {
+          await CacheManager().delete(requestCacheKey);
+        }
         final onLoadFailedCallback = onLoadFailed;
         if (onLoadFailedCallback == null ||
             !_shouldRetryImageLoad(
@@ -838,9 +874,13 @@ class ImageDownloadProgress {
 
   final Uint8List? imageBytes;
 
+  /// Actual disk entry to evict if the completed image cannot be decoded.
+  final String? diskCacheKey;
+
   const ImageDownloadProgress({
     required this.currentBytes,
     required this.totalBytes,
     this.imageBytes,
+    this.diskCacheKey,
   });
 }

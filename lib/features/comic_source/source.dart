@@ -105,8 +105,7 @@ class ComicSource {
 
   final GetImageLoadingConfigFunc? getImageLoadingConfig;
 
-  final Map<String, dynamic> Function(String imageKey)?
-  getThumbnailLoadingConfig;
+  final GetThumbnailLoadingConfigFunc? getThumbnailLoadingConfig;
 
   _SourceSession _session = _SourceSession();
 
@@ -406,6 +405,10 @@ class ExplorePageData {
 
   final Listenable? changeListenable;
 
+  /// An optional message displayed above a paged comic list.  Sources that do
+  /// not provide one keep the existing list layout unchanged.
+  final String? Function()? statusMessage;
+
   final Future<void> Function()? onRefresh;
 
   ExplorePageData(
@@ -416,6 +419,7 @@ class ExplorePageData {
     this.loadMultiPart,
     this.loadMixed, {
     this.changeListenable,
+    this.statusMessage,
     this.onRefresh,
   });
 }

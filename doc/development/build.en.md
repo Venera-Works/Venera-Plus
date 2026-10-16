@@ -37,6 +37,15 @@ flutter pub get --enforce-lockfile
 
 Do not delete or regenerate `pubspec.lock` without understanding the dependency changes.
 
+## OpenList core
+
+This repository no longer compiles OpenList. After `flutter pub get`, each platform build runs
+`python3 .github/scripts/fetch_openlist_core.py <platform>` to download the fixed core; supported
+platforms are `android`, `ios`, `macos-universal`, `windows-x64`, `linux-x64`, and `linux-arm64`.
+The version, source commit, and asset digests are in `native/openlist_core/core.lock.json`. Release
+a new Venera-OpenList-Core version first, verify all assets and licenses, then update the lock file
+and run the application CI.
+
 See [Dependency Governance](dependencies.en.md) for Git fork provenance, pinned commits, and upgrade requirements.
 
 ### Critical Version Pin
@@ -210,7 +219,7 @@ python .github/scripts/release_version.py --check --tag v1.2.3
 
 `pubspec.yaml`, the release tag, and the version section in `CHANGELOG.md` must match `release.json`.
 
-The `代码分析` workflow runs version and structure checks, Python script tests, Dart formatting checks across `lib` and `test` (covering subdirectories), `flutter analyze`, the full Dart test suite, and coverage reporting. `依赖安全审查` checks dependencies added or upgraded by a pull request, while `PR 平台冒烟构建` verifies Android and Windows compilation as well as native database integration test scenarios when the changed files can affect platform builds. Before starting multi-platform builds, `完整构建` reuses the same quality workflow. Manual platform builds and tag releases both reuse `.github/workflows/build.yml` so their build definitions cannot drift apart.
+The `代码分析` workflow runs version and structure checks, Python script tests, Dart formatting checks across `lib` and `test` (covering subdirectories), `flutter analyze`, the full Dart test suite, and coverage reporting. `依赖安全审查` checks dependencies added or upgraded by a pull request, while `PR 平台冒烟构建` verifies Android and Windows compilation as well as native database integration test scenarios when the changed files can affect platform builds; it can also be dispatched manually to validate a released core. Before starting multi-platform builds, `完整构建` reuses the same quality workflow. Manual platform builds and tag releases both reuse `.github/workflows/build.yml` so their build definitions cannot drift apart.
 
 Native CI build jobs configure compilation and dependency caching: `sccache` caches Rust on native jobs and C/C++ on supported Linux CMake generator paths (the Windows C/C++ wrapper was intentionally not retained), Cargo caches registry and Git downloads, and Android jobs reuse the Gradle build cache. Jobs print statistics via `sccache --show-stats` upon completion to verify warm-cache hits. Final release packages and installers are always rebuilt and are never reused from cache.
 

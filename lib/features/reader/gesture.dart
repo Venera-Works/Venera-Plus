@@ -399,7 +399,11 @@ class ReaderGestureDetectorState
   }
 
   void onLongPressedDown(Offset location) {
-    _longPressAction = reader.readerSetting('longPressAction') as String;
+    _longPressAction =
+        (reader.readerSetting('longPressAction') as String?) ??
+        (reader.readerSetting('enableLongPressToZoom') == true
+            ? 'zoom'
+            : 'none');
     switch (_longPressAction) {
       case 'zoom':
         reader.imageViewController?.handleLongPressDown(location);

@@ -107,56 +107,70 @@ class ChangelogPage extends StatefulWidget {
 }
 
 class _ChangelogPageState extends State<ChangelogPage> {
-  late final Future<String> _changelog = rootBundle.loadString("CHANGELOG.md");
+  late final Future<List<String>> _changelog = rootBundle
+      .loadString("CHANGELOG.md")
+      .then((data) => data.split(RegExp(r'(?=^## )', multiLine: true)));
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     return Material(
-      child: SmoothCustomScrollView(
-        slivers: [
-          SliverAppbar(title: Text("Changelog".tl)),
-          FutureBuilder(
-            future: _changelog,
-            builder: (context, snapshot) {
-              if (snapshot.hasError) {
-                return SliverFillRemaining(
-                  hasScrollBody: false,
-                  child: Center(child: Text("Error".tl)),
-                );
-              }
-              if (!snapshot.hasData) {
-                return const SliverFillRemaining(
-                  hasScrollBody: false,
-                  child: Center(child: CircularProgressIndicator()),
-                );
-              }
-              return SelectionArea(
-                child: MarkdownBody(
-                  data: snapshot.data!,
-                  styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
-                    p: theme.textTheme.bodyMedium?.copyWith(height: 1.35),
-                    h1: theme.textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                    h2: theme.textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                    h3: theme.textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                    code: theme.textTheme.bodyMedium?.copyWith(
-                      fontFamily: 'monospace',
-                      color: colorScheme.onSecondaryContainer,
-                      backgroundColor: colorScheme.secondaryContainer,
-                    ),
+      child: SelectionArea(
+        child: SmoothCustomScrollView(
+          slivers: [
+            SelectionContainer.disabled(
+              child: SliverAppbar(title: Text("Changelog".tl)),
+            ),
+            FutureBuilder(
+              future: _changelog,
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return SliverFillRemaining(
+                    hasScrollBody: false,
+                    child: Center(child: Text("Error".tl)),
+                  );
+                }
+                if (!snapshot.hasData) {
+                  return const SliverFillRemaining(
+                    hasScrollBody: false,
+                    child: Center(child: CircularProgressIndicator()),
+                  );
+                }
+                final sections = snapshot.data!;
+                final styleSheet = MarkdownStyleSheet.fromTheme(theme).copyWith(
+                  p: theme.textTheme.bodyMedium?.copyWith(height: 1.35),
+                  h1: theme.textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
                   ),
-                ),
-              ).paddingAll(16).toSliver();
-            },
-          ),
-        ],
+                  h2: theme.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                  h3: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                  code: theme.textTheme.bodyMedium?.copyWith(
+                    fontFamily: 'monospace',
+                    color: colorScheme.onSecondaryContainer,
+                    backgroundColor: colorScheme.secondaryContainer,
+                  ),
+                );
+                return SliverPadding(
+                  padding: const EdgeInsets.all(16),
+                  sliver: SliverList.separated(
+                    itemCount: sections.length,
+                    itemBuilder: (context, index) => MarkdownBody(
+                      data: sections[index],
+                      styleSheet: styleSheet,
+                    ),
+                    separatorBuilder: (context, index) =>
+                        SizedBox(height: styleSheet.blockSpacing),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
       ),
     );
   }

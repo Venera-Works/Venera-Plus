@@ -155,10 +155,12 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
 
       try {
         final buffer = await ImmutableBuffer.fromUint8List(bytes);
-        return await decode(
+        final codec = await decode(
           buffer,
           getTargetSize: enableResize ? _getTargetSize : null,
         );
+        await cacheImageAfterDecoding();
+        return codec;
       } catch (e) {
         await CacheManager().delete(diskCacheKey);
         if (bytes.length < 2 * 1024) {
@@ -191,6 +193,10 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
     StreamController<ImageChunkEvent> chunkEvents,
     void Function() checkStop,
   );
+
+  /// Persist completed image data only after the decoder accepts it.
+  @protected
+  Future<void> cacheImageAfterDecoding() async {}
 
   String get key;
 

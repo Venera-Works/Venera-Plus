@@ -1311,7 +1311,7 @@ class ComicSourceManager with ChangeNotifier, Init {
 
   bool get isEmpty => _sources.isEmpty;
 
-  Map<String, dynamic> _getThumbnailLoadingConfig(
+  FutureOr<Map<String, dynamic>> _getThumbnailLoadingConfig(
     String sourceKey,
     String url,
   ) {

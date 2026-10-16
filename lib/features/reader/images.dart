@@ -45,7 +45,22 @@ class ReaderImagesState extends State<ReaderImages> {
 
   bool inProgress = false;
 
+  bool _forceRefresh = false;
+
   late ReaderState reader;
+
+  void retryImage(int chapter, int sourcePage) {
+    if (inProgress) return;
+    reader.onReaderContentLoading();
+    reader.chapter = chapter;
+    reader.pageValue = sourcePage;
+    reader.initImagesPerPage(sourcePage);
+    setState(() {
+      _forceRefresh = true;
+      reader.isLoading = true;
+      error = null;
+    });
+  }
 
   @override
   void initState() {
@@ -87,6 +102,7 @@ class ReaderImagesState extends State<ReaderImages> {
         type: reader.type,
         chapter: reader.chapter,
         chapters: reader.widget.chapters,
+        forceRefresh: _forceRefresh,
         onOnlineFallback: () {
           fellBackOnline = true;
           reader.onLocalChapterRecoveredOnline();
@@ -94,6 +110,7 @@ class ReaderImagesState extends State<ReaderImages> {
       );
       if (!mounted) return;
       reader.images = images;
+      _forceRefresh = false;
 
       if (!reader.localPageOrderChecked) {
         final history = reader.history;
@@ -873,6 +890,9 @@ class GalleryModeState extends State<_GalleryMode>
                     size: viewportSize,
                     child: ComicImage(
                       image: provider,
+                      onRetry: () => context
+                          .findAncestorStateOfType<ReaderImagesState>()!
+                          .retryImage(reader.chapter, sourceIndex + 1),
                       wideImagePart: part,
                       onImageSize: (size) =>
                           _onSourceImageSize(sourceIndex, size),
@@ -904,7 +924,9 @@ class GalleryModeState extends State<_GalleryMode>
                   errorBuilder: (_, error, s, retry) {
                     return NetworkError(
                       message: error.toString(),
-                      retry: retry,
+                      retry: () => context
+                          .findAncestorStateOfType<ReaderImagesState>()!
+                          .retryImage(reader.chapter, startIndex + 1),
                     );
                   },
                 );
@@ -922,24 +944,28 @@ class GalleryModeState extends State<_GalleryMode>
           },
           pageController: controller,
           loadingBuilder: (context, event) {
-            return PhotoView.customChild(
-              childSize: MediaQuery.of(context).size,
-              initialScale: PhotoViewComputedScale.contained,
-              minScale: PhotoViewComputedScale.contained * 1.0,
-              maxScale: PhotoViewComputedScale.covered * 10.0,
-              backgroundDecoration: BoxDecoration(
-                color: context.colorScheme.surface,
-              ),
-              child: Center(
-                child: SizedBox(
-                  width: 20.0,
-                  height: 20.0,
-                  child: CircularProgressIndicator(
-                    backgroundColor: context.colorScheme.surfaceContainerHigh,
-                    value: event == null || event.expectedTotalBytes == null
-                        ? null
-                        : event.cumulativeBytesLoaded /
-                              event.expectedTotalBytes!,
+            // Scope inherited dependencies to the placeholder to preserve
+            // PhotoView's loaded state when system bars change.
+            return Builder(
+              builder: (context) => PhotoView.customChild(
+                childSize: MediaQuery.of(context).size,
+                initialScale: PhotoViewComputedScale.contained,
+                minScale: PhotoViewComputedScale.contained * 1.0,
+                maxScale: PhotoViewComputedScale.covered * 10.0,
+                backgroundDecoration: BoxDecoration(
+                  color: context.colorScheme.surface,
+                ),
+                child: Center(
+                  child: SizedBox(
+                    width: 20.0,
+                    height: 20.0,
+                    child: CircularProgressIndicator(
+                      backgroundColor: context.colorScheme.surfaceContainerHigh,
+                      value: event == null || event.expectedTotalBytes == null
+                          ? null
+                          : event.cumulativeBytesLoaded /
+                                event.expectedTotalBytes!,
+                    ),
                   ),
                 ),
               ),
@@ -1059,6 +1085,9 @@ class GalleryModeState extends State<_GalleryMode>
               context,
               entries[0].sourcePage,
             ),
+            onRetry: () => context
+                .findAncestorStateOfType<ReaderImagesState>()!
+                .retryImage(reader.chapter, entries[0].sourcePage),
             fit: BoxFit.contain,
             alignment: axis == Axis.vertical
                 ? Alignment.bottomCenter
@@ -1076,6 +1105,9 @@ class GalleryModeState extends State<_GalleryMode>
               context,
               entries[1].sourcePage,
             ),
+            onRetry: () => context
+                .findAncestorStateOfType<ReaderImagesState>()!
+                .retryImage(reader.chapter, entries[1].sourcePage),
             fit: BoxFit.contain,
             alignment: axis == Axis.vertical
                 ? Alignment.topCenter
@@ -1095,6 +1127,9 @@ class GalleryModeState extends State<_GalleryMode>
         return Expanded(
           child: ComicImage(
             image: imageProvider,
+            onRetry: () => context
+                .findAncestorStateOfType<ReaderImagesState>()!
+                .retryImage(reader.chapter, entry.sourcePage),
             fit: BoxFit.contain,
             onInit: (state) => imageStates.add(state),
             onDispose: (state) => imageStates.remove(state),
@@ -2055,7 +2090,7 @@ class ContinuousModeState extends State<_ContinuousMode>
                 child: CircularProgressIndicator(strokeWidth: 2),
               ),
               const SizedBox(width: 12),
-              Text('Loading next chapter'.tl),
+              Flexible(child: Text('Loading next chapter'.tl)),
             ],
           ),
         ),
@@ -2211,6 +2246,9 @@ class ContinuousModeState extends State<_ContinuousMode>
         var comicImage = ComicImage(
           filterQuality: FilterQuality.medium,
           image: image,
+          onRetry: () => context
+              .findAncestorStateOfType<ReaderImagesState>()!
+              .retryImage(imageRef.chapter, imageRef.page),
           width: width,
           height: height,
           fit: BoxFit.contain,
