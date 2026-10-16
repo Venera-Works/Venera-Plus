@@ -1,7 +1,11 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/storage/storage.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
+import 'package:venera_plus/routing/webview.dart';
 
 void main() {
   testWidgets('first connection can continue to a selected purpose', (
@@ -117,6 +121,8 @@ void main() {
     expect(find.text('Refresh Token'), findsOneWidget);
     expect(find.text('Access Token'), findsNothing);
     expect(find.text('AppID'), findsNothing);
+    expect(find.text('Log in and authorize'), findsOneWidget);
+    expect(find.text('Open OpenList token page'), findsNothing);
     expect(find.text('Token JSON or callback'), findsNothing);
     await tester.tap(find.text('Save'));
     await tester.pumpAndSettle();
@@ -201,6 +207,111 @@ void main() {
     expect(accounts.saved!.authorization['ClientSecret'], 'secret');
   });
 
+  testWidgets('Quark saves official tokens without application keys', (
+    tester,
+  ) async {
+    final accounts = _Accounts()
+      ..saved = const StorageAccount(
+        id: 'quark',
+        backend: StorageBackend.openlist,
+        driver: 'QuarkOpen',
+        name: 'Quark account',
+        authorization: {'refresh_token': 'refresh'},
+      );
+    await tester.pumpWidget(
+      MaterialApp(home: StorageAccountsPage(accounts: accounts)),
+    );
+    await tester.tap(find.text('Quark account'));
+    await tester.pumpAndSettle();
+    expect(find.text('Log in and authorize'), findsOneWidget);
+    expect(find.text('AppID'), findsNothing);
+    expect(find.text('SignKey'), findsNothing);
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(accounts.saved!.authorization['refresh_token'], 'refresh');
+    expect(accounts.saved!.authorization['use_online_api'], isTrue);
+    expect(accounts.saved!.authorization['app_id'], isNull);
+    expect(accounts.saved!.authorization['sign_key'], isNull);
+    expect(accounts.rpc.testCalls, 1);
+  });
+
+  testWidgets('authorization callback fills tokens and replaces old app keys', (
+    tester,
+  ) async {
+    final accounts = _Accounts()
+      ..saved = const StorageAccount(
+        id: 'onedrive',
+        backend: StorageBackend.openlist,
+        driver: 'Onedrive',
+        name: 'My OneDrive',
+        authorization: {
+          'refresh_token': 'old-refresh',
+          'client_id': 'old-client',
+          'client_secret': 'old-secret',
+          'use_online_api': false,
+          'root_folder_path': '/Comics',
+        },
+      );
+    await tester.pumpWidget(
+      MaterialApp(home: StorageAccountsPage(accounts: accounts)),
+    );
+    await tester.tap(find.text('My OneDrive'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Log in and authorize'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
+
+    final login = tester.widget<AppWebview>(find.byType(AppWebview));
+    expect(
+      Uri.parse(login.initialUrl).queryParameters['driver_txt'],
+      'onedrive_pr',
+    );
+    final controller = _WebviewController()
+      ..page = {
+        'url': login.initialUrl,
+        'body': '{"text":"https://login.microsoftonline.com/authorize"}',
+      };
+    login.onLoadStop!(controller);
+    await tester.pump();
+    expect(
+      controller.scripts.last,
+      contains(
+        'location.replace("https://login.microsoftonline.com/authorize")',
+      ),
+    );
+    final payload = base64Encode(
+      utf8.encode(
+        jsonEncode({
+          'driver_txt': 'onedrive_pr',
+          'access_token': 'new-access',
+          'refresh_token': 'new-refresh',
+        }),
+      ),
+    );
+    controller.page = jsonEncode({
+      'url': 'https://api.oplist.org/#$payload',
+      'body': null,
+    });
+    login.onLoadStop!(controller);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AppWebview), findsNothing);
+    final refresh = tester.widget<TextField>(
+      find.widgetWithText(TextField, 'Refresh Token'),
+    );
+    expect(refresh.controller!.text, 'new-refresh');
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+    expect(accounts.saved!.authorization['refresh_token'], 'new-refresh');
+    expect(accounts.saved!.authorization['client_id'], isEmpty);
+    expect(accounts.saved!.authorization['client_secret'], isEmpty);
+    expect(accounts.saved!.authorization['use_online_api'], isTrue);
+    expect(accounts.saved!.authorization['root_folder_path'], '/Comics');
+    expect(accounts.rpc.testCalls, 1);
+  });
+
   testWidgets('account initialization errors are not replaced by list errors', (
     tester,
   ) async {
@@ -235,6 +346,20 @@ void main() {
     expect(accounts.saved!.statusMessage, isNull);
     expect(accounts.saved!.status, StorageAuthorizationStatus.valid);
   });
+}
+
+class _WebviewController extends Fake implements InAppWebViewController {
+  Object? page;
+  final scripts = <String>[];
+
+  @override
+  Future<dynamic> evaluateJavascript({
+    required String source,
+    ContentWorld? contentWorld,
+  }) async {
+    scripts.add(source);
+    return page;
+  }
 }
 
 class _Accounts extends RemoteStorageAccounts {

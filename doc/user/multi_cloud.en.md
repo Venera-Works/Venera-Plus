@@ -4,9 +4,11 @@ VeneraPlus connects Baidu Netdisk, Quark, 115, 123 Cloud, OneDrive, and Google D
 
 The embedded core is built independently by Venera-OpenList-Core and packaged with the app. The app uses a fixed released core version and does not download or run an OpenList service on the device.
 
-Add accounts in Storage & Sync. Import the authorization data copied from the [OpenList Token page](https://api.oplist.org/) manually. The app does not expose an OpenList HTTP server.
+Add accounts in Storage & Sync. For Baidu Netdisk, Quark, 115, 123 Cloud, and OneDrive, choose "Log in and authorize" to complete authorization in the app's WebView and fill the tokens automatically, then save and test the connection. Authorization and online token refresh continue to use the official OpenList API. The app does not expose an OpenList HTTP server.
 
-Choose "Use parameters provided by OpenList" when obtaining authorization. Baidu Netdisk, 123 Cloud (OAuth), OneDrive, and Google Drive only need a refresh token; the embedded core supplies online API defaults, so no client ID or secret is needed. For 115, enter both access and refresh tokens as documented by OpenList. The current Quark driver also needs AppID and SignKey, which have no official built-in defaults. Expand "Import token JSON or callback" to populate the authorization fields in one step; tokens remain editable after import.
+Automatic authorization always uses the parameters provided by OpenList: OAuth App verification for 115, Baidu, and Quark; official OAuth verification for 123 Cloud; and personal OAuth App authorization for OneDrive. No client ID, application secret, or Quark AppID and SignKey is required from the user.
+
+Google Drive still requires manual authorization on the [OpenList Token page](https://api.oplist.org/). You can also enter tokens manually for any provider or expand "Import token JSON or callback" to populate the fields; tokens remain editable after import. Baidu, Quark, 123 Cloud, OneDrive, and Google Drive require a refresh token; 115 requires both access and refresh tokens.
 
 Settings → Storage and Sync groups cloud accounts, online comic libraries, app-data sync, and comic archive backup by purpose, showing the selected accounts, directories, and sync status. Authorize an account once and reuse it across purposes. You can add an account from any account selector and continue the current form. After connecting an account for the first time, you can also choose its purpose directly.
 

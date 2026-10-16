@@ -9,6 +9,83 @@ const openListSupportedDrivers = <String>{
   'GoogleDrive',
 };
 
+const openListLoginDrivers = <String, String>{
+  '115 Open': '115cloud_go',
+  '123 Open': '123cloud_oa',
+  'BaiduNetdisk': 'baiduyun_go',
+  'QuarkOpen': 'quarkyun_fn',
+  'Onedrive': 'onedrive_pr',
+};
+
+Uri openListLoginUri(String driver) {
+  final loginDriver = openListLoginDrivers[driver];
+  if (loginDriver == null) {
+    throw ArgumentError.value(driver, 'driver', 'Unsupported login provider');
+  }
+  return Uri.https(
+    'api.oplist.org',
+    '/${loginDriver.split('_').first}/requests',
+    {
+      'driver_txt': loginDriver,
+      'server_use': 'true',
+      'client_uid': '',
+      'client_key': '',
+    },
+  );
+}
+
+Map<String, dynamic>? parseOpenListLoginCallback(
+  String url, {
+  required String driver,
+}) {
+  final uri = Uri.tryParse(url);
+  if (uri == null ||
+      uri.scheme != 'https' ||
+      uri.host != 'api.oplist.org' ||
+      uri.port != 443 ||
+      uri.path != '/' ||
+      uri.fragment.isEmpty) {
+    return null;
+  }
+  final value = parseOpenListAuthorization(url, driver: driver);
+  final error = value.remove('message_err');
+  if (error != null && '$error'.isNotEmpty) {
+    throw FormatException('$error');
+  }
+  if (value['driver_txt'] != openListLoginDrivers[driver]) {
+    throw const FormatException(
+      'Authorization does not match the selected provider',
+    );
+  }
+  final refreshKey = driver == '123 Open' ? 'RefreshToken' : 'refresh_token';
+  if ((value[refreshKey] as String? ?? '').isEmpty) {
+    throw const FormatException('Refresh Token is required');
+  }
+  if (driver == '115 Open' &&
+      (value['access_token'] as String? ?? '').isEmpty) {
+    throw const FormatException('Access Token is required');
+  }
+  value['server_use'] = true;
+  // Reauthorization with official parameters replaces any previous app keys.
+  final clientKeys = switch (driver) {
+    '123 Open' => ['ClientID', 'ClientSecret'],
+    'QuarkOpen' => ['app_id', 'sign_key'],
+    _ => ['client_id', 'client_secret'],
+  };
+  for (final key in clientKeys) {
+    value[key] = '';
+  }
+  if (driver != '115 Open') {
+    value['use_online_api'] = true;
+    value['api_url_address'] = Uri.https(
+      'api.oplist.org',
+      '/${openListLoginDrivers[driver]!.split('_').first}/renewapi',
+    ).toString();
+  }
+  if (driver == 'Onedrive') value['region'] = 'global';
+  return value;
+}
+
 Map<String, dynamic> parseOpenListAuthorization(
   String text, {
   required String driver,
@@ -19,8 +96,6 @@ Map<String, dynamic> buildOpenListAuthorization({
   required String driver,
   required String accessToken,
   required String refreshToken,
-  String? appId,
-  String? signKey,
   Map<String, dynamic> authorization = const {},
 }) {
   final value = <String, dynamic>{...authorization}
@@ -30,8 +105,6 @@ Map<String, dynamic> buildOpenListAuthorization({
     ...value,
     'access_token': accessToken.trim(),
     'refresh_token': refreshToken.trim(),
-    if (appId != null) 'app_id': appId.trim(),
-    if (signKey != null) 'sign_key': signKey.trim(),
   }, driver: driver);
 }
 

@@ -4,9 +4,11 @@ VeneraPlus 可通过内置 OpenList 内核连接百度网盘、夸克网盘、11
 
 内置内核由 Venera-OpenList-Core 独立构建并随应用打包；应用只使用已发布的固定内核版本，不会在设备上下载或运行 OpenList 服务。
 
-在“存储与同步”中先添加账号。OpenList 账号使用 [OpenList Token 页面](https://api.oplist.org/) 获取的授权数据手动导入；应用不会把 OpenList HTTP 服务暴露到网络。
+在“存储与同步”中先添加账号。百度网盘、夸克网盘、115 网盘、123 云盘和 OneDrive 可点击“登录并授权”，在应用的 WebView 中完成官方授权并自动填入令牌，然后保存并测试连接。授权及在线令牌刷新继续使用 OpenList 官方 API；应用不会把 OpenList HTTP 服务暴露到网络。
 
-获取授权时选择“使用 OpenList 提供的参数”。百度网盘、123 云盘（OAuth 授权）、OneDrive 和 Google Drive 只需填写刷新令牌；在线 API 地址等参数由内置内核提供，无需填写客户端 ID 和密钥。115 按官方配置填写访问令牌与刷新令牌。夸克当前驱动还需填写 AppID、SignKey，官方未提供可内置的默认值。也可展开“导入 Token JSON 或回调”批量填充授权字段，导入后仍可直接修改 Token。
+自动授权统一使用“OpenList 提供的参数”，分别对应 115 验证登录（OAuth App）、123 验证登录（OAuth官方）、百度验证登录（OAuth App）、夸克验证登录（OAuth App）和 OneDrive 个人版本（OAuth App）。无需填写客户端 ID、应用密钥或夸克的 AppID、SignKey。
+
+Google Drive 仍使用 [OpenList Token 页面](https://api.oplist.org/) 手动获取授权。也可为各网盘直接填写令牌，或展开“导入 Token JSON 或回调”批量填充；导入后仍可修改 Token。百度、夸克、123、OneDrive 和 Google Drive 需要刷新令牌，115 需要访问令牌与刷新令牌。
 
 “设置 → 存储与同步”按用途集中展示网盘账号、在线漫画库、应用数据同步和漫画归档备份，并显示当前账号、目录及同步状态。账号只需添加一次，各用途共用授权；选择账号时可直接添加新账号，完成后继续当前配置。首次成功连接账号后，也可直接选择用途。
 
