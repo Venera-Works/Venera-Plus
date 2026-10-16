@@ -8,6 +8,7 @@ export 'js_bridge.dart';
 export 'models.dart';
 export 'normalization.dart';
 export 'parser.dart';
+export 'reading_cache.dart';
 export 'source.dart';
 export 'source_translation.dart';
 export 'tags_translation.dart';

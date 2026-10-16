@@ -39,6 +39,7 @@ class ComicImage extends StatefulWidget {
     int? cacheHeight,
     this.onInit,
     this.onDispose,
+    this.onRetry,
   }) : image = ResizeImage.resizeIfNeeded(cacheWidth, cacheHeight, image),
        assert(cacheWidth == null || cacheWidth > 0),
        assert(cacheHeight == null || cacheHeight > 0);
@@ -85,6 +86,8 @@ class ComicImage extends StatefulWidget {
   final void Function(State<ComicImage> state)? onInit;
 
   final void Function(State<ComicImage> state)? onDispose;
+
+  final VoidCallback? onRetry;
 
   static void clear() => ComicImageState.clear();
 
@@ -427,6 +430,10 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
                     onPointerDown: (details) {
                       GlobalState.find<ReaderGestureDetectorState>()
                           .ignoreNextTap();
+                      if (widget.onRetry != null) {
+                        widget.onRetry!();
+                        return;
+                      }
                       setState(() {
                         _loadingProgress = null;
                         _lastException = null;

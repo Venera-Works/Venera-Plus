@@ -126,19 +126,23 @@ void main() {
             }
           }
 
-          for (var i = 0; i < 30; i++) {
-            await pumpFrames(5);
-            if (reader.imageViewController case AutoReadingViewport viewport
-                when viewport.autoReadingReady) {
-              break;
+          Future<void> waitForImages() async {
+            for (var i = 0; i < 30; i++) {
+              await pumpFrames(5);
+              if (reader.imageViewController case AutoReadingViewport viewport
+                  when viewport.autoReadingReady) {
+                break;
+              }
             }
+            expect(reader.imageViewController, isA<AutoReadingViewport>());
+            expect(
+              (reader.imageViewController as AutoReadingViewport)
+                  .autoReadingReady,
+              isTrue,
+            );
           }
-          expect(reader.imageViewController, isA<AutoReadingViewport>());
-          expect(
-            (reader.imageViewController as AutoReadingViewport)
-                .autoReadingReady,
-            isTrue,
-          );
+
+          await waitForImages();
           if (mode.isGallery) {
             final imageFinder = find.byType(RawImage).hitTestable();
             expect(imageFinder, findsOneWidget);
@@ -158,6 +162,19 @@ void main() {
               expect(tester.widget<RawImage>(imageFinder).image, same(image));
               expect(reader.page, page);
             }
+          }
+          final imagesState = tester.state<ReaderImagesState>(
+            find.byType(ReaderImages),
+          );
+          final retryChapter = reader.chapter;
+          final retryPage = mode.isGallery ? 2 : 1;
+          imagesState.retryImage(retryChapter, retryPage);
+          await waitForImages();
+          expect(reader.chapter, retryChapter);
+          expect(reader.page, retryPage);
+          if (retryPage != 1) {
+            imagesState.retryImage(retryChapter, 1);
+            await waitForImages();
           }
           settings['longPressAction'] = 'zoom';
           if (!mode.isGallery) {

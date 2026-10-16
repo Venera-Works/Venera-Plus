@@ -299,7 +299,10 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
     }
     isAddToLocalFav = LocalFavoritesManager().isExist(widget.id, _historyType);
     _rememberHistory(_historyManager.find(widget.id, _historyType));
-    final result = await comicSource.loadComicInfo!(widget.id);
+    final result = await comicSource.loadComicInfoForReading(
+      widget.id,
+      refresh: true,
+    );
     if (result.error) return result;
     final catalog = readingCatalogFromComicChapters(result.data.chapters);
     if (catalog != null) {

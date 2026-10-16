@@ -1484,6 +1484,21 @@ class WebDavLibrarySource {
           ep != rootChapterId &&
           !ep.startsWith(_metadataChapterPrefix)) {
         final path = config.childDirectoryPathFrom(comicPath, ep);
+        final memoryKey = jsonEncode([config.cacheKey, id]);
+        var snapshot = _snapshotCache[memoryKey];
+        if (snapshot == null) {
+          final cached = _cache.find(config.cacheKey, id);
+          if (cached?.isReady == true) {
+            snapshot = _WebDavComicSnapshot.fromJson(cached!.snapshot!);
+            _snapshotCache[memoryKey] = snapshot;
+          }
+        }
+        final cachedImages = snapshot?.chapterImages[ep];
+        if (cachedImages != null) {
+          return Res([
+            for (final name in cachedImages) config.childFilePath(path, name),
+          ]);
+        }
         final entries = List<WebDavLibraryEntry>.from(
           await _activeOps.readDir(config, path),
         );
@@ -1763,6 +1778,14 @@ class WebDavLibrarySource {
       cover: coverPath ?? '',
       chapters: chapterMap,
       chaptersInspected: chaptersInspected,
+      chapterImages: {
+        for (final entry in inspectedChapterEntries.entries)
+          if (chapterMap.containsKey(entry.key))
+            entry.key: _imageEntries(entry.value)
+                .where((image) => !isNamedComicCover(image.name))
+                .map((image) => image.name)
+                .toList(),
+      },
       metadataChapters: metadataChapters,
       rootImages: rootImages,
       bangumiSubjectId: metadata?.bangumiSubjectId,
@@ -3109,6 +3132,7 @@ class _WebDavComicSnapshot {
     required this.cover,
     required this.chapters,
     this.chaptersInspected = true,
+    required this.chapterImages,
     required this.metadataChapters,
     required this.rootImages,
     required this.bangumiSubjectId,
@@ -3127,6 +3151,7 @@ class _WebDavComicSnapshot {
   final String cover;
   final Map<String, String> chapters;
   final bool chaptersInspected;
+  final Map<String, List<String>> chapterImages;
   final Map<String, ComicChapter> metadataChapters;
   final List<WebDavLibraryEntry> rootImages;
   final int? bangumiSubjectId;
@@ -3139,6 +3164,7 @@ class _WebDavComicSnapshot {
 
   factory _WebDavComicSnapshot.fromJson(Map<String, dynamic> json) {
     final chapters = json['chapters'];
+    final chapterImages = json['chapterImages'] as Map?;
     final metadataChapters = json['metadataChapters'];
     final rootImages = json['rootImages'];
     final metadataFilePresent = json['metadataFilePresent'] == true;
@@ -3149,6 +3175,11 @@ class _WebDavComicSnapshot {
       tags: (json['tags'] as List?)?.whereType<String>().toList() ?? const [],
       cover: json['cover'] as String? ?? '',
       chaptersInspected: json['chaptersInspected'] != false,
+      chapterImages: {
+        if (chapterImages != null)
+          for (final entry in chapterImages.entries)
+            entry.key as String: List<String>.from(entry.value),
+      },
       chapters: chapters is Map
           ? chapters.map(
               (key, value) => MapEntry(key.toString(), value.toString()),
@@ -3196,6 +3227,7 @@ class _WebDavComicSnapshot {
     'cover': cover,
     'chapters': chapters,
     'chaptersInspected': chaptersInspected,
+    'chapterImages': chapterImages,
     'metadataChapters': metadataChapters.map(
       (key, value) => MapEntry(key, value.toJson()),
     ),

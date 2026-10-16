@@ -1202,6 +1202,50 @@ void main() {
     ]);
   });
 
+  test(
+    'reopening reuses persisted chapter pages and library refresh updates them',
+    () async {
+      ops.dirs['/manga/'] = const [
+        WebDavLibraryEntry(name: 'Book', isDirectory: true),
+      ];
+      ops.dirs['/manga/Book/'] = const [
+        WebDavLibraryEntry(name: '第01卷', isDirectory: true),
+      ];
+      ops.dirs['/manga/Book/第01卷/'] = const [
+        WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
+        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      ];
+      expect((await WebDavLibrarySource.loadComicInfo('Book')).success, isTrue);
+      final initial = await WebDavLibrarySource.loadComicPages('Book', '第01卷');
+      expect(initial.data, [
+        '/manga/Book/第01卷/001.jpg',
+        '/manga/Book/第01卷/002.jpg',
+      ]);
+      expect(ops.readPaths, ['/manga/Book/', '/manga/Book/第01卷/']);
+
+      // Close the database and clear the source's memory cache, retaining files.
+      WebDavLibrarySource.resetCacheForTesting();
+      ops.readPaths.clear();
+      expect((await WebDavLibrarySource.loadComicInfo('Book')).success, isTrue);
+      expect(
+        (await WebDavLibrarySource.loadComicPages('Book', '第01卷')).data,
+        initial.data,
+      );
+      expect(ops.readPaths, isEmpty);
+
+      ops.dirs['/manga/Book/第01卷/'] = const [
+        WebDavLibraryEntry(name: '003.jpg', isDirectory: false),
+      ];
+      expect(
+        (await WebDavLibrarySource.synchronize(force: true)).success,
+        isTrue,
+      );
+      expect((await WebDavLibrarySource.loadComicPages('Book', '第01卷')).data, [
+        '/manga/Book/第01卷/003.jpg',
+      ]);
+    },
+  );
+
   test('loadComicPages handles Chinese directory paths', () async {
     ops.dirs['/manga/猫之眼[北条司]/第01卷/'] = List.unmodifiable([
       const WebDavLibraryEntry(name: '010.jpg', isDirectory: false),
