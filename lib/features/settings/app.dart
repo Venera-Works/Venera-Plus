@@ -185,10 +185,9 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
                 key: const Key('comic-libraries-entry'),
                 title: Text('Online Comic Libraries'.tl),
                 subtitle: Text(
-                  libraries.isEmpty
-                      ? 'Read comic images directly from cloud folders.'.tl
-                      : '${'@count comic libraries'.tlParams({'count': libraries.length})}\n'
-                            '${libraries.take(2).map((l) => '${l.name} · ${_storage.account(l.accountId)?.name ?? 'Account unavailable'.tl}\n${l.directories.join(' · ')}').join('\n')}',
+                  '@count comic libraries'.tlParams({
+                    'count': libraries.length,
+                  }),
                 ),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () =>
@@ -198,8 +197,8 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
                 key: const Key('data-sync-entry'),
                 title: Text('App Data Sync'.tl),
                 subtitle: Text(
-                  '${_locationSummary('syncRemoteLocation')}\n'
-                  '${status.isConfigured ? '$mode · $syncStatus' : 'Sync settings, favorites and reading records; comic images are excluded.'.tl}',
+                  '${_locationSummary('syncRemoteLocation')}'
+                  '${status.isConfigured ? '\n$mode · $syncStatus' : ''}',
                 ),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => showDataSyncSettings(context),
@@ -207,10 +206,7 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
               ListTile(
                 key: const Key('comic-backup-entry'),
                 title: Text('Comic Archive Backup'.tl),
-                subtitle: Text(
-                  '${_locationSummary('backupRemoteLocation')}\n'
-                  '${'Back up and restore CBZ comic files.'.tl}',
-                ),
+                subtitle: Text(_locationSummary('backupRemoteLocation')),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () async {
                   await _storage.migrateLegacyWebDavLocations();
@@ -553,11 +549,6 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                       : directories.single;
                 }),
               ),
-              Text(
-                'Sync settings, favorites and reading records; comic images are excluded.'
-                    .tl,
-              ),
-              const SizedBox(height: 12),
               const SizedBox(height: 12),
               DataSyncScheduleFields(
                 mode: syncMode,
@@ -639,45 +630,26 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                   ),
                 ],
               ),
-              Container(
-                key: const Key('data-sync-mode-notice'),
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Theme.of(
-                    context,
-                  ).colorScheme.primaryContainer.withValues(alpha: 0.5),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(
+              if (syncMode == DataSyncMode.manual)
+                Container(
+                  key: const Key('data-sync-mode-notice'),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
                     color: Theme.of(
                       context,
-                    ).colorScheme.primary.withValues(alpha: 0.2),
+                    ).colorScheme.primaryContainer.withValues(alpha: 0.5),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.primary.withValues(alpha: 0.2),
+                    ),
+                  ),
+                  child: Text(
+                    'Sync only when you choose upload or download.'.tl,
+                    style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
-                child: Text(
-                  syncMode == DataSyncMode.manual
-                      ? 'Sync only when you choose upload or download.'.tl
-                      : 'Once saved, the app will automatically sync data according to the schedule.'
-                            .tl,
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Container(
-                key: const Key('data-sync-encryption-notice'),
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Theme.of(
-                    context,
-                  ).colorScheme.tertiaryContainer.withValues(alpha: 0.45),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  'Sync data is compressed but not encrypted.'.tl,
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ),
-              const SizedBox(height: 12),
               const SizedBox(height: 16),
               Row(
                 children: [
