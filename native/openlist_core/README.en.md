@@ -25,8 +25,8 @@ Mobile platforms use the `venera/openlist` channel's `invoke` method with the
 same JSON string. Transfers return a `taskId`; callers use `taskStatus`,
 `cancel`, and `releaseTask` to manage it.
 
-Only BaiduNetdisk, QuarkOpen, 115 Open, 123 Open, Onedrive, and GoogleDrive are
-registered. Credentials are supplied only through `saveAccount.addition`; the
+Accounts accept only BaiduNetdisk, Quark, 115 Open, 123 Open, Onedrive, and
+GoogleDrive. Credentials are supplied only through `saveAccount.addition`; the
 bridge disables log output and redacts recognized credential values in errors.
 
 ## CI builds

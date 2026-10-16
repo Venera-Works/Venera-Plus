@@ -10,8 +10,6 @@ Automatic token authorization always uses the parameters provided by OpenList: O
 
 Quark uses the `Quark` Cookie driver. Choose "Log in and authorize" to sign in on Quark's official website inside the app's WebView. After confirming that the session can list drive files, the app reads the native cookie store, including HttpOnly cookies, and fills the Cookie field. You can also enter the Cookie manually. Save to test the connection. Existing `QuarkOpen` accounts require a new login; saving retains the account ID and configured directories, without the old tokens, AppID, or SignKey.
 
-This feature requires a new core containing the `Quark` driver. The currently pinned `core-v0.1.0-beta.4` only contains `QuarkOpen`; update and publish the independent core before updating the app's lockfile.
-
 Google Drive still requires manual authorization on the [OpenList Token page](https://api.oplist.org/). Token-based providers also accept manually entered tokens or "Import token JSON or callback" to populate the fields; tokens remain editable after import. Baidu, 123 Cloud, OneDrive, and Google Drive require a refresh token; 115 requires both access and refresh tokens.
 
 Settings → Storage and Sync groups cloud accounts, online comic libraries, app-data sync, and comic archive backup by purpose, showing the selected accounts, directories, and sync status. Authorize an account once and reuse it across purposes. You can add an account from any account selector and continue the current form. After connecting an account for the first time, you can also choose its purpose directly.

@@ -12,8 +12,8 @@
 `{"data":...,"error":{"code":"...","message":"..."}}`。移动端通过 `venera/openlist` 的
 `invoke` 方法传递同一请求和响应。传输请求返回 `taskId`，以 `taskStatus` 轮询并以 `cancel` 取消。
 
-所有远端路径都是账号根目录下的绝对路径。账号只接受 `BaiduNetdisk`、`QuarkOpen`、`115 Open`、
-`123 Open`、`Onedrive`、`GoogleDrive` 六个驱动。Token 等授权字段只出现在 `saveAccount` 的
+所有远端路径都是账号根目录下的绝对路径。账号只接受 `BaiduNetdisk`、`Quark`、`115 Open`、
+`123 Open`、`Onedrive`、`GoogleDrive` 六个驱动。Token、Cookie 等授权字段只出现在 `saveAccount` 的
 `addition` 中；日志关闭，错误响应也会清理常见凭据字段。
 
 ## 构建
