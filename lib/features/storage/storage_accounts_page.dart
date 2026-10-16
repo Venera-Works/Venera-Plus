@@ -149,7 +149,7 @@ class _StorageAccountsPageState extends State<StorageAccountsPage> {
               children: [
                 Text(
                   account.statusMessage ??
-                      '${account.driver} · ${switch (account.status) {
+                      '${account.driver.tl} · ${switch (account.status) {
                         StorageAuthorizationStatus.valid => 'Connected'.tl,
                         StorageAuthorizationStatus.invalid => 'Authorization invalid'.tl,
                         StorageAuthorizationStatus.unknown => 'Connection not verified'.tl,
@@ -252,7 +252,8 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
               decoration: InputDecoration(labelText: 'Provider'.tl),
               items: ['WebDAV', ...openListSupportedDrivers]
                   .map(
-                    (item) => DropdownMenuItem(value: item, child: Text(item)),
+                    (item) =>
+                        DropdownMenuItem(value: item, child: Text(item.tl)),
                   )
                   .toList(),
               onChanged: widget.initial == null && !_loggingIn
@@ -399,7 +400,7 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
                             ? widget.initial?.driver ?? 'webdav'
                             : _driver,
                         name: _name.text.trim().isEmpty
-                            ? _driver
+                            ? _driver.tl
                             : _name.text.trim(),
                         authorization: auth,
                       ),
