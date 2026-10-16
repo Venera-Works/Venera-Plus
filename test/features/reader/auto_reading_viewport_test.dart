@@ -14,6 +14,7 @@ import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/reader/auto_reading.dart';
 import 'package:venera_plus/features/reader/images.dart';
 import 'package:venera_plus/features/reader/reader_page.dart';
+import 'package:venera_plus/features/reader/scaffold.dart';
 import 'package:venera_plus/features/sync/data_sync.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
@@ -43,6 +44,7 @@ void main() {
         final previousLogMuted = Log.isMuted;
         final directory = Directory.systemTemp.createTempSync('auto-reader-');
         final key = GlobalKey<_TestReaderState>();
+        addTearDown(tester.view.resetPadding);
         try {
           App.dataPath = directory.path;
           App.cachePath = directory.path;
@@ -137,6 +139,26 @@ void main() {
                 .autoReadingReady,
             isTrue,
           );
+          if (mode.isGallery) {
+            final imageFinder = find.byType(RawImage).hitTestable();
+            expect(imageFinder, findsOneWidget);
+            final image = tester.widget<RawImage>(imageFinder).image;
+            final page = reader.page;
+            final scaffold = tester.state<ReaderScaffoldState>(
+              find.byType(ReaderScaffold),
+            );
+            for (final padding in [
+              const FakeViewPadding(top: 24, bottom: 24),
+              FakeViewPadding.zero,
+            ]) {
+              scaffold.openOrClose();
+              tester.view.padding = padding;
+              await pumpFrames(12);
+              expect(imageFinder, findsOneWidget);
+              expect(tester.widget<RawImage>(imageFinder).image, same(image));
+              expect(reader.page, page);
+            }
+          }
           settings['longPressAction'] = 'zoom';
           if (!mode.isGallery) {
             PhotoView flowPhoto() => tester.widget<PhotoView>(

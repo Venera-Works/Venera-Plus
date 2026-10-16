@@ -922,24 +922,28 @@ class GalleryModeState extends State<_GalleryMode>
           },
           pageController: controller,
           loadingBuilder: (context, event) {
-            return PhotoView.customChild(
-              childSize: MediaQuery.of(context).size,
-              initialScale: PhotoViewComputedScale.contained,
-              minScale: PhotoViewComputedScale.contained * 1.0,
-              maxScale: PhotoViewComputedScale.covered * 10.0,
-              backgroundDecoration: BoxDecoration(
-                color: context.colorScheme.surface,
-              ),
-              child: Center(
-                child: SizedBox(
-                  width: 20.0,
-                  height: 20.0,
-                  child: CircularProgressIndicator(
-                    backgroundColor: context.colorScheme.surfaceContainerHigh,
-                    value: event == null || event.expectedTotalBytes == null
-                        ? null
-                        : event.cumulativeBytesLoaded /
-                              event.expectedTotalBytes!,
+            // Scope inherited dependencies to the placeholder to preserve
+            // PhotoView's loaded state when system bars change.
+            return Builder(
+              builder: (context) => PhotoView.customChild(
+                childSize: MediaQuery.of(context).size,
+                initialScale: PhotoViewComputedScale.contained,
+                minScale: PhotoViewComputedScale.contained * 1.0,
+                maxScale: PhotoViewComputedScale.covered * 10.0,
+                backgroundDecoration: BoxDecoration(
+                  color: context.colorScheme.surface,
+                ),
+                child: Center(
+                  child: SizedBox(
+                    width: 20.0,
+                    height: 20.0,
+                    child: CircularProgressIndicator(
+                      backgroundColor: context.colorScheme.surfaceContainerHigh,
+                      value: event == null || event.expectedTotalBytes == null
+                          ? null
+                          : event.cumulativeBytesLoaded /
+                                event.expectedTotalBytes!,
+                    ),
                   ),
                 ),
               ),
