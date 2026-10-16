@@ -164,7 +164,6 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
             ),
             _group([
               ListTile(
-                leading: const Icon(Icons.cloud_outlined),
                 title: Text(
                   '@count accounts'.tlParams({'count': accounts.length}),
                 ),
@@ -184,7 +183,6 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
             _group([
               ListTile(
                 key: const Key('comic-libraries-entry'),
-                leading: const Icon(Icons.library_books_outlined),
                 title: Text('Online Comic Libraries'.tl),
                 subtitle: Text(
                   libraries.isEmpty
@@ -198,7 +196,6 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
               ),
               ListTile(
                 key: const Key('data-sync-entry'),
-                leading: const Icon(Icons.sync),
                 title: Text('App Data Sync'.tl),
                 subtitle: Text(
                   '${_locationSummary('syncRemoteLocation')}\n'
@@ -209,7 +206,6 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
               ),
               ListTile(
                 key: const Key('comic-backup-entry'),
-                leading: const Icon(Icons.archive_outlined),
                 title: Text('Comic Archive Backup'.tl),
                 subtitle: Text(
                   '${_locationSummary('backupRemoteLocation')}\n'
@@ -233,7 +229,6 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
             ),
             _group([
               ListTile(
-                leading: const Icon(Icons.storage_outlined),
                 title: Text('Local Storage and Downloads'.tl),
                 subtitle: Text(
                   'Comic storage path, cache and download threads.'.tl,
@@ -242,7 +237,6 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
                 onTap: () => context.to(() => const _LocalStorageSettings()),
               ),
               ListTile(
-                leading: const Icon(Icons.import_export),
                 title: Text('App Data Import and Export'.tl),
                 subtitle: Text('Save or restore a local app-data file.'.tl),
                 trailing: const Icon(Icons.chevron_right),
