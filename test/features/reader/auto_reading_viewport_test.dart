@@ -176,7 +176,8 @@ void main() {
             imagesState.retryImage(retryChapter, 1);
             await waitForImages();
           }
-          settings['longPressAction'] = 'zoom';
+          settings['longPressAction'] = null;
+          settings['enableLongPressToZoom'] = true;
           if (!mode.isGallery) {
             PhotoView flowPhoto() => tester.widget<PhotoView>(
               find.byWidgetPredicate(
