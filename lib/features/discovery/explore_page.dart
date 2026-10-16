@@ -659,10 +659,10 @@ class _ExplorePageState extends State<ExplorePage>
                     const Divider(height: 1),
                     ListTile(
                       leading: const Icon(Icons.extension_outlined),
-                      title: Text("Manage Comic Sources".tl),
+                      title: Text("Content Sources".tl),
                       onTap: () {
                         Navigator.pop(sheetContext);
-                        context.to(() => ComicSourcePage());
+                        context.to(() => const ContentSourcesPage());
                       },
                     ),
                   ],
@@ -723,13 +723,13 @@ class _ExplorePageState extends State<ExplorePage>
             SimpleDialogOption(
               onPressed: () {
                 Navigator.pop(dialogContext);
-                context.to(() => ComicSourcePage());
+                context.to(() => const ContentSourcesPage());
               },
               child: Row(
                 children: [
                   const Icon(Icons.extension_outlined),
                   const SizedBox(width: 12),
-                  Text("Manage Comic Sources".tl),
+                  Text("Content Sources".tl),
                 ],
               ),
             ),
@@ -743,10 +743,10 @@ class _ExplorePageState extends State<ExplorePage>
     return NetworkError(
       message: "${"No Comic Sources".tl}\n${"Please add some sources".tl}",
       retry: () {
-        context.to(() => ComicSourcePage());
+        context.to(() => const ContentSourcesPage());
       },
       withAppbar: false,
-      buttonText: "Manage Comic Sources".tl,
+      buttonText: "Content Sources".tl,
     );
   }
 
@@ -834,7 +834,7 @@ class _ExplorePageState extends State<ExplorePage>
             } else if (action == 'categories') {
               showPopUpWidget(App.rootContext, setCategoryPagesWidget());
             } else if (action == 'sources') {
-              context.to(() => ComicSourcePage());
+              context.to(() => const ContentSourcesPage());
             }
           },
           itemBuilder: (context) => [
@@ -864,7 +864,7 @@ class _ExplorePageState extends State<ExplorePage>
                 children: [
                   const Icon(Icons.extension_outlined, size: 20),
                   const SizedBox(width: 12),
-                  Text("Manage Comic Sources".tl),
+                  Text("Content Sources".tl),
                 ],
               ),
             ),

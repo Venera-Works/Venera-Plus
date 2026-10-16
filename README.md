@@ -8,100 +8,58 @@
   ![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)
 </div>
 
-VeneraPlus 是一款支持 Android、iOS、Windows和 Linux 的跨平台漫画阅读器。支持多种阅读版式、丰富的本地漫画格式导入、WebDAV 数据同步与远端漫画库、Bangumi 进度与元数据联动，以及灵活的 JavaScript 漫画源扩展。
+VeneraPlus 是一款在手机和电脑上使用的漫画阅读器，可以读本地文件、网盘漫画，也能通过漫画源扩展浏览在线内容。漫画内容和漫画源需自行准备。
 
-最新版本[下载](https://github.com/Venera-Works/Venera-Plus/releases/latest)。预编译安装包以 [Releases](https://github.com/Venera-Works/Venera-Plus/releases) 实际发布状态为准，完整变更记录请参阅 [更新日志](CHANGELOG.md)。
+## 能做什么
 
----
+- **本地阅读**：导入图片文件夹、CBZ / CB7 / ZIP / 7Z 压缩包、PDF 和图片型 EPUB。
+- **多种阅读方式**：单页、双页、连续滚动、瀑布流，支持左右翻页、自动翻页、亮度和条漫边距调节。
+- **网盘漫画库**：连接百度网盘、夸克、115、123 云盘、OneDrive、Google Drive 或 WebDAV，按需加载漫画图片。
+- **收藏与进度**：管理收藏、阅读记录和下载，可关联 Bangumi 条目并向 Bangumi 同步阅读进度。可为网盘漫画刮削元数据。
+- **同步与备份**：在设备间同步收藏、设置和阅读记录，也可单独备份漫画文件。
 
-## 核心功能概览
+## 下载安装
 
-### 阅读模式与阅读辅助
-- **丰富阅读版式**：支持画廊翻页（单页/双页、支持从左到右与从右到左翻页）、连续滚动（纵向从上到下、横向左右滚动）以及纵向瀑布流模式。
-- **双页自动拆分**：在画廊单图模式下可开启横向大图/跨页自动拆分为两个独立视觉页，并按阅读方向自动调整翻阅顺序。
-- **条漫左右边距**：纵向连续和纵向瀑布流模式支持每侧 0%～30% 边距调节，在大屏设备上避免条漫过宽，图片居中等比缩放。
-- **阅读体验辅助**：支持跨章节无缝阅读、夜间调光/阅读亮度调节、单手操作翻页、图片宽度限制、自动翻页与全屏阅读。
+点击下表链接下载 **v3.0.0 正式版**，也可前往 [最新版发布页](https://github.com/Venera-Works/Venera-Plus/releases/latest) 查看更新：
 
-### 本地导入与文档支持
-- **本地目录导入**：支持直接扫描或导入本地漫画文件夹（兼容包含章节子目录或单章节无子目录结构）。
-- **多种压缩包归档**：支持 `.cbz`、`.cb7`、`.zip`、`.7z` 等 Comic Book Archive 格式漫画导入与归档。
-- **PDF 与图片型 EPUB 转换**：
-  - PDF 漫画支持多选批量导入，后台异步队列逐本解析入库，进度可收起并在前台自由浏览其他内容。
-  - 支持固定版式图片型 EPUB 导入，提取栅格图片并在存在有效目录导航时保留分章。
-- **下载扫描与归档恢复**：支持扫描本地存储路径恢复下载记录，支持 `.venera-comics` 漫画归档包导入与导出。
+| 设备 | 选择哪个文件 |
+|---|---|
+| Android 手机 / 平板 | 安卓设备可下载 [arm64](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.0.0/VeneraPlus-3.0.0-android-arm64-v8a.apk) 版本，，不清楚型号时安装 [通用版](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.0.0/VeneraPlus-3.0.0-android.apk) |
+| Windows | [-windows-installer.exe](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.0.0/VeneraPlus-3.0.0-windows-installer.exe) 安装版，或 [-windows-portable.zip](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.0.0/VeneraPlus-3.0.0-windows-portable.zip) 解压运行版 |
+| Linux | Ubuntu / Debian：[.deb（x64）](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.0.0/venera-plus_3.0.0_amd64.deb)、[.deb（ARM64）](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.0.0/venera-plus_3.0.0_arm64.deb)；Arch Linux：[.pkg.tar.zst（x64）](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.0.0/venera-plus-3.0.0-26-x86_64.pkg.tar.zst) |
+| iPhone / iPad | [.ipa](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.0.0/VeneraPlus-ios-3.0.0%2B26.ipa)，需自行签名安装 |
+| macOS | 当前暂无正式安装包，可参阅[构建指南](doc/development/build.zh.md)自行构建 |
 
-### WebDAV 数据同步与远端漫画库
-- **应用数据同步**：
-  - 支持设置、收藏、历史、Cookie 和已安装漫画源扩展的应用数据同步。
-- **WebDAV 在线漫画库**：
-  - 支持直接将 WebDAV 作为远端漫画书库在线流式阅读，按需拉取目录与图片，无需全量下载。
-  - 支持普通图片目录结构、带有 `metadata.json` 标记的多层目录结构，以及解压后的 CBZ 漫画目录。
-  - 漫画库配置固定随应用设置同步；凭据会保存在云端快照中，应仅在可信且访问受控的 WebDAV 服务上开启。
+`Source code` 是源码，不是安装包。
 
-### Bangumi 元数据与阅读进度
-- **账号与条目关联**：支持配置 Bangumi Access Token 关联账号，可在漫画详情页手动搜索并绑定 Bangumi 条目。
-- **WebDAV 自动刮削**：WebDAV 漫画库自动刮削功能默认关闭；按需启用后，可在同步时为缺少元数据的漫画自动匹配 Bangumi 条目并补充标题、作者、简介与标签。
-- **进度单向同步**：漫画阅读完成后可单向更新 Bangumi 条目的阅读状态与卷数/话数进度，支持本地失败重试队列。
+## 第一次使用
 
-### JavaScript 漫画源扩展
-- **轻量扩展运行时**：内置 JavaScript 运行时环境，支持通过 JS 脚本扩展更多网络漫画源。
-- **源管理与调试**：支持漫画源仓库订阅、检查更新、本地预览安装、单源调试与安装回滚。
-- **排版与网络适配**：支持漫画源根据阅读器视口排版请求自适应图片尺寸，支持自定义 Header 与 User-Agent 安全回退。
-- *声明：本项目仅提供扩展运行环境与接口规范，不内置、不提供、不维护、不推荐任何第三方漫画源。*
+1. **读本地漫画**：打开「书库 → 本地漫画 → 导入」，选择漫画文件夹、压缩包、PDF 或图片型 EPUB。
+2. **读网盘漫画**：在「设置 → 存储与同步 → 网盘账号」添加账号，再到「在线漫画库」选择存放漫画的目录；回到「发现」选择该漫画库即可阅读。网盘里的压缩包需先解压为图片目录。
+3. **使用漫画源**：在「设置 → 来源与服务 → 管理漫画源」安装自行获取的扩展，再到「发现」浏览或使用右上角搜索。
 
----
+主页可以绑定常看的收藏夹。
 
-## 下载与快速入门
+## 同步、备份与迁移
 
-### 获取应用
-前往 [最新版](https://github.com/Venera-Works/Venera-Plus/releases/latest) 下载适用于对应平台的安装包或便携包。
+以下入口都在「设置 → 存储与同步」中：
 
-### 数据迁移（可选）
-VeneraPlus 与旧版 Venera / VeneraNext 互为独立应用，可并存安装使用。如需从旧版迁移数据：
-1. 在旧版应用中打开 **设置 → 应用 → 导出应用数据**，导出 `.venera` 数据备份文件。
-2. 在 VeneraPlus 中打开 **设置 → 存储与同步 → 导入应用数据**，选取备份文件恢复收藏与历史。
+| 入口 | 用来做什么 |
+|---|---|
+| 应用数据同步 | 通过网盘或 WebDAV 上传、恢复设置、收藏和阅读记录等应用数据，不包含漫画图片；支持手动、实时和定时同步 |
+| 漫画归档备份 | 将本地漫画文件备份到网盘或 WebDAV，需要时下载恢复 |
+| 应用数据导入与导出 | 手动导出或导入 `.venera` 数据备份，方便迁移收藏、记录和设置 |
 
-### 快速上手
-- **主页与收藏书库**：主页默认不绑定收藏夹，可选择已有收藏夹或新建后绑定，也可在「书库 → 漫画收藏 → 收藏夹更多菜单」设为主页显示；阅读记录位于主页右下角悬浮按钮。漫画收藏首次展示「全部」，之后记住最后查看的收藏夹。
-- **刷新、发现与快速搜索**：主页和收藏页支持下拉刷新，桌面端可在顶部继续滚轮下拉或用鼠标、触控板下拉；发现页支持左右滑动切换当前书源的「浏览 / 分类」。通过右上角工具栏快速搜索漫画或执行数据同步。
-- **本地导入与阅读**：前往「书库 → 本地漫画」，通过顶栏导入菜单导入漫画目录、压缩包（CBZ/ZIP/7Z）或批量导入 PDF，直接在书库中集中浏览、排序与阅读。
-- **数据同步配置**：点击顶栏同步按钮（未配置时自动引导）或前往「设置 → 存储与同步 → 数据同步」，配置 WebDAV 服务端信息，选择手动、实时或定时同步；已配置后顶栏可选择上传或下载完整快照。
-- **远端漫画库**：前往「设置 → 来源与服务 → WebDAV 漫画库」配置远端漫画库路径，并在「发现」中选择对应源在线浏览与阅读。
+从 Venera 迁移时，先在旧版导出 `.venera`，再在新版「应用数据导入与导出」中导入；已下载的漫画文件需另行迁移。
 
----
+同步下载会用云端的完整备份恢复本地数据，不会逐条合并。备份包含漫画库配置和账号登录信息，请使用可信的存储位置。
 
-## 反馈与支持
+## 文档与反馈
 
-- **提交问题**：如遇到阅读器本体的缺陷或有功能建议，欢迎在 [GitHub Issues](https://github.com/Venera-Works/Venera-Plus/issues) 提交反馈。提交时请附带系统平台、应用版本、复现步骤及相关日志。
-- **漫画源相关问题**：本仓库只维护阅读器本体，不处理第三方漫画源的图源失效、更新缺失、搜索内容或版权问题。相关问题请向对应漫画源作者或网络服务方反馈。
+- 使用说明：[本地漫画导入](doc/user/import_comic.zh.md) · [多网盘设置](doc/user/multi_cloud.zh.md) · [应用数据同步](doc/user/data_sync.zh.md) · [全部文档](doc/README.md)
+- 遇到问题：在 [GitHub Issues](https://github.com/Venera-Works/Venera-Plus/issues) 附上系统、应用版本、复现步骤和日志。漫画源内容或失效问题请联系对应源作者。
+- 开发与贡献：使用 **Flutter 3.41.4**，参阅[构建指南](doc/development/build.zh.md)和[贡献指南](CONTRIBUTING.md)。
 
-## 文档索引
+## 许可与致谢
 
-- **用户使用指南**：
-  - [本地漫画导入指南](doc/user/import_comic.zh.md)
-  - [应用数据同步说明](doc/user/data_sync.zh.md)
-  - [条漫左右边距说明](doc/user/reader_width.zh.md)
-- **开发与贡献**：
-  - [项目完整文档索引](doc/README.md)
-  - [构建与开发指南](doc/development/build.zh.md)
-  - [贡献指南](CONTRIBUTING.md)
-
----
-
-## 开发与构建
-
-本项目基于 **Flutter 3.41.4** 开发。
-
-环境准备、依赖锁定、各平台构建步骤与贡献规范请参阅上方的 [构建与开发指南](doc/development/build.zh.md) 及 [贡献指南](CONTRIBUTING.md)。
-
----
-
-## 许可与历史来源致谢
-
-本项目遵循 [GPL-3.0](LICENSE) 许可证开源。
-
-### 历史来源与致谢
-- [venera-app/venera](https://github.com/venera-app/venera)
-- [CyrilPeng/Venera-Next](https://github.com/CyrilPeng/Venera-Next)
-
-感谢原项目与历史维护者的架构设计与开源奉献。
+项目使用 [GPL-3.0](LICENSE) 许可证。感谢 [venera-app/venera](https://github.com/venera-app/venera) 、 [CyrilPeng/Venera-Next](https://github.com/CyrilPeng/Venera-Next) 、[OpenList](https://github.com/OpenListTeam/OpenList) 的开源贡献。

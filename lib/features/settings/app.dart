@@ -12,7 +12,6 @@ import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/bangumi/bangumi.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
-import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/settings/data_sync_schedule_fields.dart';
 import 'package:venera_plus/features/settings/setting_components.dart';
 import 'package:venera_plus/features/storage/storage.dart';
@@ -28,6 +27,8 @@ import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
+
+import 'content_sources_page.dart';
 
 class SourcesAndServicesSettings extends StatefulWidget {
   const SourcesAndServicesSettings({super.key});
@@ -53,10 +54,11 @@ class _SourcesAndServicesSettingsState
           icon: Icons.source_outlined,
         ),
         CallbackSetting(
-          title: "Manage Comic Sources".tl,
+          title: "Content Sources".tl,
+          subtitle: 'Website sources and remote comic libraries.'.tl,
           actionTitle: "Open".tl,
           callback: () {
-            context.to(() => const ComicSourcePage());
+            context.to(() => const ContentSourcesPage());
           },
         ).toSliver(),
         SettingPartTitle(
@@ -112,9 +114,7 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
     final (account, purpose) = result;
     switch (purpose) {
       case StorageAccountPurpose.library:
-        context.to(
-          () => RemoteLibrarySettingsPage(initialAccountId: account.id),
-        );
+        context.to(() => ContentSourcesPage(initialAccountId: account.id));
       case StorageAccountPurpose.sync:
         await showDataSyncSettings(context, initialAccount: account);
       case StorageAccountPurpose.archive:
@@ -190,8 +190,7 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
                   }),
                 ),
                 trailing: const Icon(Icons.chevron_right),
-                onTap: () =>
-                    context.to(() => const RemoteLibrarySettingsPage()),
+                onTap: () => context.to(() => const ContentSourcesPage()),
               ),
               ListTile(
                 key: const Key('data-sync-entry'),

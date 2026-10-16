@@ -14,6 +14,8 @@ Google Drive still requires manual authorization on the [OpenList Token page](ht
 
 Settings → Storage and Sync groups cloud accounts, online comic libraries, app-data sync, and comic archive backup by purpose, showing the selected accounts, directories, and sync status. Authorize an account once and reuse it across purposes. You can add an account from any account selector and continue the current form. After connecting an account for the first time, you can also choose its purpose directly.
 
+Settings → Sources and Services → Content Sources manages website sources and remote comic libraries in separate groups on one page. Choose Add and select a source type: install website sources from repositories or import a link or file; add remote libraries by selecting a cloud account and comic directories, with the option to create an account during setup. Online Comic Libraries in Storage and Sync and source-management actions in discovery and search open this same page.
+
 Each online comic library can select one account and one or more recognition directories. Results are combined, with duplicate full remote paths shown once and same-named comics in different paths kept separately. App-data sync and comic archive backup each use one account and one directory: the former transfers settings, favorites, reading records, and other app data; the latter backs up and restores CBZ comic files.
 
 Existing WebDAV sync and archive settings are automatically added to the shared accounts while retaining their remote directories. Local comic paths, cache settings, and download threads are under Local Storage and Downloads; manual data transfer is under App Data Import and Export.

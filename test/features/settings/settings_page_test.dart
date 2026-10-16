@@ -18,6 +18,23 @@ import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 
 import '../../widget_test_io.dart';
 
+class _SettingsSource extends Fake implements ComicSource {
+  _SettingsSource({
+    required this.name,
+    required this.key,
+    required this.filePath,
+  });
+
+  @override
+  final String name;
+  @override
+  final String key;
+  @override
+  final String filePath;
+  @override
+  String get version => '1.2.3';
+}
+
 class _LibraryPickerRpc implements OpenListRpcClient {
   @override
   Future<Map<String, dynamic>> invoke(
@@ -214,28 +231,28 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byType(SourcesAndServicesSettings), findsOneWidget);
 
-      // Push nested ComicSourcePage within the right pane
-      await tester.tap(find.text('Manage Comic Sources'));
+      // Push nested ContentSourcesPage within the right pane
+      await tester.tap(find.text('Content Sources'));
       await tester.pumpAndSettle();
-      expect(find.byType(ComicSourcePage), findsOneWidget);
+      expect(find.byType(ContentSourcesPage), findsOneWidget);
 
-      // Tap left settings Back button explicitly: pops ComicSourcePage, leaving Sources and Services visible
+      // Tap left settings Back button explicitly: pops ContentSourcesPage, leaving Sources and Services visible
       final settingsBackFinder = find.byKey(const Key('settings-back-button'));
       await tester.tap(settingsBackFinder);
       await tester.pumpAndSettle();
-      expect(find.byType(ComicSourcePage), findsNothing);
+      expect(find.byType(ContentSourcesPage), findsNothing);
       expect(find.byType(SourcesAndServicesSettings), findsOneWidget);
 
-      // Push nested ComicSourcePage again to test system back / hardware maybePop
-      await tester.tap(find.text('Manage Comic Sources'));
+      // Push nested ContentSourcesPage again to test system back / hardware maybePop
+      await tester.tap(find.text('Content Sources'));
       await tester.pumpAndSettle();
-      expect(find.byType(ComicSourcePage), findsOneWidget);
+      expect(find.byType(ContentSourcesPage), findsOneWidget);
 
       // Trigger system pop route
       final didPop = await tester.binding.handlePopRoute();
       expect(didPop, isTrue);
       await tester.pumpAndSettle();
-      expect(find.byType(ComicSourcePage), findsNothing);
+      expect(find.byType(ContentSourcesPage), findsNothing);
       expect(find.byType(SourcesAndServicesSettings), findsOneWidget);
 
       // Destination switch in wide layout changes content cleanly
@@ -354,6 +371,73 @@ void main() {
   );
 
   testWidgets(
+    'unified sources distinguish website scripts from virtual libraries and open website import',
+    (tester) async {
+      _setupTestView(tester, const Size(390, 1100));
+      final manager = ComicSourceManager();
+      final library = RemoteComicLibraryRegistry.create(
+        accountId: 'drive',
+        directories: const ['/Comics/'],
+        name: 'Cloud Comics',
+      );
+      appdata.settings[remoteStorageAccountsSetting] = [
+        const StorageAccount(
+          id: 'drive',
+          backend: StorageBackend.webdav,
+          driver: 'webdav',
+          name: 'My Drive',
+          authorization: {},
+        ).toJson(),
+      ];
+      appdata.settings[remoteLibrariesSetting] = [library.toJson()];
+      appdata.settings['comicSourceRepositories'] = [];
+      final website = _SettingsSource(
+        name: 'Website with a long name that must fit on a narrow screen',
+        key: 'settings-website',
+        filePath: '${App.dataPath}/website.js',
+      );
+      manager.add(website);
+      manager.add(
+        _SettingsSource(
+          name: library.name,
+          key: library.sourceKey,
+          filePath: '',
+        ),
+      );
+      addTearDown(() {
+        manager.remove(website.key);
+        manager.remove(library.sourceKey);
+      });
+      await tester.pumpWidget(const MaterialApp(home: ContentSourcesPage()));
+      await tester.pumpAndSettle();
+      expect(find.text(website.name), findsOneWidget);
+      expect(find.text('Cloud Comics'), findsOneWidget);
+      expect(find.textContaining('My Drive'), findsOneWidget);
+      expect(find.byTooltip('Source actions'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      await tester.tap(find.byTooltip('Source actions'));
+      await tester.pumpAndSettle();
+      expect(find.text('Manage source origin'), findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('add-content-source')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('add-website-source')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Import Link or File').last);
+      await tester.pumpAndSettle();
+      expect(find.text('Detect and preview'), findsOneWidget);
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Source Repositories'));
+      await tester.pumpAndSettle();
+      expect(find.text('No repositories yet'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'empty comic libraries allow adding an account without losing the library name',
     (tester) async {
       _setupTestView(tester, const Size(390, 1000));
@@ -361,10 +445,10 @@ void main() {
       storage.configureOpenList(_LibraryPickerRpc());
       appdata.settings[remoteStorageAccountsSetting] = [];
       appdata.settings[remoteLibrariesSetting] = [];
-      await tester.pumpWidget(
-        const MaterialApp(home: RemoteLibrarySettingsPage()),
-      );
-      await tester.tap(find.byType(FloatingActionButton));
+      await tester.pumpWidget(const MaterialApp(home: ContentSourcesPage()));
+      await tester.tap(find.byKey(const Key('add-content-source')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('add-remote-library')));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), 'My library');
       await tester.tap(find.byType(DropdownButton<String>));
@@ -512,7 +596,9 @@ void main() {
       }
 
       Future<void> addLibrary(String name) async {
-        await tester.tap(find.byType(FloatingActionButton));
+        await tester.tap(find.byKey(const Key('add-content-source')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('add-remote-library')));
         await tester.pumpAndSettle();
         await tester.enterText(find.byType(TextField), name);
         await selectDirectories();
@@ -534,8 +620,10 @@ void main() {
       expect(tester.takeException(), isNull);
       expect(storage.libraries, hasLength(1));
       final original = storage.libraries.single;
+      expect(find.text('Remote Comics'), findsOneWidget);
       await reloadSources();
       expect(manager.find(original.sourceKey), isNotNull);
+      expect(find.text('Remote Comics'), findsOneWidget);
       expect(orderedSourceKeys(), contains(original.sourceKey));
       expect(original.directories, ['/A/', '/B/C/']);
       expect(original.autoRefresh, isTrue);

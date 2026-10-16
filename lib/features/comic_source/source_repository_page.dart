@@ -36,7 +36,7 @@ class SourceRepositoriesPanel extends StatelessWidget {
               icon: Icons.inventory_2_outlined,
               title: 'No repositories yet'.tl,
               description:
-                  'Add a repository using its source list URL. Installed sources are managed in the Installed tab.'
+                  'Add a repository using its source list URL. Installed sources are managed in Content Sources.'
                       .tl,
             ),
           for (final repository in store.all)
@@ -672,7 +672,7 @@ Future<void> showSourceOriginPicker(
         if (store.all.isEmpty)
           Padding(
             padding: const EdgeInsets.all(24),
-            child: Text('Add a repository in the Repositories tab first.'.tl),
+            child: Text('Add a repository in Source Repositories first.'.tl),
           ),
         for (final repository in store.all)
           SimpleDialogOption(

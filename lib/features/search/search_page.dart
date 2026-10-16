@@ -211,7 +211,7 @@ class _SearchPageState extends State<SearchPage> {
     if (ComicSource.isEmpty) {
       msg += "Please add some sources".tl;
       onTap = () {
-        context.to(() => ComicSourcePage());
+        context.to(() => const ContentSourcesPage());
       };
     } else {
       msg += "Please check your settings".tl;
