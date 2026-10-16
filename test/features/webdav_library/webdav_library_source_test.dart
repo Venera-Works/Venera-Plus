@@ -466,6 +466,259 @@ void main() {
     },
   );
 
+  test(
+    'comic covers update while other directories are still being scanned',
+    () async {
+      final names = ['A', 'B', 'C', 'D', 'E', 'F'];
+      ops.dirs['/manga/'] = [
+        for (final name in names)
+          WebDavLibraryEntry(name: name, isDirectory: true),
+      ];
+      for (final name in names) {
+        ops.dirs['/manga/$name/'] = const [
+          WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        ];
+        ops.blockers['/manga/$name/'] = Completer<void>();
+        ops.readStarted['/manga/$name/'] = Completer<void>();
+      }
+      final cacheKey = WebDavLibraryConfig.fromSettings().cacheKey;
+      final coverReady = Completer<void>();
+      void onChanged() {
+        if (!coverReady.isCompleted &&
+            WebDavLibraryCache.instance.find(cacheKey, 'A')?.cover.isNotEmpty ==
+                true) {
+          coverReady.complete();
+        }
+      }
+
+      WebDavLibrarySource.contentVersion.addListener(onChanged);
+      final sync = WebDavLibrarySource.synchronize();
+      try {
+        await Future.wait([
+          for (final name in names.take(4))
+            ops.readStarted['/manga/$name/']!.future,
+        ]).timeout(const Duration(seconds: 2));
+        expect(ops.readStarted['/manga/E/']!.isCompleted, isFalse);
+        ops.blockers['/manga/A/']!.complete();
+        await coverReady.future.timeout(const Duration(seconds: 2));
+        await ops.readStarted['/manga/E/']!.future.timeout(
+          const Duration(seconds: 2),
+        );
+        expect(ops.readStarted['/manga/F/']!.isCompleted, isFalse);
+        final comics = await WebDavLibrarySource.loadComics(1);
+        expect(comics.data.first.cover, '/manga/A/001.jpg');
+        expect(WebDavLibrarySource.syncStatus.value.isSyncing, isTrue);
+      } finally {
+        WebDavLibrarySource.contentVersion.removeListener(onChanged);
+        for (final blocker in ops.blockers.values) {
+          if (!blocker.isCompleted) blocker.complete();
+        }
+        await sync;
+      }
+      expect(
+        (await WebDavLibrarySource.loadComics(1)).data.map((comic) => comic.id),
+        names,
+      );
+    },
+  );
+
+  test(
+    'nested remote comics appear before their category finishes scanning',
+    () async {
+      final store = _FakeRemoteFileStore('account');
+      store.dirs['/manga/'] = const [
+        RemoteEntry(
+          name: 'Category',
+          path: '/manga/Category/',
+          isDirectory: true,
+        ),
+      ];
+      store.dirs['/manga/Category/'] = const [
+        RemoteEntry(
+          name: 'Book A',
+          path: '/manga/Category/Book A/',
+          isDirectory: true,
+        ),
+        RemoteEntry(
+          name: 'Book B',
+          path: '/manga/Category/Book B/',
+          isDirectory: true,
+        ),
+      ];
+      for (final name in ['Book A', 'Book B']) {
+        store.dirs['/manga/Category/$name/'] = [
+          RemoteEntry(
+            name: '001.jpg',
+            path: '/manga/Category/$name/001.jpg',
+            isDirectory: false,
+          ),
+        ];
+      }
+      final blocker = Completer<void>();
+      store.blockers['/manga/Category/Book B/'] = blocker;
+      final engine = WebDavLibraryEngine(
+        library: const RemoteLibrary(
+          id: 'library',
+          sourceKey: 'library',
+          accountId: 'account',
+          directories: ['/manga/'],
+          name: 'Library',
+          autoRefresh: false,
+        ),
+        store: store,
+      );
+      final source = engine.create();
+      final coverReady = Completer<void>();
+      void onChanged() {
+        if (!coverReady.isCompleted &&
+            WebDavLibraryCache.instance
+                    .find('remote-library:library', '/manga/Category/Book A/')
+                    ?.cover
+                    .isNotEmpty ==
+                true) {
+          coverReady.complete();
+        }
+      }
+
+      engine.contentVersion.addListener(onChanged);
+      final sync = engine.synchronize();
+      try {
+        await coverReady.future.timeout(const Duration(seconds: 2));
+        final comics = await source.explorePages.single.loadPage!(1);
+        expect(
+          comics.data.any(
+            (comic) => comic.cover == '/manga/Category/Book A/001.jpg',
+          ),
+          isTrue,
+        );
+        expect(engine.syncStatus.value.isSyncing, isTrue);
+      } finally {
+        engine.contentVersion.removeListener(onChanged);
+        blocker.complete();
+        await sync;
+        engine.cancel();
+      }
+    },
+  );
+
+  for (final rootCover in [true, false]) {
+    test(
+      'comic listing defers chapter inspection (root cover: $rootCover)',
+      () async {
+        ops.dirs['/manga/'] = const [
+          WebDavLibraryEntry(name: 'Comic', isDirectory: true),
+        ];
+        ops.dirs['/manga/Comic/'] = [
+          const WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
+          if (rootCover)
+            const WebDavLibraryEntry(name: 'cover.jpg', isDirectory: false),
+          const WebDavLibraryEntry(name: '第01卷', isDirectory: true),
+          const WebDavLibraryEntry(name: '第02卷', isDirectory: true),
+          const WebDavLibraryEntry(name: '临时目录', isDirectory: true),
+        ];
+        ops.textFiles['/manga/Comic/metadata.json'] = jsonEncode({
+          'title': 'Comic title',
+          'author': 'Author',
+          'tags': ['Tag'],
+        });
+        for (final name in ['第01卷', '第02卷']) {
+          ops.dirs['/manga/Comic/$name/'] = const [
+            WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+          ];
+        }
+        final blocker = Completer<void>();
+        final chapterStarted = Completer<void>();
+        ops.blockers['/manga/Comic/第02卷/'] = blocker;
+        ops.readStarted['/manga/Comic/第02卷/'] = chapterStarted;
+        final sync = WebDavLibrarySource.synchronize();
+        try {
+          expect(
+            (await sync.timeout(const Duration(seconds: 2))).success,
+            isTrue,
+          );
+          final comics = await WebDavLibrarySource.loadComics(1);
+          expect(comics.data.single.title, 'Comic title');
+          expect(
+            comics.data.single.cover,
+            rootCover ? '/manga/Comic/cover.jpg' : '/manga/Comic/第01卷/001.jpg',
+          );
+          expect(chapterStarted.isCompleted, isFalse);
+          // Reopen the persistent summary before loading complete reader details.
+          WebDavLibrarySource.ops = ops;
+          final firstDetails = WebDavLibrarySource.loadComicInfo('Comic');
+          final secondDetails = WebDavLibrarySource.loadComicInfo('Comic');
+          await chapterStarted.future.timeout(const Duration(seconds: 2));
+          blocker.complete();
+          final details = await Future.wait([firstDetails, secondDetails]);
+          for (final result in details) {
+            expect(result.data.chapters!.allChapters.keys, ['第01卷', '第02卷']);
+          }
+          expect(
+            ops.readPaths.where((path) => path == '/manga/Comic/第02卷/'),
+            hasLength(1),
+          );
+        } finally {
+          if (!blocker.isCompleted) blocker.complete();
+          await sync;
+        }
+      },
+    );
+  }
+
+  for (final rootCover in [true, false]) {
+    test('chapter-only comic previews its cover before discovery completes '
+        '(root cover: $rootCover)', () async {
+      ops.dirs['/manga/'] = const [
+        WebDavLibraryEntry(name: 'Comic', isDirectory: true),
+      ];
+      ops.dirs['/manga/Comic/'] = [
+        if (rootCover)
+          const WebDavLibraryEntry(name: 'cover.jpg', isDirectory: false),
+        const WebDavLibraryEntry(name: '第01卷', isDirectory: true),
+        const WebDavLibraryEntry(name: '第02卷', isDirectory: true),
+      ];
+      for (final name in ['第01卷', '第02卷']) {
+        ops.dirs['/manga/Comic/$name/'] = const [
+          WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        ];
+      }
+      final blocker = Completer<void>();
+      ops.blockers['/manga/Comic/${rootCover ? '第01卷' : '第02卷'}/'] = blocker;
+      final coverReady = Completer<void>();
+      final cacheKey = WebDavLibraryConfig.fromSettings().cacheKey;
+      void onChanged() {
+        if (!coverReady.isCompleted &&
+            WebDavLibraryCache.instance
+                    .find(cacheKey, 'Comic')
+                    ?.cover
+                    .isNotEmpty ==
+                true) {
+          coverReady.complete();
+        }
+      }
+
+      WebDavLibrarySource.contentVersion.addListener(onChanged);
+      final sync = WebDavLibrarySource.synchronize();
+      try {
+        await coverReady.future.timeout(const Duration(seconds: 2));
+        final comics = await WebDavLibrarySource.loadComics(1);
+        expect(
+          comics.data.single.cover,
+          rootCover ? '/manga/Comic/cover.jpg' : '/manga/Comic/第01卷/001.jpg',
+        );
+        expect(WebDavLibrarySource.syncStatus.value.isSyncing, isTrue);
+        blocker.complete();
+        expect((await sync).success, isTrue);
+        final details = await WebDavLibrarySource.loadComicInfo('Comic');
+        expect(details.data.chapters!.allChapters.keys, ['第01卷', '第02卷']);
+      } finally {
+        WebDavLibrarySource.contentVersion.removeListener(onChanged);
+        if (!blocker.isCompleted) blocker.complete();
+        await sync;
+      }
+    });
+  }
+
   test('cached comic list is paged without additional WebDAV reads', () async {
     ops.dirs['/manga/'] = [
       for (var index = 1; index <= 45; index++)
@@ -2626,6 +2879,7 @@ class _FakeRemoteFileStore implements RemoteFileStore {
   final writtenPaths = <String>[];
   final links = <String, RemoteLink>{};
   final linkedPaths = <String>[];
+  final blockers = <String, Completer<void>>{};
   var cancelAllCalls = 0;
 
   @override
@@ -2657,6 +2911,7 @@ class _FakeRemoteFileStore implements RemoteFileStore {
 
   @override
   Future<List<RemoteEntry>> list(String directory) async {
+    await blockers[directory]?.future;
     final error = errors[directory];
     if (error != null) throw error;
     return dirs[directory] ?? const [];

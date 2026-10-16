@@ -1277,10 +1277,105 @@ class WebDavLibrarySource {
         indexReady.complete(const Res(true));
       }
       contentVersion.value++;
+      var discoveredCount = 0;
+      var total = 0;
+      var processed = 0;
+      var failed = 0;
+      final scrapeCheckTime = metadataNowProvider();
       final discovered = await _discoverComicDirectories(
         config,
         rootEntries: rootEntries,
         syncRun: run,
+        onPreview: (comicId, cover) {
+          _throwIfSynchronizationObsolete(run);
+          final id = _stableComicPath(config, comicId);
+          final cached = _cache.find(configKey, id);
+          if (cached?.isReady == true) return;
+          _cache.upsertSnapshot(
+            configKey,
+            WebDavLibraryCachedComic(
+              id: id,
+              sortIndex: cached?.sortIndex ?? discoveredCount,
+              title: _directoryName(id),
+              author: cached?.author ?? '',
+              tags: cached?.tags ?? const [],
+              cover: cover,
+              snapshot: cached?.snapshot,
+              remoteETag: cached?.remoteETag,
+              remoteModifiedAt: cached?.remoteModifiedAt,
+            ),
+          );
+          if (config.remoteLibrary != null) {
+            _cache.addRootMembership(configKey, config.remotePath, id);
+          }
+          contentVersion.value++;
+        },
+        onDiscovered: (comic) async {
+          _throwIfSynchronizationObsolete(run);
+          final id = _stableComicPath(config, comic.id);
+          final cached = previous[id];
+          final directory = WebDavLibraryRemoteDirectory(
+            id: id,
+            sortIndex: cached?.sortIndex ?? discoveredCount,
+            eTag: comic.eTag,
+            modifiedAt: comic.modifiedAt,
+          );
+          discoveredCount++;
+          final shouldRefresh =
+              force ||
+              !hadDirectoryIndex ||
+              cached == null ||
+              !cached.isReady ||
+              (_canScrapeMetadata &&
+                  cached.shouldRetryMetadataScrape(
+                    scraperVersion: _metadataScraperVersion,
+                    now: scrapeCheckTime,
+                  )) ||
+              !cached.hasSameRemoteVersion(
+                eTag: directory.eTag,
+                modifiedAt: directory.modifiedAt,
+              );
+          if (!shouldRefresh) {
+            if (config.remoteLibrary != null) {
+              _cache.addRootMembership(configKey, config.remotePath, id);
+            }
+            return;
+          }
+          total++;
+          try {
+            await _loadSnapshot(
+              config,
+              id,
+              forceRefresh: true,
+              summaryOnly: true,
+              remoteDirectory: directory,
+              rootEntries: comic.entries.isEmpty ? null : comic.entries,
+              childEntries: comic.childEntries,
+              syncRun: run,
+            );
+            _throwIfSynchronizationObsolete(run);
+            if (config.remoteLibrary != null) {
+              _cache.addRootMembership(configKey, config.remotePath, id);
+            }
+          } on _WebDavSynchronizationObsoleteException {
+            rethrow;
+          } catch (e) {
+            failed++;
+            Log.warning('WebDAV Library', 'Failed to inspect $id: $e');
+          } finally {
+            processed++;
+            if (_isSynchronizationCurrent(run)) {
+              contentVersion.value++;
+              syncStatus.value = WebDavLibrarySyncStatus(
+                isSyncing: true,
+                lastSuccessfulSync: previousLastSync,
+                processed: processed,
+                total: total,
+                failed: failed,
+              );
+            }
+          }
+        },
       );
       _throwIfSynchronizationObsolete(run);
       final remoteDirectories = <WebDavLibraryRemoteDirectory>[
@@ -1295,82 +1390,6 @@ class WebDavLibrarySource {
       _replaceRootAwareIndex(config, remoteDirectories);
       contentVersion.value++;
 
-      final scrapeCheckTime = metadataNowProvider();
-      final toRefresh = <WebDavLibraryRemoteDirectory>[];
-      for (final directory in remoteDirectories) {
-        final cached = previous[directory.id];
-        if (force ||
-            !hadDirectoryIndex ||
-            cached == null ||
-            !cached.isReady ||
-            (_canScrapeMetadata &&
-                cached.shouldRetryMetadataScrape(
-                  scraperVersion: _metadataScraperVersion,
-                  now: scrapeCheckTime,
-                )) ||
-            !cached.hasSameRemoteVersion(
-              eTag: directory.eTag,
-              modifiedAt: directory.modifiedAt,
-            )) {
-          toRefresh.add(directory);
-        }
-      }
-
-      var processed = 0;
-      var failed = 0;
-      _throwIfSynchronizationObsolete(run);
-      syncStatus.value = WebDavLibrarySyncStatus(
-        isSyncing: true,
-        lastSuccessfulSync: previousLastSync,
-        total: toRefresh.length,
-      );
-      await runThrottledTasks(
-        toRefresh,
-        concurrency: 4,
-        throttleEvery: 0,
-        run: (directory) async {
-          try {
-            _throwIfSynchronizationObsolete(run);
-            final discoveredDirectory = discovered.firstWhere(
-              (candidate) =>
-                  _stableComicPath(config, candidate.id) == directory.id,
-            );
-            await _loadSnapshot(
-              config,
-              directory.id,
-              forceRefresh: true,
-              remoteDirectory: directory,
-              rootEntries: discoveredDirectory.entries.isEmpty
-                  ? null
-                  : discoveredDirectory.entries,
-              childEntries: discoveredDirectory.childEntries,
-              syncRun: run,
-            );
-          } on _WebDavSynchronizationObsoleteException {
-            rethrow;
-          } catch (e) {
-            failed++;
-            Log.warning(
-              'WebDAV Library',
-              'Failed to inspect ${directory.id}: $e',
-            );
-          } finally {
-            processed++;
-            if (_isSynchronizationCurrent(run) &&
-                (processed % 5 == 0 || processed == toRefresh.length)) {
-              contentVersion.value++;
-              syncStatus.value = WebDavLibrarySyncStatus(
-                isSyncing: true,
-                lastSuccessfulSync: previousLastSync,
-                processed: processed,
-                total: toRefresh.length,
-                failed: failed,
-              );
-            }
-          }
-        },
-      );
-
       _throwIfSynchronizationObsolete(run);
       final now = DateTime.now().millisecondsSinceEpoch;
       _cache.setLastSuccessfulSync(configKey, now);
@@ -1378,7 +1397,7 @@ class WebDavLibrarySource {
         isSyncing: false,
         lastSuccessfulSync: now,
         processed: processed,
-        total: toRefresh.length,
+        total: total,
         failed: failed,
       );
       contentVersion.value++;
@@ -1509,6 +1528,7 @@ class WebDavLibrarySource {
     WebDavLibraryConfig config,
     String id, {
     bool forceRefresh = false,
+    bool summaryOnly = false,
     WebDavLibraryRemoteDirectory? remoteDirectory,
     List<WebDavLibraryEntry>? rootEntries,
     Map<String, List<WebDavLibraryEntry>>? childEntries,
@@ -1517,17 +1537,32 @@ class WebDavLibrarySource {
     final memoryKey = jsonEncode([config.cacheKey, id]);
     if (!forceRefresh) {
       final memoryCached = _snapshotCache[memoryKey];
-      if (memoryCached != null) return memoryCached;
+      if (memoryCached != null &&
+          (summaryOnly || memoryCached.chaptersInspected)) {
+        return memoryCached;
+      }
       final diskCached = _cache.find(config.cacheKey, id);
       if (diskCached?.isReady == true) {
         final snapshot = _WebDavComicSnapshot.fromJson(diskCached!.snapshot!);
         _snapshotCache[memoryKey] = snapshot;
-        return snapshot;
+        if (summaryOnly || snapshot.chaptersInspected) return snapshot;
       }
     }
 
     final inFlight = _snapshotInFlight[memoryKey];
-    if (inFlight != null) return inFlight;
+    if (inFlight != null) {
+      final snapshot = await inFlight;
+      if (summaryOnly || snapshot.chaptersInspected) return snapshot;
+      if (identical(_snapshotInFlight[memoryKey], inFlight)) {
+        _snapshotInFlight.remove(memoryKey);
+      }
+      return _loadSnapshot(
+        config,
+        id,
+        forceRefresh: forceRefresh,
+        syncRun: syncRun,
+      );
+    }
     final future = () async {
       final existing = _cache.find(config.cacheKey, id);
       final previousSnapshot = existing?.snapshot == null
@@ -1539,6 +1574,7 @@ class WebDavLibrarySource {
         rootEntries: rootEntries,
         childEntries: childEntries,
         previousSnapshot: previousSnapshot,
+        summaryOnly: summaryOnly,
         syncRun: syncRun,
       );
       if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
@@ -1576,6 +1612,7 @@ class WebDavLibrarySource {
     List<WebDavLibraryEntry>? rootEntries,
     Map<String, List<WebDavLibraryEntry>>? childEntries,
     _WebDavComicSnapshot? previousSnapshot,
+    bool summaryOnly = false,
     _WebDavLibrarySyncRun? syncRun,
   }) async {
     final comicPath = config.childDirectoryPath(id);
@@ -1642,10 +1679,22 @@ class WebDavLibrarySource {
 
     final metadataChapters = <String, ComicChapter>{};
     final chapterMap = <String, String>{};
+    var chaptersInspected = true;
+    final namedCover = _findNamedCover(entries);
+    String? coverPath = namedCover == null
+        ? null
+        : config.childFilePath(comicPath, namedCover.name);
+    if (rootImages.isNotEmpty) {
+      coverPath ??= config.childFilePath(comicPath, rootImages.first.name);
+    }
     if (directories.isNotEmpty) {
       for (final directory in directories) {
         var chapterEntries = inspectedChapterEntries[directory.name];
         if (chapterEntries == null) {
+          if (summaryOnly && coverPath != null) {
+            chaptersInspected = false;
+            continue;
+          }
           final chapterPath = config.childDirectoryPathFrom(
             comicPath,
             directory.name,
@@ -1673,6 +1722,17 @@ class WebDavLibrarySource {
             ).any((entry) => !isNamedComicCover(entry.name));
         if (hasReadablePages) {
           chapterMap[directory.name] = directory.name;
+          if (coverPath == null) {
+            final coverEntry =
+                _findNamedCover(chapterEntries) ??
+                _imageEntries(
+                  chapterEntries,
+                ).firstWhere((entry) => !isNamedComicCover(entry.name));
+            coverPath = config.childFilePath(
+              config.childDirectoryPathFrom(comicPath, directory.name),
+              coverEntry.name,
+            );
+          }
         }
       }
       if (rootImages.isNotEmpty) {
@@ -1688,56 +1748,12 @@ class WebDavLibrarySource {
     } else if (rootImages.isNotEmpty) {
       chapterMap[rootChapterId] = rootChapterTitle;
     }
-    if (chapterMap.isEmpty) {
+    if (chapterMap.isEmpty && chaptersInspected) {
       throw const FormatException(
         'No images found in the WebDAV comic directory',
       );
     }
 
-    final namedCover = _findNamedCover(entries);
-    String? coverPath = namedCover == null
-        ? null
-        : config.childFilePath(comicPath, namedCover.name);
-    if (rootImages.isNotEmpty) {
-      coverPath ??= config.childFilePath(comicPath, rootImages.first.name);
-    }
-    if (coverPath == null) {
-      for (final directory in directories) {
-        if (!chapterMap.containsKey(directory.name)) continue;
-        final chapterPath = config.childDirectoryPathFrom(
-          comicPath,
-          directory.name,
-        );
-        var chapterEntries = inspectedChapterEntries[directory.name];
-        if (chapterEntries == null) {
-          try {
-            chapterEntries = List<WebDavLibraryEntry>.from(
-              await _activeOps.readDir(config, chapterPath),
-            );
-            if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
-            inspectedChapterEntries[directory.name] = chapterEntries;
-          } on _WebDavSynchronizationObsoleteException {
-            rethrow;
-          } catch (e) {
-            Log.warning(
-              'WebDAV Library',
-              'Failed to inspect chapter cover at $chapterPath: $e',
-            );
-          }
-        }
-        if (chapterEntries != null) {
-          final chapterCover = _findNamedCover(chapterEntries);
-          final chapterPages = _imageEntries(
-            chapterEntries,
-          ).where((entry) => !isNamedComicCover(entry.name)).toList();
-          final coverEntry = chapterCover ?? chapterPages.firstOrNull;
-          if (coverEntry != null) {
-            coverPath = config.childFilePath(chapterPath, coverEntry.name);
-            break;
-          }
-        }
-      }
-    }
     final metadataTitle = metadata?.title.trim() ?? '';
     return _WebDavComicSnapshot(
       title: metadataTitle.isEmpty ? _directoryName(id) : metadataTitle,
@@ -1746,6 +1762,7 @@ class WebDavLibrarySource {
       description: metadata?.description ?? '',
       cover: coverPath ?? '',
       chapters: chapterMap,
+      chaptersInspected: chaptersInspected,
       metadataChapters: metadataChapters,
       rootImages: rootImages,
       bangumiSubjectId: metadata?.bangumiSubjectId,
@@ -2405,6 +2422,8 @@ class WebDavLibrarySource {
     WebDavLibraryConfig config, {
     required List<WebDavLibraryEntry> rootEntries,
     required _WebDavLibrarySyncRun syncRun,
+    required void Function(String id, String cover) onPreview,
+    required Future<void> Function(_WebDavDiscoveredDirectory) onDiscovered,
   }) async {
     final result = <_WebDavDiscoveredDirectory>[];
     var inspectedDirectories = 0;
@@ -2420,25 +2439,29 @@ class WebDavLibrarySource {
     }) async {
       _throwIfSynchronizationObsolete(syncRun);
       final version = _directoryContentVersion(directory, entries);
-      _WebDavDiscoveredDirectory current({
+      Future<List<_WebDavDiscoveredDirectory>> current({
         Map<String, List<WebDavLibraryEntry>> childEntries = const {},
-      }) => _WebDavDiscoveredDirectory(
-        id: id,
-        entries: entries,
-        childEntries: childEntries,
-        eTag: version.eTag,
-        modifiedAt: version.modifiedAt,
-      );
+      }) async {
+        final comic = _WebDavDiscoveredDirectory(
+          id: id,
+          entries: entries,
+          childEntries: childEntries,
+          eTag: version.eTag,
+          modifiedAt: version.modifiedAt,
+        );
+        await onDiscovered(comic);
+        return [comic];
+      }
 
       if (_hasMetadataFile(entries) ||
           _imageEntries(
             entries,
           ).any((entry) => !isNamedComicCover(entry.name))) {
-        return [current()];
+        return current();
       }
       final childDirectories = _sortedDirectories(entries);
       if (childDirectories.isEmpty) {
-        return preserveFallback ? [current()] : const [];
+        return preserveFallback ? current() : const [];
       }
 
       if (depth >= _maxDiscoveryDepth) {
@@ -2469,6 +2492,16 @@ class WebDavLibrarySource {
             })
           >[];
       final childEntriesMap = <String, List<WebDavLibraryEntry>>{};
+      final nested = <_WebDavDiscoveredDirectory>[];
+      var isCategory = false;
+      final namedCover = _findNamedCover(entries);
+      var hasPreview = namedCover != null;
+      if (namedCover != null) {
+        onPreview(
+          id,
+          config.childFilePath(config.childDirectoryPath(id), namedCover.name),
+        );
+      }
       for (final child in childDirectories) {
         if (inspectedDirectories >= maxDirectories) {
           Log.warning(
@@ -2488,16 +2521,36 @@ class WebDavLibrarySource {
         _throwIfSynchronizationObsolete(syncRun);
         children.add((directory: child, id: childId, entries: childEntries));
         childEntriesMap[child.name] = childEntries;
+        final pages = _imageEntries(
+          childEntries,
+        ).where((entry) => !isNamedComicCover(entry.name));
+        isCategory =
+            isCategory ||
+            _hasMetadataFile(childEntries) ||
+            _sortedDirectories(childEntries).isNotEmpty ||
+            (!_looksLikeChapterName(child.name) && pages.isNotEmpty);
+        if (!isCategory && !hasPreview && pages.isNotEmpty) {
+          final cover = _findNamedCover(childEntries) ?? pages.first;
+          onPreview(id, config.childFilePath(childPath, cover.name));
+          hasPreview = true;
+        }
+        if (isCategory) {
+          for (final pending in children) {
+            nested.addAll(
+              await scan(
+                directory: pending.directory,
+                id: pending.id,
+                entries: pending.entries,
+                depth: depth + 1,
+                preserveFallback: false,
+              ),
+            );
+          }
+          children.clear();
+        }
       }
 
-      final hasExplicitComicChild = children.any(
-        (child) => _hasMetadataFile(child.entries),
-      );
-      final hasNestedDirectoryChild = children.any(
-        (child) => _sortedDirectories(child.entries).isNotEmpty,
-      );
-
-      if (!hasExplicitComicChild && !hasNestedDirectoryChild) {
+      if (!isCategory) {
         final childrenWithImages = children.where(
           (child) => _imageEntries(
             child.entries,
@@ -2513,7 +2566,7 @@ class WebDavLibrarySource {
               'WebDAV Library',
               'Treating "$id" as comic root because all image child directories match chapter naming',
             );
-            return [current(childEntries: childEntriesMap)];
+            return current(childEntries: childEntriesMap);
           }
         } else if (childDirectories.every(
           (child) => _looksLikeChapterName(child.name),
@@ -2522,55 +2575,49 @@ class WebDavLibrarySource {
             'WebDAV Library',
             'Treating "$id" as comic root because all child directory names match chapter naming',
           );
-          return [current(childEntries: childEntriesMap)];
+          return current(childEntries: childEntriesMap);
         }
       }
 
-      final nested = <_WebDavDiscoveredDirectory>[];
-      for (final child in children) {
-        nested.addAll(
+      if (nested.isNotEmpty) return nested;
+      return preserveFallback ? current() : const [];
+    }
+
+    await runThrottledTasks(
+      _sortedDirectories(rootEntries),
+      concurrency: 4,
+      throttleEvery: 0,
+      run: (directory) async {
+        _throwIfSynchronizationObsolete(syncRun);
+        if (inspectedDirectories >= maxDirectories) {
+          Log.warning(
+            'WebDAV Library',
+            'Discovery inspection limit reached at library root',
+          );
+          throw const FormatException(
+            'WebDAV comic discovery directory limit reached',
+          );
+        }
+        inspectedDirectories++;
+        final id = directory.name;
+        final path = config.childDirectoryPath(id);
+        final entries = List<WebDavLibraryEntry>.from(
+          await _activeOps.readDir(config, path),
+        );
+        _throwIfSynchronizationObsolete(syncRun);
+
+        result.addAll(
           await scan(
-            directory: child.directory,
-            id: child.id,
-            entries: child.entries,
-            depth: depth + 1,
-            preserveFallback: false,
+            directory: directory,
+            id: id,
+            entries: entries,
+            depth: 0,
+            preserveFallback: true,
           ),
         );
-      }
-      if (nested.isNotEmpty) return nested;
-      return preserveFallback ? [current()] : const [];
-    }
-
-    for (final directory in _sortedDirectories(rootEntries)) {
-      if (inspectedDirectories >= maxDirectories) {
-        Log.warning(
-          'WebDAV Library',
-          'Discovery inspection limit reached at library root',
-        );
-        throw const FormatException(
-          'WebDAV comic discovery directory limit reached',
-        );
-      }
-      inspectedDirectories++;
-      final id = directory.name;
-      final path = config.childDirectoryPath(id);
-      final entries = List<WebDavLibraryEntry>.from(
-        await _activeOps.readDir(config, path),
-      );
-      _throwIfSynchronizationObsolete(syncRun);
-
-      result.addAll(
-        await scan(
-          directory: directory,
-          id: id,
-          entries: entries,
-          depth: 0,
-          preserveFallback: true,
-        ),
-      );
-      _throwIfSynchronizationObsolete(syncRun);
-    }
+        _throwIfSynchronizationObsolete(syncRun);
+      },
+    );
 
     result.sort((a, b) => compareComicFileNames(a.id, b.id));
     return result;
@@ -3061,6 +3108,7 @@ class _WebDavComicSnapshot {
     required this.tags,
     required this.cover,
     required this.chapters,
+    this.chaptersInspected = true,
     required this.metadataChapters,
     required this.rootImages,
     required this.bangumiSubjectId,
@@ -3078,6 +3126,7 @@ class _WebDavComicSnapshot {
   final List<String> tags;
   final String cover;
   final Map<String, String> chapters;
+  final bool chaptersInspected;
   final Map<String, ComicChapter> metadataChapters;
   final List<WebDavLibraryEntry> rootImages;
   final int? bangumiSubjectId;
@@ -3099,6 +3148,7 @@ class _WebDavComicSnapshot {
       description: json['description'] as String? ?? '',
       tags: (json['tags'] as List?)?.whereType<String>().toList() ?? const [],
       cover: json['cover'] as String? ?? '',
+      chaptersInspected: json['chaptersInspected'] != false,
       chapters: chapters is Map
           ? chapters.map(
               (key, value) => MapEntry(key.toString(), value.toString()),
@@ -3145,6 +3195,7 @@ class _WebDavComicSnapshot {
     'tags': tags,
     'cover': cover,
     'chapters': chapters,
+    'chaptersInspected': chaptersInspected,
     'metadataChapters': metadataChapters.map(
       (key, value) => MapEntry(key, value.toJson()),
     ),

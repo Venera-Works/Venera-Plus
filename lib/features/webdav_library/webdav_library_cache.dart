@@ -361,6 +361,16 @@ class WebDavLibraryCache {
     }
   }
 
+  void addRootMembership(String configKey, String rootPath, String comicId) {
+    _database.execute(
+      '''
+      INSERT OR IGNORE INTO webdav_library_root_membership(config_key, root_path, comic_id)
+      VALUES (?, ?, ?);
+      ''',
+      [configKey, rootPath, comicId],
+    );
+  }
+
   void markRootFailure(String configKey, String rootPath, String error) {
     _database.execute(
       '''
@@ -424,7 +434,7 @@ class WebDavLibraryCache {
         comic.author,
         jsonEncode(comic.tags),
         comic.cover,
-        jsonEncode(comic.snapshot),
+        comic.snapshot == null ? null : jsonEncode(comic.snapshot),
         comic.remoteETag,
         comic.remoteModifiedAt,
         DateTime.now().millisecondsSinceEpoch,
