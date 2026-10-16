@@ -114,6 +114,9 @@ void main() {
     testRoot = root;
     App.cachePath = (await Directory('${root.path}/cache').create()).path;
     App.dataPath = (await Directory('${root.path}/data').create()).path;
+    // Match app startup: finish migration writes in the real async zone before
+    // opening settings in a widget test's fake async zone.
+    await RemoteStorageAccounts.instance.migrateLegacyWebDavLocations();
   });
 
   tearDown(() async {
