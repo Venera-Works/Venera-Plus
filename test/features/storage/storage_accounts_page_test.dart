@@ -1,9 +1,12 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/storage/storage.dart';
+import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 import 'package:venera_plus/routing/webview.dart';
 
@@ -240,6 +243,46 @@ void main() {
   testWidgets('authorization callback fills tokens and replaces old app keys', (
     tester,
   ) async {
+    final controller = _WebviewController();
+    String? desktopUrl;
+    var desktopClosed = false;
+    if (Platform.isLinux) {
+      App.dataPath = Directory.systemTemp.path;
+      const channel = MethodChannel('webview_window');
+      const codec = StandardMethodCodec();
+      final messenger = tester.binding.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        switch (call.method) {
+          case 'create':
+            return 1;
+          case 'launch':
+            desktopUrl = call.arguments['url'] as String;
+            return null;
+          case 'evaluateJavaScript':
+            final script = call.arguments['javaScriptString'] as String;
+            if (script.contains('function collect()')) {
+              return jsonEncode({
+                'id': 'document_created',
+                'data': {'title': 'Login', 'ua': 'test'},
+              });
+            }
+            return controller.evaluateJavascript(source: script);
+          case 'close':
+            desktopClosed = true;
+            tester.binding.channelBuffers.push(
+              channel.name,
+              codec.encodeMethodCall(
+                const MethodCall('onWindowClose', {'id': 1}),
+              ),
+              (_) {},
+            );
+            return null;
+          default:
+            return null;
+        }
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    }
     final accounts = _Accounts()
       ..saved = const StorageAccount(
         id: 'onedrive',
@@ -263,18 +306,21 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 350));
 
-    final login = tester.widget<AppWebview>(find.byType(AppWebview));
-    expect(
-      Uri.parse(login.initialUrl).queryParameters['driver_txt'],
-      'onedrive_pr',
-    );
-    final controller = _WebviewController()
-      ..page = {
-        'url': login.initialUrl,
-        'body': '{"text":"https://login.microsoftonline.com/authorize"}',
-      };
-    login.onLoadStop!(controller);
-    await tester.pump();
+    final login = Platform.isLinux
+        ? null
+        : tester.widget<AppWebview>(find.byType(AppWebview));
+    final loginUrl = Platform.isLinux ? desktopUrl! : login!.initialUrl;
+    expect(Uri.parse(loginUrl).queryParameters['driver_txt'], 'onedrive_pr');
+    controller.page = {
+      'url': loginUrl,
+      'body': '{"text":"https://login.microsoftonline.com/authorize"}',
+    };
+    if (Platform.isLinux) {
+      await tester.pump(const Duration(seconds: 2));
+    } else {
+      login!.onLoadStop!(controller);
+      await tester.pump();
+    }
     expect(
       controller.scripts.last,
       contains(
@@ -294,9 +340,14 @@ void main() {
       'url': 'https://api.oplist.org/#$payload',
       'body': null,
     });
-    login.onLoadStop!(controller);
+    if (Platform.isLinux) {
+      await tester.pump(const Duration(seconds: 2));
+    } else {
+      login!.onLoadStop!(controller);
+    }
     await tester.pumpAndSettle();
 
+    if (Platform.isLinux) expect(desktopClosed, isTrue);
     expect(find.byType(AppWebview), findsNothing);
     final refresh = tester.widget<TextField>(
       find.widgetWithText(TextField, 'Refresh Token'),
