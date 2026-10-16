@@ -156,9 +156,15 @@ class RemoteStorageAccounts with ChangeNotifier {
           )
         : value;
     var previous = this.account(account.id);
+    final replacesQuarkOpen =
+        previous?.backend == StorageBackend.openlist &&
+        account.backend == StorageBackend.openlist &&
+        previous?.driver == 'QuarkOpen' &&
+        account.driver == 'Quark';
     if (previous != null &&
         (previous.backend != account.backend ||
-            previous.driver != account.driver)) {
+            previous.driver != account.driver) &&
+        !replacesQuarkOpen) {
       throw ArgumentError(
         'Storage account backend and driver cannot be changed',
       );

@@ -16,6 +16,7 @@ void main() {
 
   test('imports provider token forms into driver fields', () {
     for (final driver in openListSupportedDrivers) {
+      if (driver == 'Quark') continue;
       final value = parseOpenListAuthorization(
         '{"access_token":"access","refresh_token":"refresh","client_uid":"id","client_key":"secret","app_id":"app","sign_key":"sign"}',
         driver: driver,
@@ -24,9 +25,6 @@ void main() {
         expect(value['AccessToken'], 'access');
         expect(value['RefreshToken'], 'refresh');
         expect(value['driver_txt'], '123cloud_oa');
-      } else if (driver == 'QuarkOpen') {
-        expect(value['app_id'], 'app');
-        expect(value['sign_key'], 'sign');
       } else if (driver != 'BaiduNetdisk') {
         expect(value['client_id'], 'id');
         expect(value['client_secret'], 'secret');
@@ -34,34 +32,23 @@ void main() {
     }
   });
 
-  test(
-    'canonicalizes Pascal tokens and keeps incomplete Quark configuration',
-    () {
-      final google = normalizeOpenListAuthorization({
-        'AccessToken': 'old',
-        'access_token': 'rotated',
-        'RefreshToken': 'refresh',
-      }, driver: 'GoogleDrive');
-      expect(google['access_token'], 'rotated');
-      expect(google.containsKey('AccessToken'), isFalse);
+  test('canonicalizes Pascal tokens', () {
+    final google = normalizeOpenListAuthorization({
+      'AccessToken': 'old',
+      'access_token': 'rotated',
+      'RefreshToken': 'refresh',
+    }, driver: 'GoogleDrive');
+    expect(google['access_token'], 'rotated');
+    expect(google.containsKey('AccessToken'), isFalse);
 
-      final baidu = normalizeOpenListAuthorization({
-        'access_token': 'new',
-        'AccessToken': 'old',
-        'refresh_token': 'refresh',
-      }, driver: 'BaiduNetdisk');
-      expect(baidu['AccessToken'], 'new');
-      expect(baidu.containsKey('access_token'), isFalse);
-      expect(
-        buildOpenListAuthorization(
-          driver: 'QuarkOpen',
-          accessToken: 'a',
-          refreshToken: 'r',
-        )['app_id'],
-        isNull,
-      );
-    },
-  );
+    final baidu = normalizeOpenListAuthorization({
+      'access_token': 'new',
+      'AccessToken': 'old',
+      'refresh_token': 'refresh',
+    }, driver: 'BaiduNetdisk');
+    expect(baidu['AccessToken'], 'new');
+    expect(baidu.containsKey('access_token'), isFalse);
+  });
 
   test('official online API accounts only need a refresh token', () {
     for (final driver in [
@@ -85,15 +72,21 @@ void main() {
     }
   });
 
-  test('imports Quark client fields from the official API callback', () {
+  test('Quark uses Cookie authorization and preserves the root folder', () {
     final value = parseOpenListAuthorization(
-      '{"refresh_token":"refresh","client_uid":"app","client_key":"sign"}',
-      driver: 'QuarkOpen',
+      '{"Cookie":"__pus=old","root_folder_id":"123"}',
+      driver: 'Quark',
     );
-    expect(value['app_id'], 'app');
-    expect(value['sign_key'], 'sign');
-    expect(value.containsKey('client_id'), isFalse);
-    expect(value.containsKey('client_secret'), isFalse);
+    expect(
+      buildOpenListAuthorization(
+        driver: 'Quark',
+        accessToken: '',
+        refreshToken: '',
+        cookie: ' __pus=new; __puus=secret ',
+        authorization: value,
+      ),
+      {'cookie': '__pus=new; __puus=secret', 'root_folder_id': '123'},
+    );
   });
 
   test('edited tokens replace old aliases and retain account settings', () {

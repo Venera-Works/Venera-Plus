@@ -65,10 +65,13 @@ class AppWebview extends StatefulWidget {
     this.onLoadStart,
     this.onLoadStop,
     this.initialScripts = const [],
+    this.userAgent,
     super.key,
   });
 
   final String initialUrl;
+
+  final String? userAgent;
 
   final void Function(String title, InAppWebViewController controller)?
   onTitleChange;
@@ -202,7 +205,10 @@ class _AppWebviewState extends State<AppWebview> {
   Widget createWebviewWithEnvironment(WebViewEnvironment? e) {
     return InAppWebView(
       webViewEnvironment: e,
-      initialSettings: InAppWebViewSettings(isInspectable: true),
+      initialSettings: InAppWebViewSettings(
+        isInspectable: true,
+        userAgent: widget.userAgent,
+      ),
       initialUrlRequest: URLRequest(url: WebUri(widget.initialUrl)),
       initialUserScripts: UnmodifiableListView([
         for (final script in widget.initialScripts)

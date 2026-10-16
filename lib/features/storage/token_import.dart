@@ -2,7 +2,7 @@ import 'dart:convert';
 
 const openListSupportedDrivers = <String>{
   'BaiduNetdisk',
-  'QuarkOpen',
+  'Quark',
   '115 Open',
   '123 Open',
   'Onedrive',
@@ -13,7 +13,6 @@ const openListLoginDrivers = <String, String>{
   '115 Open': '115cloud_go',
   '123 Open': '123cloud_oa',
   'BaiduNetdisk': 'baiduyun_go',
-  'QuarkOpen': 'quarkyun_fn',
   'Onedrive': 'onedrive_pr',
 };
 
@@ -69,7 +68,6 @@ Map<String, dynamic>? parseOpenListLoginCallback(
   // Reauthorization with official parameters replaces any previous app keys.
   final clientKeys = switch (driver) {
     '123 Open' => ['ClientID', 'ClientSecret'],
-    'QuarkOpen' => ['app_id', 'sign_key'],
     _ => ['client_id', 'client_secret'],
   };
   for (final key in clientKeys) {
@@ -96,8 +94,15 @@ Map<String, dynamic> buildOpenListAuthorization({
   required String driver,
   required String accessToken,
   required String refreshToken,
+  String cookie = '',
   Map<String, dynamic> authorization = const {},
 }) {
+  if (driver == 'Quark') {
+    return normalizeOpenListAuthorization({
+      ...authorization,
+      'cookie': cookie.trim(),
+    }, driver: driver);
+  }
   final value = <String, dynamic>{...authorization}
     ..remove('AccessToken')
     ..remove('RefreshToken');
@@ -118,6 +123,10 @@ Map<String, dynamic> normalizeOpenListAuthorization(
     throw ArgumentError.value(driver, 'driver', 'Unsupported OpenList driver');
   }
   final value = <String, dynamic>{...source};
+  if (driver == 'Quark') {
+    _move(value, 'Cookie', 'cookie');
+    return value;
+  }
   final callbackDriver = value.remove('driver') ?? value['driver_txt'];
   if (callbackDriver is String && callbackDriver.isNotEmpty) {
     value['driver_txt'] = callbackDriver;
@@ -128,12 +137,6 @@ Map<String, dynamic> normalizeOpenListAuthorization(
   _move(value, 'ClientSecret', 'client_secret');
   _move(value, 'client_uid', 'client_id');
   _move(value, 'client_key', 'client_secret');
-  if (driver == 'QuarkOpen') {
-    _move(value, 'AppID', 'app_id');
-    _move(value, 'SignKey', 'sign_key');
-    _move(value, 'client_id', 'app_id');
-    _move(value, 'client_secret', 'sign_key');
-  }
   if (driver != '115 Open') value['use_online_api'] ??= true;
   if (driver == '123 Open') {
     _move(value, 'access_token', 'AccessToken');

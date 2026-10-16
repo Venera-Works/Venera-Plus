@@ -61,6 +61,36 @@ void main() {
   });
 
   test(
+    'replacing QuarkOpen keeps account references and requires the same provider',
+    () async {
+      const previous = StorageAccount(
+        id: 'quark',
+        backend: StorageBackend.openlist,
+        driver: 'QuarkOpen',
+        name: 'Quark',
+        authorization: {'refresh_token': 'old'},
+      );
+      await storage.save(previous);
+      appdata.settings['syncRemoteLocation'] = {
+        'accountId': previous.id,
+        'directory': '/Comics/',
+      };
+      final replacement = StorageAccount(
+        id: previous.id,
+        backend: previous.backend,
+        driver: 'Quark',
+        name: previous.name,
+        authorization: const {'cookie': '__pus=session; __puus=secret'},
+      );
+      await storage.save(replacement);
+      expect(storage.accounts.single.toJson(), replacement.toJson());
+      expect(appdata.settings['syncRemoteLocation']['accountId'], previous.id);
+      await expectLater(storage.save(previous), throwsArgumentError);
+      expect(storage.accounts.single.driver, 'Quark');
+    },
+  );
+
+  test(
     'legacy WebDAV locations reuse accounts and preserve remote paths',
     () async {
       const account = StorageAccount(

@@ -210,7 +210,7 @@ void main() {
     expect(accounts.saved!.authorization['ClientSecret'], 'secret');
   });
 
-  testWidgets('Quark saves official tokens without application keys', (
+  testWidgets('legacy Quark accounts switch to Cookie login on save', (
     tester,
   ) async {
     final accounts = _Accounts()
@@ -219,7 +219,7 @@ void main() {
         backend: StorageBackend.openlist,
         driver: 'QuarkOpen',
         name: 'Quark account',
-        authorization: {'refresh_token': 'refresh'},
+        authorization: {'refresh_token': 'refresh', 'root_folder_id': '123'},
       );
     await tester.pumpWidget(
       MaterialApp(home: StorageAccountsPage(accounts: accounts)),
@@ -229,14 +229,28 @@ void main() {
     expect(find.text('Log in and authorize'), findsOneWidget);
     expect(find.text('AppID'), findsNothing);
     expect(find.text('SignKey'), findsNothing);
+    expect(find.text('Refresh Token'), findsNothing);
+    expect(find.text('Import token JSON or callback'), findsNothing);
+    expect(find.text('Cookie'), findsOneWidget);
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+    expect(find.text('Cookie is required'), findsOneWidget);
+    expect(accounts.saved!.driver, 'QuarkOpen');
+
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Cookie'),
+      ' __pus=session; __puus=secret ',
+    );
     await tester.tap(find.text('Save'));
     await tester.pumpAndSettle();
 
     expect(find.byType(AlertDialog), findsNothing);
-    expect(accounts.saved!.authorization['refresh_token'], 'refresh');
-    expect(accounts.saved!.authorization['use_online_api'], isTrue);
-    expect(accounts.saved!.authorization['app_id'], isNull);
-    expect(accounts.saved!.authorization['sign_key'], isNull);
+    expect(accounts.saved!.id, 'quark');
+    expect(accounts.saved!.driver, 'Quark');
+    expect(accounts.saved!.authorization, {
+      'cookie': '__pus=session; __puus=secret',
+      'root_folder_id': '123',
+    });
     expect(accounts.rpc.testCalls, 1);
   });
 

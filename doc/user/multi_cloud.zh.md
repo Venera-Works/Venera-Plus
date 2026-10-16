@@ -4,11 +4,15 @@ VeneraPlus 可通过内置 OpenList 内核连接百度网盘、夸克网盘、11
 
 内置内核由 Venera-OpenList-Core 独立构建并随应用打包；应用只使用已发布的固定内核版本，不会在设备上下载或运行 OpenList 服务。
 
-在“存储与同步”中先添加账号。百度网盘、夸克网盘、115 网盘、123 云盘和 OneDrive 可点击“登录并授权”，在应用的 WebView 中完成官方授权并自动填入令牌，然后保存并测试连接。授权及在线令牌刷新继续使用 OpenList 官方 API；应用不会把 OpenList HTTP 服务暴露到网络。
+在“存储与同步”中先添加账号。百度网盘、115 网盘、123 云盘和 OneDrive 可点击“登录并授权”，在应用的 WebView 中完成官方授权并自动填入令牌，然后保存并测试连接。授权及在线令牌刷新继续使用 OpenList 官方 API；应用不会把 OpenList HTTP 服务暴露到网络。
 
-自动授权统一使用“OpenList 提供的参数”，分别对应 115 验证登录（OAuth App）、123 验证登录（OAuth官方）、百度验证登录（OAuth App）、夸克验证登录（OAuth App）和 OneDrive 个人版本（OAuth App）。无需填写客户端 ID、应用密钥或夸克的 AppID、SignKey。
+令牌自动授权统一使用“OpenList 提供的参数”，分别对应 115 验证登录（OAuth App）、123 验证登录（OAuth官方）、百度验证登录（OAuth App）和 OneDrive 个人版本（OAuth App）。无需填写客户端 ID 或应用密钥。
 
-Google Drive 仍使用 [OpenList Token 页面](https://api.oplist.org/) 手动获取授权。也可为各网盘直接填写令牌，或展开“导入 Token JSON 或回调”批量填充；导入后仍可修改 Token。百度、夸克、123、OneDrive 和 Google Drive 需要刷新令牌，115 需要访问令牌与刷新令牌。
+夸克改用 `Quark` Cookie 驱动。点击“登录并授权”后在应用 WebView 中登录夸克官网，应用确认能读取网盘目录后，通过原生 Cookie 存储提取包括 HttpOnly 在内的完整 Cookie 并回填；也可手动填写 Cookie。保存后测试连接。已有 `QuarkOpen` 账号需重新登录，保存时保留账号标识及已配置的目录，不再使用旧令牌、AppID 或 SignKey。
+
+此功能需配套包含 `Quark` 驱动的新内核。当前锁定的 `core-v0.1.0-beta.4` 仍仅包含 `QuarkOpen`；需先更新独立内核并发布，再更新应用锁文件。
+
+Google Drive 仍使用 [OpenList Token 页面](https://api.oplist.org/) 手动获取授权。使用令牌的网盘也可直接填写令牌，或展开“导入 Token JSON 或回调”批量填充；导入后仍可修改 Token。百度、123、OneDrive 和 Google Drive 需要刷新令牌，115 需要访问令牌与刷新令牌。
 
 “设置 → 存储与同步”按用途集中展示网盘账号、在线漫画库、应用数据同步和漫画归档备份，并显示当前账号、目录及同步状态。账号只需添加一次，各用途共用授权；选择账号时可直接添加新账号，完成后继续当前配置。首次成功连接账号后，也可直接选择用途。
 

@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'token_import.dart';
 import 'openlist_login.dart';
+import 'quark_login.dart';
 
 enum StorageAccountPurpose { library, sync, archive }
 
@@ -188,9 +189,13 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
     text: widget.initial?.name,
   );
   final TextEditingController _token = TextEditingController();
-  late Map<String, dynamic> _authorization = {
-    ...?widget.initial?.authorization,
-  };
+  late Map<String, dynamic> _authorization =
+      widget.initial?.driver == 'QuarkOpen'
+      ? {
+          'root_folder_id':
+              widget.initial?.authorization['root_folder_id'] ?? '0',
+        }
+      : {...?widget.initial?.authorization};
   late final TextEditingController _url = TextEditingController(
     text: widget.initial?.authorization['url'] as String?,
   );
@@ -206,8 +211,13 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
   late final TextEditingController _refreshToken = TextEditingController(
     text: _tokenValue('refresh_token', 'RefreshToken'),
   );
+  late final TextEditingController _cookie = TextEditingController(
+    text: widget.initial?.authorization['cookie'] as String?,
+  );
   late String _driver = widget.initial?.backend == StorageBackend.webdav
       ? 'WebDAV'
+      : widget.initial?.driver == 'QuarkOpen'
+      ? 'Quark'
       : widget.initial?.driver ?? 'BaiduNetdisk';
   String? _error;
   bool _loggingIn = false;
@@ -220,13 +230,15 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
     _password.dispose();
     _accessToken.dispose();
     _refreshToken.dispose();
+    _cookie.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final webdav = _driver == 'WebDAV';
-    final hasLogin = openListLoginDrivers.containsKey(_driver);
+    final quark = _driver == 'Quark';
+    final hasLogin = quark || openListLoginDrivers.containsKey(_driver);
     return AlertDialog(
       title: Text('Cloud Storage Account'.tl),
       content: SingleChildScrollView(
@@ -273,52 +285,68 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
                   label: Text('Log in and authorize'.tl),
                 ),
                 Text(
-                  'Use OpenList authorization to fill tokens automatically.'.tl,
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ],
-              if (_driver == '115 Open')
-                TextField(
-                  controller: _accessToken,
-                  decoration: InputDecoration(labelText: 'Access Token'.tl),
-                ),
-              TextField(
-                controller: _refreshToken,
-                onChanged: _driver == '115 Open'
-                    ? null
-                    : (_) => _accessToken.clear(),
-                decoration: InputDecoration(labelText: 'Refresh Token'.tl),
-              ),
-              if (!hasLogin) ...[
-                Text(
-                  'Use parameters provided by OpenList on the token page, then fill in the required tokens.'
+                  (quark
+                          ? 'Log in to Quark to fill the Cookie automatically.'
+                          : 'Use OpenList authorization to fill tokens automatically.')
                       .tl,
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
-                TextButton.icon(
-                  onPressed: () => launchUrl(
-                    Uri.parse('https://api.oplist.org/'),
-                    mode: LaunchMode.externalApplication,
+              ],
+              if (quark)
+                TextField(
+                  controller: _cookie,
+                  obscureText: true,
+                  autocorrect: false,
+                  enableSuggestions: false,
+                  decoration: InputDecoration(labelText: 'Cookie'.tl),
+                )
+              else ...[
+                if (_driver == '115 Open')
+                  TextField(
+                    controller: _accessToken,
+                    decoration: InputDecoration(labelText: 'Access Token'.tl),
                   ),
-                  icon: const Icon(Icons.open_in_new),
-                  label: Text('Open OpenList token page'.tl),
+                TextField(
+                  controller: _refreshToken,
+                  onChanged: _driver == '115 Open'
+                      ? null
+                      : (_) => _accessToken.clear(),
+                  decoration: InputDecoration(labelText: 'Refresh Token'.tl),
+                ),
+                if (!hasLogin) ...[
+                  Text(
+                    'Use parameters provided by OpenList on the token page, then fill in the required tokens.'
+                        .tl,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  TextButton.icon(
+                    onPressed: () => launchUrl(
+                      Uri.parse('https://api.oplist.org/'),
+                      mode: LaunchMode.externalApplication,
+                    ),
+                    icon: const Icon(Icons.open_in_new),
+                    label: Text('Open OpenList token page'.tl),
+                  ),
+                ],
+                ExpansionTile(
+                  title: Text('Import token JSON or callback'.tl),
+                  children: [
+                    TextField(
+                      controller: _token,
+                      minLines: 3,
+                      maxLines: 6,
+                      decoration: InputDecoration(
+                        labelText: 'Token JSON or callback'.tl,
+                        hintText: 'Paste the token JSON from api.oplist.org'.tl,
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: _importToken,
+                      child: Text('Import'.tl),
+                    ),
+                  ],
                 ),
               ],
-              ExpansionTile(
-                title: Text('Import token JSON or callback'.tl),
-                children: [
-                  TextField(
-                    controller: _token,
-                    minLines: 3,
-                    maxLines: 6,
-                    decoration: InputDecoration(
-                      labelText: 'Token JSON or callback'.tl,
-                      hintText: 'Paste the token JSON from api.oplist.org'.tl,
-                    ),
-                  ),
-                  TextButton(onPressed: _importToken, child: Text('Import'.tl)),
-                ],
-              ),
               if (_error != null)
                 Text(
                   _error!.tl,
@@ -338,7 +366,11 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
               ? null
               : () {
                   try {
-                    if (!webdav) {
+                    if (quark) {
+                      if (_cookie.text.trim().isEmpty) {
+                        throw const FormatException('Cookie is required');
+                      }
+                    } else if (!webdav) {
                       final clientId =
                           _authorization['ClientID'] ??
                           _authorization['client_id'];
@@ -372,6 +404,7 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
                             driver: _driver,
                             accessToken: _accessToken.text,
                             refreshToken: _refreshToken.text,
+                            cookie: _cookie.text,
                             authorization: _authorization,
                           );
                     Navigator.pop(
@@ -418,7 +451,9 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
       _error = null;
     });
     try {
-      final authorization = await showOpenListLogin(context, driver: _driver);
+      final authorization = _driver == 'Quark'
+          ? await showQuarkLogin(context)
+          : await showOpenListLogin(context, driver: _driver);
       if (mounted && authorization != null) {
         _applyAuthorization({..._authorization, ...authorization});
       }
@@ -436,6 +471,7 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
   void _applyAuthorization(Map<String, dynamic> authorization) {
     setState(() {
       _authorization = authorization;
+      _cookie.text = authorization['cookie'] as String? ?? '';
       _accessToken.text =
           authorization['access_token'] as String? ??
           authorization['AccessToken'] as String? ??

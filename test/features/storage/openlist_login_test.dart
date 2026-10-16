@@ -8,7 +8,6 @@ void main() {
     '115 Open': ('115cloud', '115cloud_go'),
     '123 Open': ('123cloud', '123cloud_oa'),
     'BaiduNetdisk': ('baiduyun', 'baiduyun_go'),
-    'QuarkOpen': ('quarkyun', 'quarkyun_fn'),
     'Onedrive': ('onedrive', 'onedrive_pr'),
   };
 
@@ -48,10 +47,6 @@ void main() {
       } else {
         expect(value['refresh_token'], 'refresh');
       }
-      if (provider.key == 'QuarkOpen') {
-        expect(value['app_id'], isEmpty);
-        expect(value['sign_key'], isEmpty);
-      }
       if (provider.key != '115 Open') {
         expect(value['use_online_api'], isTrue);
         expect(
@@ -83,7 +78,7 @@ void main() {
       expect(parseOpenListLoginCallback(url, driver: 'BaiduNetdisk'), isNull);
     }
     expect(
-      () => parseOpenListLoginCallback(callback, driver: 'QuarkOpen'),
+      () => parseOpenListLoginCallback(callback, driver: '123 Open'),
       throwsFormatException,
     );
   });
