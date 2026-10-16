@@ -113,7 +113,7 @@ Map<String, dynamic> buildOpenListAuthorization({
   }, driver: driver);
 }
 
-/// Maps api.oplist.org callback fields and pasted token JSON to OpenList's
+/// Maps api.oplist.org callback fields and saved authorization to OpenList's
 /// actual driver addition field names, with a single canonical token per key.
 Map<String, dynamic> normalizeOpenListAuthorization(
   Map<String, dynamic> source, {
@@ -172,9 +172,7 @@ Map<String, dynamic> _decodePayload(String value) {
     );
     if (result is Map) return result.map((key, item) => MapEntry('$key', item));
   } catch (_) {}
-  throw const FormatException(
-    'Paste the OpenList token JSON or callback payload',
-  );
+  throw const FormatException('Invalid authorization response');
 }
 
 void _move(Map<String, dynamic> value, String source, String destination) {

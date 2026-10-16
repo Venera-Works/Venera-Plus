@@ -188,7 +188,6 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
   late final TextEditingController _name = TextEditingController(
     text: widget.initial?.name,
   );
-  final TextEditingController _token = TextEditingController();
   late Map<String, dynamic> _authorization =
       widget.initial?.driver == 'QuarkOpen'
       ? {
@@ -224,7 +223,6 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
   @override
   void dispose() {
     _name.dispose();
-    _token.dispose();
     _url.dispose();
     _user.dispose();
     _password.dispose();
@@ -279,18 +277,19 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
               ),
             ] else ...[
               if (hasLogin) ...[
-                TextButton.icon(
-                  onPressed: _loggingIn ? null : _login,
-                  icon: const Icon(Icons.login),
-                  label: Text('Log in and authorize'.tl),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size(0, 48),
+                    ),
+                    onPressed: _loggingIn ? null : _login,
+                    icon: const Icon(Icons.login),
+                    label: Text('Log in and authorize'.tl),
+                  ),
                 ),
-                Text(
-                  (quark
-                          ? 'Log in to Quark to fill the Cookie automatically.'
-                          : 'Use OpenList authorization to fill tokens automatically.')
-                      .tl,
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
+                const SizedBox(height: 16),
               ],
               if (quark)
                 TextField(
@@ -328,24 +327,6 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
                     label: Text('Open OpenList token page'.tl),
                   ),
                 ],
-                ExpansionTile(
-                  title: Text('Import token JSON or callback'.tl),
-                  children: [
-                    TextField(
-                      controller: _token,
-                      minLines: 3,
-                      maxLines: 6,
-                      decoration: InputDecoration(
-                        labelText: 'Token JSON or callback'.tl,
-                        hintText: 'Paste the token JSON from api.oplist.org'.tl,
-                      ),
-                    ),
-                    TextButton(
-                      onPressed: _importToken,
-                      child: Text('Import'.tl),
-                    ),
-                  ],
-                ),
               ],
               if (_error != null)
                 Text(
@@ -433,18 +414,6 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
     );
   }
 
-  void _importToken() {
-    try {
-      final authorization = parseOpenListAuthorization(
-        _token.text,
-        driver: _driver,
-      );
-      _applyAuthorization(authorization);
-    } on FormatException catch (error) {
-      setState(() => _error = error.message);
-    }
-  }
-
   Future<void> _login() async {
     setState(() {
       _loggingIn = true;
@@ -480,7 +449,6 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
           authorization['refresh_token'] as String? ??
           authorization['RefreshToken'] as String? ??
           '';
-      _token.clear();
       _error = null;
     });
   }

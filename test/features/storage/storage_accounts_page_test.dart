@@ -126,7 +126,7 @@ void main() {
     expect(find.text('AppID'), findsNothing);
     expect(find.text('Log in and authorize'), findsOneWidget);
     expect(find.text('Open OpenList token page'), findsNothing);
-    expect(find.text('Token JSON or callback'), findsNothing);
+    expect(find.text('Import token JSON or callback'), findsNothing);
     await tester.tap(find.text('Save'));
     await tester.pumpAndSettle();
     expect(find.text('Refresh Token is required'), findsOneWidget);
@@ -142,27 +142,28 @@ void main() {
     expect(accounts.saved!.authorization['use_online_api'], isTrue);
   });
 
-  testWidgets('import fills fields and later token edits take precedence', (
+  testWidgets('manual token edits replace old tokens and preserve settings', (
     tester,
   ) async {
-    final accounts = _Accounts();
+    final accounts = _Accounts()
+      ..saved = const StorageAccount(
+        id: 'baidu',
+        backend: StorageBackend.openlist,
+        driver: 'BaiduNetdisk',
+        name: 'BaiduNetdisk',
+        authorization: {
+          'refresh_token': 'saved-refresh',
+          'AccessToken': 'old-access',
+          'root_folder_path': '/Comics',
+        },
+      );
     await tester.pumpWidget(
       MaterialApp(home: StorageAccountsPage(accounts: accounts)),
     );
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Import token JSON or callback'));
-    await tester.pumpAndSettle();
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Token JSON or callback'),
-      '{"refresh_token":"imported","AccessToken":"old-access",'
-      '"root_folder_path":"/Comics"}',
-    );
-    await tester.ensureVisible(find.text('Import'));
-    await tester.tap(find.text('Import'));
+    await tester.tap(find.text('BaiduNetdisk'));
     await tester.pumpAndSettle();
     final refresh = find.widgetWithText(TextField, 'Refresh Token');
-    expect(tester.widget<TextField>(refresh).controller!.text, 'imported');
+    expect(tester.widget<TextField>(refresh).controller!.text, 'saved-refresh');
     await tester.ensureVisible(refresh);
     await tester.enterText(refresh, 'edited');
     await tester.tap(find.text('Save'));
