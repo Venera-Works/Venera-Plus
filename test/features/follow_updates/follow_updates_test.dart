@@ -28,46 +28,43 @@ void main() {
     ComicSourceManager().remove(sourceKey);
   });
 
-  test('updateComic does not wait after final retry failure', () async {
-    var attempts = 0;
-    final retryDelays = <Duration>[];
-    final source = _source(
-      sourceKey,
-      loadComicInfo: (id) async {
-        attempts++;
-        throw 'network unavailable';
+  for (final throwsError in [false, true]) {
+    test(
+      'updateComic does not repeat a failed source load ($throwsError)',
+      () async {
+        var attempts = 0;
+        final source = _source(
+          sourceKey,
+          loadComicInfo: (id) async {
+            attempts++;
+            if (throwsError) throw 'network unavailable';
+            return const Res.error('network unavailable');
+          },
+        );
+        ComicSourceManager().add(source);
+
+        final item = FavoriteItemWithUpdateInfo(
+          FavoriteItem(
+            id: 'comic-1',
+            name: 'Comic 1',
+            coverPath: 'cover.jpg',
+            author: 'Author',
+            type: ComicType.fromKey(sourceKey),
+            tags: const [],
+          ),
+          null,
+          false,
+          null,
+        );
+
+        final result = await updateComic(item, 'folder');
+
+        expect(result.updated, isFalse);
+        expect(result.errorMessage, contains('network unavailable'));
+        expect(attempts, 1);
       },
     );
-    ComicSourceManager().add(source);
-
-    final item = FavoriteItemWithUpdateInfo(
-      FavoriteItem(
-        id: 'comic-1',
-        name: 'Comic 1',
-        coverPath: 'cover.jpg',
-        author: 'Author',
-        type: ComicType.fromKey(sourceKey),
-        tags: const [],
-      ),
-      null,
-      false,
-      null,
-    );
-
-    final result = await updateComic(
-      item,
-      'folder',
-      retryDelay: (duration) {
-        retryDelays.add(duration);
-        return Future.value();
-      },
-    );
-
-    expect(result.updated, isFalse);
-    expect(result.errorMessage, contains('network unavailable'));
-    expect(attempts, 3);
-    expect(retryDelays, const [Duration(seconds: 2), Duration(seconds: 2)]);
-  });
+  }
 
   test(
     'updateComic for local comic returns immediately without network request',
@@ -109,18 +106,9 @@ void main() {
         null,
       );
 
-      var delayCalled = false;
-      final result = await updateComic(
-        missingSourceItem,
-        'folder',
-        retryDelay: (_) {
-          delayCalled = true;
-          return Future.value();
-        },
-      );
+      final result = await updateComic(missingSourceItem, 'folder');
       expect(result.updated, isFalse);
       expect(result.errorMessage, contains('Comic source not found'));
-      expect(delayCalled, isFalse);
     },
   );
 
@@ -219,6 +207,67 @@ void main() {
             } finally {
               manager.removeListener(listener);
             }
+          });
+        },
+      );
+
+      test(
+        'mixed folder refresh starts other sources while the first source is pending',
+        () async {
+          const otherSourceKey = 'follow_updates_test_other_source';
+          final slowResponse = Completer<void>();
+          final otherStarted = Completer<void>();
+          final requested = <(String, String)>[];
+          ComicSourceManager().add(
+            _source(
+              sourceKey,
+              loadComicInfo: (id) async {
+                requested.add((sourceKey, id));
+                await slowResponse.future;
+                return Res(_details(sourceKey, id));
+              },
+            ),
+          );
+          ComicSourceManager().add(
+            _source(
+              otherSourceKey,
+              loadComicInfo: (id) async {
+                requested.add((otherSourceKey, id));
+                otherStarted.complete();
+                return Res(_details(otherSourceKey, id));
+              },
+            ),
+          );
+          addTearDown(() => ComicSourceManager().remove(otherSourceKey));
+          await _withLiveFavorites((manager) async {
+            for (var index = 0; index < 5; index++) {
+              manager.addComic(
+                '在读',
+                _tracked(sourceKey, 'slow-$index'),
+                null,
+                _oldTime,
+              );
+            }
+            manager.addComic(
+              '在读',
+              _tracked(otherSourceKey, 'other'),
+              null,
+              _oldTime,
+            );
+            final refreshing = updateFolder('在读', true).toList();
+            try {
+              await otherStarted.future.timeout(const Duration(seconds: 3));
+              expect(requested, contains((otherSourceKey, 'other')));
+            } finally {
+              slowResponse.complete();
+              await refreshing;
+            }
+            final progress = await refreshing;
+            expect(requested, hasLength(6));
+            expect(progress.last.current, 6);
+            expect(progress.last.updated, 6);
+            expect(progress.last.errors, 0);
+            expect(isFolderUpdating('在读'), isFalse);
           });
         },
       );

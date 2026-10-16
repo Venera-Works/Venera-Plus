@@ -5,11 +5,10 @@ import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/log.dart';
-import 'package:venera_plus/foundation/throttled_task_runner.dart';
 import 'package:venera_plus/network/cache.dart';
+import 'package:venera_plus/network/request_scope.dart';
 
-const _updateConcurrency = 5;
-const _updateThrottleEvery = 5;
+import 'follow_update_queue.dart';
 
 class ComicUpdateResult {
   final bool updated;
@@ -38,15 +37,12 @@ final _activeComics =
 
 /// Loads fresh details once across overlapping local, automatic and remote
 /// refreshes. Only memberships existing at request start are eligible for writes.
-Future<ComicRefreshResult> refreshComic(
-  Comic comic, {
-  Future<void> Function(Duration duration)? retryDelay,
-}) {
+Future<ComicRefreshResult> refreshComic(Comic comic) {
   final manager = LocalFavoritesManager();
   final key = (manager, manager.generation, comic.sourceKey, comic.id);
   final active = _activeComics[key];
   if (active != null) return active;
-  final future = _refreshComic(comic, manager, retryDelay);
+  final future = _refreshComic(comic, manager);
   _activeComics[key] = future;
   return future.whenComplete(() {
     if (identical(_activeComics[key], future)) _activeComics.remove(key);
@@ -56,7 +52,6 @@ Future<ComicRefreshResult> refreshComic(
 Future<ComicRefreshResult> _refreshComic(
   Comic comic,
   LocalFavoritesManager manager,
-  Future<void> Function(Duration duration)? retryDelay,
 ) async {
   final type = comic is FavoriteItem
       ? comic.type
@@ -78,19 +73,14 @@ Future<ComicRefreshResult> _refreshComic(
   final folders = manager.isCurrentGeneration(generation)
       ? manager.find(comic.id, type)
       : <String>[];
-  final waitRetry = retryDelay ?? Future<void>.delayed;
-  ComicDetails? details;
-  for (var attempt = 0; attempt < 3; attempt++) {
-    try {
-      details = (await loader(comic.id)).data;
-      break;
-    } catch (e, s) {
-      Log.error('Check Updates', e, s);
-      if (attempt == 2) return ComicRefreshResult(false, e.toString());
-      await waitRetry(const Duration(seconds: 2));
-    }
+  final ComicDetails info;
+  try {
+    // Source loaders already handle transient read failures.
+    info = (await loader(comic.id)).data;
+  } catch (e, s) {
+    Log.error('Check Updates', e, s);
+    return ComicRefreshResult(false, e.toString());
   }
-  final info = details!;
   final tags = <String>[];
   for (final entry in info.tags.entries) {
     if (const ['author', 'artist', 'time'].contains(entry.key.toLowerCase())) {
@@ -174,9 +164,8 @@ Future<ComicRefreshResult> _refreshComic(
 
 Future<ComicUpdateResult> updateComic(
   FavoriteItemWithUpdateInfo comic,
-  String folder, {
-  Future<void> Function(Duration duration)? retryDelay,
-}) async {
+  String folder,
+) async {
   final manager = LocalFavoritesManager();
   if (manager.isCurrentGeneration(manager.generation) &&
       (!manager.existsFolder(folder) ||
@@ -186,7 +175,7 @@ Future<ComicUpdateResult> updateComic(
       'Favorites changed during refresh. Refresh again.',
     );
   }
-  return refreshComic(comic, retryDelay: retryDelay);
+  return refreshComic(comic);
 }
 
 class UpdateProgress {
@@ -294,6 +283,7 @@ Future<void> _runFolderUpdate(
   _FolderRefresh stream,
   void Function() onFinished,
 ) async {
+  final scope = RequestScope();
   try {
     if (!manager.isCurrentGeneration(generation)) {
       throw StateError('Favorites changed during refresh. Refresh again.');
@@ -317,10 +307,10 @@ Future<void> _runFolderUpdate(
     var errors = 0;
     var updated = 0;
     stream.add(UpdateProgress(pending.length, 0, 0, 0));
-    await runThrottledTasks(
+    await runFollowUpdateTasks(
       pending,
-      concurrency: _updateConcurrency,
-      throttleEvery: _updateThrottleEvery,
+      sourceKey: (comic) => comic.sourceKey,
+      scope: scope,
       run: (comic) async {
         final result = manager.isCurrentGeneration(generation)
             ? await refreshComic(comic)
@@ -346,6 +336,7 @@ Future<void> _runFolderUpdate(
   } catch (e, s) {
     stream.addError(e, s);
   } finally {
+    scope.dispose();
     onFinished();
     stream.close();
   }
