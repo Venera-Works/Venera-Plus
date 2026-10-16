@@ -564,7 +564,7 @@ jobs:
             [[ -s "$file" ]] || { echo "构建产物为空：$file" >&2; exit 1; }
           done
           for deb in "${debs[@]}"; do
-            dpkg-deb -c "$deb" | grep -q 'libvenera_openlist\.so$' || { echo "DEB 未包含 OpenList 内核：$deb" >&2; exit 1; }
+            dpkg-deb -c "$deb" | grep 'libvenera_openlist\.so$' > /dev/null || { echo "DEB 未包含 OpenList 内核：$deb" >&2; exit 1; }
           done
       - name: sccache 统计
         if: ${{ always() && steps.sccache.outcome == 'success' }}
@@ -680,7 +680,7 @@ jobs:
             [[ -s "$file" ]] || { echo "构建产物为空：$file" >&2; exit 1; }
           done
           for deb in "${debs[@]}"; do
-            dpkg-deb -c "$deb" | grep -q 'libvenera_openlist\.so$' || { echo "DEB 未包含 OpenList 内核：$deb" >&2; exit 1; }
+            dpkg-deb -c "$deb" | grep 'libvenera_openlist\.so$' > /dev/null || { echo "DEB 未包含 OpenList 内核：$deb" >&2; exit 1; }
           done
       - name: sccache 统计
         if: ${{ always() && steps.sccache.outcome == 'success' }}
