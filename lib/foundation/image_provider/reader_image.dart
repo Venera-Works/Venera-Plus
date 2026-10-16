@@ -59,6 +59,8 @@ class ReaderImageProvider
     this.target,
   });
 
+  static final _diskCacheKeys = Expando<String>();
+
   final String imageKey;
 
   final String? sourceKey;
@@ -109,6 +111,7 @@ class ReaderImageProvider
           ),
         );
         if (event.imageBytes != null) {
+          _diskCacheKeys[this] = event.diskCacheKey;
           imageBytes = event.imageBytes;
           break;
         }
@@ -181,11 +184,13 @@ class ReaderImageProvider
       : "$imageKey@$sourceKey@$cid@$eid@$enableResize";
 
   @override
-  String get diskCacheKey => ImageDownloader.getComicImageCacheKey(
-    imageKey,
-    sourceKey,
-    cid,
-    eid,
-    target: target,
-  );
+  String get diskCacheKey =>
+      _diskCacheKeys[this] ??
+      ImageDownloader.getComicImageCacheKey(
+        imageKey,
+        sourceKey,
+        cid,
+        eid,
+        target: target,
+      );
 }
