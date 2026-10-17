@@ -5,7 +5,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:photo_view/photo_view.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:image/image.dart' as img;
 import 'package:venera_plus/components/gesture.dart';
@@ -16,6 +15,7 @@ import 'package:venera_plus/features/favorites/favorites_manager.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
+import 'package:venera_plus/features/reader/comic_image.dart';
 import 'package:venera_plus/features/reader/reader_page.dart';
 import 'package:venera_plus/foundation/image_provider/reader_image.dart';
 import 'package:venera_plus/features/sync/data_sync.dart';
@@ -989,13 +989,13 @@ Future<void> _waitForReader(
 }
 
 Finder _visibleReaderPage(int page) {
-  final galleryPage = find.byWidgetPredicate((widget) {
-    if (widget is! PhotoView) return false;
-    final provider = widget.imageProvider;
+  final comicImage = find.byWidgetPredicate((widget) {
+    if (widget is! ComicImage) return false;
+    final provider = widget.image;
     return provider is ReaderImageProvider && provider.page == page;
   });
   return find.descendant(
-    of: galleryPage,
+    of: comicImage,
     matching: find.byWidgetPredicate(
       (widget) => widget is RawImage && widget.image != null,
     ),
