@@ -60,8 +60,9 @@ void main() {
     CacheManager.debugDisableInitialScan = true;
   });
 
-  tearDown(() {
+  tearDown(() async {
     ImageDownloader.cancelAllLoadingImages();
+    await ImageDownloader.debugFlushImageCacheWrites();
     ImageDownloader.debugResetSourceImageLoading();
     CacheManager.resetForTesting();
     directory.deleteSync(recursive: true);
@@ -118,6 +119,7 @@ void main() {
       );
 
       expect(await _resolveImage(provider()), isNull);
+      await ImageDownloader.debugFlushImageCacheWrites();
       ImageDownloader.cancelAllLoadingImages();
       CacheManager.resetForTesting();
       // Include the real startup scan, while retaining only the disk files.
@@ -129,6 +131,80 @@ void main() {
       expect(callbacks.single.destroyCount, 1);
     },
   );
+
+  test('preloaded image reuses source processing when opened', () async {
+    var configs = 0;
+    var downloads = 0;
+    final bytes = base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==',
+    );
+    ImageDownloader.configureSourceImageLoading(
+      comicImageLoadingConfig: (source, image, comic, chapter, {target}) {
+        configs++;
+        return {'onResponse': _ResponseCallback(bytes)};
+      },
+    );
+    ImageDownloader.debugComicImageTransport = (url, config) {
+      downloads++;
+      return Uint8List.fromList([0]);
+    };
+    await ImageDownloader.preloadComicImage(
+      'preloaded',
+      'source',
+      'comic',
+      'chapter',
+      target: galleryTarget,
+    );
+    expect(
+      await _resolveImage(
+        ReaderImageProvider(
+          'preloaded',
+          'source',
+          'comic',
+          'chapter',
+          1,
+          target: galleryTarget,
+        ),
+      ),
+      isNull,
+    );
+    expect(configs, 1);
+    expect(downloads, 1);
+  });
+
+  test(
+    'cache eviction waits for pending persistence before deleting',
+    () async {
+      const key = 'pending-processed-image';
+      final write = ImageDownloader.cacheProcessedImage(
+        key,
+        Uint8List.fromList([1]),
+      );
+      await ImageDownloader.deleteComicImageCache(key);
+      await write;
+      expect(await CacheManager().findCache(key), isNull);
+    },
+  );
+
+  test('chunked downloads preserve bytes and complete progress', () async {
+    final chunks = List.generate(
+      64,
+      (index) => Uint8List(16384)..fillRange(0, 16384, index),
+    );
+    ImageDownloader.debugComicImageTransport = (url, config) =>
+        Stream.fromIterable(chunks);
+    final events = await ImageDownloader.loadComicImage(
+      'chunked',
+      null,
+      'comic',
+      'chapter',
+      target: galleryTarget,
+    ).toList();
+    final result = events.last;
+    expect(result.currentBytes, 64 * 16384);
+    expect(result.totalBytes, result.currentBytes);
+    expect(result.imageBytes, orderedEquals(chunks.expand((chunk) => chunk)));
+  });
 
   test('reader modes reuse a completed identical image request', () async {
     var requests = 0;

@@ -20,6 +20,7 @@ import 'package:venera_plus/features/reader/chapter_loader.dart';
 import 'package:venera_plus/features/reader/comic_image.dart';
 import 'package:venera_plus/features/reader/gallery_page_plan.dart';
 import 'package:venera_plus/features/reader/gallery_coordinator.dart';
+import 'package:venera_plus/features/reader/image_preloader.dart';
 import 'package:venera_plus/features/reader/reader_page.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/reader/waterfall_flow.dart';
@@ -296,6 +297,9 @@ class GalleryModeState extends State<_GalleryMode>
   int get preCacheCount => appdata.settings["preloadImageCount"];
 
   final _pool = GalleryPhotoViewControllerPool();
+  final _preloader = ReaderImagePreloader();
+  List<ReaderImagePreload> _pendingPreloads = [];
+  bool _preloadScheduled = false;
   String? _lastVisibleStableIdentity;
   bool _isAnimatingVisualPage = false;
   int? _visualAnimationToken;
@@ -552,6 +556,7 @@ class GalleryModeState extends State<_GalleryMode>
     final commandId = _userPagingCommandId;
     if (commandId != null) reader.finishNavigationCommand(commandId);
     _coalescer.reset();
+    _preloader.dispose();
     controller.dispose();
     if (_isAnimatingVisualPage) {
       _isAnimatingVisualPage = false;
@@ -748,34 +753,53 @@ class GalleryModeState extends State<_GalleryMode>
   }
 
   void cache(int startPage) {
-    for (int i = startPage - 1; i <= startPage + preCacheCount; i++) {
-      if (i == startPage ||
-          i <= 0 ||
-          i > totalPages ||
-          isChapterCommentsPage(i)) {
-        continue;
-      }
-      _cachePage(i, i == startPage + 1 || i == startPage - 1);
-    }
+    _pendingPreloads = [
+      ..._cachePage(startPage + 1, true),
+      ..._cachePage(startPage - 1, true),
+      for (var offset = 2; offset <= preCacheCount; offset++)
+        ..._cachePage(startPage + offset, false),
+    ];
+    if (_preloadScheduled) return;
+    _preloadScheduled = true;
+    // Let the visible page resolve its image before starting background work.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _preloadScheduled = false;
+      if (mounted) _preloader.update(_pendingPreloads);
+    });
   }
 
-  void _cachePage(int page, bool shouldPreCache) {
-    if (isChapterCommentsPage(page)) return;
+  Iterable<ReaderImagePreload> _cachePage(int page, bool shouldPreCache) sync* {
+    if (page <= 0 || page > totalPages || isChapterCommentsPage(page)) return;
+    Iterable<int> sourcePages;
     if (isSplitEnabled && _pagePlan != null) {
-      final visualIndex = page - 1;
-      if (visualIndex >= 0 && visualIndex < _pagePlan!.displayPageCount) {
-        final sourceIndex = _pagePlan!.displayPageAt(visualIndex).sourceIndex;
-        shouldPreCache
-            ? _precacheImage(sourceIndex + 1, context)
-            : _preDownloadImage(sourceIndex + 1, context);
-      }
-      return;
+      sourcePages = [_pagePlan!.displayPageAt(page - 1).sourceIndex + 1];
+    } else {
+      final (start, end) = getPageImagesRange(page);
+      sourcePages = [for (var i = start; i < end; i++) i + 1];
     }
-    var (startIndex, endIndex) = getPageImagesRange(page);
-    for (int i = startIndex; i < endIndex; i++) {
-      shouldPreCache
-          ? _precacheImage(i + 1, context)
-          : _preDownloadImage(i + 1, context);
+    for (final sourcePage in sourcePages) {
+      final provider =
+          _createImageProvider(sourcePage, context) as ReaderImageProvider;
+      if (!shouldPreCache && provider.imageKey.startsWith('file://')) continue;
+      yield ReaderImagePreload(
+        key: provider,
+        decode: shouldPreCache,
+        load: shouldPreCache
+            ? () => precacheImage(
+                provider,
+                context,
+                onError: (error, stack) {
+                  Log.warning('Reader preload', '$error\n$stack');
+                },
+              )
+            : () => ImageDownloader.preloadComicImage(
+                provider.imageKey,
+                provider.sourceKey,
+                provider.cid,
+                provider.eid,
+                target: provider.target,
+              ),
+      );
     }
   }
 
@@ -3129,16 +3153,6 @@ ImageProvider _createImageProvider(int page, BuildContext context) {
   var reader = context.reader;
   var imageKey = reader.images![page - 1];
   return _createImageProviderFromKey(imageKey, context, page);
-}
-
-/// [_precacheImage] is used to precache the image for the given page.
-/// The image is cached using the flutter's [precacheImage] method.
-/// The image will be downloaded and decoded into memory.
-void _precacheImage(int page, BuildContext context) {
-  if (page <= 0 || page > context.reader.images!.length) {
-    return;
-  }
-  precacheImage(_createImageProvider(page, context), context);
 }
 
 /// [_preDownloadImage] is used to download the image for the given page.

@@ -1,4 +1,5 @@
-import 'dart:async' show Completer, Future, StreamController, scheduleMicrotask;
+import 'dart:async'
+    show Completer, Future, StreamController, scheduleMicrotask, unawaited;
 import 'dart:io' show FileSystemException;
 import 'dart:convert';
 import 'dart:math';
@@ -160,10 +161,17 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
           buffer,
           getTargetSize: enableResize ? getTargetSize : null,
         );
-        await cacheImageAfterDecoding();
+        unawaited(
+          cacheImageAfterDecoding().catchError((
+            Object error,
+            StackTrace stack,
+          ) {
+            Log.warning('Image cache', '$error\n$stack');
+          }),
+        );
         return codec;
       } catch (e) {
-        await CacheManager().delete(diskCacheKey);
+        await evictDiskCache();
         if (bytes.length < 2 * 1024) {
           // data is too short, it's likely that the data is text, not image
           try {
@@ -198,6 +206,9 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
   /// Persist completed image data only after the decoder accepts it.
   @protected
   Future<void> cacheImageAfterDecoding() async {}
+
+  @protected
+  Future<void> evictDiskCache() => CacheManager().delete(diskCacheKey);
 
   String get key;
 

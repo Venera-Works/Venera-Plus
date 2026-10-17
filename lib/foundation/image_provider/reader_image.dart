@@ -4,10 +4,8 @@ import 'dart:ui' show TargetImageSize;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_qjs/flutter_qjs.dart';
-import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/file_system.dart';
 import 'package:venera_plus/foundation/js_engine.dart';
-import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/network/images.dart';
 import 'base_image_provider.dart';
 import 'reader_image.dart' as image_provider;
@@ -168,10 +166,7 @@ class ReaderImageProvider
           if (event.diskCacheKey != _processedCacheKey) {
             // Keep the source-processed bytes before applying the user's
             // processing script, which still runs on subsequent cache hits.
-            _pendingCacheBytes[this] =
-                appdata.settings['enableCustomImageProcessing'] == true
-                ? Uint8List.fromList(imageBytes!)
-                : imageBytes;
+            _pendingCacheBytes[this] = imageBytes;
           }
           break;
         }
@@ -181,6 +176,8 @@ class ReaderImageProvider
       throw "Error: Empty response body.";
     }
     if (appdata.settings['enableCustomImageProcessing']) {
+      // User scripts may mutate their input; preserve shared/cache bytes.
+      imageBytes = Uint8List.fromList(imageBytes);
       var script = appdata.settings['customImageProcessing'].toString();
       if (!script.contains('function processImage')) {
         return imageBytes;
@@ -243,13 +240,17 @@ class ReaderImageProvider
     final bytes = _pendingCacheBytes[this];
     _pendingCacheBytes[this] = null;
     if (bytes == null) return;
-    try {
-      await CacheManager().writeCache(_processedCacheKey, bytes);
-      _diskCacheKeys[this] = _processedCacheKey;
-    } catch (error, stack) {
-      Log.warning('Reader image cache', '$error\n$stack');
-    }
+    final write = ImageDownloader.cacheProcessedImage(
+      _processedCacheKey,
+      bytes,
+    );
+    _diskCacheKeys[this] = _processedCacheKey;
+    await write;
   }
+
+  @override
+  Future<void> evictDiskCache() =>
+      ImageDownloader.deleteComicImageCache(diskCacheKey);
 
   @override
   String get key {

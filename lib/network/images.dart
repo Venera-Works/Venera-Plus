@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart' show immutable, visibleForTesting;
@@ -9,6 +10,7 @@ import 'package:flutter_qjs/flutter_qjs.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/consts.dart';
 import 'package:venera_plus/foundation/image_processing.dart';
+import 'package:venera_plus/foundation/log.dart';
 
 import 'app_dio.dart';
 
@@ -165,6 +167,38 @@ typedef ComicImageTransport =
     FutureOr<dynamic> Function(String url, Map<String, dynamic> configs);
 
 abstract class ImageDownloader {
+  // Keep accepted bytes available while their disk write is in progress.
+  static final _pendingProcessedImages =
+      <String, ({Uint8List bytes, Future<void> written})>{};
+
+  static Future<void> cacheProcessedImage(String key, Uint8List bytes) {
+    final pending = _pendingProcessedImages[key];
+    if (pending != null) return pending.written;
+    final written = Future<void>(() async {
+      try {
+        await CacheManager().writeCache(key, bytes);
+      } catch (error, stack) {
+        Log.warning('Reader image cache', '$error\n$stack');
+      } finally {
+        _pendingProcessedImages.remove(key);
+      }
+    });
+    _pendingProcessedImages[key] = (bytes: bytes, written: written);
+    return written;
+  }
+
+  static Future<void> deleteComicImageCache(String key) async {
+    await _pendingProcessedImages[key]?.written;
+    await CacheManager().delete(key);
+  }
+
+  @visibleForTesting
+  static Future<void> debugFlushImageCacheWrites() async {
+    await Future.wait(
+      _pendingProcessedImages.values.map((entry) => entry.written),
+    );
+  }
+
   static ThumbnailLoadingConfigResolver? _thumbnailLoadingConfigResolver;
 
   static ThumbnailCoverResolver? _thumbnailCoverResolver;
@@ -454,14 +488,38 @@ abstract class ImageDownloader {
     String eid, {
     ComicImageLoadTarget? target,
   }) async {
-    await for (final _ in loadComicImage(
+    final cacheKey = getComicImageCacheKey(
+      imageKey,
+      sourceKey,
+      cid,
+      eid,
+      target: target,
+    );
+    await for (final progress in loadComicImage(
       imageKey,
       sourceKey,
       cid,
       eid,
       target: target,
     )) {
-      // Consume the shared stream until completion.
+      final bytes = progress.imageBytes;
+      if (bytes == null ||
+          progress.diskCacheKey == null ||
+          progress.diskCacheKey == cacheKey) {
+        continue;
+      }
+      // Accept the encoded image without decoding its full pixel buffer.
+      // Invalid responses remain for the display provider to report and evict.
+      final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
+      try {
+        final descriptor = await ui.ImageDescriptor.encoded(buffer);
+        descriptor.dispose();
+      } catch (_) {
+        continue;
+      } finally {
+        buffer.dispose();
+      }
+      await cacheProcessedImage(cacheKey, bytes);
     }
   }
 
@@ -562,6 +620,16 @@ abstract class ImageDownloader {
       eid,
       target: target,
     );
+    final pending = _pendingProcessedImages[cacheKey];
+    if (pending != null) {
+      yield ImageDownloadProgress(
+        currentBytes: pending.bytes.length,
+        totalBytes: pending.bytes.length,
+        imageBytes: pending.bytes,
+        diskCacheKey: cacheKey,
+      );
+      return;
+    }
     final cache = await CacheManager().findCache(cacheKey);
 
     if (cache != null) {
@@ -620,7 +688,7 @@ abstract class ImageDownloader {
         final cached = requestCacheKey == null
             ? null
             : await CacheManager().findCache(requestCacheKey);
-        var buffer = <int>[];
+        List<int> buffer;
         if (cached != null) {
           buffer = await cached.readAsBytes();
         } else {
@@ -668,13 +736,23 @@ abstract class ImageDownloader {
               expectedBytes = null;
             }
           }
+          final chunks = BytesBuilder(copy: false);
+          final progressClock = Stopwatch()..start();
+          var reportedProgress = false;
           await for (var data in stream) {
-            buffer.addAll(data);
-            yield ImageDownloadProgress(
-              currentBytes: buffer.length,
-              totalBytes: expectedBytes,
-            );
+            chunks.add(data);
+            if (!reportedProgress ||
+                progressClock.elapsedMilliseconds >= 50 ||
+                chunks.length == expectedBytes) {
+              yield ImageDownloadProgress(
+                currentBytes: chunks.length,
+                totalBytes: expectedBytes,
+              );
+              reportedProgress = true;
+              progressClock.reset();
+            }
           }
+          buffer = chunks.takeBytes();
           if (requestCacheKey != null) {
             await CacheManager().writeCache(requestCacheKey, buffer);
           }

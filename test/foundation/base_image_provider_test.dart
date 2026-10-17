@@ -8,14 +8,17 @@ import 'package:venera_plus/foundation/image_provider/base_image_provider.dart';
 import 'package:venera_plus/foundation/log.dart';
 
 class _TestImage extends BaseImageProvider<_TestImage> {
-  _TestImage({this.emptyCount = 1});
+  _TestImage({this.emptyCount = 1, this.cacheWrite});
   final int emptyCount;
+  final Future<void>? cacheWrite;
   int attempts = 0;
   @override
   String get key => 'test-${identityHashCode(hash)}';
   final Object hash = Object();
   @override
   Future<_TestImage> obtainKey(ImageConfiguration configuration) async => this;
+  @override
+  Future<void> cacheImageAfterDecoding() => cacheWrite ?? Future.value();
   @override
   Future<Uint8List> load(chunkEvents, checkStop) async {
     attempts++;
@@ -54,6 +57,17 @@ void main() {
     final provider = _TestImage();
     expect(await resolveImage(provider), isNull);
     expect(provider.attempts, 2);
+  });
+
+  test('first image frame does not wait for cache persistence', () async {
+    final write = Completer<void>();
+    final provider = _TestImage(emptyCount: 0, cacheWrite: write.future);
+    try {
+      expect(await resolveImage(provider), isNull);
+      expect(write.isCompleted, isFalse);
+    } finally {
+      write.complete();
+    }
   });
 
   test('permanently empty bytes stop after three attempts', () async {
