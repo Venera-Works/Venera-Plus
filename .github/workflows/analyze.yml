@@ -5,7 +5,7 @@ on:
   push:
     branches:
       - main
-      - feature/drive_openlist
+      - 'feature/**'
 
 concurrency:
   group: quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
