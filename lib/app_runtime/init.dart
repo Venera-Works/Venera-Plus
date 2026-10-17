@@ -23,6 +23,7 @@ import 'package:venera_plus/features/webdav_library/webdav_library.dart';
 import 'package:venera_plus/foundation/image_provider/cached_image.dart';
 import 'package:venera_plus/foundation/js_engine.dart';
 import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/startup_timing.dart';
 import 'package:venera_plus/network/cookie_jar.dart';
 import 'package:venera_plus/network/proxy.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
@@ -198,37 +199,22 @@ Future<ComicMetaData?> scrapeBangumiMetadataForWebDav(
   return subject == null ? null : _metadataFromBangumiSubject(subject);
 }
 
-Future<void> init() async {
-  await App.init().wait();
-  await appdata.init();
+Future<void> init({bool deferBackgroundTasks = false}) async {
+  await StartupTiming.measure('App paths', App.init);
+  await StartupTiming.measure('Settings', appdata.init);
   final remoteStorage = RemoteStorageAccounts.instance;
-  remoteStorage.configureOpenList(EmbeddedOpenListRpc());
-  try {
-    await remoteStorage.initialize(
-      dataDir: '${App.dataPath}/openlist',
-      proxy: await getProxy(),
-    );
-  } catch (error, stackTrace) {
-    Log.error('OpenList', error, stackTrace);
-  }
-  await RemoteComicLibraryRegistry.migrateLegacyWebDavLibrary();
-  await remoteStorage.migrateLegacyWebDavLocations();
-  _watchRemoteLibraryConfiguration(remoteStorage);
-  var proxySetting = appdata.settings['proxy'];
-  appdata.settings.addListener(() {
-    final current = appdata.settings['proxy'];
-    if (current == proxySetting) return;
-    proxySetting = current;
-    unawaited(
-      () async {
-        // Resolve the configured value before passing it to the native core;
-        // the core never receives the UI-only `system` sentinel.
-        await Future<void>.delayed(const Duration(seconds: 1));
-        await remoteStorage.updateProxy(await getProxy());
-      }().wait(),
-    );
+  remoteStorage.configureOpenList(
+    EmbeddedOpenListRpc(),
+    dataDir: '${App.dataPath}/openlist',
+    proxy: await getProxy(),
+  );
+  await StartupTiming.measure('Storage migrations', () async {
+    await RemoteComicLibraryRegistry.migrateLegacyWebDavLibrary();
+    await remoteStorage.migrateLegacyWebDavLocations();
   });
-  await SingleInstanceCookieJar.createInstance();
+  await StartupTiming.measure('Cookies', () async {
+    await SingleInstanceCookieJar.createInstance();
+  });
   configureComicTypeSourceKeyResolver();
   configureBangumiScopeResolver(
     (sourceKey) =>
@@ -314,24 +300,66 @@ Future<void> init() async {
   );
   try {
     var futures = [
-      Rhttp.init(),
+      StartupTiming.measure('HTTP runtime', Rhttp.init),
       App.initComponents([
-        HistoryManager().init,
-        LocalFavoritesManager().init,
-        LocalManager().init,
+        () => StartupTiming.measure('History database', HistoryManager().init),
+        () => StartupTiming.measure(
+          'Favorites database',
+          LocalFavoritesManager().init,
+        ),
+        () => StartupTiming.measure('Local library', LocalManager().init),
       ]),
       SAFTaskWorker().init().wait(),
-      AppTranslation.init().wait(),
-      TagsTranslation.readData().wait(),
-      JsEngine().init().wait(),
-      ComicSourceManager().init().wait(),
-      OpenCC.init(),
+      StartupTiming.measure('Translations', AppTranslation.init),
+      StartupTiming.measure('Tag translations', TagsTranslation.readData),
+      StartupTiming.measure('JavaScript runtime', JsEngine().init),
+      StartupTiming.measure('Comic sources', ComicSourceManager().init),
+      StartupTiming.measure('Chinese conversion', OpenCC.init),
     ];
     await Future.wait(futures);
   } catch (e, s) {
     Log.error("init", "$e\n$s");
+    rethrow;
   }
   await _checkOldConfigs();
+  CacheManager().setLimitSize(appdata.settings['cacheSize']);
+  FlutterError.onError = (details) {
+    Log.error("Unhandled Exception", "${details.exception}\n${details.stack}");
+  };
+  StartupTiming.mark('Local initialization complete');
+  if (!deferBackgroundTasks) startBackgroundTasks();
+}
+
+bool _backgroundTasksStarted = false;
+
+/// GUI startup calls this after the first app frame; headless startup calls it
+/// directly. Every OpenList consumer shares the same initialization future.
+void startBackgroundTasks() {
+  if (_backgroundTasksStarted) return;
+  _backgroundTasksStarted = true;
+  final remoteStorage = RemoteStorageAccounts.instance;
+  _watchRemoteLibraryConfiguration(remoteStorage);
+  var proxySetting = appdata.settings['proxy'];
+  appdata.settings.addListener(() {
+    final current = appdata.settings['proxy'];
+    if (current == proxySetting) return;
+    proxySetting = current;
+    unawaited(
+      () async {
+        await remoteStorage.updateProxy(await getProxy());
+      }().wait(),
+    );
+  });
+  if (remoteStorage.accounts.any(
+    (account) => account.backend == StorageBackend.openlist,
+  )) {
+    unawaited(
+      StartupTiming.measure('OpenList', () async {
+        await remoteStorage.ensureInitialized();
+        StartupTiming.mark('OpenList ready');
+      }).wait(),
+    );
+  }
   final dataSync = DataSync();
   configureComicSourceDataSavedHandler(() async => dataSync.onDataChanged());
   startBangumiAfterDataSync(
@@ -347,19 +375,9 @@ Future<void> init() async {
       FollowUpdatesService.initChecker();
     },
   );
-  CacheManager().setLimitSize(appdata.settings['cacheSize']);
   if (App.isAndroid) {
-    handleLinks();
-    handleTextShare();
-    try {
-      await FlutterDisplayMode.setHighRefreshRate();
-    } catch (e) {
-      Log.error("Display Mode", "Failed to set high refresh rate: $e");
-    }
+    unawaited(FlutterDisplayMode.setHighRefreshRate().wait());
   }
-  FlutterError.onError = (details) {
-    Log.error("Unhandled Exception", "${details.exception}\n${details.stack}");
-  };
   if (App.isWindows) {
     // Report to the monitor thread that the app is running
     // https://github.com/Venera-Works/Venera-Plus/issues
@@ -368,6 +386,16 @@ Future<void> init() async {
       methodChannel.invokeMethod("heartBeat");
     });
   }
+}
+
+bool _appLinkHandlersStarted = false;
+
+/// Subscribe after main navigation exists, including after startup auth.
+void startAppLinkHandlers() {
+  if (!App.isAndroid || _appLinkHandlersStarted) return;
+  _appLinkHandlersStarted = true;
+  handleLinks();
+  handleTextShare();
 }
 
 ComicTileState _resolveComicTileState(Comic comic) {

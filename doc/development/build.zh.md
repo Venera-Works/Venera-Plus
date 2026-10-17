@@ -67,6 +67,14 @@ Select-String pubspec.lock -Pattern "flutter_rust_bridge" -Context 0,6
 version: "2.11.1"
 ```
 
+## 启动耗时排查
+
+应用日志中的 `Startup` 记录以 Dart 入口为起点，分别标记 `First loading frame`（Android 加载界面的首帧）、`Local app ready`（首页或鉴权页首帧）和 `OpenList ready`（网盘内核与账号就绪）。无网盘账号时不会预先启动 OpenList，也不会产生该就绪标记。
+
+`Settings`、`Storage migrations`、各数据库、漫画源、词库等记录各自的初始化耗时；并发任务的耗时不能直接相加。排查时使用同一设备、相同数据和同一构建模式，对比正常网络、断网及账号失效时的冷启动日志。日志不包含账号凭据。点击图标到 Dart 入口之前的引擎耗时需另用 Android 平台工具测量。
+
+使用 CI 构建产物进行真机对比；本地构建和运行仍需用户明确授权。
+
 ## 质量检查
 
 提交代码前至少运行：

@@ -20,14 +20,34 @@ class RemoteStorageAccounts with ChangeNotifier {
   OpenListRpcClient? _openListRpc;
   Future<void>? _initialization;
   String? _dataDir;
+  String? _proxy;
   final _uuid = const Uuid();
   final _activeStores = <String, Set<RemoteFileStore>>{};
 
-  void configureOpenList(OpenListRpcClient rpc) => _openListRpc = rpc;
+  void configureOpenList(
+    OpenListRpcClient rpc, {
+    String? dataDir,
+    String? proxy,
+  }) {
+    _openListRpc = rpc;
+    _dataDir = dataDir;
+    _proxy = proxy;
+  }
+
+  /// Shared by background startup and operations requested before it completes.
+  Future<void> ensureInitialized() {
+    final pending = _initialization;
+    if (pending != null) return pending;
+    final dataDir = _dataDir;
+    if (dataDir == null) return Future.value();
+    return initialize(dataDir: dataDir, proxy: _proxy);
+  }
 
   Future<void> initialize({required String dataDir, String? proxy}) {
     final rpc = _openListRpc;
     if (rpc == null) return Future.value();
+    _dataDir = dataDir;
+    _proxy = proxy;
     return _initialization ??= _initialize(rpc, dataDir, proxy).catchError((
       Object error,
     ) {
@@ -41,7 +61,6 @@ class RemoteStorageAccounts with ChangeNotifier {
     String dataDir,
     String? proxy,
   ) async {
-    _dataDir = dataDir;
     _throwRpcError(
       await rpc.invoke('initialize', {
         'dataDir': dataDir,
@@ -53,9 +72,11 @@ class RemoteStorageAccounts with ChangeNotifier {
   }
 
   Future<void> updateProxy(String? proxy) async {
+    _proxy = proxy;
     final rpc = _openListRpc;
     final dataDir = _dataDir;
     if (rpc == null || dataDir == null) return;
+    await ensureInitialized();
     _throwRpcError(
       await rpc.invoke('initialize', {
         'dataDir': dataDir,
@@ -224,8 +245,17 @@ class RemoteStorageAccounts with ChangeNotifier {
         'Storage account backend and driver cannot be changed',
       );
     }
+    RemoteStorageException? initializationError;
+    if (account.backend == StorageBackend.openlist && _openListRpc != null) {
+      try {
+        await ensureInitialized();
+      } on RemoteStorageException catch (error) {
+        initializationError = error;
+      }
+    }
     if (previous != null &&
         previous.backend == StorageBackend.openlist &&
+        initializationError == null &&
         jsonEncode(previous.authorization) ==
             jsonEncode(account.authorization)) {
       await _refreshNativeAccounts();
@@ -255,13 +285,14 @@ class RemoteStorageAccounts with ChangeNotifier {
     await appdata.saveData();
     final rpc = _openListRpc;
     if (account.backend == StorageBackend.openlist && rpc != null) {
-      final response = await rpc.invoke('saveAccount', {
-        'id': account.id,
-        'driver': account.driver,
-        'name': account.name,
-        'addition': account.authorization,
-      });
       try {
+        if (initializationError != null) throw initializationError;
+        final response = await rpc.invoke('saveAccount', {
+          'id': account.id,
+          'driver': account.driver,
+          'name': account.name,
+          'addition': account.authorization,
+        });
         _throwRpcError(response);
       } on RemoteStorageException catch (error) {
         final pending = account.copyWith(
@@ -285,6 +316,13 @@ class RemoteStorageAccounts with ChangeNotifier {
 
   Future<void> remove(String id) async {
     final previous = account(id);
+    if (previous?.backend == StorageBackend.openlist) {
+      try {
+        await ensureInitialized();
+      } on RemoteStorageException {
+        // Local removal remains possible when the native core is unavailable.
+      }
+    }
     await _cancelStores(id);
     final rpc = _openListRpc;
     if (previous?.backend == StorageBackend.openlist && rpc != null) {
@@ -335,10 +373,16 @@ class RemoteStorageAccounts with ChangeNotifier {
     } finally {
       final rpc = _openListRpc;
       try {
+        try {
+          await _initialization;
+        } on RemoteStorageException {
+          // A failed initialization still needs its native resources closed.
+        }
         if (rpc != null) _throwRpcError(await rpc.invoke('close', const {}));
       } finally {
         _initialization = null;
         _dataDir = null;
+        _proxy = null;
       }
     }
   }
@@ -367,6 +411,7 @@ class RemoteStorageAccounts with ChangeNotifier {
       StorageBackend.openlist => OpenListFileStore(
         account,
         _openListRpc ?? _UnavailableOpenListRpc(),
+        waitForInitialization: ensureInitialized,
       ),
     };
     return _StatusTrackingStore(delegate, _recordResult);
@@ -400,7 +445,11 @@ class RemoteStorageAccounts with ChangeNotifier {
   /// Called by app-data export plumbing. It obtains rotated native additions,
   /// then exports only account credentials rather than OpenList's database.
   Future<List<Map<String, dynamic>>> beforeExportSettings() async {
+    if (!accounts.any((item) => item.backend == StorageBackend.openlist)) {
+      return accounts.map((item) => item.toJson()).toList();
+    }
     try {
+      await ensureInitialized();
       await _refreshNativeAccounts();
     } on RemoteStorageException {
       // Keep ordinary local/WebDAV backup export available while a pending
@@ -480,6 +529,13 @@ class RemoteStorageAccounts with ChangeNotifier {
         .map((item) => StorageAccount.fromJson(item))
         .where((item) => item.isConfigured)
         .toList();
+    if (incoming.any((item) => item.backend == StorageBackend.openlist)) {
+      try {
+        await ensureInitialized();
+      } on RemoteStorageException {
+        // Imported credentials are retained for a later initialization.
+      }
+    }
     final local = localBeforeImport ?? accounts;
     final merged = mergeRemoteStorageAccounts(local, incoming);
     final nativeUpdates = merged.where((value) {

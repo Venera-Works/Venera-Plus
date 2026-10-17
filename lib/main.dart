@@ -18,6 +18,7 @@ import 'foundation/app.dart';
 import 'foundation/appdata.dart';
 import 'foundation/context.dart';
 import 'foundation/js_engine.dart';
+import 'foundation/startup_timing.dart';
 import 'features/sync/sync.dart';
 
 void main(List<String> args) {
@@ -30,12 +31,22 @@ void main(List<String> args) {
     runZonedGuarded(
       () async {
         WidgetsFlutterBinding.ensureInitialized();
+        StartupTiming.start();
         registerShowMessageHandler((context, message) {
           showToast(message: message, context: context);
         });
         JsEngine.configureUiMessageHandler(JsUiApi());
-        await init();
-        runApp(const MyApp());
+        if (App.isAndroid) {
+          runApp(
+            StartupPage(
+              initialize: () => init(deferBackgroundTasks: true),
+              child: const MyApp(),
+            ),
+          );
+        } else {
+          await init(deferBackgroundTasks: true);
+          runApp(const MyApp());
+        }
         if (App.isDesktop) {
           await windowManager.ensureInitialized();
           windowManager.waitUntilReadyToShow().then((_) async {
@@ -80,7 +91,13 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     App.registerForceRebuild(forceRebuild);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     WidgetsBinding.instance.addObserver(this);
-    checkUpdates();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      StartupTiming.mark('Local app ready');
+      startBackgroundTasks();
+      checkUpdates();
+      if (!appdata.settings['authorizationRequired']) startAppLinkHandlers();
+    });
     super.initState();
   }
 
@@ -234,6 +251,9 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       home = AuthPage(
         onSuccessfulAuth: () {
           App.rootContext.toReplacement(() => const MainPage());
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) startAppLinkHandlers();
+          });
         },
       );
     } else {

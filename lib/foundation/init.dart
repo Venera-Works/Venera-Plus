@@ -34,7 +34,15 @@ abstract mixin class Init {
     if (_isInit) {
       return;
     }
-    await doInit();
+    try {
+      await doInit();
+    } catch (error, stack) {
+      for (final completer in _initCompleter) {
+        completer.completeError(error, stack);
+      }
+      _initCompleter.clear();
+      rethrow;
+    }
     await _markInit();
   }
 }

@@ -23,8 +23,15 @@ void main() {
       const pathChannel = MethodChannel('plugins.flutter.io/path_provider');
       final messenger =
           TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      const openListChannel = MethodChannel('venera/openlist');
+      var nativeCalls = 0;
+      messenger.setMockMethodCallHandler(openListChannel, (call) async {
+        nativeCalls++;
+        return '{"data":{"ready":true}}';
+      });
       addTearDown(() async {
         messenger.setMockMethodCallHandler(pathChannel, null);
+        messenger.setMockMethodCallHandler(openListChannel, null);
         App.isInitialized = false;
         Log.isMuted = false;
         await dataDir.delete(recursive: true);
@@ -75,6 +82,11 @@ void main() {
       );
 
       expect(storage.accounts.single.toJson(), account.toJson());
+      expect(
+        nativeCalls,
+        0,
+        reason: 'Local startup must not connect to OpenList',
+      );
       expect(storage.libraries.single.toJson(), library.toJson());
       expect(appdata.settings['proxy'], 'direct');
       final saved =

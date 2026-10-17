@@ -11,12 +11,14 @@ abstract class OpenListRpcClient {
 /// Native adapters provide this bridge. All messages deliberately use JSON-safe
 /// values so Android/iOS channels and desktop C ABI have the same contract.
 class OpenListFileStore implements RemoteFileStore {
-  OpenListFileStore(this.account, this._rpc);
+  OpenListFileStore(this.account, this._rpc, {this.waitForInitialization});
   @override
   final StorageAccount account;
   final OpenListRpcClient _rpc;
+  final Future<void> Function()? waitForInitialization;
   var _nextTransfer = 0;
   final _activeTasks = <String>{};
+  final _submittedTasks = <String>{};
   final _cancelledTasks = <String>{};
 
   @override
@@ -123,6 +125,9 @@ class OpenListFileStore implements RemoteFileStore {
     final taskId = _newTaskId();
     _activeTasks.add(taskId);
     try {
+      await waitForInitialization?.call();
+      _throwIfCancelled(taskId);
+      _submittedTasks.add(taskId);
       final data = await _data(method, {...request, 'taskId': taskId});
       _throwIfCancelled(taskId);
       return data;
@@ -140,6 +145,9 @@ class OpenListFileStore implements RemoteFileStore {
     _activeTasks.add(taskId);
     try {
       onProgress?.call(RemoteTransferProgress(taskId: taskId, completed: 0));
+      await waitForInitialization?.call();
+      _throwIfCancelled(taskId);
+      _submittedTasks.add(taskId);
       await _data(method, {...request, 'taskId': taskId});
       _throwIfCancelled(taskId);
       while (true) {
@@ -167,6 +175,7 @@ class OpenListFileStore implements RemoteFileStore {
 
   Future<void> _requestCancel(String taskId) async {
     _cancelledTasks.add(taskId);
+    if (!_submittedTasks.contains(taskId)) return;
     final response = await _rpc.invoke('cancel', {
       'accountId': account.id,
       'taskId': taskId,
@@ -187,6 +196,7 @@ class OpenListFileStore implements RemoteFileStore {
   Future<void> _finishTask(String taskId) async {
     _activeTasks.remove(taskId);
     _cancelledTasks.remove(taskId);
+    if (!_submittedTasks.remove(taskId)) return;
     await _rpc.invoke('releaseTask', {
       'accountId': account.id,
       'taskId': taskId,

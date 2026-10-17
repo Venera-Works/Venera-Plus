@@ -68,6 +68,14 @@ The result must include:
 version: "2.11.1"
 ```
 
+## Startup timing diagnostics
+
+Application log entries titled `Startup` measure time from the Dart entry point. Milestones are `First loading frame` (the Android loading screen), `Local app ready` (the first home or authorization frame), and `OpenList ready` (the native core and accounts are ready). Without OpenList accounts, the core is not started eagerly and its readiness milestone is omitted.
+
+Entries for `Settings`, `Storage migrations`, databases, comic sources, and dictionaries report individual initialization durations. Concurrent durations must not be added together. Compare cold starts on the same device with the same data and build mode, including normal connectivity, offline operation, and expired accounts. Logs contain no account credentials. Use Android platform tools separately to measure engine startup before the Dart entry point.
+
+Use CI artifacts for device comparisons. Local application builds and runs still require explicit user authorization.
+
 ## Quality Checks
 
 Run at least the following before submitting code:
