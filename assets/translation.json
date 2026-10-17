@@ -1,5 +1,6 @@
 {
   "zh_CN": {
+    "An account with this name already exists.": "已存在同名网盘账号，请使用其他名称。",
     "SYNC_STATE_CHANGED: Synchronization state changed. Retry synchronization; details are in the log.": "SYNC_STATE_CHANGED：同步状态已变化，请重试同步；详细诊断见日志。",
     "SYNC_STATE_DIVERGED: Keep both synchronization databases and inspect the log before repair.": "SYNC_STATE_DIVERGED：请保留同步主库和备份库，先查看日志再修复。",
     "SYNC_STATE_INVALID: Synchronization data was preserved. Inspect the log before repair.": "SYNC_STATE_INVALID：同步数据已保留，请先查看日志再修复。",
@@ -1151,6 +1152,7 @@
     "Use the saved backup location.": "使用已保存的备份位置。"
   },
   "zh_TW": {
+    "An account with this name already exists.": "已存在同名網盤帳號，請使用其他名稱。",
     "SYNC_STATE_CHANGED: Synchronization state changed. Retry synchronization; details are in the log.": "SYNC_STATE_CHANGED：同步狀態已變更，請重試同步；詳細診斷見日誌。",
     "SYNC_STATE_DIVERGED: Keep both synchronization databases and inspect the log before repair.": "SYNC_STATE_DIVERGED：請保留同步主資料庫和備份資料庫，先查看日誌再修復。",
     "SYNC_STATE_INVALID: Synchronization data was preserved. Inspect the log before repair.": "SYNC_STATE_INVALID：同步資料已保留，請先查看日誌再修復。",

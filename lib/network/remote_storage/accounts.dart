@@ -88,6 +88,12 @@ class RemoteStorageAccounts with ChangeNotifier {
 
   List<StorageAccount> get accounts => _readAccounts();
   List<RemoteLibrary> get libraries => _readLibraries();
+  bool isNameInUse(String name, {String? excludingId}) => accounts.any(
+    (account) =>
+        account.id != excludingId &&
+        _accountNameKey(account.name) == _accountNameKey(name),
+  );
+  String availableName(String name) => _availableAccountName(name, accounts);
   StorageAccount? account(String id) {
     for (final value in accounts) {
       if (value.id == id) return value;
@@ -220,6 +226,10 @@ class RemoteStorageAccounts with ChangeNotifier {
   }
 
   Future<StorageAccount> save(StorageAccount value) async {
+    value = value.copyWith(name: value.name.trim());
+    if (isNameInUse(value.name, excludingId: value.id)) {
+      throw ArgumentError('An account with this name already exists.');
+    }
     var account = value.id.isEmpty
         ? StorageAccount(
             id: _uuid.v4(),
@@ -537,14 +547,30 @@ class RemoteStorageAccounts with ChangeNotifier {
       }
     }
     final local = localBeforeImport ?? accounts;
-    final merged = mergeRemoteStorageAccounts(local, incoming);
+    final aliases = <String, String>{};
+    final merged = mergeRemoteStorageAccounts(
+      local,
+      incoming,
+      idAliases: aliases,
+    );
+    final replacedIds = aliases.entries
+        .where((entry) => entry.key != entry.value)
+        .map((entry) => entry.value)
+        .toSet();
     final nativeUpdates = merged.where((value) {
       final existing = _accountById(local, value.id);
       return existing == null ||
+          replacedIds.contains(value.id) ||
           (existing.authorizationIsKnownInvalid &&
               existing.backend == value.backend &&
               existing.driver == value.driver);
     }).toList();
+    for (final entry in aliases.entries.where(
+      (entry) => entry.key != entry.value,
+    )) {
+      await _cancelStores(entry.key);
+    }
+    _remapAccountReferences(aliases);
     appdata.settings[remoteStorageAccountsSetting] = merged
         .map((item) => item.toJson())
         .toList();
@@ -567,6 +593,42 @@ class RemoteStorageAccounts with ChangeNotifier {
           // An unavailable core must not roll back the remaining app-data import.
         }
       }
+      for (final entry in aliases.entries.where(
+        (entry) => entry.key != entry.value,
+      )) {
+        final previous = _accountById([...local, ...incoming], entry.key);
+        if (previous?.backend != StorageBackend.openlist) continue;
+        try {
+          _throwRpcError(
+            await rpc.invoke('cancelAccount', {'accountId': entry.key}),
+          );
+          _throwRpcError(await rpc.invoke('deleteAccount', {'id': entry.key}));
+        } catch (_) {
+          // Local references remain valid while the core is unavailable.
+        }
+      }
+    }
+  }
+
+  void _remapAccountReferences(Map<String, String> aliases) {
+    for (final key in const ['syncRemoteLocation', 'backupRemoteLocation']) {
+      final location = appdata.settings[key];
+      if (location is Map && aliases.containsKey(location['accountId'])) {
+        appdata.settings[key] = {
+          ...location,
+          'accountId': aliases[location['accountId']],
+        };
+      }
+    }
+    final libraries = appdata.settings[remoteLibrariesSetting];
+    if (libraries is List) {
+      appdata.settings[remoteLibrariesSetting] = [
+        for (final library in libraries)
+          if (library is Map && aliases.containsKey(library['accountId']))
+            {...library, 'accountId': aliases[library['accountId']]}
+          else
+            library,
+      ];
     }
   }
 
@@ -612,34 +674,79 @@ class RemoteStorageAccounts with ChangeNotifier {
   );
 }
 
-/// Merges credentials from an app-data snapshot without changing an existing
-/// account's backend or driver identity.
+/// Matches accounts by ID or by unique name within the same backend and driver.
+/// Existing local authorizations take priority unless explicitly invalid.
 List<StorageAccount> mergeRemoteStorageAccounts(
   Iterable<StorageAccount> local,
-  Iterable<StorageAccount> incoming,
-) {
-  final merged = <StorageAccount>[...local];
-  for (final value in incoming) {
-    final index = merged.indexWhere((item) => item.id == value.id);
+  Iterable<StorageAccount> incoming, {
+  Map<String, String>? idAliases,
+}) {
+  final merged = <StorageAccount>[];
+  final aliases = idAliases ?? <String, String>{};
+  for (final value in [...local, ...incoming]) {
+    var index = merged.indexWhere(
+      (item) => item.id == (aliases[value.id] ?? value.id),
+    );
+    if (index < 0 && value.name.trim().isNotEmpty) {
+      index = merged.indexWhere(
+        (item) =>
+            _accountNameKey(item.name) == _accountNameKey(value.name) &&
+            item.backend == value.backend &&
+            item.driver == value.driver,
+      );
+    }
     if (index < 0) {
-      merged.add(value);
+      merged.add(value.copyWith(name: value.name.trim()));
+      aliases[value.id] = value.id;
       continue;
     }
     final existing = merged[index];
-    if (existing.authorizationIsKnownInvalid &&
-        existing.backend == value.backend &&
-        existing.driver == value.driver) {
+    if (existing.backend != value.backend || existing.driver != value.driver) {
+      continue;
+    }
+    // Both devices select the same survivor even when they import in reverse order.
+    final id = existing.id.compareTo(value.id) <= 0 ? existing.id : value.id;
+    for (final entry in aliases.entries.toList()) {
+      if (entry.value == existing.id) aliases[entry.key] = id;
+    }
+    aliases[existing.id] = id;
+    aliases[value.id] = id;
+    if (existing.authorizationIsKnownInvalid) {
       merged[index] = existing.copyWith(
-        name: value.name,
+        id: id,
+        name: value.name.trim(),
         authorization: value.authorization,
         status: value.status,
         statusMessage: value.statusMessage,
+        clearStatusMessage: value.statusMessage == null,
       );
     } else {
-      merged[index] = existing.copyWith(name: value.name);
+      merged[index] = existing.copyWith(id: id, name: value.name.trim());
     }
   }
-  return merged;
+  final named = <StorageAccount>[];
+  for (final value in merged) {
+    named.add(value.copyWith(name: _availableAccountName(value.name, named)));
+  }
+  return named;
+}
+
+String _accountNameKey(String name) => name.trim().toLowerCase();
+
+String _availableAccountName(
+  String preferredName,
+  List<StorageAccount> values,
+) {
+  final name = preferredName.trim();
+  bool used(String candidate) => values.any(
+    (value) => _accountNameKey(value.name) == _accountNameKey(candidate),
+  );
+  if (!used(name)) return name;
+  var number = 2;
+  while (used('$name ($number)')) {
+    number++;
+  }
+  return '$name ($number)';
 }
 
 StorageAccount? _accountById(Iterable<StorageAccount> values, String id) {

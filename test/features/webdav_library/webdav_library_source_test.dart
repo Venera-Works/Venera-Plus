@@ -95,6 +95,36 @@ void main() {
     },
   );
 
+  test('legacy account recovery avoids a default-name collision', () async {
+    final storage = RemoteStorageAccounts.instance;
+    final original = RemoteLibrary(
+      id: WebDavLibraryConfig.fromSettings().libraryId,
+      sourceKey: WebDavLibrarySource.sourceKey,
+      accountId: 'legacy-missing',
+      directories: ['/manga/'],
+      name: 'Old library',
+    );
+    const unrelated = StorageAccount(
+      id: 'other-account',
+      backend: StorageBackend.webdav,
+      driver: 'webdav',
+      name: 'WebDAV漫画库',
+      authorization: {
+        'url': 'https://other.example.com/',
+        'user': 'other',
+        'password': 'other',
+      },
+    );
+    appdata.settings[remoteStorageAccountsSetting] = [unrelated.toJson()];
+    appdata.settings[remoteLibrariesSetting] = [original.toJson()];
+    appdata.settings[RemoteComicLibraryRegistry.legacyAccountMigrationKey] =
+        false;
+    await RemoteComicLibraryRegistry.migrateLegacyWebDavLibrary();
+    expect(storage.account(unrelated.id)?.toJson(), unrelated.toJson());
+    expect(storage.account(original.accountId)?.name, 'WebDAV漫画库 (2)');
+    expect(storage.libraries.single.toJson(), original.toJson());
+  });
+
   for (final hasMatchingAccount in [false, true]) {
     test(
       'recovers an orphaned legacy library and reads old favorites, existing=$hasMatchingAccount',

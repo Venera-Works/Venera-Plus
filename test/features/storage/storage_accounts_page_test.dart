@@ -11,6 +11,52 @@ import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 import 'package:venera_plus/routing/webview.dart';
 
 void main() {
+  testWidgets('duplicate account names stay in the editor until renamed', (
+    tester,
+  ) async {
+    final accounts = _Accounts()
+      ..saved = const StorageAccount(
+        id: 'existing',
+        backend: StorageBackend.openlist,
+        driver: 'BaiduNetdisk',
+        name: 'My Drive',
+        authorization: {'refresh_token': 'existing'},
+      );
+    final previous = accounts.saved;
+    await tester.pumpWidget(
+      MaterialApp(home: StorageAccountsPage(accounts: accounts)),
+    );
+    await tester.tap(find.byIcon(Icons.add));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Name'),
+      ' my DRIVE ',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Refresh Token'),
+      'new',
+    );
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('An account with this name already exists.'),
+      findsOneWidget,
+    );
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(accounts.saved, same(previous));
+    expect(accounts.rpc.testCalls, 0);
+
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Name'),
+      'Other Drive',
+    );
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(accounts.saved?.name, 'Other Drive');
+    expect(accounts.rpc.testCalls, 1);
+  });
+
   testWidgets('first connection can continue to a selected purpose', (
     tester,
   ) async {

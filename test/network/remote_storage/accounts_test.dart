@@ -61,6 +61,132 @@ void main() {
     ]);
   });
 
+  test('account names are unique when adding and renaming', () async {
+    await storage.save(_account);
+    await expectLater(
+      storage.save(_account.copyWith(id: '', name: ' drive ')),
+      throwsArgumentError,
+    );
+    final other = _account.copyWith(id: 'other', name: 'Other');
+    await storage.save(other);
+    await expectLater(
+      storage.save(other.copyWith(name: 'DRIVE')),
+      throwsArgumentError,
+    );
+    await storage.save(_account.copyWith(name: ' Drive '));
+    expect(storage.accounts, hasLength(2));
+    expect(storage.account(_account.id)?.name, 'Drive');
+    expect(storage.availableName('Drive'), 'Drive (2)');
+    expect(storage.account(other.id)?.name, 'Other');
+  });
+
+  for (final localWinsId in [false, true]) {
+    test(
+      'name merge preserves library identities and paths, local id wins=$localWinsId',
+      () async {
+        final local = _account.copyWith(
+          id: localWinsId ? 'a-local' : 'z-local',
+        );
+        final incoming = local.copyWith(
+          id: localWinsId ? 'z-remote' : 'a-remote',
+          authorization: {'refresh_token': 'remote'},
+        );
+        final canonicalId = localWinsId ? local.id : incoming.id;
+        appdata.settings[remoteStorageAccountsSetting] = [local.toJson()];
+        final captured = storage.captureLocalAccounts();
+        appdata.settings.replaceAll({
+          remoteStorageAccountsSetting: [incoming.toJson()],
+          'syncRemoteLocation': {
+            'accountId': local.id,
+            'directory': '/Local sync/',
+          },
+          'backupRemoteLocation': {
+            'accountId': incoming.id,
+            'directory': '/漫画 100%/CBZ/',
+          },
+          remoteLibrariesSetting: [
+            {
+              'id': 'local-library',
+              'sourceKey': 'local-source',
+              'accountId': local.id,
+              'directories': ['/Local/'],
+              'name': 'Local library',
+            },
+            {
+              'id': 'remote-library',
+              'sourceKey': 'remote-source',
+              'accountId': incoming.id,
+              'directories': ['/Remote/'],
+              'name': 'Remote library',
+            },
+          ],
+        });
+        await storage.mergeImportedSettings([
+          incoming.toJson(),
+        ], localBeforeImport: captured);
+        final expectedLibraries = [
+          for (final library
+              in appdata.settings[remoteLibrariesSetting] as List)
+            Map<String, dynamic>.from(library as Map),
+        ];
+        expect(storage.accounts.single.id, canonicalId);
+        expect(storage.accounts.single.authorization, local.authorization);
+        expect(appdata.settings['syncRemoteLocation'], {
+          'accountId': canonicalId,
+          'directory': '/Local sync/',
+        });
+        expect(appdata.settings['backupRemoteLocation'], {
+          'accountId': canonicalId,
+          'directory': '/漫画 100%/CBZ/',
+        });
+        expect(storage.libraries.map((library) => library.id), [
+          'local-library',
+          'remote-library',
+        ]);
+        expect(storage.libraries.map((library) => library.sourceKey), [
+          'local-source',
+          'remote-source',
+        ]);
+        expect(
+          storage.libraries.every(
+            (library) => library.accountId == canonicalId,
+          ),
+          isTrue,
+        );
+        expect(storage.libraries.map((library) => library.directories.single), [
+          '/Local/',
+          '/Remote/',
+        ]);
+        await storage.mergeImportedSettings([incoming.toJson()]);
+        await appdata.loadDataForTesting(dataDir.path);
+        expect(storage.accounts.single.id, canonicalId);
+        expect(storage.accounts.single.authorization, local.authorization);
+        expect(appdata.settings[remoteLibrariesSetting], expectedLibraries);
+      },
+    );
+  }
+
+  test(
+    'native name merge registers retained authorization and removes duplicate mounts',
+    () async {
+      final local = _account.copyWith(id: 'z-local');
+      final incoming = local.copyWith(
+        id: 'a-remote',
+        authorization: {'refresh_token': 'remote'},
+      );
+      final rpc = _MergeRpc()..values[local.id] = local.authorization;
+      storage.configureOpenList(rpc, dataDir: dataDir.path);
+      appdata.settings[remoteStorageAccountsSetting] = [incoming.toJson()];
+      await storage.mergeImportedSettings(
+        [incoming.toJson()],
+        localBeforeImport: [local],
+      );
+      expect(storage.accounts.single.id, incoming.id);
+      expect(rpc.values, {incoming.id: local.authorization});
+      expect(rpc.cancelled, contains(local.id));
+    },
+  );
+
   test(
     'replacing QuarkOpen keeps account references and requires the same provider',
     () async {
@@ -313,3 +439,35 @@ const _account = StorageAccount(
   name: 'Drive',
   authorization: {'refresh_token': 'refresh'},
 );
+
+class _MergeRpc implements OpenListRpcClient {
+  final values = <String, Map<String, dynamic>>{};
+  final cancelled = <String>[];
+
+  @override
+  Future<Map<String, dynamic>> invoke(
+    String method,
+    Map<String, dynamic> request,
+  ) async {
+    if (method == 'accounts') {
+      return {
+        'data': {
+          'accounts': [
+            for (final entry in values.entries)
+              {'id': entry.key, 'addition': entry.value},
+          ],
+        },
+      };
+    }
+    if (method == 'saveAccount') {
+      values[request['id'] as String] = Map<String, dynamic>.from(
+        request['addition'] as Map,
+      );
+    } else if (method == 'deleteAccount') {
+      values.remove(request['id']);
+    } else if (method == 'cancelAccount') {
+      cancelled.add(request['accountId'] as String);
+    }
+    return const {'data': {}};
+  }
+}

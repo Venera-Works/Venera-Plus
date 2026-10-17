@@ -22,6 +22,8 @@ Existing WebDAV sync and archive settings are automatically added to the shared 
 
 All saved cloud accounts and their credentials are included in app-data snapshots, including accounts not yet used by a comic library. During restore, a still-valid local authorization is retained. The data-sync destination stays local; archive-backup configuration is synchronized only when its opt-in is enabled.
 
+Account names must be unique, ignoring leading and trailing whitespace and letter case. Use the same name for the same account on every device and different names for different accounts. Synchronization merges accounts with the same name and provider, updating library, sync, and backup references while retaining library IDs and favorite associations. Accounts with matching names but different providers are retained with a name suffix to distinguish them. Renaming an account retains its internal ID.
+
 Native OpenList builds, platform loading, and real-provider checks have not been run locally. They are pending CI and dedicated test directories.
 
 The macOS app continues to support macOS 12. Because of the Go 1.27 runtime requirement, the six OpenList providers require macOS 13 or later; WebDAV and local features remain available on macOS 12.

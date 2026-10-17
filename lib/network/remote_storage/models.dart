@@ -28,13 +28,14 @@ class StorageAccount {
       status == StorageAuthorizationStatus.invalid;
 
   StorageAccount copyWith({
+    String? id,
     String? name,
     Map<String, dynamic>? authorization,
     StorageAuthorizationStatus? status,
     String? statusMessage,
     bool clearStatusMessage = false,
   }) => StorageAccount(
-    id: id,
+    id: id ?? this.id,
     backend: backend,
     driver: driver,
     name: name ?? this.name,

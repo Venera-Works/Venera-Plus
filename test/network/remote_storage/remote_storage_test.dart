@@ -170,6 +170,122 @@ void main() {
     expect(rejected.driver, 'GoogleDrive');
   });
 
+  for (final driver in [
+    'webdav',
+    'BaiduNetdisk',
+    'Quark',
+    '115 Open',
+    '123 Open',
+    'Onedrive',
+    'GoogleDrive',
+  ]) {
+    test('$driver merges same-name accounts with different device ids', () {
+      final local = StorageAccount(
+        id: 'z-local',
+        backend: driver == 'webdav'
+            ? StorageBackend.webdav
+            : StorageBackend.openlist,
+        driver: driver,
+        name: 'My Drive',
+        authorization: const {'credential': 'local-valid'},
+        status: StorageAuthorizationStatus.valid,
+      );
+      final incoming = local.copyWith(
+        id: 'a-remote',
+        name: ' my DRIVE ',
+        authorization: {'credential': 'remote'},
+      );
+      final aliases = <String, String>{};
+      final merged = mergeRemoteStorageAccounts(
+        [local],
+        [incoming],
+        idAliases: aliases,
+      ).single;
+      expect(merged.id, incoming.id);
+      expect(merged.name, 'my DRIVE');
+      expect(merged.authorization, local.authorization);
+      expect(aliases, {'z-local': 'a-remote', 'a-remote': 'a-remote'});
+
+      final reverse = mergeRemoteStorageAccounts([incoming], [local]).single;
+      expect(reverse.id, merged.id);
+      expect(reverse.authorization, incoming.authorization);
+      expect(
+        mergeRemoteStorageAccounts([merged], [local, incoming]),
+        hasLength(1),
+      );
+    });
+  }
+
+  test(
+    'merging existing duplicates repairs transitive ids and invalid credentials',
+    () {
+      final expired = _account.copyWith(
+        id: 'z',
+        authorization: {'refresh_token': 'expired'},
+        status: StorageAuthorizationStatus.invalid,
+        statusMessage: 'expired',
+      );
+      final valid = expired.copyWith(
+        id: 'm',
+        authorization: {'refresh_token': 'valid'},
+        status: StorageAuthorizationStatus.valid,
+        clearStatusMessage: true,
+      );
+      final aliases = <String, String>{};
+      final merged = mergeRemoteStorageAccounts(
+        [expired, valid],
+        [
+          valid.copyWith(id: 'a', authorization: {'refresh_token': 'remote'}),
+        ],
+        idAliases: aliases,
+      ).single;
+      expect(merged.id, 'a');
+      expect(merged.authorization, valid.authorization);
+      expect(merged.status, StorageAuthorizationStatus.valid);
+      expect(merged.statusMessage, isNull);
+      expect(aliases, {'z': 'a', 'm': 'a', 'a': 'a'});
+    },
+  );
+
+  test('same-name different providers remain separate with unique names', () {
+    const other = StorageAccount(
+      id: 'other',
+      backend: StorageBackend.openlist,
+      driver: 'Onedrive',
+      name: 'Drive',
+      authorization: {},
+    );
+    final merged = mergeRemoteStorageAccounts(
+      [other, _account],
+      [_account.copyWith(id: 'duplicate')],
+    );
+    expect(merged, hasLength(2));
+    expect(merged.map((account) => account.name), ['Drive', 'Drive (2)']);
+    expect(merged.map((account) => account.driver), [
+      'Onedrive',
+      'GoogleDrive',
+    ]);
+    expect(
+      mergeRemoteStorageAccounts(merged, [
+        other,
+        _account,
+      ]).map((account) => account.toJson()),
+      merged.map((account) => account.toJson()),
+    );
+  });
+
+  test('renaming a synchronized account matches its existing id', () {
+    final local = _account.copyWith(authorization: {'refresh_token': 'local'});
+    final incoming = local.copyWith(
+      name: 'Renamed',
+      authorization: {'refresh_token': 'remote'},
+    );
+    final result = mergeRemoteStorageAccounts([local], [incoming]).single;
+    expect(result.id, local.id);
+    expect(result.name, 'Renamed');
+    expect(result.authorization, local.authorization);
+  });
+
   test('native rotated credentials clear stale invalid status', () {
     const stale = StorageAccount(
       id: 'same',

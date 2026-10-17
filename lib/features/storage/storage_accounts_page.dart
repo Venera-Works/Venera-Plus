@@ -18,7 +18,7 @@ Future<StorageAccount?> showStorageAccountEditor(
   final storage = accounts ?? RemoteStorageAccounts.instance;
   final result = await showDialog<StorageAccount>(
     context: context,
-    builder: (_) => _StorageAccountDialog(initial: initial),
+    builder: (_) => _StorageAccountDialog(initial: initial, accounts: storage),
   );
   if (result == null) return null;
   var saved = await storage.save(result);
@@ -178,8 +178,9 @@ class _StorageAccountsPageState extends State<StorageAccountsPage> {
 }
 
 class _StorageAccountDialog extends StatefulWidget {
-  const _StorageAccountDialog({this.initial});
+  const _StorageAccountDialog({this.initial, required this.accounts});
   final StorageAccount? initial;
+  final RemoteStorageAccounts accounts;
   @override
   State<_StorageAccountDialog> createState() => _StorageAccountDialogState();
 }
@@ -348,6 +349,17 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
               ? null
               : () {
                   try {
+                    final name = _name.text.trim().isEmpty
+                        ? _driver.tl
+                        : _name.text.trim();
+                    if (widget.accounts.isNameInUse(
+                      name,
+                      excludingId: widget.initial?.id,
+                    )) {
+                      throw FormatException(
+                        'An account with this name already exists.'.tl,
+                      );
+                    }
                     if (quark) {
                       if (_cookie.text.trim().isEmpty) {
                         throw const FormatException('Cookie is required');
@@ -399,9 +411,7 @@ class _StorageAccountDialogState extends State<_StorageAccountDialog> {
                         driver: webdav
                             ? widget.initial?.driver ?? 'webdav'
                             : _driver,
-                        name: _name.text.trim().isEmpty
-                            ? _driver.tl
-                            : _name.text.trim(),
+                        name: name,
                         authorization: auth,
                       ),
                     );

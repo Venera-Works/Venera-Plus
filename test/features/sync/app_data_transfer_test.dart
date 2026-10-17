@@ -139,7 +139,7 @@ String? _historyTitle(String id) {
 
 void main() {
   test(
-    'cloud-account snapshots restore unused accounts and retain local authorization',
+    'cloud-account snapshots merge same-name accounts and retain local authorization',
     () async {
       final root = Directory.systemTemp.createTempSync(
         'venera-account-import-',
@@ -169,7 +169,7 @@ void main() {
         await root.delete(recursive: true);
       });
       const local = StorageAccount(
-        id: 'local-sync',
+        id: 'z-local-sync',
         backend: StorageBackend.openlist,
         driver: 'GoogleDrive',
         name: 'Local sync',
@@ -181,6 +181,17 @@ void main() {
         driver: 'BaiduNetdisk',
         name: 'Unused cloud',
         authorization: {'refresh_token': 'incoming-token'},
+      );
+      final remote = local.copyWith(
+        id: 'a-remote-sync',
+        authorization: {'refresh_token': 'remote-old-token'},
+      );
+      const library = RemoteLibrary(
+        id: 'existing-library',
+        sourceKey: 'existing-source',
+        accountId: 'a-remote-sync',
+        directories: ['/Comics/'],
+        name: 'Library',
       );
       final syncLocation = {'accountId': local.id, 'directory': '/Local sync/'};
       appdata.settings.replaceAll({
@@ -196,15 +207,10 @@ void main() {
             'settings': {
               'dataVersion': 1,
               remoteStorageAccountsSetting: [
-                local
-                    .copyWith(
-                      authorization: const {
-                        'refresh_token': 'remote-old-token',
-                      },
-                    )
-                    .toJson(),
+                remote.toJson(),
                 incoming.toJson(),
               ],
+              remoteLibrariesSetting: [library.toJson()],
             },
           }),
         );
@@ -213,11 +219,19 @@ void main() {
       await importAppData(File(p.join(root.path, 'snapshot.venera')));
 
       final storage = RemoteStorageAccounts.instance;
-      expect(storage.account(local.id)?.authorization, local.authorization);
+      expect(storage.accounts, hasLength(2));
+      expect(storage.account(remote.id)?.authorization, local.authorization);
       expect(storage.account(incoming.id)?.toJson(), incoming.toJson());
-      expect(appdata.settings['syncRemoteLocation'], syncLocation);
+      expect(appdata.settings['syncRemoteLocation'], {
+        ...syncLocation,
+        'accountId': remote.id,
+      });
+      expect(storage.libraries.single.toJson(), library.toJson());
       expect(refreshed, isTrue);
       await appdata.loadDataForTesting(App.dataPath);
+      expect(storage.accounts, hasLength(2));
+      expect(storage.account(remote.id)?.authorization, local.authorization);
+      expect(storage.libraries.single.toJson(), library.toJson());
       expect(storage.account(incoming.id)?.toJson(), incoming.toJson());
     },
   );
