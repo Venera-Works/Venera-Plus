@@ -87,6 +87,39 @@ void main() {
     expect(started, hasLength(2));
   });
 
+  test(
+    'scrolling pauses queued work until the final page is selected',
+    () async {
+      preloader.update([task('active'), task('old-queued')]);
+      preloader.setPaused(true);
+      await finish('active:false');
+      expect(started, ['active:false']);
+
+      preloader.update([task('midpoint', decode: true)]);
+      expect(started, ['active:false']);
+      preloader.update([task('final-next', decode: true), task('final-far')]);
+      preloader.setPaused(false);
+      expect(started, ['active:false', 'final-next:true', 'final-far:false']);
+    },
+  );
+
+  test(
+    'a download completed during scrolling is decoded after resume',
+    () async {
+      preloader.update([task('page')]);
+      preloader.setPaused(true);
+      preloader.update([task('page', decode: true)]);
+      await finish('page:false');
+      expect(started, ['page:false']);
+      preloader.setPaused(false);
+      expect(started, ['page:false', 'page:true']);
+      await finish('page:true');
+      preloader.setPaused(true);
+      preloader.setPaused(false);
+      expect(started, hasLength(2));
+    },
+  );
+
   test('failed preloads do not loop or block subsequent pages', () async {
     final muted = Log.isMuted;
     Log.isMuted = true;

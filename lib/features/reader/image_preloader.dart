@@ -19,7 +19,14 @@ class ReaderImagePreloader {
   Map<Object, ReaderImagePreload> _wanted = {};
   final _active = <Object, ReaderImagePreload>{};
   final _finished = <Object, bool>{};
+  bool _paused = false;
   bool _disposed = false;
+
+  /// Let active requests finish, but keep new work out of page animations.
+  void setPaused(bool paused) {
+    _paused = paused;
+    _drain();
+  }
 
   void update(List<ReaderImagePreload> tasks) {
     if (_disposed) return;
@@ -33,7 +40,7 @@ class ReaderImagePreloader {
   }
 
   void _drain() {
-    if (_disposed) return;
+    if (_disposed || _paused) return;
     for (final task in _wanted.values) {
       if (_active.length >= 2) break;
       if (_active.containsKey(task.key)) continue;

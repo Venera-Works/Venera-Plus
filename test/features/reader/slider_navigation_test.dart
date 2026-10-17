@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/components/custom_slider.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/features/comic_source/models.dart';
@@ -312,6 +313,97 @@ void main() {
           ),
           isTrue,
         );
+
+        reader.toPage(50, animated: false);
+        await frames(10);
+        await runWidgetIo(tester, () async {
+          while (PaintingBinding.instance.imageCache.pendingImageCount > 0) {
+            await Future<void>.delayed(const Duration(milliseconds: 10));
+          }
+        });
+        final afterNext = ReaderImageProvider(
+          reader.images![51],
+          null,
+          reader.cid,
+          reader.eid,
+          52,
+          chapter: reader.chapter,
+          enableResize: true,
+          target: calculateReaderImageTargetFromContext(
+            tester.element(find.byType(ComicImage).first),
+            52,
+          ),
+        );
+        final imageCache = PaintingBinding.instance.imageCache;
+        imageCache.evict(afterNext);
+        final favoriteReads = (manager as _TestHistory).imageFavoriteReads;
+        final gallery = reader.imageViewController as GalleryModeState;
+        final viewport = tester.getRect(find.byType(PageView));
+        final swipe = await tester.startGesture(viewport.center);
+        // PhotoView consumes the first move while claiming the drag gesture.
+        await swipe.moveBy(Offset(-viewport.width * 0.15, 0));
+        await tester.pump();
+        await swipe.moveBy(
+          Offset(-viewport.width * (50.3 - gallery.controller.page!), 0),
+        );
+        await tester.pump(const Duration(milliseconds: 20));
+        expect(gallery.controller.page, closeTo(50.3, 0.01));
+        expect(reader.page, 50);
+        expect(imageCache.containsKey(afterNext), isFalse);
+        await swipe.moveBy(
+          Offset(-viewport.width * (50.6 - gallery.controller.page!), 0),
+        );
+        await tester.pump(const Duration(milliseconds: 20));
+        await tester.pump();
+        expect(gallery.controller.page, closeTo(50.6, 0.01));
+        expect(reader.page, 51);
+        expect(imageCache.containsKey(afterNext), isFalse);
+        expect(manager.imageFavoriteReads, favoriteReads);
+        await swipe.up();
+        await tester.pumpAndSettle();
+        expect(reader.page, 51);
+        expect(imageCache.containsKey(afterNext), isTrue);
+        expect(manager.imageFavoriteReads, favoriteReads);
+
+        // Favorites still refresh when changed, without a query on each page.
+        await runWidgetIo(
+          tester,
+          () => manager.flushReadingProgress(id: 'book', type: ComicType.local),
+        );
+        expect(scaffold.isLiked(), isFalse);
+        final favorite = ImageFavorite(
+          51,
+          reader.images![50],
+          false,
+          'one',
+          'book',
+          1,
+          'local',
+          'One',
+        );
+        ImageFavoriteManager().addOrUpdateOrDelete(
+          ImageFavoritesComic(
+            'book',
+            [
+              ImageFavoritesEp('one', 1, [favorite], 'One', 300),
+            ],
+            'Book',
+            'local',
+            [],
+            [],
+            DateTime(2026),
+            '',
+            {},
+            '',
+            300,
+          ),
+        );
+        await tester.pump();
+        expect(scaffold.isLiked(), isTrue);
+        expect(find.byIcon(Icons.favorite), findsOneWidget);
+        ImageFavoriteManager().deleteImageFavorite([favorite]);
+        await tester.pump();
+        expect(scaffold.isLiked(), isFalse);
         expect(tester.takeException(), isNull);
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());
@@ -391,6 +483,15 @@ class _Favorites extends ChangeNotifier implements LocalFavoritesManager {
 
 class _TestHistory extends HistoryManager {
   _TestHistory() : super.create();
+
+  int imageFavoriteReads = 0;
+
+  @override
+  Database get imageFavoritesDatabase {
+    imageFavoriteReads++;
+    return super.imageFavoritesDatabase;
+  }
+
   @override
   Future<void> addReadDuration(History history, Duration duration) async {}
 }

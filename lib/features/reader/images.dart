@@ -298,7 +298,6 @@ class GalleryModeState extends State<_GalleryMode>
 
   final _pool = GalleryPhotoViewControllerPool();
   final _preloader = ReaderImagePreloader();
-  List<ReaderImagePreload> _pendingPreloads = [];
   bool _preloadScheduled = false;
   String? _lastVisibleStableIdentity;
   bool _isAnimatingVisualPage = false;
@@ -752,19 +751,33 @@ class GalleryModeState extends State<_GalleryMode>
     return (startIndex, endIndex);
   }
 
-  void cache(int startPage) {
-    _pendingPreloads = [
-      ..._cachePage(startPage + 1, true),
-      ..._cachePage(startPage - 1, true),
-      for (var offset = 2; offset <= preCacheCount; offset++)
-        ..._cachePage(startPage + offset, false),
-    ];
+  void _schedulePreload() {
     if (_preloadScheduled) return;
     _preloadScheduled = true;
-    // Let the visible page resolve its image before starting background work.
+    // onPageChanged runs halfway through a swipe. Wait for scrolling to stop,
+    // then let the visible page resolve its image before background work.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _preloadScheduled = false;
-      if (mounted) _preloader.update(_pendingPreloads);
+      if (!mounted ||
+          (controller.hasClients &&
+              controller.position.isScrollingNotifier.value)) {
+        return;
+      }
+      final startPage = _currentControllerIndex;
+      _preloader.update([
+        ..._cachePage(startPage + 1, true),
+        ..._cachePage(startPage - 1, true),
+        for (var offset = 2; offset <= preCacheCount; offset++)
+          ..._cachePage(startPage + offset, false),
+      ]);
+      _preloader.setPaused(false);
+      _pool.pruneExcept(
+        resolveKeepControllerKeys(
+          currentIndex: startPage,
+          totalVisualPages: totalVisualPages,
+          resolveKeyForIndex: _controllerKeyForIndex,
+        ),
+      );
     });
   }
 
@@ -823,7 +836,7 @@ class GalleryModeState extends State<_GalleryMode>
       _attachedChapter = reader.chapter;
       _lastVisibleStableIdentity = null;
     }
-    cache(_currentControllerIndex);
+    _schedulePreload();
     return Listener(
       onPointerDown: (event) {
         fingers++;
@@ -851,17 +864,21 @@ class GalleryModeState extends State<_GalleryMode>
       },
       child: NotificationListener<ScrollNotification>(
         onNotification: (notification) {
-          if (notification is ScrollStartNotification &&
-              notification.dragDetails != null) {
-            _isUserPaging = true;
-            _userPagingCommandId ??= reader.createNavigationCommandId(
-              retainObservedProgress: true,
-            );
+          if (notification.depth != 0) return false;
+          if (notification is ScrollStartNotification) {
+            _preloader.setPaused(true);
+            if (notification.dragDetails != null) {
+              _isUserPaging = true;
+              _userPagingCommandId ??= reader.createNavigationCommandId(
+                retainObservedProgress: true,
+              );
+            }
           } else if (notification is ScrollEndNotification) {
             final commandId = _userPagingCommandId;
             if (commandId != null) reader.finishNavigationCommand(commandId);
             _isUserPaging = false;
             _userPagingCommandId = null;
+            _schedulePreload();
           }
           return false;
         },
@@ -993,7 +1010,7 @@ class GalleryModeState extends State<_GalleryMode>
               _userPagingCommandId = commandId;
             }
             _currentControllerIndex = i;
-            cache(i);
+            _schedulePreload();
             var shouldRefresh = false;
             if (i == 0) {
               _lastVisibleStableIdentity = null;
@@ -1052,12 +1069,6 @@ class GalleryModeState extends State<_GalleryMode>
             if (shouldRefresh) {
               context.readerScaffold.requestEInkRefresh();
             }
-            final keepKeys = resolveKeepControllerKeys(
-              currentIndex: i,
-              totalVisualPages: totalVisualPages,
-              resolveKeyForIndex: _controllerKeyForIndex,
-            );
-            _pool.pruneExcept(keepKeys);
           },
         ),
       ),

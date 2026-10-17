@@ -45,6 +45,8 @@ class ReaderScaffoldState extends State<ReaderScaffold>
 
   bool _brightnessPanelOpen = false;
 
+  final _imageFavorites = <(String, int), ImageFavorite>{};
+
   final EInkRefreshController _eInkRefreshController = EInkRefreshController();
 
   static const kTopBarHeight = 56.0;
@@ -127,11 +129,14 @@ class ReaderScaffoldState extends State<ReaderScaffold>
       }
     });
     super.initState();
+    _reloadImageFavorites();
+    ImageFavoriteManager().addListener(_reloadImageFavorites);
     Future.delayed(const Duration(milliseconds: 200), addDragListener);
   }
 
   @override
   void dispose() {
+    ImageFavoriteManager().removeListener(_reloadImageFavorites);
     _eInkRefreshController.dispose();
     sliderFocus.dispose();
     super.dispose();
@@ -355,14 +360,22 @@ class ReaderScaffoldState extends State<ReaderScaffold>
   }
 
   ImageFavorite? _findImageFavorite(int page) {
+    return _imageFavorites[(context.reader.eid, page)];
+  }
+
+  void _reloadImageFavorites() {
     final comic = ImageFavoriteManager().find(
       context.reader.cid,
       context.reader.type.sourceKey,
     );
-    final ep = comic?.imageFavoritesEp
-        .where((e) => e.eid == context.reader.eid)
-        .firstOrNull;
-    return ep?.imageFavorites.where((image) => image.page == page).firstOrNull;
+    // Page changes only read memory, even while the toolbar is hidden.
+    _imageFavorites.clear();
+    for (final ep in comic?.imageFavoritesEp ?? <ImageFavoritesEp>[]) {
+      for (final image in ep.imageFavorites) {
+        _imageFavorites.putIfAbsent((ep.eid, image.page), () => image);
+      }
+    }
+    update();
   }
 
   void addImageFavorite() async {
