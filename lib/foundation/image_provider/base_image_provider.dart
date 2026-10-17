@@ -38,7 +38,8 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
 
   static const int maxImagePixel = 2560 * 1440;
 
-  static TargetImageSize _getTargetSize(int width, int height) {
+  @protected
+  TargetImageSize getTargetSize(int width, int height) {
     // ignore invalid size
     if (width <= 0 || height <= 0) {
       return TargetImageSize(width: width, height: height);
@@ -157,7 +158,7 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
         final buffer = await ImmutableBuffer.fromUint8List(bytes);
         final codec = await decode(
           buffer,
-          getTargetSize: enableResize ? _getTargetSize : null,
+          getTargetSize: enableResize ? getTargetSize : null,
         );
         await cacheImageAfterDecoding();
         return codec;

@@ -1,4 +1,6 @@
 import 'dart:async' show Future;
+import 'dart:math' as math;
+import 'dart:ui' show TargetImageSize;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_qjs/flutter_qjs.dart';
@@ -59,6 +61,7 @@ class ReaderImageProvider
     this.chapter,
     this.enableResize = false,
     this.target,
+    this.decodeScale = 1.0,
   });
 
   static final _diskCacheKeys = Expando<String>();
@@ -78,8 +81,53 @@ class ReaderImageProvider
 
   final ComicImageLoadTarget? target;
 
+  /// Changes the memory decode size without changing the source request/cache.
+  final double decodeScale;
+
+  ReaderImageProvider withDecodeScale(double scale) => ReaderImageProvider(
+    imageKey,
+    sourceKey,
+    cid,
+    eid,
+    page,
+    chapter: chapter,
+    enableResize: enableResize,
+    target: target,
+    decodeScale: scale,
+  );
+
   @override
   final bool enableResize;
+
+  @override
+  TargetImageSize getTargetSize(int width, int height) {
+    final size = target;
+    if (size == null || width <= 0 || height <= 0) {
+      return super.getTargetSize(width, height);
+    }
+    final scale = decodeScale.isFinite && decodeScale > 0 ? decodeScale : 1.0;
+    final split = size.splitWideImage && width > height;
+    final displayWidth = split ? width / 2 : width.toDouble();
+    final targetWidth = size.physicalWidth;
+    final targetHeight = size.physicalHeight;
+    var ratio = 1.0;
+    switch (size.fit) {
+      case ComicImageTargetFit.fitWidth:
+        if (targetWidth != null) ratio = targetWidth * scale / displayWidth;
+      case ComicImageTargetFit.fitHeight:
+        if (targetHeight != null) ratio = targetHeight * scale / height;
+      case ComicImageTargetFit.contain:
+        if (targetWidth != null) ratio = targetWidth * scale / displayWidth;
+        if (targetHeight != null) {
+          ratio = math.min(ratio, targetHeight * scale / height);
+        }
+    }
+    ratio = math.min(ratio, 1.0);
+    return TargetImageSize(
+      width: math.max(1, (width * ratio).round()),
+      height: math.max(1, (height * ratio).round()),
+    );
+  }
 
   @override
   bool get retryFileSystemErrors => !imageKey.startsWith('file://');
@@ -204,9 +252,12 @@ class ReaderImageProvider
   }
 
   @override
-  String get key => target != null
-      ? "$imageKey@$sourceKey@$cid@$eid@$enableResize@${target!.cacheIdentity}"
-      : "$imageKey@$sourceKey@$cid@$eid@$enableResize";
+  String get key {
+    final base = target != null
+        ? "$imageKey@$sourceKey@$cid@$eid@$enableResize@${target!.cacheIdentity}"
+        : "$imageKey@$sourceKey@$cid@$eid@$enableResize";
+    return decodeScale == 1.0 ? base : '$base@decode$decodeScale';
+  }
 
   @override
   String get diskCacheKey => _diskCacheKeys[this] ?? _processedCacheKey;

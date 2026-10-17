@@ -1,11 +1,14 @@
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:photo_view/photo_view.dart';
 import 'package:venera_plus/features/reader/gesture.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/global_state.dart';
+import 'package:venera_plus/foundation/image_provider/reader_image.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/features/reader/gallery_page_plan.dart';
 
@@ -40,6 +43,7 @@ class ComicImage extends StatefulWidget {
     this.onInit,
     this.onDispose,
     this.onRetry,
+    this.zoomController,
   }) : image = ResizeImage.resizeIfNeeded(cacheWidth, cacheHeight, image),
        assert(cacheWidth == null || cacheWidth > 0),
        assert(cacheHeight == null || cacheHeight > 0);
@@ -88,6 +92,8 @@ class ComicImage extends StatefulWidget {
   final void Function(State<ComicImage> state)? onDispose;
 
   final VoidCallback? onRetry;
+
+  final PhotoViewController? zoomController;
 
   static void clear() => ComicImageState.clear();
 
@@ -205,6 +211,40 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
 
   static final Map<int, Size> _cache = {};
 
+  StreamSubscription<PhotoViewControllerValue>? _zoomSubscription;
+  double _decodeScale = 1.0;
+
+  double _getDecodeScale(PhotoViewControllerValue value) {
+    final initial = widget.zoomController?.getInitialScale?.call();
+    if (initial == null || initial <= 0) return 1.0;
+    return ((value.scale ?? initial) / initial - 0.01).ceilToDouble().clamp(
+      1.0,
+      double.infinity,
+    );
+  }
+
+  void _listenForZoom() {
+    _zoomSubscription?.cancel();
+    final controller = widget.zoomController;
+    _decodeScale = 1.0;
+    _zoomSubscription = controller?.outputStateStream.listen(_onZoom);
+    // PhotoView initializes its scale in a microtask after mounting its child.
+    Future.microtask(() {
+      if (mounted &&
+          controller != null &&
+          widget.zoomController == controller) {
+        _onZoom(controller.value);
+      }
+    });
+  }
+
+  void _onZoom(PhotoViewControllerValue value) {
+    final scale = _getDecodeScale(value);
+    if (scale == _decodeScale) return;
+    _decodeScale = scale;
+    _resolveImage(keepImage: true);
+  }
+
   static void clear() => _cache.clear();
 
   @override
@@ -212,6 +252,7 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _scrollAwareContext = DisposableBuildContext<State<ComicImage>>(this);
+    _listenForZoom();
     widget.onInit?.call(this);
   }
 
@@ -219,6 +260,7 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   void dispose() {
     assert(_imageStream != null);
     WidgetsBinding.instance.removeObserver(this);
+    _zoomSubscription?.cancel();
     _stopListeningToStream();
     _completerHandle?.dispose();
     _scrollAwareContext.dispose();
@@ -246,7 +288,11 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   @override
   void didUpdateWidget(ComicImage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.image != oldWidget.image) {
+    if (widget.zoomController != oldWidget.zoomController) {
+      _listenForZoom();
+    }
+    if (widget.image != oldWidget.image ||
+        widget.zoomController != oldWidget.zoomController) {
       _resolveImage();
       _lastReportedSize = null;
       _lastReportedImageKey = null;
@@ -282,10 +328,13 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
         SemanticsBinding.instance.accessibilityFeatures.invertColors;
   }
 
-  void _resolveImage() {
+  void _resolveImage({bool keepImage = false}) {
+    final image = widget.image;
     final ScrollAwareImageProvider provider = ScrollAwareImageProvider<Object>(
       context: _scrollAwareContext,
-      imageProvider: widget.image,
+      imageProvider: image is ReaderImageProvider && _decodeScale != 1.0
+          ? image.withDecodeScale(_decodeScale)
+          : image,
     );
     final ImageStream newStream = provider.resolve(
       createLocalImageConfiguration(
@@ -295,7 +344,7 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
             : null,
       ),
     );
-    _updateSourceStream(newStream);
+    _updateSourceStream(newStream, keepImage: keepImage);
   }
 
   ImageStreamListener? _imageStreamListener;
@@ -345,7 +394,7 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   // Updates _imageStream to newStream, and moves the stream listener
   // registration from the old stream to the new stream (if a listener was
   // registered).
-  void _updateSourceStream(ImageStream newStream) {
+  void _updateSourceStream(ImageStream newStream, {bool keepImage = false}) {
     if (_imageStream?.key == newStream.key) {
       return;
     }
@@ -354,7 +403,7 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
       _imageStream!.removeListener(_getListener());
     }
 
-    if (!widget.gaplessPlayback) {
+    if (!widget.gaplessPlayback && !keepImage) {
       setState(() {
         _replaceImage(info: null);
       });

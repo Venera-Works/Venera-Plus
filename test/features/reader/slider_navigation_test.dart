@@ -11,6 +11,7 @@ import 'package:venera_plus/features/favorites/favorites_manager.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/reader/images.dart';
+import 'package:venera_plus/features/reader/comic_image.dart';
 import 'package:venera_plus/features/reader/reader_page.dart';
 import 'package:venera_plus/features/reader/scaffold.dart';
 import 'package:venera_plus/features/sync/data_sync.dart';
@@ -18,6 +19,7 @@ import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/image_provider/reader_image.dart';
 
 import '../../widget_test_io.dart';
 
@@ -115,6 +117,23 @@ void main() {
         expect(reader.maxPage, 300);
         expect(reader.imageViewController, isA<ContinuousModeState>());
         expect(reader.page, 250);
+        final nextImage = ReaderImageProvider(
+          reader.images![250],
+          null,
+          reader.cid,
+          reader.eid,
+          251,
+          chapter: reader.chapter,
+          enableResize: true,
+          target: calculateReaderImageTargetFromContext(
+            tester.element(find.byType(ComicImage).first),
+            251,
+          ),
+        );
+        expect(
+          PaintingBinding.instance.imageCache.containsKey(nextImage),
+          isTrue,
+        );
         final scaffold = tester.state<ReaderScaffoldState>(
           find.byType(ReaderScaffold),
         );
@@ -297,6 +316,11 @@ void main() {
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());
         tester.view.resetPhysicalSize();
+        await runWidgetIo(tester, () async {
+          while (PaintingBinding.instance.imageCache.pendingImageCount > 0) {
+            await Future<void>.delayed(const Duration(milliseconds: 10));
+          }
+        });
         await runWidgetIo(
           tester,
           () => HistoryManager().flushReadingProgress(
@@ -315,7 +339,6 @@ void main() {
         previous.forEach((key, value) => appdata.settings[key] = value);
         await tester.runAsync(() async {
           await appdata.saveData(false);
-          await Future<void>.delayed(const Duration(milliseconds: 200));
           await directory.delete(recursive: true);
         });
       }

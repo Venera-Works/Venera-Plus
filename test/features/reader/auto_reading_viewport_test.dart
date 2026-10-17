@@ -12,6 +12,7 @@ import 'package:venera_plus/features/favorites/favorites_manager.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/reader/auto_reading.dart';
+import 'package:venera_plus/features/reader/comic_image.dart';
 import 'package:venera_plus/features/reader/images.dart';
 import 'package:venera_plus/features/reader/reader_page.dart';
 import 'package:venera_plus/features/reader/scaffold.dart';
@@ -20,6 +21,7 @@ import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/image_provider/reader_image.dart';
 
 bool _sqliteAvailable() {
   try {
@@ -144,6 +146,23 @@ void main() {
 
           await waitForImages();
           if (mode.isGallery) {
+            final nextImage = ReaderImageProvider(
+              reader.images![1],
+              null,
+              reader.cid,
+              reader.eid,
+              2,
+              chapter: reader.chapter,
+              enableResize: true,
+              target: calculateReaderImageTargetFromContext(
+                tester.element(find.byType(ComicImage).first),
+                2,
+              ),
+            );
+            expect(
+              PaintingBinding.instance.imageCache.containsKey(nextImage),
+              isTrue,
+            );
             final imageFinder = find.byType(RawImage).hitTestable();
             expect(imageFinder, findsOneWidget);
             final image = tester.widget<RawImage>(imageFinder).image;

@@ -390,12 +390,6 @@ class GalleryModeState extends State<_GalleryMode>
         ((photo?.scale ?? initialScale) - initialScale).abs() > 0.01) {
       return false;
     }
-    if (!isSplitEnabled) {
-      final (start, end) = getPageImagesRange(currentIndex);
-      if (end - start == 1) {
-        return true;
-      }
-    }
     final visible = imageStates
         .whereType<ComicImageState>()
         .where((image) => image.visibleInReader)
@@ -805,6 +799,7 @@ class GalleryModeState extends State<_GalleryMode>
       _attachedChapter = reader.chapter;
       _lastVisibleStableIdentity = null;
     }
+    cache(_currentControllerIndex);
     return Listener(
       onPointerDown: (event) {
         fingers++;
@@ -865,7 +860,6 @@ class GalleryModeState extends State<_GalleryMode>
                 child: _buildChapterCommentsPage(),
               );
             } else {
-              cache(index);
               final key = _controllerKeyForIndex(index);
               final photoViewController = _pool.getOrCreate(key);
 
@@ -890,6 +884,7 @@ class GalleryModeState extends State<_GalleryMode>
                     size: viewportSize,
                     child: ComicImage(
                       image: provider,
+                      zoomController: photoViewController,
                       onRetry: () => context
                           .findAncestorStateOfType<ReaderImagesState>()!
                           .retryImage(reader.chapter, sourceIndex + 1),
@@ -911,34 +906,17 @@ class GalleryModeState extends State<_GalleryMode>
                 endIndex,
               );
 
-              if (reader.imagesPerPage == 1 || pageImages.length == 1) {
-                return PhotoViewGalleryPageOptions(
-                  filterQuality: FilterQuality.medium,
-                  controller: photoViewController,
-                  imageProvider: _createImageProviderFromKey(
-                    pageImages[0],
-                    context,
-                    startIndex + 1,
-                  ),
-                  fit: BoxFit.contain,
-                  errorBuilder: (_, error, s, retry) {
-                    return NetworkError(
-                      message: error.toString(),
-                      retry: () => context
-                          .findAncestorStateOfType<ReaderImagesState>()!
-                          .retryImage(reader.chapter, startIndex + 1),
-                    );
-                  },
-                );
-              }
-
               final viewportSize = MediaQuery.of(context).size;
               return PhotoViewGalleryPageOptions.customChild(
                 childSize: viewportSize,
                 controller: photoViewController,
                 minScale: PhotoViewComputedScale.contained * 1.0,
                 maxScale: PhotoViewComputedScale.covered * 10.0,
-                child: buildPageImages(pageImages, startIndex),
+                child: buildPageImages(
+                  pageImages,
+                  startIndex,
+                  photoViewController,
+                ),
               );
             }
           },
@@ -991,6 +969,7 @@ class GalleryModeState extends State<_GalleryMode>
               _userPagingCommandId = commandId;
             }
             _currentControllerIndex = i;
+            cache(i);
             var shouldRefresh = false;
             if (i == 0) {
               _lastVisibleStableIdentity = null;
@@ -1061,7 +1040,11 @@ class GalleryModeState extends State<_GalleryMode>
     );
   }
 
-  Widget buildPageImages(List<String> images, int startIndex) {
+  Widget buildPageImages(
+    List<String> images,
+    int startIndex,
+    PhotoViewController zoomController,
+  ) {
     Axis axis = (reader.mode == ReaderMode.galleryTopToBottom)
         ? Axis.vertical
         : Axis.horizontal;
@@ -1078,6 +1061,7 @@ class GalleryModeState extends State<_GalleryMode>
       imageWidgets = [
         Expanded(
           child: ComicImage(
+            zoomController: zoomController,
             width: double.infinity,
             height: double.infinity,
             image: _createImageProviderFromKey(
@@ -1098,6 +1082,7 @@ class GalleryModeState extends State<_GalleryMode>
         ),
         Expanded(
           child: ComicImage(
+            zoomController: zoomController,
             width: double.infinity,
             height: double.infinity,
             image: _createImageProviderFromKey(
@@ -1127,6 +1112,9 @@ class GalleryModeState extends State<_GalleryMode>
         return Expanded(
           child: ComicImage(
             image: imageProvider,
+            zoomController: zoomController,
+            width: double.infinity,
+            height: double.infinity,
             onRetry: () => context
                 .findAncestorStateOfType<ReaderImagesState>()!
                 .retryImage(reader.chapter, entry.sourcePage),
@@ -1277,7 +1265,16 @@ class GalleryModeState extends State<_GalleryMode>
         : _currentControllerIndex;
     final key = _controllerKeyForIndex(currentIndex);
     var controllerForPage = _pool[key];
-    controllerForPage?.onDoubleClick?.call();
+    final initialScale = controllerForPage?.getInitialScale?.call();
+    if (initialScale == null) return;
+    final target = controllerForPage!.scale == initialScale
+        ? initialScale * 1.75
+        : initialScale;
+    final size = reader.size;
+    controllerForPage.animateScale?.call(
+      target,
+      Offset(size.width / 2 - location.dx, size.height / 2 - location.dy),
+    );
   }
 
   @override
@@ -1896,10 +1893,9 @@ class ContinuousModeState extends State<_ContinuousMode>
     _initSegments();
     itemPositionsListener.itemPositions.addListener(onPositionChanged);
     cached = List.filled(reader.maxPage + 2, false);
-    Future.delayed(
-      const Duration(milliseconds: 100),
-      () => cacheImages(reader.page),
-    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) cacheImages(reader.page);
+    });
     super.initState();
   }
 
@@ -2059,7 +2055,15 @@ class ContinuousModeState extends State<_ContinuousMode>
   }
 
   void cacheImages(int current) {
+    if (!mounted) return;
+    for (final i in [current - 1, current + 1]) {
+      final imageRef = _imageRefAt(i);
+      if (imageRef != null) {
+        precacheImage(_createImageProviderFromRef(imageRef, context), context);
+      }
+    }
     for (int i = current + 1; i <= current + preCacheCount; i++) {
+      if (i == current + 1) continue;
       if (crossChapter) {
         var imageRef = _imageRefAt(i);
         if (imageRef == null) continue;
@@ -2246,6 +2250,7 @@ class ContinuousModeState extends State<_ContinuousMode>
         var comicImage = ComicImage(
           filterQuality: FilterQuality.medium,
           image: image,
+          zoomController: photoViewController,
           onRetry: () => context
               .findAncestorStateOfType<ReaderImagesState>()!
               .retryImage(imageRef.chapter, imageRef.page),
@@ -3097,7 +3102,7 @@ ImageProvider _createImageProviderFromKey(
     reader.eid,
     page,
     chapter: reader.chapter,
-    enableResize: reader.mode.isContinuous,
+    enableResize: true,
     target: target,
   );
 }
@@ -3115,7 +3120,7 @@ ImageProvider _createImageProviderFromRef(
     imageRef.eid,
     imageRef.page,
     chapter: imageRef.chapter,
-    enableResize: reader.mode.isContinuous,
+    enableResize: true,
     target: target,
   );
 }
