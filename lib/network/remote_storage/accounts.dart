@@ -89,7 +89,11 @@ class RemoteStorageAccounts with ChangeNotifier {
         appdata.settings['backupWebdavPath'] as String? ?? '/venera_backup/',
       ),
     ]) {
-      if (appdata.settings[locationKey] is Map) continue;
+      final previousLocation = appdata.settings[locationKey];
+      if (previousLocation is Map &&
+          values.any((value) => value.id == previousLocation['accountId'])) {
+        continue;
+      }
       final raw = appdata.settings[setting];
       if (raw is! List ||
           raw.length != 3 ||
@@ -124,7 +128,12 @@ class RemoteStorageAccounts with ChangeNotifier {
         }
       }
       selected ??= StorageAccount(
-        id: _uuid.v4(),
+        id:
+            previousLocation is Map &&
+                previousLocation['accountId'] is String &&
+                (previousLocation['accountId'] as String).isNotEmpty
+            ? previousLocation['accountId'] as String
+            : _uuid.v4(),
         backend: StorageBackend.webdav,
         driver: 'webdav',
         name: setting == 'webdav' ? 'WebDAV同步' : 'WebDAV',
@@ -137,7 +146,10 @@ class RemoteStorageAccounts with ChangeNotifier {
       if (!values.any((a) => a.id == selected!.id)) values.add(selected);
       appdata.settings[locationKey] = RemoteLocation(
         accountId: selected.id,
-        directory: directory,
+        directory:
+            previousLocation is Map && previousLocation['directory'] is String
+            ? previousLocation['directory'] as String
+            : directory,
       ).toJson();
       appdata.settings[setting] = const [];
       changed = true;
@@ -240,7 +252,7 @@ class RemoteStorageAccounts with ChangeNotifier {
     appdata.settings[remoteStorageAccountsSetting] = values
         .map((item) => item.toJson())
         .toList();
-    await appdata.saveData(false);
+    await appdata.saveData();
     final rpc = _openListRpc;
     if (account.backend == StorageBackend.openlist && rpc != null) {
       final response = await rpc.invoke('saveAccount', {
@@ -291,7 +303,7 @@ class RemoteStorageAccounts with ChangeNotifier {
         appdata.settings[key] = null;
       }
     }
-    await appdata.saveData(false);
+    await appdata.saveData();
     notifyListeners();
   }
 

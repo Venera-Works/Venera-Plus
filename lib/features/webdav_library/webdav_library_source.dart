@@ -51,6 +51,8 @@ class RemoteComicLibraryRegistry {
   /// Importers reset this only for snapshots containing a valid legacy WebDAV
   /// configuration and no `remoteLibraries` field.
   static const legacyMigrationKey = 'remoteComicLibraryLegacyMigrated';
+  static const legacyAccountMigrationKey =
+      'remoteComicLibraryLegacyAccountMigrated';
 
   static List<RemoteLibrary> read() {
     final value = appdata.settings[settingsKey];
@@ -139,12 +141,64 @@ class RemoteComicLibraryRegistry {
   /// The legacy source still serves it so its historical comic ids stay
   /// untouched; the stored relation makes it manageable beside new libraries.
   static Future<void> migrateLegacyWebDavLibrary() async {
-    if (appdata.settings[legacyMigrationKey] == true) return;
+    final storage = RemoteStorageAccounts.instance;
+    final existing = findBySourceKey(WebDavLibrarySource.sourceKey);
     final legacy = WebDavLibraryConfig.fromSettings();
-    if (!legacy.isValid ||
-        RemoteStorageAccounts.instance.libraries.any(
-          (item) => item.sourceKey == WebDavLibrarySource.sourceKey,
+    if (existing != null) {
+      if (appdata.settings[legacyAccountMigrationKey] == true) return;
+      if (storage.account(existing.accountId) == null) {
+        if (!legacy.isValid || existing.id != legacy.libraryId) return;
+        StorageAccount? matching;
+        for (final account in storage.accounts.where(
+          (account) => account.backend == StorageBackend.webdav,
         )) {
+          final endpoint = WebDavEndpoint(
+            url: account.authorization['url'] as String? ?? '',
+            user: account.authorization['user'] as String? ?? '',
+            password: account.authorization['password'] as String? ?? '',
+          );
+          if (endpoint.url == legacy.url &&
+              endpoint.user == legacy.user &&
+              endpoint.password == legacy.pass) {
+            matching = account;
+            break;
+          }
+        }
+        if (matching == null) {
+          await storage.save(
+            StorageAccount(
+              id: existing.accountId,
+              backend: StorageBackend.webdav,
+              driver: 'webdav',
+              name: 'WebDAV漫画库',
+              authorization: {
+                'url': legacy.url,
+                'user': legacy.user,
+                'password': legacy.pass,
+              },
+            ),
+          );
+        } else {
+          await storage.saveLibrary(
+            RemoteLibrary(
+              id: existing.id,
+              sourceKey: existing.sourceKey,
+              accountId: matching.id,
+              directories: existing.directories,
+              name: existing.name,
+              autoRefresh: existing.autoRefresh,
+              refreshIntervalMinutes: existing.refreshIntervalMinutes,
+            ),
+          );
+        }
+      }
+      appdata.settings[legacyAccountMigrationKey] = true;
+      appdata.settings[legacyMigrationKey] = true;
+      await appdata.saveData(false);
+      return;
+    }
+    if (appdata.settings[legacyMigrationKey] == true) return;
+    if (!legacy.isValid) {
       appdata.settings[legacyMigrationKey] = true;
       await appdata.saveData(false);
       return;
@@ -181,6 +235,7 @@ class RemoteComicLibraryRegistry {
       ),
     );
     appdata.settings[legacyMigrationKey] = true;
+    appdata.settings[legacyAccountMigrationKey] = true;
     await appdata.saveData(false);
   }
 }

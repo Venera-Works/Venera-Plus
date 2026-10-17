@@ -20,7 +20,7 @@ Each online comic library can select one account and one or more recognition dir
 
 Existing WebDAV sync and archive settings are automatically added to the shared accounts while retaining their remote directories. Local comic paths, cache settings, and download threads are under Local Storage and Downloads; manual data transfer is under App Data Import and Export.
 
-Comic-library credentials are included in app-data snapshots. During restore, a still-valid local authorization is retained. The data-sync destination stays local; archive-backup configuration is synchronized only when its opt-in is enabled.
+All saved cloud accounts and their credentials are included in app-data snapshots, including accounts not yet used by a comic library. During restore, a still-valid local authorization is retained. The data-sync destination stays local; archive-backup configuration is synchronized only when its opt-in is enabled.
 
 Native OpenList builds, platform loading, and real-provider checks have not been run locally. They are pending CI and dedicated test directories.
 

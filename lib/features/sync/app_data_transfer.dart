@@ -11,7 +11,6 @@ import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/foundation/log.dart';
-import 'package:venera_plus/foundation/appdata_sync_policy.dart';
 import 'package:venera_plus/network/cookie_jar.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library.dart';
@@ -217,11 +216,7 @@ Future<void> importAppData(File file, {bool checkVersion = false}) async {
       final settings = importedAppdata['settings'];
       if (settings is Map) {
         await RemoteStorageAccounts.instance.mergeImportedSettings(
-          filterRemoteStorageAccountsForSync(
-            settings['remoteStorageAccounts'],
-            Map<String, dynamic>.from(settings),
-            includeIncomingBackup: true,
-          ),
+          settings['remoteStorageAccounts'],
           localBeforeImport: localAccounts,
         );
       }

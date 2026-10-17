@@ -201,6 +201,29 @@ void main() {
   }
 
   test(
+    'repairs a missing sync account from retained legacy credentials',
+    () async {
+      appdata.settings['legacyWebDavAccountNamesMigrated'] = true;
+      appdata.settings['webdav'] = ['https://example.com/dav', 'user', 'pass'];
+      final location = {
+        'accountId': 'lost-sync',
+        'directory': '/Existing sync/',
+      };
+      appdata.settings['syncRemoteLocation'] = location;
+
+      await storage.migrateLegacyWebDavLocations();
+
+      expect(appdata.settings['syncRemoteLocation'], location);
+      expect(storage.account('lost-sync')?.authorization, {
+        'url': 'https://example.com/dav',
+        'user': 'user',
+        'password': 'pass',
+      });
+      expect(storage.account('lost-sync')?.name, 'WebDAV同步');
+    },
+  );
+
+  test(
     'repairs previously migrated shared account without changing library ids',
     () async {
       const account = StorageAccount(

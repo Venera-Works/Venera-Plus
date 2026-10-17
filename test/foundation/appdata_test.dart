@@ -29,6 +29,61 @@ void main() {
     expect(appdata.settings['comicSourceListUrl'], isEmpty);
   });
 
+  test(
+    'sync snapshots retain cloud accounts and keep the sync target local',
+    () async {
+      final previousSettings = Map<String, dynamic>.from(
+        appdata.toJson()['settings'] as Map,
+      );
+      addTearDown(() async {
+        appdata.settings.replaceAll(previousSettings);
+        await appdata.saveData(false);
+      });
+      final accounts = [
+        {
+          'id': 'cloud',
+          'backend': 'openlist',
+          'driver': 'GoogleDrive',
+          'name': 'Unused cloud account',
+          'authorization': {'refresh_token': 'cloud-refresh'},
+        },
+        {
+          'id': 'webdav',
+          'backend': 'webdav',
+          'driver': 'webdav',
+          'name': 'WebDAV漫画库',
+          'authorization': {
+            'url': 'https://example.test/dav',
+            'user': 'user',
+            'password': 'password',
+          },
+        },
+      ];
+      final syncLocation = {'accountId': 'cloud', 'directory': '/Local sync/'};
+      appdata.settings.replaceAll({
+        'remoteStorageAccounts': accounts,
+        'syncRemoteLocation': syncLocation,
+      });
+      await appdata.saveData(false);
+      final snapshot =
+          jsonDecode(
+                await File(
+                  p.join(App.dataPath, 'syncdata.json'),
+                ).readAsString(),
+              )
+              as Map<String, dynamic>;
+      final settings = snapshot['settings'] as Map;
+      expect(settings['remoteStorageAccounts'], accounts);
+      expect(settings.containsKey('syncRemoteLocation'), isFalse);
+      expect(appdata.exportSyncSettings()['remoteStorageAccounts'], accounts);
+
+      appdata.settings['remoteStorageAccounts'] = [];
+      await appdata.syncData(snapshot);
+      expect(appdata.settings['remoteStorageAccounts'], accounts);
+      expect(appdata.settings['syncRemoteLocation'], syncLocation);
+    },
+  );
+
   test('reader settings resolve from global, device, then comic scope', () {
     final previousDeviceId = appdata.settings['deviceId'];
     final previousDeviceSettings = appdata.settings['deviceSpecificSettings'];

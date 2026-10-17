@@ -7,7 +7,6 @@ import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/sync/sync.dart';
-import 'package:venera_plus/foundation/appdata_sync_policy.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 
 void main() {
@@ -58,20 +57,18 @@ void main() {
   });
 
   group('archive WebDAV config sync setting', () {
-    test('exports only accounts used by libraries and opted-in backup', () {
+    test('exports all accounts independently of their configured purposes', () {
       final accounts = [
         {'id': 'library'},
         {'id': 'backup'},
         {'id': 'sync-only'},
+        {'id': 'unused'},
       ];
-      final result = filterRemoteStorageAccountsForSync(accounts, {
-        'remoteLibraries': [
-          {'accountId': 'library'},
-        ],
-        'backupWebdavSyncEnabled': true,
-        'backupRemoteLocation': {'accountId': 'backup'},
-      });
-      expect(result.map((item) => (item as Map)['id']), ['library', 'backup']);
+      appdata.settings[remoteStorageAccountsSetting] = accounts;
+      expect(
+        appdata.exportSyncSettings()[remoteStorageAccountsSetting],
+        accounts,
+      );
     });
 
     test('does not sync archive WebDAV config when disabled', () async {

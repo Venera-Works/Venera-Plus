@@ -20,6 +20,6 @@ When choosing real-time or scheduled mode, choose an initial upload or download.
 
 ## Sync boundaries
 
-WebDAV connection information, mode, interval, pending state, local paths, and Bangumi local retry queues stay on this device. Settings listed in `disableSyncFields` are excluded. Comic-library configuration always participates in settings sync, including its connection information; use only a trusted WebDAV service.
+The data-sync destination, mode, interval, pending state, local paths, and Bangumi local retry queues stay on this device. Settings listed in `disableSyncFields` are excluded. All cloud accounts and their credentials are included in settings sync, and comic-library configuration always participates; use only a trusted storage service.
 
 Local imports and cloud downloads both restore complete `.venera` snapshots and roll back replaced files on failure. Restored data reloads databases, comic sources, and affected runtime services. Only a manual local import becomes a new local change for later sync; a cloud download never triggers an upload. An old snapshot without the Home favorites binding clears the previous local binding.

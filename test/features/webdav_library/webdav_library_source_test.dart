@@ -95,6 +95,111 @@ void main() {
     },
   );
 
+  for (final hasMatchingAccount in [false, true]) {
+    test(
+      'recovers an orphaned legacy library and reads old favorites, existing=$hasMatchingAccount',
+      () async {
+        final storage = RemoteStorageAccounts.instance;
+        final legacy = WebDavLibraryConfig.fromSettings();
+        final original = RemoteLibrary(
+          id: legacy.libraryId,
+          sourceKey: WebDavLibrarySource.sourceKey,
+          accountId: 'legacy-missing',
+          directories: ['/manga/'],
+          name: 'Old library',
+          autoRefresh: false,
+        );
+        appdata.settings[remoteStorageAccountsSetting] = [];
+        appdata.settings[remoteLibrariesSetting] = [original.toJson()];
+        appdata.settings[RemoteComicLibraryRegistry.legacyMigrationKey] = true;
+        appdata.settings[RemoteComicLibraryRegistry.legacyAccountMigrationKey] =
+            false;
+        if (hasMatchingAccount) {
+          await storage.save(
+            StorageAccount(
+              id: 'existing-account',
+              backend: StorageBackend.webdav,
+              driver: 'webdav',
+              name: 'My library account',
+              authorization: {
+                'url': legacy.url,
+                'user': legacy.user,
+                'password': legacy.pass,
+              },
+            ),
+          );
+        }
+
+        await RemoteComicLibraryRegistry.migrateLegacyWebDavLibrary();
+        await appdata.loadDataForTesting(dataDir.path);
+
+        final library = storage.libraries.single;
+        final account = storage.account(library.accountId)!;
+        expect(library.id, original.id);
+        expect(library.sourceKey, original.sourceKey);
+        expect(library.directories, original.directories);
+        expect(storage.accounts, hasLength(1));
+        expect(
+          account.id,
+          hasMatchingAccount ? 'existing-account' : original.accountId,
+        );
+        expect(account.authorization, {
+          'url': legacy.url,
+          'user': legacy.user,
+          'password': legacy.pass,
+        });
+        if (hasMatchingAccount) expect(account.name, 'My library account');
+        final store = _FakeRemoteFileStore(account.id)
+          ..dirs['/manga/Old/'] = const [
+            RemoteEntry(
+              name: '001.jpg',
+              path: '/manga/Old/001.jpg',
+              isDirectory: false,
+            ),
+          ];
+        final engine = WebDavLibraryEngine(library: library, store: store);
+        addTearDown(engine.cancel);
+        final source = engine.create();
+        final details = await source.loadComicInfo!('Old');
+        final pages = await source.loadComicPages!('Old', null);
+        expect(source.key, original.sourceKey);
+        expect(details.success, isTrue);
+        expect(pages.success, isTrue);
+        expect(pages.data, ['/manga/Old/001.jpg']);
+
+        // Later account deletion is an explicit action and must stay deleted.
+        await storage.remove(account.id);
+        await RemoteComicLibraryRegistry.migrateLegacyWebDavLibrary();
+        expect(storage.accounts, isEmpty);
+      },
+    );
+  }
+
+  test(
+    'does not restore legacy credentials into a different library identity',
+    () async {
+      appdata.settings[remoteStorageAccountsSetting] = [];
+      appdata.settings[remoteLibrariesSetting] = [
+        const RemoteLibrary(
+          id: 'another-library',
+          sourceKey: WebDavLibrarySource.sourceKey,
+          accountId: 'missing',
+          directories: ['/elsewhere/'],
+          name: 'Other',
+        ).toJson(),
+      ];
+      appdata.settings[RemoteComicLibraryRegistry.legacyMigrationKey] = true;
+      appdata.settings[RemoteComicLibraryRegistry.legacyAccountMigrationKey] =
+          false;
+      await RemoteComicLibraryRegistry.migrateLegacyWebDavLibrary();
+      expect(RemoteStorageAccounts.instance.accounts, isEmpty);
+      expect(
+        RemoteStorageAccounts.instance.libraries.single.accountId,
+        'missing',
+      );
+    },
+  );
+
   test(
     'root memberships merge selected directories and retain removed root cache',
     () {

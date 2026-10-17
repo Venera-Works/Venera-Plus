@@ -15,6 +15,7 @@ import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/network/cookie_jar.dart';
+import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 import 'package:webdav_client/webdav_client.dart' as dav;
 import 'package:zip_flutter/zip_flutter.dart';
 
@@ -137,6 +138,90 @@ String? _historyTitle(String id) {
 }
 
 void main() {
+  test(
+    'cloud-account snapshots restore unused accounts and retain local authorization',
+    () async {
+      final root = Directory.systemTemp.createTempSync(
+        'venera-account-import-',
+      );
+      String? previousDataPath;
+      String? previousCachePath;
+      try {
+        previousDataPath = App.dataPath;
+      } catch (_) {}
+      try {
+        previousCachePath = App.cachePath;
+      } catch (_) {}
+      final previousSettings = Map<String, dynamic>.from(
+        appdata.toJson()['settings'] as Map,
+      );
+      App.dataPath = Directory(p.join(root.path, 'data')).path;
+      App.cachePath = Directory(p.join(root.path, 'cache')).path;
+      await Directory(App.dataPath).create();
+      await Directory(App.cachePath).create();
+      addTearDown(() async {
+        configureAppDataArchiveExtractorForTesting(null);
+        registerAppDataSettingsChangedHandler(null);
+        appdata.settings.replaceAll(previousSettings);
+        await appdata.saveData(false);
+        App.dataPath = previousDataPath ?? Directory.systemTemp.path;
+        App.cachePath = previousCachePath ?? Directory.systemTemp.path;
+        await root.delete(recursive: true);
+      });
+      const local = StorageAccount(
+        id: 'local-sync',
+        backend: StorageBackend.openlist,
+        driver: 'GoogleDrive',
+        name: 'Local sync',
+        authorization: {'refresh_token': 'local-valid-token'},
+      );
+      const incoming = StorageAccount(
+        id: 'unused-cloud',
+        backend: StorageBackend.openlist,
+        driver: 'BaiduNetdisk',
+        name: 'Unused cloud',
+        authorization: {'refresh_token': 'incoming-token'},
+      );
+      final syncLocation = {'accountId': local.id, 'directory': '/Local sync/'};
+      appdata.settings.replaceAll({
+        remoteStorageAccountsSetting: [local.toJson()],
+        'syncRemoteLocation': syncLocation,
+      });
+      await appdata.saveData(false);
+      var refreshed = false;
+      registerAppDataSettingsChangedHandler(() => refreshed = true);
+      configureAppDataArchiveExtractorForTesting((archive, destination) async {
+        await File(p.join(destination.path, 'appdata.json')).writeAsString(
+          jsonEncode({
+            'settings': {
+              'dataVersion': 1,
+              remoteStorageAccountsSetting: [
+                local
+                    .copyWith(
+                      authorization: const {
+                        'refresh_token': 'remote-old-token',
+                      },
+                    )
+                    .toJson(),
+                incoming.toJson(),
+              ],
+            },
+          }),
+        );
+      });
+
+      await importAppData(File(p.join(root.path, 'snapshot.venera')));
+
+      final storage = RemoteStorageAccounts.instance;
+      expect(storage.account(local.id)?.authorization, local.authorization);
+      expect(storage.account(incoming.id)?.toJson(), incoming.toJson());
+      expect(appdata.settings['syncRemoteLocation'], syncLocation);
+      expect(refreshed, isTrue);
+      await appdata.loadDataForTesting(App.dataPath);
+      expect(storage.account(incoming.id)?.toJson(), incoming.toJson());
+    },
+  );
+
   group(
     'App data transfer with native ZIP',
     () {
