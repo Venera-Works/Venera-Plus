@@ -208,9 +208,10 @@ class ReaderState extends State<Reader>
   @override
   String get cid => widget.cid;
 
-  String get eid => widget.chapters?.ids.elementAtOrNull(chapter - 1) ?? '0';
+  String get eid => readingChapter?.id ?? '0';
   ReadingChapter? get readingChapter =>
       _readingChapters.elementAtOrNull(chapter - 1);
+  String? get chapterTitle => _chapterTitles.elementAtOrNull(chapter - 1);
 
   @override
   List<String>? images;
@@ -225,6 +226,7 @@ class ReaderState extends State<Reader>
   History? history;
   bool localPageOrderChecked = false;
   late final List<ReadingChapter> _readingChapters;
+  late final List<String> _chapterTitles;
   late final ReadingCatalog? _readingCatalog;
   late String? sessionRoundId;
   late final String _initialNavigationCommandId;
@@ -317,6 +319,8 @@ class ReaderState extends State<Reader>
     history = widget.history;
     _readingCatalog = readingCatalogFromComicChapters(widget.chapters);
     _readingChapters = _readingCatalog?.chapters ?? const [];
+    _chapterTitles =
+        widget.chapters?.titles.toList(growable: false) ?? const [];
     sessionRoundId = widget.history.activeRereadId;
     _initialNavigationCommandId = const Uuid().v4();
     _applyInitialHistoryPosition(widget.history);
@@ -695,7 +699,7 @@ class ReaderState extends State<Reader>
   }
 
   @override
-  int get maxChapter => widget.chapters?.length ?? 1;
+  int get maxChapter => widget.chapters == null ? 1 : _readingChapters.length;
 
   bool get isSplitDualPageEnabled =>
       mode.isGallery &&
@@ -743,15 +747,15 @@ class ReaderState extends State<Reader>
       lastImagePage: maxPage,
       totalPages: totalPages,
       chapter: chapter,
-      maxChapter: chapters.length,
+      maxChapter: maxChapter,
       isGallerySplitEnabled: isSplitDualPageEnabled,
       controller: imageViewController,
     )) {
       return;
     }
-    final chapterKey = chapters.ids.elementAtOrNull(chapter - 1);
-    final chapterTitle = chapters.titles.elementAtOrNull(chapter - 1);
-    if (chapterKey == null || chapterTitle == null) {
+    final chapterKey = readingChapter?.id;
+    final completedChapterTitle = chapterTitle;
+    if (chapterKey == null || completedChapterTitle == null) {
       return;
     }
     try {
@@ -761,7 +765,7 @@ class ReaderState extends State<Reader>
           sourceKey: type.sourceKey,
           comicId: cid,
           chapterKey: chapterKey,
-          chapterTitle: chapterTitle,
+          chapterTitle: completedChapterTitle,
         ),
       );
     } catch (error, stackTrace) {
@@ -873,8 +877,7 @@ class ReaderState extends State<Reader>
     _initialNavigationSubmitted = true;
     if (isInitialCommand) _initialObservedProgress = null;
 
-    final remoteEpId =
-        chapterEntry?.id ?? widget.chapters?.ids.elementAtOrNull(chapter - 1);
+    final remoteEpId = chapterEntry?.id;
     if (remoteEpId != null && remoteEpId.isNotEmpty) {
       _remoteProgressTracker?.schedule(remoteEpId, sourcePage);
     }

@@ -959,8 +959,8 @@ void main() {
         final cacheDir = Directory.systemTemp.createTempSync(
           'venera-nsm-cache-',
         );
-        addTearDown(() {
-          CacheManager.resetForTesting();
+        addTearDown(() async {
+          await CacheManager.resetForTesting();
           ImageDownloader.debugResetSourceImageLoading();
           if (dataDir.existsSync()) dataDir.deleteSync(recursive: true);
           if (cacheDir.existsSync()) cacheDir.deleteSync(recursive: true);
@@ -1008,8 +1008,8 @@ void main() {
         final cacheDir = Directory.systemTemp.createTempSync(
           'venera-real-cache-',
         );
-        addTearDown(() {
-          CacheManager.resetForTesting();
+        addTearDown(() async {
+          await CacheManager.resetForTesting();
           ImageDownloader.debugResetSourceImageLoading();
           if (dataDir.existsSync()) dataDir.deleteSync(recursive: true);
           if (cacheDir.existsSync()) cacheDir.deleteSync(recursive: true);
@@ -1104,8 +1104,8 @@ void main() {
         'venera-image-cache-cache-',
       );
 
-      addTearDown(() {
-        CacheManager.resetForTesting();
+      addTearDown(() async {
+        await CacheManager.resetForTesting();
 
         if (dataDir.existsSync()) {
           dataDir.deleteSync(recursive: true);
@@ -1280,8 +1280,8 @@ void main() {
         final cacheDir = Directory.systemTemp.createTempSync(
           'venera-header-cache-',
         );
-        addTearDown(() {
-          CacheManager.resetForTesting();
+        addTearDown(() async {
+          await CacheManager.resetForTesting();
           ImageDownloader.debugResetSourceImageLoading();
           if (dataDir.existsSync()) dataDir.deleteSync(recursive: true);
           if (cacheDir.existsSync()) cacheDir.deleteSync(recursive: true);
@@ -1362,8 +1362,8 @@ void main() {
         final cacheDir = Directory.systemTemp.createTempSync(
           'venera-header-custom-cache-',
         );
-        addTearDown(() {
-          CacheManager.resetForTesting();
+        addTearDown(() async {
+          await CacheManager.resetForTesting();
           ImageDownloader.debugResetSourceImageLoading();
           if (dataDir.existsSync()) dataDir.deleteSync(recursive: true);
           if (cacheDir.existsSync()) cacheDir.deleteSync(recursive: true);

@@ -27,22 +27,28 @@ class Image {
   Image.empty(this.width, this.height) : _data = Uint32List(width * height);
 
   static Future<Image> decodeImage(Uint8List data) async {
-    var codec = await ui.instantiateImageCodec(data);
-    var frame = await codec.getNextFrame();
-    codec.dispose();
-    var info = await frame.image.toByteData(
-      format: ui.ImageByteFormat.rawStraightRgba,
-    );
-    if (info == null) {
-      throw Exception('Failed to decode image');
+    final codec = await ui.instantiateImageCodec(data);
+    late ui.FrameInfo frame;
+    try {
+      frame = await codec.getNextFrame();
+    } finally {
+      codec.dispose();
     }
-    var image = Image(
-      info.buffer.asUint32List(),
-      frame.image.width,
-      frame.image.height,
-    );
-    frame.image.dispose();
-    return image;
+    try {
+      final info = await frame.image.toByteData(
+        format: ui.ImageByteFormat.rawStraightRgba,
+      );
+      if (info == null) {
+        throw Exception('Failed to decode image');
+      }
+      return Image(
+        info.buffer.asUint32List(),
+        frame.image.width,
+        frame.image.height,
+      );
+    } finally {
+      frame.image.dispose();
+    }
   }
 
   Color getPixelAtIndex(int index) {
@@ -226,28 +232,34 @@ class Color {
   int get a => (value >> 24) & 0xFF;
 }
 
-class JsEngine {
-  static final JsEngine _instance = JsEngine._();
+class _ImageScriptEngine {
+  _ImageScriptEngine([FlutterQjs? runtime]) : runtime = runtime ?? FlutterQjs();
 
-  factory JsEngine() => _instance;
+  final FlutterQjs runtime;
 
-  JsEngine._() {
-    _engine = FlutterQjs();
-    _engine!.dispatch();
-    var setGlobalFunc = _engine!.evaluate(
-      "(key, value) => { this[key] = value; }",
-    );
-    (setGlobalFunc as JSInvokable)(["sendMessage", _messageReceiver]);
-    setGlobalFunc.free();
+  void runCode(String js, [String? name]) {
+    dynamic result;
+    try {
+      result = runtime.evaluate('$js\n;void 0;', name: name);
+    } finally {
+      JSRef.freeRecursive(result);
+    }
   }
 
-  FlutterQjs? _engine;
+  final images = <int, Image>{};
 
-  dynamic runCode(String js, [String? name]) {
-    return _engine!.evaluate(js, name: name);
+  var _disposed = false;
+
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    try {
+      runtime.close();
+    } finally {
+      runtime.port.close();
+      images.clear();
+    }
   }
-
-  var images = <int, Image>{};
 
   int _key = 0;
 
@@ -332,25 +344,63 @@ Future<T> debugRunWithImageScriptSlot<T>(Future<T> Function() task) {
   return _imageScriptSlots.run(task);
 }
 
+@visibleForTesting
+Image debugRunImageScript(
+  Image image,
+  String initJs,
+  String script, {
+  FlutterQjs? runtime,
+}) {
+  return _runImageScript(image, initJs, script, runtime: runtime);
+}
+
+Image _runImageScript(
+  Image image,
+  String initJs,
+  String script, {
+  FlutterQjs? runtime,
+}) {
+  final engine = _ImageScriptEngine(runtime);
+  try {
+    unawaited(engine.runtime.dispatch());
+    final setGlobalFunc = engine.runtime.evaluate(
+      '(key, value) => { this[key] = value; }',
+    );
+    try {
+      (setGlobalFunc as JSInvokable)(['sendMessage', engine._messageReceiver]);
+    } finally {
+      JSRef.freeRecursive(setGlobalFunc);
+    }
+    engine.runCode(initJs, '<init>');
+    engine.runCode(script);
+    final key = engine.setImage(image);
+    dynamic result;
+    try {
+      result = engine.runtime.evaluate('''(() => {
+        const image = new Image($key);
+        return modifyImage(image).key;
+      })()''');
+      if (result is! int || !engine.images.containsKey(result)) {
+        throw StateError(
+          'Image script must synchronously return an Image with a valid key.',
+        );
+      }
+      return engine.images[result]!;
+    } finally {
+      JSRef.freeRecursive(result);
+    }
+  } finally {
+    engine.dispose();
+  }
+}
+
 Future<Uint8List> modifyImageWithScript(Uint8List data, String script) async {
   return _imageScriptSlots.run(() async {
     var image = await Image.decodeImage(data);
     var initJs = await rootBundle.loadString('assets/init.js');
     return await Isolate.run(() {
-      var jsEngine = JsEngine();
-      jsEngine.runCode(initJs, '<init>');
-      jsEngine.runCode(script);
-      var key = jsEngine.setImage(image);
-      var res = jsEngine.runCode('''
-        let func = () => {
-          let image = new Image($key);
-          let result = modifyImage(image);
-          return result.key;
-        }
-        func();
-      ''');
-      var newImage = jsEngine.images[res];
-      var data = newImage!.encodePng();
+      final newImage = _runImageScript(image, initJs, script);
+      final data = newImage.encodePng();
       return Uint8List.fromList(data);
     });
   });

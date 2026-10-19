@@ -225,6 +225,161 @@ void main() {
     );
 
     test(
+      'decode identity uses effective pixels and preserves the base key',
+      () {
+        final target = ComicImageLoadTarget(
+          logicalWidth: 200,
+          logicalHeight: 300,
+        );
+        final base = ReaderImageProvider(
+          'img-1',
+          'source-1',
+          'comic-1',
+          'chapter-1',
+          1,
+          chapter: 2,
+          enableResize: true,
+          target: target,
+        );
+        final key = base.key;
+        final hashCode = base.hashCode;
+        const sourceSize = Size(800, 1200);
+        final zoomed = base.withDecodeScale(2, sourceSize);
+        expect(zoomed.key, '$key@decode400x600');
+        expect(zoomed, isNot(base));
+        expect(zoomed.diskCacheKey, base.diskCacheKey);
+        expect(zoomed.imageKey, base.imageKey);
+        expect(zoomed.sourceKey, base.sourceKey);
+        expect(zoomed.cid, base.cid);
+        expect(zoomed.eid, base.eid);
+        expect(zoomed.page, base.page);
+        expect(zoomed.chapter, base.chapter);
+        expect(zoomed.enableResize, base.enableResize);
+        expect(zoomed.target, same(target));
+        expect(zoomed.withDecodeScale(1, sourceSize), same(base));
+        expect(base.withDecodeScale(1, sourceSize), same(base));
+
+        final capped = base.withDecodeScale(4, sourceSize);
+        expect(capped.key, '$key@decode800x1200');
+        for (final scale in [5.0, 10.0]) {
+          final next = base.withDecodeScale(scale, sourceSize);
+          expect(next, capped);
+          expect(next.hashCode, capped.hashCode);
+        }
+        expect(base.key, key);
+        expect(base.hashCode, hashCode);
+        expect(
+          key,
+          'img-1@source-1@comic-1@chapter-1@true@${target.cacheIdentity}',
+        );
+      },
+    );
+
+    test('small images and equal rounded pixels reuse the base provider', () {
+      final base = ReaderImageProvider(
+        'img-1',
+        'source-1',
+        'comic-1',
+        'chapter-1',
+        1,
+        enableResize: true,
+        target: ComicImageLoadTarget(logicalWidth: 200, logicalHeight: 300),
+      );
+      for (final scale in [4.0, 5.0, 10.0]) {
+        expect(base.withDecodeScale(scale, const Size(100, 150)), same(base));
+      }
+      final rounded = ReaderImageProvider(
+        'img-2',
+        'source-1',
+        'comic-1',
+        'chapter-1',
+        2,
+        enableResize: true,
+        target: ComicImageLoadTarget(logicalWidth: 2, logicalHeight: 3),
+      );
+      expect(rounded.withDecodeScale(1.1, const Size(3, 4)), same(rounded));
+    });
+
+    test('noninteger source cap merges the first capped level and higher', () {
+      final base = ReaderImageProvider(
+        'img-1',
+        null,
+        'comic-1',
+        'chapter-1',
+        1,
+        enableResize: true,
+        target: ComicImageLoadTarget(logicalWidth: 200, logicalHeight: 300),
+      );
+      const sourceSize = Size(750, 1100);
+      expect(
+        base.withDecodeScale(3, sourceSize).key,
+        '${base.key}@decode600x880',
+      );
+      final capped = base.withDecodeScale(3.75, sourceSize);
+      expect(capped.key, '${base.key}@decode750x1100');
+      for (final scale in [4.0, 5.0, 10.0]) {
+        expect(base.withDecodeScale(scale, sourceSize), capped);
+      }
+    });
+
+    for (final (name, target, sourceSize, dimensions) in [
+      (
+        'fitWidth',
+        ComicImageLoadTarget(
+          logicalWidth: 200,
+          fit: ComicImageTargetFit.fitWidth,
+        ),
+        const Size(600, 3600),
+        '400x2400',
+      ),
+      (
+        'fitHeight',
+        ComicImageLoadTarget(
+          logicalHeight: 200,
+          fit: ComicImageTargetFit.fitHeight,
+        ),
+        const Size(1200, 800),
+        '600x400',
+      ),
+      (
+        'split contain',
+        ComicImageLoadTarget(
+          logicalWidth: 300,
+          logicalHeight: 500,
+          splitWideImage: true,
+        ),
+        const Size(1800, 900),
+        '1200x600',
+      ),
+      (
+        'split fitWidth',
+        ComicImageLoadTarget(
+          logicalWidth: 300,
+          fit: ComicImageTargetFit.fitWidth,
+          splitWideImage: true,
+        ),
+        const Size(1800, 900),
+        '1200x600',
+      ),
+    ]) {
+      test('$name uses the same normalization for variant identity', () {
+        final base = ReaderImageProvider(
+          'img-1',
+          null,
+          'comic-1',
+          'chapter-1',
+          1,
+          enableResize: true,
+          target: target,
+        );
+        final zoomed = base.withDecodeScale(2, sourceSize);
+        expect(zoomed.key, '${base.key}@decode$dimensions');
+        expect(zoomed.target, same(target));
+        expect(zoomed.diskCacheKey, base.diskCacheKey);
+      });
+    }
+
+    test(
       'ReaderImageProvider load forwards target to ImageDownloader and receives bytes',
       () async {
         final source = StreamController<ImageDownloadProgress>();

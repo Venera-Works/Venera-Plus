@@ -13,6 +13,36 @@ import 'package:venera_plus/foundation/appdata.dart';
 
 final Object _imageProcessingCanceled = Object();
 
+TargetImageSize _readerImageTargetSize(
+  int width,
+  int height,
+  ComicImageLoadTarget target,
+  double decodeScale,
+) {
+  final scale = decodeScale.isFinite && decodeScale > 0 ? decodeScale : 1.0;
+  final split = target.splitWideImage && width > height;
+  final displayWidth = split ? width / 2 : width.toDouble();
+  final targetWidth = target.physicalWidth;
+  final targetHeight = target.physicalHeight;
+  var ratio = 1.0;
+  switch (target.fit) {
+    case ComicImageTargetFit.fitWidth:
+      if (targetWidth != null) ratio = targetWidth * scale / displayWidth;
+    case ComicImageTargetFit.fitHeight:
+      if (targetHeight != null) ratio = targetHeight * scale / height;
+    case ComicImageTargetFit.contain:
+      if (targetWidth != null) ratio = targetWidth * scale / displayWidth;
+      if (targetHeight != null) {
+        ratio = math.min(ratio, targetHeight * scale / height);
+      }
+  }
+  ratio = math.min(ratio, 1.0);
+  return TargetImageSize(
+    width: math.max(1, (width * ratio).round()),
+    height: math.max(1, (height * ratio).round()),
+  );
+}
+
 @visibleForTesting
 Future<dynamic> debugWaitForReaderImageProcessingResult(
   Future<dynamic> image,
@@ -59,11 +89,29 @@ class ReaderImageProvider
     this.chapter,
     this.enableResize = false,
     this.target,
-    this.decodeScale = 1.0,
-  });
+  }) : _baseProvider = null,
+       _decodeSize = null;
+
+  ReaderImageProvider._withDecodeSize(
+    ReaderImageProvider base,
+    this._decodeSize,
+  ) : imageKey = base.imageKey,
+      sourceKey = base.sourceKey,
+      cid = base.cid,
+      eid = base.eid,
+      page = base.page,
+      chapter = base.chapter,
+      enableResize = base.enableResize,
+      target = base.target,
+      _baseProvider = base;
 
   static final _diskCacheKeys = Expando<String>();
   static final _pendingCacheBytes = Expando<Uint8List>();
+  static final _sourceSizes = Expando<Size>();
+
+  /// The encoded size after source and user processing, shared by cache hits.
+  static Size? sourceSizeOf(ImageStreamCompleter? completer) =>
+      completer == null ? null : _sourceSizes[completer];
 
   final String imageKey;
 
@@ -79,23 +127,46 @@ class ReaderImageProvider
 
   final ComicImageLoadTarget? target;
 
-  /// Changes the memory decode size without changing the source request/cache.
-  final double decodeScale;
+  final ReaderImageProvider? _baseProvider;
+  final TargetImageSize? _decodeSize;
 
-  ReaderImageProvider withDecodeScale(double scale) => ReaderImageProvider(
-    imageKey,
-    sourceKey,
-    cid,
-    eid,
-    page,
-    chapter: chapter,
-    enableResize: enableResize,
-    target: target,
-    decodeScale: scale,
-  );
+  /// Changes only the memory decode size, once the encoded size is known.
+  ReaderImageProvider withDecodeScale(double scale, Size sourceSize) {
+    final base = _baseProvider ?? this;
+    final size = base.target;
+    if (!base.enableResize || size == null) return base;
+    final width = sourceSize.width.toInt();
+    final height = sourceSize.height.toInt();
+    final baseSize = _readerImageTargetSize(width, height, size, 1.0);
+    final decodeSize = _readerImageTargetSize(width, height, size, scale);
+    if (decodeSize.width == baseSize.width &&
+        decodeSize.height == baseSize.height) {
+      return base;
+    }
+    return ReaderImageProvider._withDecodeSize(base, decodeSize);
+  }
 
   @override
   final bool enableResize;
+
+  @override
+  ImageStreamCompleter loadImage(
+    ReaderImageProvider key,
+    ImageDecoderCallback decode,
+  ) {
+    late final ImageStreamCompleter completer;
+    completer = super.loadImage(key, (buffer, {getTargetSize}) {
+      return decode(
+        buffer,
+        getTargetSize: (width, height) {
+          _sourceSizes[completer] = Size(width.toDouble(), height.toDouble());
+          return getTargetSize?.call(width, height) ??
+              TargetImageSize(width: width, height: height);
+        },
+      );
+    });
+    return completer;
+  }
 
   @override
   TargetImageSize getTargetSize(int width, int height) {
@@ -103,28 +174,7 @@ class ReaderImageProvider
     if (size == null || width <= 0 || height <= 0) {
       return super.getTargetSize(width, height);
     }
-    final scale = decodeScale.isFinite && decodeScale > 0 ? decodeScale : 1.0;
-    final split = size.splitWideImage && width > height;
-    final displayWidth = split ? width / 2 : width.toDouble();
-    final targetWidth = size.physicalWidth;
-    final targetHeight = size.physicalHeight;
-    var ratio = 1.0;
-    switch (size.fit) {
-      case ComicImageTargetFit.fitWidth:
-        if (targetWidth != null) ratio = targetWidth * scale / displayWidth;
-      case ComicImageTargetFit.fitHeight:
-        if (targetHeight != null) ratio = targetHeight * scale / height;
-      case ComicImageTargetFit.contain:
-        if (targetWidth != null) ratio = targetWidth * scale / displayWidth;
-        if (targetHeight != null) {
-          ratio = math.min(ratio, targetHeight * scale / height);
-        }
-    }
-    ratio = math.min(ratio, 1.0);
-    return TargetImageSize(
-      width: math.max(1, (width * ratio).round()),
-      height: math.max(1, (height * ratio).round()),
-    );
+    return _decodeSize ?? _readerImageTargetSize(width, height, size, 1.0);
   }
 
   @override
@@ -257,7 +307,8 @@ class ReaderImageProvider
     final base = target != null
         ? "$imageKey@$sourceKey@$cid@$eid@$enableResize@${target!.cacheIdentity}"
         : "$imageKey@$sourceKey@$cid@$eid@$enableResize";
-    return decodeScale == 1.0 ? base : '$base@decode$decodeScale';
+    final size = _decodeSize;
+    return size == null ? base : '$base@decode${size.width}x${size.height}';
   }
 
   @override

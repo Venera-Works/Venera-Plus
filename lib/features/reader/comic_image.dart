@@ -178,13 +178,13 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   ImageStreamCompleterHandle? _completerHandle;
   Size? _lastReportedSize;
   Object? _lastReportedImageKey;
+  Size? _layoutSize;
+  Size? _sourceSize;
+  ImageProvider? _resolvedImage;
 
-  void _notifyImageSizeIfNeeded(ImageInfo? imageInfo) {
-    if (imageInfo == null) return;
-    final currentSize = Size(
-      imageInfo.image.width.toDouble(),
-      imageInfo.image.height.toDouble(),
-    );
+  void _notifyImageSizeIfNeeded() {
+    final currentSize = _layoutSize;
+    if (currentSize == null) return;
     if (shouldNotifyImageSize(
       lastReportedSize: _lastReportedSize,
       lastReportedKey: _lastReportedImageKey,
@@ -242,7 +242,26 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
     final scale = _getDecodeScale(value);
     if (scale == _decodeScale) return;
     _decodeScale = scale;
-    _resolveImage(keepImage: true);
+    if (widget.image is ReaderImageProvider && _sourceSize != null) {
+      _resolveImage(keepImage: true);
+    }
+  }
+
+  void _scheduleDecodeUpgrade() {
+    final image = widget.image;
+    final controller = widget.zoomController;
+    final stream = _imageStream;
+    if (image is! ReaderImageProvider || _sourceSize == null) return;
+    Future.microtask(() {
+      if (!mounted ||
+          widget.image != image ||
+          widget.zoomController != controller ||
+          _imageStream != stream) {
+        return;
+      }
+      if (controller != null) _decodeScale = _getDecodeScale(controller.value);
+      if (_decodeScale != 1.0) _resolveImage(keepImage: true);
+    });
   }
 
   static void clear() => _cache.clear();
@@ -288,14 +307,18 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   @override
   void didUpdateWidget(ComicImage oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.image != oldWidget.image) {
+      _sourceSize = null;
+      _layoutSize = null;
+      _lastReportedSize = null;
+      _lastReportedImageKey = null;
+    }
     if (widget.zoomController != oldWidget.zoomController) {
       _listenForZoom();
     }
     if (widget.image != oldWidget.image ||
         widget.zoomController != oldWidget.zoomController) {
-      _resolveImage();
-      _lastReportedSize = null;
-      _lastReportedImageKey = null;
+      _resolveImage(keepImage: widget.image == oldWidget.image);
     }
   }
 
@@ -329,12 +352,14 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   }
 
   void _resolveImage({bool keepImage = false}) {
-    final image = widget.image;
+    var image = widget.image;
+    final sourceSize = _sourceSize;
+    if (image is ReaderImageProvider && sourceSize != null) {
+      image = image.withDecodeScale(_decodeScale, sourceSize);
+    }
     final ScrollAwareImageProvider provider = ScrollAwareImageProvider<Object>(
       context: _scrollAwareContext,
-      imageProvider: image is ReaderImageProvider && _decodeScale != 1.0
-          ? image.withDecodeScale(_decodeScale)
-          : image,
+      imageProvider: image,
     );
     final ImageStream newStream = provider.resolve(
       createLocalImageConfiguration(
@@ -344,7 +369,7 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
             : null,
       ),
     );
-    _updateSourceStream(newStream, keepImage: keepImage);
+    _updateSourceStream(newStream, image: image, keepImage: keepImage);
   }
 
   ImageStreamListener? _imageStreamListener;
@@ -352,10 +377,20 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   ImageStreamListener _getListener({bool recreateListener = false}) {
     if (_imageStreamListener == null || recreateListener) {
       _lastException = null;
+      final stream = _imageStream;
       _imageStreamListener = ImageStreamListener(
-        _handleImageFrame,
-        onChunk: _handleImageChunk,
+        (imageInfo, synchronousCall) {
+          if (!mounted || _imageStream != stream) {
+            imageInfo.dispose();
+            return;
+          }
+          _handleImageFrame(imageInfo, synchronousCall);
+        },
+        onChunk: (event) {
+          if (mounted && _imageStream == stream) _handleImageChunk(event);
+        },
         onError: (Object error, StackTrace? stackTrace) {
+          if (!mounted || _imageStream != stream) return;
           setState(() {
             _lastException = error;
           });
@@ -366,7 +401,17 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   }
 
   void _handleImageFrame(ImageInfo imageInfo, bool synchronousCall) {
-    _notifyImageSizeIfNeeded(imageInfo);
+    final isFirstBaseFrame =
+        _resolvedImage == widget.image && _layoutSize == null;
+    if (isFirstBaseFrame) {
+      _layoutSize = Size(
+        imageInfo.image.width.toDouble(),
+        imageInfo.image.height.toDouble(),
+      );
+      _cache[widget.image.hashCode] = _layoutSize!;
+    }
+    _notifyImageSizeIfNeeded();
+    _sourceSize ??= ReaderImageProvider.sourceSizeOf(_imageStream?.completer);
     setState(() {
       _replaceImage(info: imageInfo);
       _loadingProgress = null;
@@ -374,6 +419,7 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
       _frameNumber = _frameNumber == null ? 0 : _frameNumber! + 1;
       _wasSynchronouslyLoaded = _wasSynchronouslyLoaded | synchronousCall;
     });
+    if (isFirstBaseFrame) _scheduleDecodeUpgrade();
   }
 
   void _handleImageChunk(ImageChunkEvent event) {
@@ -394,7 +440,11 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   // Updates _imageStream to newStream, and moves the stream listener
   // registration from the old stream to the new stream (if a listener was
   // registered).
-  void _updateSourceStream(ImageStream newStream, {bool keepImage = false}) {
+  void _updateSourceStream(
+    ImageStream newStream, {
+    required ImageProvider image,
+    bool keepImage = false,
+  }) {
     if (_imageStream?.key == newStream.key) {
       return;
     }
@@ -416,6 +466,8 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
     });
 
     _imageStream = newStream;
+    _resolvedImage = image;
+    _imageStreamListener = null;
     if (_isListeningToStream) {
       _imageStream!.addListener(_getListener());
     }
@@ -514,15 +566,7 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
         var width = widget.width;
         var height = widget.height;
 
-        if (_imageInfo != null) {
-          // Record the height and the width of the image
-          _cache[widget.image.hashCode] = Size(
-            _imageInfo!.image.width.toDouble(),
-            _imageInfo!.image.height.toDouble(),
-          );
-          _notifyImageSizeIfNeeded(_imageInfo);
-        }
-        Size? cacheSize = _cache[widget.image.hashCode];
+        final cacheSize = _layoutSize ?? _cache[widget.image.hashCode];
         if (cacheSize != null) {
           final isWide = shouldSplitWideImage(cacheSize);
           final hasSinglePart =
@@ -540,6 +584,13 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
           } else if (height == double.infinity) {
             height = constrains.maxHeight;
             width = height * displaySize.width / displaySize.height;
+          } else if (width == null && height == null) {
+            width = displaySize.width;
+            height = displaySize.height;
+          } else if (width == null) {
+            width = height! * displaySize.width / displaySize.height;
+          } else if (height == null) {
+            height = width * displaySize.height / displaySize.width;
           }
         } else {
           if (width == double.infinity) {
@@ -556,7 +607,7 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
             _imageInfo!.image.width.toDouble(),
             _imageInfo!.image.height.toDouble(),
           );
-          final isWide = shouldSplitWideImage(imageSize);
+          final isWide = shouldSplitWideImage(cacheSize ?? imageSize);
           final hasSinglePart =
               widget.wideImagePart != null &&
               widget.wideImagePart != GalleryImagePart.full &&

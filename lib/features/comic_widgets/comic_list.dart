@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:venera_plus/components/button.dart';
@@ -14,7 +15,6 @@ import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/res.dart';
-import 'package:venera_plus/foundation/extensions.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 
@@ -59,6 +59,16 @@ class SliverGridComics extends StatefulWidget {
 class _SliverGridComicsState extends State<SliverGridComics> {
   List<Comic> comics = [];
   List<int> heroIDs = [];
+  List<(String, String)> _identities = [];
+  List<Comic> _sourceComics = [];
+  List<String> _blockedWords = [];
+  ModalRoute<dynamic>? _route;
+  bool _tickerModeEnabled = true;
+  bool _needsContentCheck = true;
+  bool _presentationDirty = true;
+  Widget? _presentation;
+
+  bool get _isVisible => _tickerModeEnabled && (_route?.isCurrent ?? true);
 
   static int _nextHeroID = 0;
 
@@ -70,77 +80,88 @@ class _SliverGridComicsState extends State<SliverGridComics> {
   }
 
   @override
-  void didUpdateWidget(covariant SliverGridComics oldWidget) {
-    if (oldWidget.useFavoriteDisplaySettings !=
-        widget.useFavoriteDisplaySettings) {
-      if (widget.useFavoriteDisplaySettings) {
-        appdata.settings.addListener(_onSettingsChanged);
-      } else {
-        appdata.settings.removeListener(_onSettingsChanged);
-      }
-    }
-    if (!comics.isEqualTo(widget.comics)) {
-      comics.clear();
-      for (var comic in widget.comics) {
-        if (isBlocked(comic) == null) {
-          comics.add(comic);
-        }
-      }
-      generateHeroID();
-    }
-    super.didUpdateWidget(oldWidget);
+  void initState() {
+    super.initState();
+    addComicWidgetStateListener(_onPresentationChanged);
+    appdata.settings.addListener(_onSettingsChanged);
   }
 
   @override
-  void initState() {
-    for (var comic in widget.comics) {
-      if (isBlocked(comic) == null) {
-        comics.add(comic);
-      }
-    }
-    generateHeroID();
-    addComicWidgetStateListener(update);
-    if (widget.useFavoriteDisplaySettings) {
-      appdata.settings.addListener(_onSettingsChanged);
-    }
-    super.initState();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _route = ModalRoute.of(context);
+    _tickerModeEnabled = TickerMode.valuesOf(context).enabled;
+    // Block actions can mutate the words in place without a settings event.
+    _needsContentCheck = true;
+    _refreshIfVisible();
+  }
+
+  @override
+  void didUpdateWidget(covariant SliverGridComics oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _needsContentCheck = true;
+    _presentationDirty = true;
+    _refreshIfVisible();
   }
 
   @override
   void dispose() {
-    removeComicWidgetStateListener(update);
-    if (widget.useFavoriteDisplaySettings) {
-      appdata.settings.removeListener(_onSettingsChanged);
-    }
+    removeComicWidgetStateListener(_onPresentationChanged);
+    appdata.settings.removeListener(_onSettingsChanged);
     super.dispose();
   }
 
   void _onSettingsChanged() {
-    if (mounted) {
-      setState(() {});
-    }
+    _needsContentCheck = true;
+    _onPresentationChanged();
   }
 
-  void update() {
-    setState(() {
-      comics.clear();
-      for (var comic in widget.comics) {
-        if (isBlocked(comic) == null) {
-          comics.add(comic);
+  void _onPresentationChanged() {
+    _presentationDirty = true;
+    if (_isVisible) setState(_refreshIfVisible);
+  }
+
+  void _refreshIfVisible() {
+    if (!_isVisible || (!_needsContentCheck && !_presentationDirty)) return;
+    if (_needsContentCheck) {
+      final words = appdata.settings['blockedWords'] as List;
+      // Comic equality only compares source/id; new objects may carry new data.
+      final sourceChanged =
+          _sourceComics.length != widget.comics.length ||
+          _sourceComics.indexed.any(
+            (entry) => !identical(entry.$2, widget.comics[entry.$1]),
+          );
+      if (sourceChanged || !listEquals(_blockedWords, words)) {
+        final filtered = widget.comics
+            .where((comic) => isBlocked(comic) == null)
+            .toList();
+        // Hero IDs follow identity and order, independently of metadata.
+        final identities = filtered
+            .map((comic) => (comic.sourceKey, comic.id))
+            .toList(growable: false);
+        comics = filtered;
+        if (!listEquals(_identities, identities)) {
+          _identities = identities;
+          generateHeroID();
         }
+        _sourceComics = List<Comic>.of(widget.comics);
+        _blockedWords = List<String>.from(words);
       }
-    });
+      _needsContentCheck = false;
+    }
+    _presentationDirty = false;
   }
 
   @override
   Widget build(BuildContext context) {
+    if (!_isVisible && _presentation != null) return _presentation!;
     final favoriteDisplayState = comicFavoriteDisplayState();
     final favoriteDisplayMode = widget.useFavoriteDisplaySettings
         ? (favoriteDisplayState.isGallery
               ? ComicTileDisplayMode.gallery
               : ComicTileDisplayMode.detailed)
         : null;
-    return _SliverGridComics(
+    return _presentation = _SliverGridComics(
       comics: comics,
       heroIDs: heroIDs,
       selection: widget.selections,
@@ -149,7 +170,7 @@ class _SliverGridComicsState extends State<SliverGridComics> {
       menuBuilder: widget.menuBuilder,
       onTap: widget.onTap,
       onLongPressed: widget.onLongPressed,
-      onBlocked: update,
+      onBlocked: _onSettingsChanged,
       hideFavoriteBadge: widget.hideFavoriteBadge,
       favoriteDisplayMode: favoriteDisplayMode,
       galleryColumns: favoriteDisplayMode == ComicTileDisplayMode.gallery

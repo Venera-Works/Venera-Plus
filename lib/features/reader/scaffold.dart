@@ -300,9 +300,7 @@ class ReaderScaffoldState extends State<ReaderScaffold>
   }
 
   Widget buildTop() {
-    final epName = context.reader.widget.chapters?.titles.elementAtOrNull(
-      context.reader.chapter - 1,
-    );
+    final epName = context.reader.chapterTitle;
 
     return BlurEffect(
       child: Container(
@@ -806,11 +804,7 @@ class ReaderScaffoldState extends State<ReaderScaffold>
   }
 
   Widget buildPageInfoText() {
-    var epName =
-        context.reader.widget.chapters?.titles.elementAtOrNull(
-          context.reader.chapter - 1,
-        ) ??
-        "E${context.reader.chapter}";
+    var epName = context.reader.chapterTitle ?? "E${context.reader.chapter}";
     if (epName.length > 8) {
       epName = "${epName.substring(0, 8)}...";
     }

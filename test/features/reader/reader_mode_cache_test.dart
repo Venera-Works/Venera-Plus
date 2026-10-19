@@ -64,7 +64,7 @@ void main() {
     ImageDownloader.cancelAllLoadingImages();
     await ImageDownloader.debugFlushImageCacheWrites();
     ImageDownloader.debugResetSourceImageLoading();
-    CacheManager.resetForTesting();
+    await CacheManager.resetForTesting();
     directory.deleteSync(recursive: true);
   });
 
@@ -121,7 +121,7 @@ void main() {
       expect(await _resolveImage(provider()), isNull);
       await ImageDownloader.debugFlushImageCacheWrites();
       ImageDownloader.cancelAllLoadingImages();
-      CacheManager.resetForTesting();
+      await CacheManager.resetForTesting();
       // Include the real startup scan, while retaining only the disk files.
       await CacheManager().debugInitialScanTask;
       restarted = true;

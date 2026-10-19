@@ -97,10 +97,10 @@ void main() {
     ComicSourceManager().add(source);
   });
 
-  tearDown(() {
+  tearDown(() async {
     ComicSourceManager().remove(_key);
     LocalManager.resetForTesting();
-    CacheManager.resetForTesting();
+    await CacheManager.resetForTesting();
     directory.deleteSync(recursive: true);
   });
 
@@ -116,8 +116,8 @@ void main() {
     forceRefresh: refresh,
   );
 
-  void reopenCache() {
-    CacheManager.resetForTesting();
+  Future<void> reopenCache() async {
+    await CacheManager.resetForTesting();
     CacheManager.debugDisableInitialScan = true;
   }
 
@@ -126,7 +126,7 @@ void main() {
     () async {
       final initial = await source.loadComicInfoForReading('book');
       final pages = await load(chapters: initial.data.chapters!);
-      reopenCache();
+      await reopenCache();
       offline = true;
 
       final reopened = await source.loadComicInfoForReading('book');
@@ -144,7 +144,7 @@ void main() {
     await source.loadComicInfoForReading('book');
     final pages = await load();
     for (var opening = 0; opening < 2; opening++) {
-      reopenCache();
+      await reopenCache();
       expect(
         (await source.loadComicInfoForReading('book', refresh: true)).success,
         isTrue,
@@ -167,7 +167,7 @@ void main() {
       );
       expect(refreshed.data.title, 'Book 2');
       expect(await load(), ['https://example.invalid/book/first/2.jpg']);
-      reopenCache();
+      await reopenCache();
       expect(
         (await source.loadComicInfoForReading('book')).data.title,
         'Book 2',
@@ -186,7 +186,7 @@ void main() {
       expect(await load(refresh: true), [
         'https://example.invalid/book/first/2.jpg',
       ]);
-      reopenCache();
+      await reopenCache();
       expect(await load(), ['https://example.invalid/book/first/2.jpg']);
       expect(pageCalls, 2);
     },

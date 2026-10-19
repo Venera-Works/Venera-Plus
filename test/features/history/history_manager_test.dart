@@ -40,6 +40,13 @@ class _CountingCatalog extends ReadingCatalog {
   _CountingCatalog(super.chapters);
 
   int serializations = 0;
+  int chapterReads = 0;
+
+  @override
+  List<ReadingChapter> get chapters {
+    chapterReads++;
+    return super.chapters;
+  }
 
   @override
   Map<String, Object?> toJson() {
@@ -47,6 +54,36 @@ class _CountingCatalog extends ReadingCatalog {
     return super.toJson();
   }
 }
+
+class _HistoryResultGate {
+  final reached = Completer<void>();
+  final _release = Completer<void>();
+
+  Future<void> pause() {
+    reached.complete();
+    return _release.future;
+  }
+
+  void open() {
+    if (!_release.isCompleted) _release.complete();
+  }
+}
+
+SyncRecords _syncedHistory(
+  History item,
+  ReadingProgress progress, {
+  required int durationMs,
+  String? title,
+}) => {
+  syncRecordKey('history', [item.id, item.type.value]): {
+    'title': title ?? item.title,
+    'subtitle': item.subtitle,
+    'cover': item.cover,
+    'maxPage': item.maxPage,
+    'readDurationMs': durationMs,
+    'readingProgress': progress.toJson(),
+  },
+};
 
 void main() {
   test('History.fromMap defaults missing reading duration to zero', () {
@@ -144,10 +181,18 @@ void main() {
             catalog: catalog,
           );
 
+          manager.debugBeforeAsyncHistoryResultApplied = () async {
+            catalog.chapterReads = 0;
+            catalog.serializations = 0;
+          };
           for (var page = 3; page <= 5; page++) {
             await manager.flushReadingProgress();
+            expect(catalog.chapterReads, lessThan(40));
+            expect(catalog.serializations, 0);
             if (page == 4) {
               await manager.addReadDuration(item, const Duration(seconds: 5));
+              expect(catalog.chapterReads, lessThan(40));
+              expect(catalog.serializations, 0);
             }
             final persisted = manager
                 .find(item.id, item.type)!
@@ -232,6 +277,349 @@ void main() {
           }
         },
       );
+
+      test(
+        'history worker rechecks a sync written in the result adoption window',
+        () async {
+          final catalog = ReadingCatalog(const [
+            ReadingChapter(id: 'one', ep: 1),
+            ReadingChapter(id: 'two', ep: 2),
+          ]);
+          final item = _history('sync-adoption')
+            ..readingProgress = ReadingProgress.seed(
+              const ReadingPosition(ep: 2, page: 8, chapterId: 'two'),
+              catalog: catalog,
+            );
+          manager.addHistory(item);
+          final gate = _HistoryResultGate();
+          addTearDown(gate.open);
+          var results = 0;
+          manager.debugBeforeAsyncHistoryResultApplied = () {
+            return ++results == 1 ? gate.pause() : Future.value();
+          };
+          final write = manager.addHistoryAsync(item);
+          await gate.reached.future;
+
+          final expanded = ReadingCatalog([
+            ...catalog.chapters,
+            const ReadingChapter(id: 'three', ep: 3),
+          ]);
+          final remote = item.readingProgress!
+              .record(
+                const ReadingPosition(ep: 1, page: 2, chapterId: 'one'),
+                source: ReadingNavigationSource.userBackward,
+                newRoundId: 'synced-round',
+              )
+              .rebaseCatalog(expanded);
+          manager.applySyncRecords(
+            _syncedHistory(item, remote, durationMs: 12000, title: 'Synced'),
+          );
+          gate.open();
+          await write;
+
+          final cached = manager.find(item.id, item.type)!;
+          expect(results, 2);
+          expect(cached.title, 'Synced');
+          expect(cached.readDurationMs, 12000);
+          expect(cached.activeRereadId, 'synced-round');
+          expect(cached.resumePosition, remote.resumePosition);
+          expect(cached.readingProgress!.catalog!.chapters, hasLength(3));
+        },
+      );
+
+      test(
+        'duration rechecks successive sync and import changes without adding twice',
+        () async {
+          final catalog = ReadingCatalog(const [
+            ReadingChapter(id: 'one', ep: 1),
+            ReadingChapter(id: 'two', ep: 2),
+          ]);
+          final item = _history('duration-adoption')
+            ..readDurationMs = 1000
+            ..readingProgress = ReadingProgress.seed(
+              const ReadingPosition(ep: 2, page: 8, chapterId: 'two'),
+              catalog: catalog,
+            );
+          manager.addHistory(item);
+          final writeGate = _HistoryResultGate();
+          final readGate = _HistoryResultGate();
+          addTearDown(writeGate.open);
+          addTearDown(readGate.open);
+          var results = 0;
+          manager.debugBeforeAsyncHistoryResultApplied = () {
+            return switch (++results) {
+              1 => writeGate.pause(),
+              2 => readGate.pause(),
+              _ => Future.value(),
+            };
+          };
+          final first = manager.addReadDuration(
+            item,
+            const Duration(seconds: 5),
+          );
+          await writeGate.reached.future;
+
+          final expanded = ReadingCatalog([
+            ...catalog.chapters,
+            const ReadingChapter(id: 'three', ep: 3),
+          ]);
+          final remote = item.readingProgress!
+              .record(
+                const ReadingPosition(ep: 1, page: 2, chapterId: 'one'),
+                source: ReadingNavigationSource.userBackward,
+                newRoundId: 'remote-duration-round',
+              )
+              .rebaseCatalog(expanded);
+          manager.applySyncRecords(
+            _syncedHistory(
+              item,
+              remote,
+              durationMs: 20000,
+              title: 'Sync title',
+            ),
+          );
+          final second = manager.addReadDuration(
+            item,
+            const Duration(seconds: 2),
+          );
+          writeGate.open();
+          await readGate.reached.future;
+
+          expect(manager.find(item.id, item.type)!.title, 'Sync title');
+          final database = sqlite3.open('${directory.path}/history.db');
+          try {
+            database.execute(
+              'UPDATE history SET title = ?, read_duration_ms = ? '
+              'WHERE id = ? AND type = ?;',
+              ['Imported title', 25000, item.id, item.type.value],
+            );
+          } finally {
+            database.dispose();
+          }
+          manager.notifyChanges();
+          expect(manager.find(item.id, item.type)!.title, 'Imported title');
+          readGate.open();
+          await Future.wait([first, second]);
+
+          final cached = manager.find(item.id, item.type)!;
+          expect(results, 4);
+          expect(cached.title, 'Imported title');
+          expect(cached.readDurationMs, 27000);
+          expect(item.readDurationMs, 27000);
+          expect(manager.getAll().single.readDurationMs, 27000);
+          expect(cached.activeRereadId, 'remote-duration-round');
+          expect(cached.resumePosition, remote.resumePosition);
+          expect(cached.readingProgress!.catalog!.chapters, hasLength(3));
+        },
+      );
+
+      test(
+        'synchronous history writes invalidate a completed worker result',
+        () async {
+          final catalog = ReadingCatalog(const [
+            ReadingChapter(id: 'one', ep: 1),
+            ReadingChapter(id: 'two', ep: 2),
+          ]);
+          final item = _history('sync-local-adoption')
+            ..readingProgress = ReadingProgress.seed(
+              const ReadingPosition(ep: 2, page: 8, chapterId: 'two'),
+              catalog: catalog,
+            );
+          manager.addHistory(item);
+          final gate = _HistoryResultGate();
+          addTearDown(gate.open);
+          var results = 0;
+          manager.debugBeforeAsyncHistoryResultApplied = () {
+            return ++results == 1 ? gate.pause() : Future.value();
+          };
+          final write = manager.addHistoryAsync(item);
+          await gate.reached.future;
+
+          final expanded = ReadingCatalog([
+            ...catalog.chapters,
+            const ReadingChapter(id: 'three', ep: 3),
+          ]);
+          final progress = item.readingProgress!
+              .record(
+                const ReadingPosition(ep: 1, page: 3, chapterId: 'one'),
+                source: ReadingNavigationSource.userBackward,
+                newRoundId: 'synchronous-round',
+              )
+              .rebaseCatalog(expanded);
+          final replacement = _history(item.id)
+            ..title = 'Synchronous title'
+            ..readDurationMs = 17000
+            ..readingProgress = progress;
+          manager.addHistory(replacement);
+          gate.open();
+          await write;
+
+          final cached = manager.find(item.id, item.type)!;
+          expect(results, 2);
+          expect(cached.title, 'Synchronous title');
+          expect(cached.readDurationMs, 17000);
+          expect(cached.activeRereadId, 'synchronous-round');
+          expect(cached.resumePosition, progress.resumePosition);
+          expect(cached.readingProgress!.catalog!.chapters, hasLength(3));
+        },
+      );
+
+      test(
+        'worker adoption uses returned data and the keys loaded at init',
+        () async {
+          final item = _history('returned-result');
+          final gate = _HistoryResultGate();
+          addTearDown(gate.open);
+          manager.debugBeforeAsyncHistoryResultApplied = gate.pause;
+          final write = manager.addHistoryAsync(item);
+          await gate.reached.future;
+
+          final database = sqlite3.open('${directory.path}/history.db');
+          try {
+            // These unannounced sentinel changes expose a completion-time
+            // row decode or lazy full-table key read on the UI connection.
+            database.execute(
+              'UPDATE history SET reading_progress = ? WHERE id = ?;',
+              ['invalid JSON sentinel', item.id],
+            );
+            database.execute('INSERT INTO history (id, type) VALUES (?, ?);', [
+              'unannounced-key',
+              item.type.value,
+            ]);
+            gate.open();
+            await write;
+            expect(manager.find(item.id, item.type)!.page, item.page);
+            expect(manager.find('unannounced-key', item.type), isNull);
+          } finally {
+            database.dispose();
+          }
+        },
+      );
+
+      test(
+        'new queued and pending pages merge without invalidating worker results',
+        () async {
+          final catalog = ReadingCatalog(const [
+            ReadingChapter(id: 'one', ep: 1),
+          ]);
+          final item = _history('latest-local-pages')
+            ..readingProgress = ReadingProgress.seed(
+              const ReadingPosition(ep: 1, page: 2, chapterId: 'one'),
+              catalog: catalog,
+            );
+          manager.addHistory(item);
+          final firstGate = _HistoryResultGate();
+          final secondGate = _HistoryResultGate();
+          addTearDown(firstGate.open);
+          addTearDown(secondGate.open);
+          var results = 0;
+          manager.debugBeforeAsyncHistoryResultApplied = () {
+            return switch (++results) {
+              1 => firstGate.pause(),
+              2 => secondGate.pause(),
+              _ => Future.value(),
+            };
+          };
+          final first = manager.addHistoryAsync(item);
+          await firstGate.reached.future;
+          manager.recordReadingProgress(
+            item,
+            position: const ReadingPosition(ep: 1, page: 7, chapterId: 'one'),
+            source: ReadingNavigationSource.automatic,
+            catalog: catalog,
+          );
+          final flushing = manager.flushReadingProgress();
+          firstGate.open();
+          await first;
+          await secondGate.reached.future;
+          expect(manager.find(item.id, item.type)!.resumePosition?.page, 7);
+
+          manager.recordReadingProgress(
+            item,
+            position: const ReadingPosition(ep: 1, page: 9, chapterId: 'one'),
+            source: ReadingNavigationSource.automatic,
+            catalog: catalog,
+          );
+          secondGate.open();
+          await flushing;
+          expect(results, 3);
+          final cached = manager.find(item.id, item.type)!;
+          expect(cached.resumePosition?.page, 9);
+          expect(cached.readingProgress!.catalog, same(catalog));
+          expect(manager.getAll().single.resumePosition?.page, 9);
+        },
+      );
+
+      test(
+        'imported deletion does not revive a completed worker row',
+        () async {
+          final item = _history('imported-delete');
+          manager.addHistory(item);
+          final gate = _HistoryResultGate();
+          addTearDown(gate.open);
+          var results = 0;
+          manager.debugBeforeAsyncHistoryResultApplied = () {
+            return ++results == 1 ? gate.pause() : Future.value();
+          };
+          final write = manager.addReadDuration(
+            item,
+            const Duration(seconds: 5),
+          );
+          await gate.reached.future;
+          final database = sqlite3.open('${directory.path}/history.db');
+          try {
+            database.execute('DELETE FROM history WHERE id = ?;', [item.id]);
+          } finally {
+            database.dispose();
+          }
+          manager.notifyChanges();
+          gate.open();
+          await write;
+          expect(results, 2);
+          expect(manager.find(item.id, item.type), isNull);
+          expect(manager.cachedHistories, isEmpty);
+          expect(manager.getAll(), isEmpty);
+        },
+      );
+
+      test('deleting a completed write keeps later reading progress', () async {
+        final catalog = ReadingCatalog(const [
+          ReadingChapter(id: 'one', ep: 1),
+        ]);
+        final item = _history('delete-then-read')
+          ..readingProgress = ReadingProgress.seed(
+            const ReadingPosition(ep: 1, page: 2, chapterId: 'one'),
+            catalog: catalog,
+          );
+        manager.addHistory(item);
+        final gate = _HistoryResultGate();
+        addTearDown(gate.open);
+        var results = 0;
+        manager.debugBeforeAsyncHistoryResultApplied = () {
+          return ++results == 1 ? gate.pause() : Future.value();
+        };
+        final write = manager.addHistoryAsync(item);
+        await gate.reached.future;
+        manager.remove(item.id, item.type);
+        manager.recordReadingProgress(
+          item,
+          position: const ReadingPosition(ep: 1, page: 7, chapterId: 'one'),
+          source: ReadingNavigationSource.automatic,
+          catalog: catalog,
+        );
+        gate.open();
+        await write;
+        await manager.waitForAsyncWrites();
+        expect(manager.getAll(), isEmpty);
+        expect(manager.find(item.id, item.type)!.resumePosition?.page, 7);
+        await manager.flushReadingProgress();
+        expect(results, 2);
+        expect(manager.getAll().single.resumePosition?.page, 7);
+        expect(
+          manager.find(item.id, item.type)!.readingProgress!.catalog,
+          same(catalog),
+        );
+      });
 
       test(
         'pending progress is isolated from later mutable history edits',

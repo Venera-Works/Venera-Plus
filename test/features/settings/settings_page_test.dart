@@ -125,7 +125,7 @@ void main() {
       try {
         WebDavLibrarySource.resetCacheForTesting();
       } finally {
-        CacheManager.resetForTesting();
+        await CacheManager.resetForTesting();
       }
     } finally {
       appdata.settings.replaceAll(settingsSnapshot);
@@ -327,6 +327,8 @@ void main() {
     (tester) async {
       _setupTestView(tester, const Size(390, 1200));
       CacheManager.debugDisableInitialScan = true;
+      // Create the worker future outside the widget test's fake async zone.
+      await tester.runAsync(() => CacheManager().debugInitialScanTask);
       LocalManager().path = App.dataPath;
       appdata.implicitData['webdavSyncMode'] = 'manual';
       appdata.settings[remoteStorageAccountsSetting] = [

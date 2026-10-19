@@ -223,6 +223,8 @@ void configureHistoryReadingProgressCatalogResolver(
   _historyReadingProgressCatalogResolver = resolver;
 }
 
+typedef _HistoryWriteResult = ({History history, bool matchesInputCatalog});
+
 class HistoryManager with ChangeNotifier {
   static HistoryManager? cache;
 
@@ -252,6 +254,13 @@ class HistoryManager with ChangeNotifier {
   final Map<String, int> _historyDeletionGeneration = {};
   final Map<String, int> _historyOperationRevision = {};
 
+  // Only changes outside the async write queue invalidate worker results.
+  // Page turns use operation revisions without forcing another database read.
+  int _historyCacheEpoch = 0;
+
+  @visibleForTesting
+  Future<void> Function()? debugBeforeAsyncHistoryResultApplied;
+
   bool isInitialized = false;
 
   Future<void> init() async {
@@ -261,6 +270,9 @@ class HistoryManager with ChangeNotifier {
     _dbPath = "${App.dataPath}/history.db";
     _db = openSqliteDatabase(_dbPath);
     HistorySyncData.ensureSchema(_db);
+    _historyCacheEpoch++;
+    cachedHistories.clear();
+    updateCache();
 
     notifyListeners();
     ImageFavoriteManager().init();
@@ -410,20 +422,37 @@ class HistoryManager with ChangeNotifier {
     return _readPersistedHistory(db, item)!;
   }
 
-  static Future<void> _addHistoryAsync(String dbPath, History newItem) {
+  static _HistoryWriteResult _historyWriteResult(
+    History actual,
+    History input,
+  ) {
+    final inputCatalog = input.readingProgress?.catalog;
+    return (
+      history: actual,
+      matchesInputCatalog:
+          inputCatalog != null &&
+          actual.readingProgress?.catalog?.hasSameChapters(inputCatalog) ==
+              true,
+    );
+  }
+
+  static Future<_HistoryWriteResult> _addHistoryAsync(
+    String dbPath,
+    History newItem,
+  ) {
     return Isolate.run(() {
       final db = openSqliteDatabase(dbPath);
       try {
         db.execute('PRAGMA busy_timeout = 5000;');
         HistorySyncData.ensureSchema(db);
-        _writeHistory(db, newItem);
+        return _historyWriteResult(_writeHistory(db, newItem), newItem);
       } finally {
         db.dispose();
       }
     });
   }
 
-  static Future<void> _addReadDurationAsync(
+  static Future<_HistoryWriteResult> _addReadDurationAsync(
     String dbPath,
     History item,
     int durationMs,
@@ -433,7 +462,26 @@ class HistoryManager with ChangeNotifier {
       try {
         db.execute('PRAGMA busy_timeout = 5000;');
         HistorySyncData.ensureSchema(db);
-        _writeReadDuration(db, item, durationMs);
+        return _historyWriteResult(
+          _writeReadDuration(db, item, durationMs),
+          item,
+        );
+      } finally {
+        db.dispose();
+      }
+    });
+  }
+
+  static Future<_HistoryWriteResult?> _readHistoryAsync(
+    String dbPath,
+    History input,
+  ) {
+    return Isolate.run(() {
+      final db = sqlite3.open(dbPath, mode: OpenMode.readOnly);
+      try {
+        db.execute('PRAGMA busy_timeout = 5000;');
+        final actual = _readPersistedHistory(db, input);
+        return actual == null ? null : _historyWriteResult(actual, input);
       } finally {
         db.dispose();
       }
@@ -536,16 +584,57 @@ class HistoryManager with ChangeNotifier {
 
   Future<void> _writeHistoryAsync(History newItem, int generation) async {
     final key = _historyKey(newItem.id, newItem.type);
-    if (_writeGeneration(key) != generation) return;
-    await _addHistoryAsync(_dbPath, newItem);
     if (_writeGeneration(key) != generation || !isInitialized) return;
-    final actual = _readPersistedHistory(_db, newItem);
-    if (actual == null) return;
-    if (identical(_queuedHistories[key], newItem)) {
-      _queuedHistories.remove(key);
+    final epoch = _historyCacheEpoch;
+    final result = await _addHistoryAsync(_dbPath, newItem);
+    await _applyAsyncHistoryResult(newItem, generation, epoch, result);
+  }
+
+  Future<void> _applyAsyncHistoryResult(
+    History input,
+    int generation,
+    int epoch,
+    _HistoryWriteResult? result, {
+    History? durationTarget,
+  }) async {
+    final key = _historyKey(input.id, input.type);
+    while (true) {
+      if (_writeGeneration(key) != generation || !isInitialized) return;
+      final beforeApply = debugBeforeAsyncHistoryResultApplied;
+      if (beforeApply != null) await beforeApply();
+      if (_writeGeneration(key) != generation || !isInitialized) return;
+      if (epoch != _historyCacheEpoch) {
+        epoch = _historyCacheEpoch;
+        // A sync/import can replace the row after the worker has read it.
+        // Re-read only: repeating the write would add reading time twice.
+        result = await _readHistoryAsync(_dbPath, input);
+        continue;
+      }
+
+      if (identical(_queuedHistories[key], input)) {
+        _queuedHistories.remove(key);
+      }
+      if (result == null) return;
+      final actual = result.history;
+      final inputCatalog = input.readingProgress?.catalog;
+      if (result.matchesInputCatalog && inputCatalog != null) {
+        // The worker compared the chapters. Rebase positions only on the UI
+        // isolate, preserving remote rereads in the actual persisted progress.
+        actual.readingProgress = actual.readingProgress!.rebaseCatalog(
+          inputCatalog,
+        );
+      }
+      if (durationTarget != null) {
+        durationTarget.readDurationMs = actual.readDurationMs;
+      }
+      final queued = _queuedHistories[key];
+      if (queued != null && !identical(queued, actual)) {
+        _mergeHistorySnapshot(actual, queued);
+      }
+      _cacheHistory(actual, compareCatalogs: false);
+      notifyListeners();
+      return;
     }
-    _cacheHistory(actual);
-    notifyListeners();
   }
 
   /// Atomically adds foreground reading time without replacing progress data.
@@ -558,17 +647,16 @@ class HistoryManager with ChangeNotifier {
     final generation = _writeGeneration(key);
     _queuedHistories[key] = snapshot;
     return _enqueueAsyncWrite(() async {
-      if (_writeGeneration(key) != generation) return;
-      await _addReadDurationAsync(_dbPath, snapshot, durationMs);
       if (_writeGeneration(key) != generation || !isInitialized) return;
-      final actual = _readPersistedHistory(_db, snapshot);
-      if (actual == null) return;
-      if (identical(_queuedHistories[key], snapshot)) {
-        _queuedHistories.remove(key);
-      }
-      item.readDurationMs = actual.readDurationMs;
-      _cacheHistory(actual);
-      notifyListeners();
+      final epoch = _historyCacheEpoch;
+      final result = await _addReadDurationAsync(_dbPath, snapshot, durationMs);
+      await _applyAsyncHistoryResult(
+        snapshot,
+        generation,
+        epoch,
+        result,
+        durationTarget: item,
+      );
     });
   }
 
@@ -889,7 +977,7 @@ class HistoryManager with ChangeNotifier {
     });
   }
 
-  void _cacheHistory(History newItem) {
+  void _cacheHistory(History newItem, {bool compareCatalogs = true}) {
     final key = _historyKey(newItem.id, newItem.type);
     final pending = _pendingReadingProgress[key];
     final progress = newItem.readingProgress;
@@ -898,7 +986,8 @@ class HistoryManager with ChangeNotifier {
         cachedHistories[key]?.readingProgress?.catalog;
     // Database reads create new catalog objects. Reuse an unchanged live
     // catalog here so the next gesture does not compare/encode every chapter.
-    if (progress != null &&
+    if (compareCatalogs &&
+        progress != null &&
         cachedCatalog != null &&
         progress.catalog?.hasSameChapters(cachedCatalog) == true) {
       newItem.readingProgress = progress.rebaseCatalog(cachedCatalog);
@@ -926,6 +1015,7 @@ class HistoryManager with ChangeNotifier {
     _advanceHistoryRevision(key);
     _queuedHistories[key] = snapshot;
     final actual = _writeHistory(_db, snapshot);
+    _historyCacheEpoch++;
     if (identical(_queuedHistories[key], snapshot)) {
       _queuedHistories.remove(key);
     }
@@ -957,6 +1047,7 @@ class HistoryManager with ChangeNotifier {
     final keys = _knownHistoryKeys();
     final revisions = {for (final key in keys) key: _invalidateHistory(key)};
     _db.execute('DELETE FROM history;');
+    if (keys.isNotEmpty) _historyCacheEpoch++;
     updateCache();
     notifyListeners();
     for (final entry in revisions.entries) {
@@ -1004,6 +1095,7 @@ class HistoryManager with ChangeNotifier {
         [id, typeValue, cutoff],
       );
     }
+    if (keysToDelete.isNotEmpty) _historyCacheEpoch++;
     updateCache();
     notifyListeners();
     for (final entry in revisions.entries) {
@@ -1044,6 +1136,7 @@ class HistoryManager with ChangeNotifier {
       _db.execute('ROLLBACK;');
       rethrow;
     }
+    if (keysToDelete.isNotEmpty) _historyCacheEpoch++;
     updateCache();
     notifyListeners();
     for (final entry in revisions.entries) {
@@ -1058,6 +1151,7 @@ class HistoryManager with ChangeNotifier {
       id,
       type.value,
     ]);
+    _historyCacheEpoch++;
     updateCache();
     notifyListeners();
     _queueDelete(key, revision);
@@ -1151,6 +1245,7 @@ class HistoryManager with ChangeNotifier {
     }
     if (!result.hasChanges) return;
     if (result.historyChanged) {
+      _historyCacheEpoch++;
       cachedHistories.clear();
       updateCache();
       notifyListeners();
@@ -1218,10 +1313,13 @@ class HistoryManager with ChangeNotifier {
       _writeHistory(_db, item);
     }
     isInitialized = false;
+    _historyCacheEpoch++;
     _db.dispose();
   }
 
   void notifyChanges() {
+    _historyCacheEpoch++;
+    cachedHistories.clear();
     updateCache();
     notifyListeners();
   }
@@ -1245,6 +1343,7 @@ class HistoryManager with ChangeNotifier {
       _db.execute('ROLLBACK;');
       rethrow;
     }
+    _historyCacheEpoch++;
     updateCache();
     notifyListeners();
     for (final entry in revisions.entries) {
