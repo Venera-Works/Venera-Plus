@@ -121,6 +121,119 @@ void main() {
       });
 
       test(
+        'page turns after progress and duration writes reuse the live catalog',
+        () async {
+          final catalog = _CountingCatalog([
+            for (var chapter = 1; chapter <= 1000; chapter++)
+              ReadingChapter(id: 'chapter-$chapter', ep: chapter),
+          ]);
+          final item = _history('persisted-catalog')
+            ..readingProgress = ReadingProgress.seed(
+              const ReadingPosition(ep: 1, page: 2, chapterId: 'chapter-1'),
+              catalog: ReadingCatalog.fromJson(catalog.toJson()),
+            );
+          manager.addHistory(item);
+          manager.recordReadingProgress(
+            item,
+            position: const ReadingPosition(
+              ep: 1,
+              page: 2,
+              chapterId: 'chapter-1',
+            ),
+            source: ReadingNavigationSource.userForward,
+            catalog: catalog,
+          );
+
+          for (var page = 3; page <= 5; page++) {
+            await manager.flushReadingProgress();
+            if (page == 4) {
+              await manager.addReadDuration(item, const Duration(seconds: 5));
+            }
+            final persisted = manager
+                .find(item.id, item.type)!
+                .readingProgress!;
+            expect(persisted.catalog, same(catalog));
+            catalog.serializations = 0;
+            final observed = persisted.merge(item.readingProgress!);
+            manager.recordReadingProgress(
+              item,
+              position: ReadingPosition(
+                ep: 1,
+                page: page,
+                chapterId: 'chapter-1',
+              ),
+              source: ReadingNavigationSource.userForward,
+              commandId: 'gesture-$page',
+              catalog: catalog,
+              observedProgress: observed,
+            );
+            expect(catalog.serializations, 0);
+            expect(item.readingProgress!.catalog, same(catalog));
+            expect(item.resumePosition?.page, page);
+          }
+          await manager.flushReadingProgress();
+          final saved = manager.getAll().single;
+          expect(saved.resumePosition?.page, 5);
+          expect(saved.readDurationMs, 5000);
+        },
+      );
+
+      test(
+        'catalog reuse preserves a remotely written reread and changed directory',
+        () async {
+          final catalog = ReadingCatalog(const [
+            ReadingChapter(id: 'one', ep: 1),
+            ReadingChapter(id: 'two', ep: 2),
+          ]);
+          final item = _history('remote-catalog');
+          manager.recordReadingProgress(
+            item,
+            position: const ReadingPosition(ep: 2, page: 5, chapterId: 'two'),
+            source: ReadingNavigationSource.userForward,
+            catalog: catalog,
+          );
+          await manager.flushReadingProgress();
+          final remote = item.readingProgress!.record(
+            const ReadingPosition(ep: 1, page: 2, chapterId: 'one'),
+            source: ReadingNavigationSource.userBackward,
+            newRoundId: 'remote-round',
+          );
+          final database = sqlite3.open('${directory.path}/history.db');
+          try {
+            database.execute(
+              'UPDATE history SET reading_progress = ? WHERE id = ? AND type = ?',
+              [jsonEncode(remote.toJson()), item.id, item.type.value],
+            );
+            await manager.addReadDuration(item, const Duration(seconds: 1));
+            final cached = manager.find(item.id, item.type)!.readingProgress!;
+            expect(cached.catalog, same(catalog));
+            expect(cached.activeRoundId, 'remote-round');
+            expect(cached.resumePosition, remote.resumePosition);
+
+            final expanded = ReadingCatalog([
+              ...catalog.chapters,
+              const ReadingChapter(id: 'three', ep: 3),
+            ]);
+            database.execute(
+              'UPDATE history SET reading_progress = ? WHERE id = ? AND type = ?',
+              [
+                jsonEncode(remote.rebaseCatalog(expanded).toJson()),
+                item.id,
+                item.type.value,
+              ],
+            );
+            await manager.addReadDuration(item, const Duration(seconds: 1));
+            final updated = manager.find(item.id, item.type)!.readingProgress!;
+            expect(updated.catalog!.chapters, hasLength(3));
+            expect(updated.activeRoundId, 'remote-round');
+            expect(updated.resumePosition, remote.resumePosition);
+          } finally {
+            database.close();
+          }
+        },
+      );
+
+      test(
         'pending progress is isolated from later mutable history edits',
         () async {
           final item = _history('snapshot')

@@ -79,6 +79,22 @@ class ReadingCatalog {
   final List<ReadingChapter> chapters;
   late final Map<String, List<int>> _indicesById;
 
+  bool hasSameChapters(ReadingCatalog other) {
+    if (identical(this, other)) return true;
+    if (chapters.length != other.chapters.length) return false;
+    for (var i = 0; i < chapters.length; i++) {
+      final left = chapters[i];
+      final right = other.chapters[i];
+      if (left.id != right.id ||
+          left.ep != right.ep ||
+          left.group != right.group ||
+          left.groupId != right.groupId) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   Map<String, Object?> toJson() => {
     'chapters': chapters.map((chapter) => chapter.toJson()).toList(),
   };

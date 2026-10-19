@@ -8,15 +8,20 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:image/image.dart' as img;
 import 'package:venera_plus/components/gesture.dart';
+import 'package:venera_plus/components/custom_slider.dart';
 import 'package:venera_plus/components/window_frame.dart';
 import 'package:venera_plus/features/comic_details/comic_details.dart';
+import 'package:venera_plus/features/comic_details/chapters.dart';
 import 'package:venera_plus/features/comic_details/thumbnails.dart';
 import 'package:venera_plus/features/favorites/favorites_manager.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/reader/comic_image.dart';
+import 'package:venera_plus/features/reader/brightness.dart';
 import 'package:venera_plus/features/reader/reader_page.dart';
+import 'package:venera_plus/features/reader/scaffold.dart';
+import 'package:venera_plus/foundation/app_page_route.dart';
 import 'package:venera_plus/foundation/image_provider/reader_image.dart';
 import 'package:venera_plus/features/sync/data_sync.dart';
 import 'package:venera_plus/foundation/app.dart';
@@ -46,6 +51,156 @@ void main() {
       expect(isAuthorNamespace('language'), isFalse);
     },
   );
+  for (final nested in [false, true]) {
+    testWidgets(
+      'covered details defer page refreshes until visible (nested=$nested)',
+      (tester) async {
+        final fixture = await _createFixture(tester, grouped: false);
+        fixture.histories.addHistory(fixture.makeHistory(ep: 1, page: 1));
+        final page = fixture.page as MaterialApp;
+        await tester.pumpWidget(
+          nested
+              ? MaterialApp(
+                  navigatorKey: App.rootNavigatorKey,
+                  builder: page.builder,
+                  home: Navigator(
+                    onGenerateRoute: (_) =>
+                        AppPageRoute<void>(builder: (_) => page.home!),
+                  ),
+                )
+              : page,
+        );
+        await _waitForText(tester, 'P1');
+        await tester.tap(find.text('Continue'));
+        final reader = await _waitForReaderRoute(tester);
+        await _waitForReader(tester, reader, 1);
+        await tester.pumpAndSettle();
+        final chapters = find.byType(ComicChaptersView, skipOffstage: false);
+        final before = tester.widget<ComicChaptersView>(chapters);
+        expect(chapters, findsOneWidget);
+
+        for (final page in [2, 3, 4]) {
+          reader.setPage(page, source: ReadingNavigationSource.userForward);
+          await tester.pump();
+          expect(tester.widget<ComicChaptersView>(chapters), same(before));
+        }
+        await _pumpAsyncWork(tester, fixture.histories.flushReadingProgress());
+        await tester.pump();
+        expect(tester.widget<ComicChaptersView>(chapters), same(before));
+
+        final history = reader.history!;
+        await _popReader(tester, fixture);
+        expect(tester.widget<ComicChaptersView>(chapters), isNot(same(before)));
+        expect(find.textContaining('P4'), findsOneWidget);
+        fixture.histories.recordReadingProgress(
+          history,
+          position: const ReadingPosition(ep: 1, page: 3, chapterId: 'c1'),
+          source: ReadingNavigationSource.userBackward,
+          commandId: 'visible-backward',
+          catalog: fixture.readingCatalog,
+        );
+        await tester.pump();
+        expect(find.textContaining('P3'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+        await _pumpAsyncWork(tester, fixture.histories.flushReadingProgress());
+      },
+      skip: !_sqliteAvailable(),
+    );
+  }
+
+  testWidgets(
+    'gallery midpoint updates page text without rebuilding hidden controls',
+    (tester) async {
+      final fixture = await _createFixture(
+        tester,
+        grouped: false,
+        withChapterComments: true,
+      );
+      appdata.settings['showPageNumberInReader'] = true;
+      fixture.histories.addHistory(fixture.makeHistory(ep: 1, page: 1));
+      await tester.pumpWidget(fixture.page);
+      await _waitForText(tester, 'Continue');
+      await tester.tap(find.text('Continue'));
+      final reader = await _waitForReaderRoute(tester);
+      await _waitForReader(tester, reader, 1);
+      await tester.pumpAndSettle();
+      final scaffold = tester.state<ReaderScaffoldState>(
+        find.byType(ReaderScaffold),
+      );
+      final slider = find.byType(CustomSlider);
+      final brightness = find.byType(ReaderBrightnessControl);
+      final top = find.widgetWithIcon(IconButton, Icons.settings);
+      final sliderBefore = tester.widget<CustomSlider>(slider);
+      final brightnessBefore = tester.widget(brightness);
+      final topBefore = tester.widget(top);
+      final gallery = find.byType(PageView);
+      final width = tester.getSize(gallery).width;
+      // Start an accepted page drag, independently of PhotoView's zoom arena.
+      // This still emits the real drag notifications and midpoint callback.
+      final drag = tester
+          .widget<PageView>(gallery)
+          .controller!
+          .position
+          .drag(DragStartDetails(), () {});
+      drag.update(
+        DragUpdateDetails(
+          globalPosition: Offset.zero,
+          delta: Offset(-width * 0.35, 0),
+          primaryDelta: -width * 0.35,
+        ),
+      );
+      await tester.pump();
+      expect(reader.page, 1);
+      drag.update(
+        DragUpdateDetails(
+          globalPosition: Offset.zero,
+          delta: Offset(-width * 0.3, 0),
+          primaryDelta: -width * 0.3,
+        ),
+      );
+      await tester.pump();
+      expect(reader.page, 2);
+      await tester.pump();
+      expect(find.textContaining('2/4'), findsNWidgets(2));
+      expect(tester.widget<CustomSlider>(slider), same(sliderBefore));
+      expect(tester.widget(brightness), same(brightnessBefore));
+      expect(tester.widget(top), same(topBefore));
+      drag.end(DragEndDetails(primaryVelocity: 0));
+      await tester.pumpAndSettle();
+
+      scaffold.openOrClose();
+      await tester.pumpAndSettle();
+      expect(tester.widget<CustomSlider>(slider).value, 2);
+      reader.imageViewController!.toPage(3);
+      await tester.pumpAndSettle();
+      expect(reader.page, 3);
+      expect(find.textContaining('3/4'), findsNWidgets(2));
+      expect(tester.widget<CustomSlider>(slider).value, 3);
+
+      reader.imageViewController!.toPage(5);
+      await tester.pumpAndSettle();
+      expect(reader.isOnChapterCommentsPage, isTrue);
+      expect(find.byType(ReaderBrightnessOverlay), findsNothing);
+      expect(find.textContaining('/4'), findsNothing);
+      expect(tester.widget<CustomSlider>(slider).value, 4);
+      reader.imageViewController!.toPage(4);
+      await tester.pumpAndSettle();
+      expect(reader.isOnChapterCommentsPage, isFalse);
+      expect(find.byType(ReaderBrightnessOverlay), findsOneWidget);
+      expect(find.textContaining('4/4'), findsNWidgets(2));
+
+      reader.toNextChapter();
+      await _waitForReader(tester, reader, 1);
+      await tester.pumpAndSettle();
+      expect(reader.chapter, 2);
+      expect(find.text('Chapter Two'), findsOneWidget);
+      expect(tester.widget<CustomSlider>(slider).value, 1);
+      expect(tester.takeException(), isNull);
+      await _popReader(tester, fixture);
+    },
+    skip: !_sqliteAvailable(),
+  );
+
   for (final grouped in [false, true]) {
     testWidgets(
       grouped
@@ -590,6 +745,7 @@ Future<_ComicDetailsFixture> _createFixture(
   bool duplicateChapterId = false,
   bool chapterless = false,
   bool includeThirdChapter = false,
+  bool withChapterComments = false,
 }) async {
   final previousSettings =
       jsonDecode(jsonEncode(appdata.toJson()['settings']))
@@ -672,6 +828,10 @@ Future<_ComicDetailsFixture> _createFixture(
     details: details,
     imageUrls: imageUrls,
     requestedChapterIds: requestedChapterIds,
+    chapterCommentsLoader: withChapterComments
+        ? (comicId, epId, page, replyTo) async =>
+              const Res(<Comment>[], subData: 1)
+        : null,
   );
   ComicSourceManager().add(source);
 
@@ -692,6 +852,8 @@ Future<_ComicDetailsFixture> _createFixture(
   settings['enableCustomImageProcessing'] = false;
   settings['enableClockAndBatteryInfoInReader'] = false;
   settings['showPageNumberInReader'] = false;
+  settings['showChapterComments'] = withChapterComments;
+  settings['showChapterCommentsAtEnd'] = withChapterComments;
   settings['showSystemStatusBar'] = false;
   settings['historyRetentionDays'] = 0;
   settings['reverseChapterOrder'] = false;
@@ -792,6 +954,7 @@ ComicSource _comicSource({
   required ComicDetails details,
   required List<String> imageUrls,
   required List<String> requestedChapterIds,
+  ChapterCommentsLoader? chapterCommentsLoader,
 }) => ComicSource(
   'Comic details test source',
   sourceKey,
@@ -815,7 +978,7 @@ ComicSource _comicSource({
   '1.0.0',
   null,
   null,
-  null,
+  chapterCommentsLoader,
   null,
   null,
   null,

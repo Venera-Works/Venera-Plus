@@ -1049,7 +1049,7 @@ class GalleryModeState extends State<_GalleryMode>
               } else {
                 reader.notifyChapterCompletedIfNeeded();
               }
-              context.readerScaffold.update();
+              context.readerScaffold.updatePage();
 
               final currentIdentity = _visibleStableIdentityForIndex(i);
               shouldRefresh = shouldRefreshEInk(
@@ -2012,7 +2012,7 @@ class ContinuousModeState extends State<_ContinuousMode>
         commandId: commandId,
         navigationCompleted: navigationCompleted,
       );
-      context.readerScaffold.update();
+      context.readerScaffold.updatePage();
     }
     cacheImages(page);
     if (crossChapter) {

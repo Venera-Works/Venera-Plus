@@ -892,6 +892,17 @@ class HistoryManager with ChangeNotifier {
   void _cacheHistory(History newItem) {
     final key = _historyKey(newItem.id, newItem.type);
     final pending = _pendingReadingProgress[key];
+    final progress = newItem.readingProgress;
+    final cachedCatalog =
+        pending?.readingProgress?.catalog ??
+        cachedHistories[key]?.readingProgress?.catalog;
+    // Database reads create new catalog objects. Reuse an unchanged live
+    // catalog here so the next gesture does not compare/encode every chapter.
+    if (progress != null &&
+        cachedCatalog != null &&
+        progress.catalog?.hasSameChapters(cachedCatalog) == true) {
+      newItem.readingProgress = progress.rebaseCatalog(cachedCatalog);
+    }
     if (pending != null && !identical(pending, newItem)) {
       _mergeHistorySnapshot(newItem, pending);
     }

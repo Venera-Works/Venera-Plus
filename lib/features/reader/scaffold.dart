@@ -45,6 +45,9 @@ class ReaderScaffoldState extends State<ReaderScaffold>
 
   bool _brightnessPanelOpen = false;
 
+  bool _isOnChapterCommentsPage = false;
+  final _pageChanges = ValueNotifier(0);
+
   final _imageFavorites = <(String, int), ImageFavorite>{};
 
   final EInkRefreshController _eInkRefreshController = EInkRefreshController();
@@ -137,6 +140,7 @@ class ReaderScaffoldState extends State<ReaderScaffold>
   @override
   void dispose() {
     ImageFavoriteManager().removeListener(_reloadImageFavorites);
+    _pageChanges.dispose();
     _eInkRefreshController.dispose();
     sliderFocus.dispose();
     super.dispose();
@@ -170,6 +174,14 @@ class ReaderScaffoldState extends State<ReaderScaffold>
 
   void update() {
     setState(() {});
+  }
+
+  void updatePage() {
+    if (_isOnChapterCommentsPage != context.reader.isOnChapterCommentsPage) {
+      update();
+    } else {
+      _pageChanges.value++;
+    }
   }
 
   void requestEInkRefresh() {
@@ -211,7 +223,7 @@ class ReaderScaffoldState extends State<ReaderScaffold>
 
   @override
   Widget build(BuildContext context) {
-    final isOnChapterCommentsPage = context.reader.isOnChapterCommentsPage;
+    _isOnChapterCommentsPage = context.reader.isOnChapterCommentsPage;
     final brightnessPanelVisible = _isOpen && _brightnessPanelOpen;
     return Stack(
       children: [
@@ -221,7 +233,7 @@ class ReaderScaffoldState extends State<ReaderScaffold>
             child: widget.child,
           ),
         ),
-        if (!isOnChapterCommentsPage)
+        if (!_isOnChapterCommentsPage)
           Positioned.fill(
             child: ReaderBrightnessOverlay(
               enabled: _readerSetting('readerBrightnessEnabled') == true,
@@ -229,9 +241,12 @@ class ReaderScaffoldState extends State<ReaderScaffold>
             ),
           ),
         if (_readerSetting('showPageNumberInReader') == true &&
-            !isOnChapterCommentsPage)
-          buildPageInfoText(),
-        if (!isOnChapterCommentsPage) buildStatusInfo(),
+            !_isOnChapterCommentsPage)
+          ListenableBuilder(
+            listenable: _pageChanges,
+            builder: (context, child) => buildPageInfoText(),
+          ),
+        if (!_isOnChapterCommentsPage) buildStatusInfo(),
         AnimatedPositioned(
           duration: const Duration(milliseconds: 180),
           right: 16,
@@ -253,7 +268,11 @@ class ReaderScaffoldState extends State<ReaderScaffold>
               : -(kBottomBarHeight + MediaQuery.of(context).padding.bottom),
           left: 0,
           right: 0,
-          child: buildBottom(),
+          child: ListenableBuilder(
+            listenable: _pageChanges,
+            builder: (context, child) => child ?? buildBottom(),
+            child: _isOpen ? null : buildBottom(),
+          ),
         ),
         AnimatedPositioned(
           duration: const Duration(milliseconds: 180),

@@ -92,6 +92,11 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
 
   late HistoryManager _historyManager;
   _HistoryProgress? _historyProgress;
+  ModalRoute<dynamic>? _route;
+  bool _tickerModeEnabled = true;
+  bool _needsHistoryRefresh = false;
+
+  bool get _isVisible => _tickerModeEnabled && (_route?.isCurrent ?? true);
 
   bool showAppbarTitle = false;
 
@@ -100,15 +105,12 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
   bool showFAB = false;
 
   @override
-  void onReadEnd() {
-    if (_refreshHistory()) {
-      if (mounted) update();
-    }
-  }
+  void onReadEnd() => _onHistoryChanged();
 
   ComicType get _historyType => ComicType.fromKey(widget.sourceKey);
 
   bool _refreshHistory() {
+    _needsHistoryRefresh = false;
     final current = _historyManager.find(widget.id, _historyType);
     final changed = !(_historyProgress?.matches(current) ?? current == null);
     history = current;
@@ -119,12 +121,15 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
   }
 
   void _onHistoryChanged() {
-    if (_refreshHistory() && mounted) {
+    if (!mounted) return;
+    _needsHistoryRefresh = true;
+    if (_isVisible && _refreshHistory()) {
       update();
     }
   }
 
   void _rememberHistory(History? current) {
+    _needsHistoryRefresh = false;
     history = current;
     _historyProgress = current == null ? null : _HistoryProgress(current);
   }
@@ -172,6 +177,15 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
     _historyManager.addListener(_onHistoryChanged);
     scrollController.addListener(onScroll);
     super.initState();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _route = ModalRoute.of(context);
+    // The root reader can cover a details page on the nested main navigator.
+    _tickerModeEnabled = TickerMode.valuesOf(context).enabled;
+    if (_isVisible && _needsHistoryRefresh) _refreshHistory();
   }
 
   @override

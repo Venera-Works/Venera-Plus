@@ -2,6 +2,39 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/history/reading_progress.dart';
 
 void main() {
+  test(
+    'catalog reuse requires identical chapter order and position mapping',
+    () {
+      final catalog = ReadingCatalog(const [
+        ReadingChapter(id: 'one', ep: 1, group: 1, groupId: 'group'),
+        ReadingChapter(id: 'two', ep: 2, group: 1, groupId: 'group'),
+      ]);
+      expect(
+        catalog.hasSameChapters(ReadingCatalog.fromJson(catalog.toJson())),
+        isTrue,
+      );
+      expect(
+        catalog.hasSameChapters(
+          ReadingCatalog(catalog.chapters.reversed.toList()),
+        ),
+        isFalse,
+      );
+      for (final changed in const [
+        ReadingChapter(id: 'other', ep: 1, group: 1, groupId: 'group'),
+        ReadingChapter(id: 'one', ep: 3, group: 1, groupId: 'group'),
+        ReadingChapter(id: 'one', ep: 1, group: 2, groupId: 'group'),
+        ReadingChapter(id: 'one', ep: 1, group: 1, groupId: 'other'),
+      ]) {
+        expect(
+          catalog.hasSameChapters(
+            ReadingCatalog([changed, catalog.chapters.last]),
+          ),
+          isFalse,
+        );
+      }
+    },
+  );
+
   group('ReadingProgress join semantics', () {
     test('maximum joins are idempotent, commutative, and associative', () {
       final first = ReadingProgress.seed(
