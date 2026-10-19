@@ -5,9 +5,13 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/app_exit.dart';
+import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/consts.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
+import 'package:venera_plus/components/message.dart';
+import 'package:venera_plus/foundation/translations.dart';
 import 'package:window_manager/window_manager.dart';
 
 const _kTitleBarHeight = 36.0;
@@ -21,7 +25,8 @@ class WindowFrameController extends InheritedWidget {
 
   /// Adds a listener that will be called when close button is clicked.
   /// The listener should return `true` to allow the window to be closed.
-  final void Function(WindowCloseListener listener) addCloseListener;
+  final void Function(WindowCloseListener listener, {bool runFirst})
+  addCloseListener;
 
   /// Removes a close listener.
   final void Function(WindowCloseListener listener) removeCloseListener;
@@ -71,8 +76,12 @@ class _WindowFrameState extends State<WindowFrame> {
 
   /// Adds a listener that will be called when close button is clicked.
   /// The listener should return `true` to allow the window to be closed.
-  void addCloseListener(WindowCloseListener listener) {
-    closeListeners.add(listener);
+  void addCloseListener(WindowCloseListener listener, {bool runFirst = false}) {
+    if (runFirst) {
+      closeListeners.insert(0, listener);
+    } else {
+      closeListeners.add(listener);
+    }
   }
 
   /// Removes a close listener.
@@ -80,13 +89,20 @@ class _WindowFrameState extends State<WindowFrame> {
     closeListeners.remove(listener);
   }
 
-  void _onClose() {
-    for (var listener in closeListeners) {
-      if (!listener()) {
-        return;
-      }
+  Future<void> _onClose() async {
+    for (final listener in closeListeners.toList()) {
+      if (!listener()) return;
     }
-    exit(0);
+    try {
+      await exitApp();
+    } catch (error, stackTrace) {
+      Log.error(
+        'Window close',
+        'Failed to save reading data before exit: $error',
+        stackTrace,
+      );
+      showToast(context: App.rootContext, message: 'Saved Failed'.tl);
+    }
   }
 
   @override

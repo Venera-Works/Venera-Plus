@@ -6,6 +6,7 @@ import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/window_frame.dart';
 import 'package:venera_plus/features/sync/app_data_transfer.dart';
 import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/app_exit.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
@@ -291,8 +292,10 @@ class DataSync with ChangeNotifier {
     }
   }
 
+  bool _windowCloseDialogOpen = false;
+
   bool _handleWindowClose() {
-    if (_isUploading) {
+    if (_isUploading || _windowCloseDialogOpen) {
       _showWindowCloseDialog();
       return false;
     }
@@ -300,15 +303,32 @@ class DataSync with ChangeNotifier {
   }
 
   void _showWindowCloseDialog() async {
-    showLoadingDialog(
+    if (_windowCloseDialogOpen) return;
+    _windowCloseDialogOpen = true;
+    final shutDown = Completer<void>();
+    final dialog = showLoadingDialog(
       App.rootContext,
       cancelButtonText: "Shut Down".tl,
-      onCancel: () => exit(0),
+      onCancel: () {
+        if (!shutDown.isCompleted) shutDown.complete();
+      },
       barrierDismissible: false,
       message: "Uploading data...".tl,
     );
-    await _waitForUploadBeforeClose();
-    exit(0);
+    try {
+      await Future.any([_waitForUploadBeforeClose(), shutDown.future]);
+      await exitApp();
+    } catch (error, stackTrace) {
+      Log.error(
+        'Window close',
+        'Failed to save reading data before exit: $error',
+        stackTrace,
+      );
+      showToast(context: App.rootContext, message: 'Saved Failed'.tl);
+    } finally {
+      dialog.close();
+      _windowCloseDialogOpen = false;
+    }
   }
 
   Future<void> _waitForUploadBeforeClose() async {
@@ -354,6 +374,9 @@ class DataSync with ChangeNotifier {
 
   @visibleForTesting
   static bool debugDisableWindowCloseHandler = false;
+
+  @visibleForTesting
+  bool debugHandleWindowClose() => _handleWindowClose();
 
   @visibleForTesting
   Future<void> debugWaitForUploadBeforeClose() {

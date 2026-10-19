@@ -18,6 +18,7 @@ TargetImageSize _readerImageTargetSize(
   int height,
   ComicImageLoadTarget target,
   double decodeScale,
+  int maxDecodePixels,
 ) {
   final scale = decodeScale.isFinite && decodeScale > 0 ? decodeScale : 1.0;
   final split = target.splitWideImage && width > height;
@@ -37,10 +38,34 @@ TargetImageSize _readerImageTargetSize(
       }
   }
   ratio = math.min(ratio, 1.0);
-  return TargetImageSize(
-    width: math.max(1, (width * ratio).round()),
-    height: math.max(1, (height * ratio).round()),
-  );
+  final targetPixelWidth = math.max(1, (width * ratio).round());
+  final targetPixelHeight = math.max(1, (height * ratio).round());
+  if (targetPixelWidth * targetPixelHeight > maxDecodePixels) {
+    return _limitReaderImagePixels(width, height, maxDecodePixels);
+  }
+  return TargetImageSize(width: targetPixelWidth, height: targetPixelHeight);
+}
+
+TargetImageSize _limitReaderImagePixels(
+  int width,
+  int height,
+  int maxDecodePixels,
+) {
+  if (width * height <= maxDecodePixels) {
+    return TargetImageSize(width: width, height: height);
+  }
+  final ratio = math.sqrt(maxDecodePixels / (width * height));
+  var limitedWidth = math.max(1, (width * ratio).floor());
+  var limitedHeight = math.max(1, (height * ratio).floor());
+  // One side can reach one pixel before an extreme aspect ratio fits.
+  if (limitedWidth * limitedHeight > maxDecodePixels) {
+    if (limitedWidth > limitedHeight) {
+      limitedWidth = maxDecodePixels ~/ limitedHeight;
+    } else {
+      limitedHeight = maxDecodePixels ~/ limitedWidth;
+    }
+  }
+  return TargetImageSize(width: limitedWidth, height: limitedHeight);
 }
 
 @visibleForTesting
@@ -89,8 +114,15 @@ class ReaderImageProvider
     this.chapter,
     this.enableResize = false,
     this.target,
-  }) : _baseProvider = null,
+    this.maxDecodePixels = defaultMaxDecodePixels,
+  }) : assert(maxDecodePixels > 0),
+       _baseProvider = null,
        _decodeSize = null;
+
+  /// 16 Mi pixels give a 64 MiB four-byte RGBA frame, below Flutter's default
+  /// 100 MiB image-cache limit. This bounds decoder output, not encoded data,
+  /// processing scripts or all cached frames.
+  static const int defaultMaxDecodePixels = 16 * 1024 * 1024;
 
   ReaderImageProvider._withDecodeSize(
     ReaderImageProvider base,
@@ -103,6 +135,7 @@ class ReaderImageProvider
       chapter = base.chapter,
       enableResize = base.enableResize,
       target = base.target,
+      maxDecodePixels = base.maxDecodePixels,
       _baseProvider = base;
 
   static final _diskCacheKeys = Expando<String>();
@@ -126,6 +159,7 @@ class ReaderImageProvider
   final int? chapter;
 
   final ComicImageLoadTarget? target;
+  final int maxDecodePixels;
 
   final ReaderImageProvider? _baseProvider;
   final TargetImageSize? _decodeSize;
@@ -137,8 +171,20 @@ class ReaderImageProvider
     if (!base.enableResize || size == null) return base;
     final width = sourceSize.width.toInt();
     final height = sourceSize.height.toInt();
-    final baseSize = _readerImageTargetSize(width, height, size, 1.0);
-    final decodeSize = _readerImageTargetSize(width, height, size, scale);
+    final baseSize = _readerImageTargetSize(
+      width,
+      height,
+      size,
+      1.0,
+      base.maxDecodePixels,
+    );
+    final decodeSize = _readerImageTargetSize(
+      width,
+      height,
+      size,
+      scale,
+      base.maxDecodePixels,
+    );
     if (decodeSize.width == baseSize.width &&
         decodeSize.height == baseSize.height) {
       return base;
@@ -161,7 +207,7 @@ class ReaderImageProvider
         getTargetSize: (width, height) {
           _sourceSizes[completer] = Size(width.toDouble(), height.toDouble());
           return getTargetSize?.call(width, height) ??
-              TargetImageSize(width: width, height: height);
+              _limitReaderImagePixels(width, height, maxDecodePixels);
         },
       );
     });
@@ -172,9 +218,15 @@ class ReaderImageProvider
   TargetImageSize getTargetSize(int width, int height) {
     final size = target;
     if (size == null || width <= 0 || height <= 0) {
-      return super.getTargetSize(width, height);
+      final fallback = super.getTargetSize(width, height);
+      return _limitReaderImagePixels(
+        fallback.width ?? width,
+        fallback.height ?? height,
+        maxDecodePixels,
+      );
     }
-    return _decodeSize ?? _readerImageTargetSize(width, height, size, 1.0);
+    return _decodeSize ??
+        _readerImageTargetSize(width, height, size, 1.0, maxDecodePixels);
   }
 
   @override
@@ -307,8 +359,13 @@ class ReaderImageProvider
     final base = target != null
         ? "$imageKey@$sourceKey@$cid@$eid@$enableResize@${target!.cacheIdentity}"
         : "$imageKey@$sourceKey@$cid@$eid@$enableResize";
+    final budgetKey = maxDecodePixels == defaultMaxDecodePixels
+        ? base
+        : '$base@pixels$maxDecodePixels';
     final size = _decodeSize;
-    return size == null ? base : '$base@decode${size.width}x${size.height}';
+    return size == null
+        ? budgetKey
+        : '$budgetKey@decode${size.width}x${size.height}';
   }
 
   @override

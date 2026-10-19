@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_saf/flutter_saf.dart';
 import 'package:rhttp/rhttp.dart';
 import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/app_exit.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/features/comic_details/comic_details.dart';
@@ -199,6 +200,11 @@ Future<ComicMetaData?> scrapeBangumiMetadataForWebDav(
   return subject == null ? null : _metadataFromBangumiSubject(subject);
 }
 
+Future<void> prepareReadingDataForExit() async {
+  await ReadingSessionTracker.finishAll();
+  await HistoryManager().flushReadingProgress();
+}
+
 Future<void> init({bool deferBackgroundTasks = false}) async {
   await StartupTiming.measure('App paths', App.init);
   await StartupTiming.measure('Settings', appdata.init);
@@ -321,6 +327,7 @@ Future<void> init({bool deferBackgroundTasks = false}) async {
     Log.error("init", "$e\n$s");
     rethrow;
   }
+  configureAppExitPreparation(prepareReadingDataForExit);
   await _checkOldConfigs();
   CacheManager().setLimitSize(appdata.settings['cacheSize']);
   FlutterError.onError = (details) {

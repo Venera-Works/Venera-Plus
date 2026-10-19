@@ -11,12 +11,20 @@ import 'package:venera_plus/network/images.dart';
 
 import '../widget_test_io.dart';
 
+class _CollidingMemoryImage extends MemoryImage {
+  const _CollidingMemoryImage(super.bytes);
+
+  @override
+  int get hashCode => 7;
+}
+
 class _MemoryImageLoader {
   _MemoryImageLoader(int width, int height)
     : bytes = img.encodePng(img.Image(width: width, height: height));
 
   final Uint8List bytes;
   final waits = <int, Completer<void>>{};
+  final failures = <int, Object>{};
   final _started = <int, Completer<void>>{};
   final targets = <ComicImageLoadTarget?>[];
   int loads = 0;
@@ -31,6 +39,8 @@ class _MemoryImageLoader {
           targets.add(target);
           (_started[request] ??= Completer<void>()).complete();
           await waits[request]?.future;
+          final failure = failures[request];
+          if (failure != null) throw failure;
           yield ImageDownloadProgress(
             currentBytes: bytes.length,
             totalBytes: bytes.length,
@@ -47,17 +57,20 @@ class _MemoryImageLoader {
   }
 }
 
-ReaderImageProvider _provider(ComicImageLoadTarget target) =>
-    ReaderImageProvider(
-      'memory-image',
-      'source',
-      'comic',
-      'chapter',
-      1,
-      chapter: 1,
-      enableResize: true,
-      target: target,
-    );
+ReaderImageProvider _provider(
+  ComicImageLoadTarget target, {
+  int maxDecodePixels = ReaderImageProvider.defaultMaxDecodePixels,
+}) => ReaderImageProvider(
+  'memory-image',
+  'source',
+  'comic',
+  'chapter',
+  1,
+  chapter: 1,
+  enableResize: true,
+  target: target,
+  maxDecodePixels: maxDecodePixels,
+);
 
 Future<Size> _decodedSize(ReaderImageProvider provider) async {
   final ready = Completer<Size>();
@@ -78,24 +91,23 @@ Future<Size> _decodedSize(ReaderImageProvider provider) async {
   }
 }
 
-Future<void> _waitForPixels(WidgetTester tester, Size expected) {
-  return runWidgetIo(tester, () async {
-    final stopwatch = Stopwatch()..start();
-    while (true) {
-      final images = tester.widgetList<RawImage>(find.byType(RawImage));
-      if (images.any(
-        (raw) =>
-            raw.image?.width == expected.width &&
-            raw.image?.height == expected.height,
-      )) {
-        return;
-      }
-      if (stopwatch.elapsed > const Duration(seconds: 8)) {
-        throw TestFailure('No painted image with pixels $expected.');
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 10));
+Future<void> _waitForPixels(WidgetTester tester, Size expected) async {
+  final stopwatch = Stopwatch()..start();
+  while (stopwatch.elapsed < const Duration(seconds: 8)) {
+    await tester.pump(const Duration(milliseconds: 20));
+    final images = tester.widgetList<RawImage>(find.byType(RawImage));
+    if (images.any(
+      (raw) =>
+          raw.image?.width == expected.width &&
+          raw.image?.height == expected.height,
+    )) {
+      return;
     }
-  });
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 10)),
+    );
+  }
+  throw TestFailure('No painted image with pixels $expected.');
 }
 
 Widget _galleryImage(
@@ -263,6 +275,178 @@ void main() {
     });
   }
 
+  for (final (name, sourceSize, target, budget, basePixels, zoomPixels) in [
+    (
+      'baseline and zoom',
+      const Size(80, 120),
+      ComicImageLoadTarget(logicalWidth: 200, logicalHeight: 300),
+      1000,
+      const Size(25, 38),
+      const Size(25, 38),
+    ),
+    (
+      'zoom only',
+      const Size(80, 120),
+      ComicImageLoadTarget(logicalWidth: 20, logicalHeight: 30),
+      1000,
+      const Size(20, 30),
+      const Size(25, 38),
+    ),
+    (
+      'fitWidth',
+      const Size(100, 1000),
+      ComicImageLoadTarget(logicalWidth: 20, fit: ComicImageTargetFit.fitWidth),
+      1000,
+      const Size(10, 100),
+      const Size(10, 100),
+    ),
+    (
+      'fitHeight',
+      const Size(1000, 100),
+      ComicImageLoadTarget(
+        logicalHeight: 20,
+        fit: ComicImageTargetFit.fitHeight,
+      ),
+      1000,
+      const Size(100, 10),
+      const Size(100, 10),
+    ),
+    (
+      'split full frame',
+      const Size(120, 60),
+      ComicImageLoadTarget(
+        logicalWidth: 10,
+        logicalHeight: 50,
+        splitWideImage: true,
+      ),
+      500,
+      const Size(20, 10),
+      const Size(31, 15),
+    ),
+    (
+      'extreme tall image',
+      const Size(1, 1000),
+      ComicImageLoadTarget(logicalWidth: 1, fit: ComicImageTargetFit.fitWidth),
+      10,
+      const Size(1, 10),
+      const Size(1, 10),
+    ),
+    (
+      'extreme wide image',
+      const Size(1000, 1),
+      ComicImageLoadTarget(
+        logicalHeight: 1,
+        fit: ComicImageTargetFit.fitHeight,
+      ),
+      10,
+      const Size(10, 1),
+      const Size(10, 1),
+    ),
+    (
+      'rounded dimensions',
+      const Size(3, 3),
+      ComicImageLoadTarget(logicalWidth: 3, logicalHeight: 3),
+      8,
+      const Size(2, 2),
+      const Size(2, 2),
+    ),
+  ]) {
+    test('$name stays inside the decoded pixel budget', () async {
+      final loader = _MemoryImageLoader(
+        sourceSize.width.toInt(),
+        sourceSize.height.toInt(),
+      )..install();
+      final base = _provider(target, maxDecodePixels: budget);
+      expect(await _decodedSize(base), basePixels);
+      final equalProvider = _provider(target, maxDecodePixels: budget);
+      final stream = equalProvider.resolve(ImageConfiguration.empty);
+      expect(
+        stream.completer,
+        same(base.resolve(ImageConfiguration.empty).completer),
+      );
+      expect(ReaderImageProvider.sourceSizeOf(stream.completer), sourceSize);
+      for (final scale in [2.0, 3.0, 4.0, 10.0]) {
+        final zoomed = equalProvider.withDecodeScale(scale, sourceSize);
+        final decoded = await _decodedSize(zoomed);
+        expect(decoded, zoomPixels);
+        expect(decoded.width, greaterThanOrEqualTo(1));
+        expect(decoded.height, greaterThanOrEqualTo(1));
+        expect(decoded.width * decoded.height, lessThanOrEqualTo(budget));
+        expect(zoomed.maxDecodePixels, budget);
+        expect(zoomed.diskCacheKey, base.diskCacheKey);
+      }
+      expect(basePixels.width * basePixels.height, lessThanOrEqualTo(budget));
+      expect(loader.loads, basePixels == zoomPixels ? 1 : 2);
+    });
+  }
+
+  test('budget applies when display resizing is disabled', () async {
+    final loader = _MemoryImageLoader(80, 120)..install();
+    const provider = ReaderImageProvider(
+      'memory-image',
+      'source',
+      'comic',
+      'chapter',
+      1,
+      maxDecodePixels: 1000,
+    );
+    expect(await _decodedSize(provider), const Size(25, 38));
+    expect(
+      ReaderImageProvider.sourceSizeOf(
+        provider.resolve(ImageConfiguration.empty).completer,
+      ),
+      const Size(80, 120),
+    );
+    expect(loader.loads, 1);
+  });
+
+  test(
+    'size records separate colliding providers and share equal providers',
+    () {
+      final bytes = Uint8List.fromList([1]);
+      final first = _CollidingMemoryImage(bytes);
+      final equal = _CollidingMemoryImage(bytes);
+      final second = _CollidingMemoryImage(Uint8List.fromList([2]));
+      expect(first.hashCode, second.hashCode);
+      expect(first, equal);
+      expect(first, isNot(second));
+      ComicImage.debugCacheImageSize(first, const Size(10, 20));
+      ComicImage.debugCacheImageSize(second, const Size(30, 40));
+      expect(ComicImage.getCachedImageSize(equal), const Size(10, 20));
+      expect(ComicImage.getCachedImageSize(second), const Size(30, 40));
+    },
+  );
+
+  test(
+    'size records evict least recently used entries and clear releases them',
+    () {
+      final providers = List.generate(
+        ComicImage.imageSizeCacheCapacity + 1,
+        (i) => MemoryImage(Uint8List.fromList([i])),
+      );
+      for (final provider in providers.take(
+        ComicImage.imageSizeCacheCapacity,
+      )) {
+        ComicImage.debugCacheImageSize(provider, const Size(10, 20));
+      }
+      expect(
+        ComicImage.getCachedImageSize(providers.first),
+        const Size(10, 20),
+      );
+      ComicImage.debugCacheImageSize(providers.last, const Size(30, 40));
+      expect(ComicImage.getCachedImageSize(providers[1]), isNull);
+      expect(
+        ComicImage.getCachedImageSize(providers.first),
+        const Size(10, 20),
+      );
+      expect(ComicImage.getCachedImageSize(providers.last), const Size(30, 40));
+      ComicImage.clear();
+      for (final provider in providers) {
+        expect(ComicImage.getCachedImageSize(provider), isNull);
+      }
+    },
+  );
+
   testWidgets('precache metadata is shared by a new equal provider', (
     tester,
   ) async {
@@ -332,6 +516,8 @@ void main() {
     await tester.pump();
     expect(loader.loads, 1);
     baseReady.complete();
+    await _waitForPixels(tester, const Size(200, 300));
+    await tester.pump(const Duration(milliseconds: 80));
     await runWidgetIo(tester, () => loader.started(2));
     await tester.pump();
     expect(tester.widget<RawImage>(find.byType(RawImage)).image!.width, 200);
@@ -430,6 +616,8 @@ void main() {
     final layout = tester.getSize(find.byType(ComicImage));
     final followingPosition = tester.getTopLeft(find.byKey(following));
     controller.scale = 1.75;
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
     await runWidgetIo(tester, () => loader.started(2));
     await tester.pump();
     expect(
@@ -534,6 +722,7 @@ void main() {
           : tester.widget<CustomPaint>(paint).painter;
       controller.scale = 1.75;
       await tester.pump();
+      await tester.pump(const Duration(milliseconds: 80));
       await runWidgetIo(tester, () async {
         decodedPixels = await _decodedSize(
           provider.withDecodeScale(2, sourceSize),
@@ -561,6 +750,191 @@ void main() {
       controller.dispose();
     });
   }
+
+  testWidgets('rapid zoom steps start only the latest stable decode', (
+    tester,
+  ) async {
+    final loader = _MemoryImageLoader(800, 1200)..install();
+    final provider = _provider(
+      ComicImageLoadTarget(logicalWidth: 200, logicalHeight: 300),
+    );
+    final controller = PhotoViewController(initialScale: 1)
+      ..getInitialScale = () => 1;
+    await tester.pumpWidget(_galleryImage(provider, controller));
+    await _waitForPixels(tester, const Size(200, 300));
+    for (final scale in [2.0, 3.0, 4.0]) {
+      controller.scale = scale;
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 20));
+      expect(loader.loads, 1);
+    }
+    await tester.pump(const Duration(milliseconds: 60));
+    await _waitForPixels(tester, const Size(800, 1200));
+    expect(loader.loads, 2);
+    for (final skipped in [2.0, 3.0]) {
+      expect(
+        PaintingBinding.instance.imageCache.containsKey(
+          provider.withDecodeScale(skipped, const Size(800, 1200)),
+        ),
+        isFalse,
+      );
+    }
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+  });
+
+  testWidgets(
+    'in-flight zoom retains only latest demand across a base return',
+    (tester) async {
+      final zoomReady = Completer<void>();
+      final loader = _MemoryImageLoader(800, 1200)
+        ..waits[2] = zoomReady
+        ..install();
+      final provider = _provider(
+        ComicImageLoadTarget(logicalWidth: 100, logicalHeight: 150),
+      );
+      final controller = PhotoViewController(initialScale: 1)
+        ..getInitialScale = () => 1;
+      await tester.pumpWidget(_galleryImage(provider, controller));
+      await _waitForPixels(tester, const Size(100, 150));
+      controller.scale = 2;
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 80));
+      await runWidgetIo(tester, () => loader.started(2));
+      for (final scale in [3.0, 4.0]) {
+        controller.scale = scale;
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(loader.loads, 2);
+      }
+      controller.scale = 1;
+      await tester.pump();
+      expect(tester.widget<RawImage>(find.byType(RawImage)).image!.width, 100);
+      for (final scale in [6.0, 8.0]) {
+        controller.scale = scale;
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(loader.loads, 2);
+      }
+      zoomReady.complete();
+      await _waitForPixels(tester, const Size(800, 1200));
+      expect(loader.loads, 3);
+      for (final skipped in [3.0, 4.0, 6.0]) {
+        expect(
+          PaintingBinding.instance.imageCache.containsKey(
+            provider.withDecodeScale(skipped, const Size(800, 1200)),
+          ),
+          isFalse,
+        );
+      }
+      expect(ComicImage.getCachedImageSize(provider), const Size(100, 150));
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+    },
+  );
+
+  testWidgets('failed in-flight decode releases the latest queued upgrade', (
+    tester,
+  ) async {
+    final failedReady = Completer<void>();
+    final loader = _MemoryImageLoader(800, 1200)
+      ..waits[2] = failedReady
+      ..failures[2] = StateError('Invalid Status Code: 404')
+      ..install();
+    final provider = _provider(
+      ComicImageLoadTarget(logicalWidth: 100, logicalHeight: 150),
+    );
+    final controller = PhotoViewController(initialScale: 1)
+      ..getInitialScale = () => 1;
+    await tester.pumpWidget(_galleryImage(provider, controller));
+    await _waitForPixels(tester, const Size(100, 150));
+    controller.scale = 2;
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+    await runWidgetIo(tester, () => loader.started(2));
+    controller.scale = 4;
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(loader.loads, 2);
+    failedReady.complete();
+    await _waitForPixels(tester, const Size(400, 600));
+    expect(loader.loads, 3);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+  });
+
+  for (final inFlight in [false, true]) {
+    testWidgets(
+      'disposing cancels ${inFlight ? 'in-flight observation' : 'queued zoom'}',
+      (tester) async {
+        final zoomReady = Completer<void>();
+        final loader = _MemoryImageLoader(800, 1200)
+          ..waits[2] = zoomReady
+          ..install();
+        final provider = _provider(
+          ComicImageLoadTarget(logicalWidth: 200, logicalHeight: 300),
+        );
+        final controller = PhotoViewController(initialScale: 1)
+          ..getInitialScale = () => 1;
+        await tester.pumpWidget(_galleryImage(provider, controller));
+        await _waitForPixels(tester, const Size(200, 300));
+        controller.scale = 2;
+        await tester.pump();
+        Future<Size>? lateFrame;
+        if (inFlight) {
+          await tester.pump(const Duration(milliseconds: 80));
+          await runWidgetIo(tester, () => loader.started(2));
+          lateFrame = _decodedSize(
+            provider.withDecodeScale(2, const Size(800, 1200)),
+          );
+          controller.scale = 3;
+          await tester.pump();
+        }
+        await tester.pumpWidget(const SizedBox.shrink());
+        zoomReady.complete();
+        if (lateFrame != null) {
+          Size? latePixels;
+          await runWidgetIo(tester, () async {
+            latePixels = await lateFrame!;
+          });
+          expect(latePixels, const Size(400, 600));
+        }
+        await tester.pump(const Duration(milliseconds: 200));
+        expect(loader.loads, inFlight ? 2 : 1);
+        expect(tester.takeException(), isNull);
+        controller.dispose();
+      },
+    );
+  }
+
+  testWidgets('changing target and controller cancels a queued zoom', (
+    tester,
+  ) async {
+    final loader = _MemoryImageLoader(800, 1200)..install();
+    final original = _provider(
+      ComicImageLoadTarget(logicalWidth: 200, logicalHeight: 300),
+    );
+    final replacement = _provider(
+      ComicImageLoadTarget(logicalWidth: 100, logicalHeight: 150),
+    );
+    final oldController = PhotoViewController(initialScale: 1)
+      ..getInitialScale = () => 1;
+    final controller = PhotoViewController(initialScale: 1)
+      ..getInitialScale = () => 1;
+    await tester.pumpWidget(_galleryImage(original, oldController));
+    await _waitForPixels(tester, const Size(200, 300));
+    oldController.scale = 4;
+    await tester.pump();
+    await tester.pumpWidget(_galleryImage(replacement, controller));
+    await _waitForPixels(tester, const Size(100, 150));
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(loader.loads, 2);
+    expect(tester.widget<RawImage>(find.byType(RawImage)).image!.width, 100);
+    await tester.pumpWidget(const SizedBox.shrink());
+    oldController.dispose();
+    controller.dispose();
+  });
 
   testWidgets('target and controller changes discard a pending base callback', (
     tester,

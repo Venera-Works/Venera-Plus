@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -98,7 +99,14 @@ class ComicImage extends StatefulWidget {
   static void clear() => ComicImageState.clear();
 
   static Size? getCachedImageSize(ImageProvider provider) =>
-      ComicImageState._cache[provider.hashCode];
+      ComicImageState._cachedImageSize(provider);
+
+  @visibleForTesting
+  static const imageSizeCacheCapacity = 128;
+
+  @visibleForTesting
+  static void debugCacheImageSize(ImageProvider provider, Size size) =>
+      ComicImageState._recordImageSize(provider, size);
 
   @override
   State<ComicImage> createState() => ComicImageState();
@@ -209,10 +217,32 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
     return visible.width > 1 && visible.height > 1;
   }
 
-  static final Map<int, Size> _cache = {};
+  static final _cache = LinkedHashMap<ImageProvider, Size>();
+
+  static Size? _cachedImageSize(ImageProvider provider) {
+    final size = _cache.remove(provider);
+    if (size != null) _cache[provider] = size;
+    return size;
+  }
+
+  static void _recordImageSize(ImageProvider provider, Size size) {
+    _cache.remove(provider);
+    _cache[provider] = size;
+    if (_cache.length > ComicImage.imageSizeCacheCapacity) {
+      _cache.remove(_cache.keys.first);
+    }
+  }
 
   StreamSubscription<PhotoViewControllerValue>? _zoomSubscription;
+  Timer? _decodeTimer;
+  ImageStream? _pendingDecodeStream;
+  ImageStreamListener? _pendingDecodeListener;
+  double _requestedDecodeScale = 1.0;
   double _decodeScale = 1.0;
+
+  // A short pause coalesces pinch/double-tap/press zoom steps without waiting
+  // for the gesture to finish. One in-flight decode keeps only the latest need.
+  static const _decodeDelay = Duration(milliseconds: 80);
 
   double _getDecodeScale(PhotoViewControllerValue value) {
     final initial = widget.zoomController?.getInitialScale?.call();
@@ -224,8 +254,10 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   }
 
   void _listenForZoom() {
+    _cancelDecodeRequest();
     _zoomSubscription?.cancel();
     final controller = widget.zoomController;
+    _requestedDecodeScale = 1.0;
     _decodeScale = 1.0;
     _zoomSubscription = controller?.outputStateStream.listen(_onZoom);
     // PhotoView initializes its scale in a microtask after mounting its child.
@@ -240,11 +272,90 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
 
   void _onZoom(PhotoViewControllerValue value) {
     final scale = _getDecodeScale(value);
-    if (scale == _decodeScale) return;
-    _decodeScale = scale;
-    if (widget.image is ReaderImageProvider && _sourceSize != null) {
-      _resolveImage(keepImage: true);
+    if (scale == _requestedDecodeScale) return;
+    _requestedDecodeScale = scale;
+    _queueDecodeRequest();
+  }
+
+  void _queueDecodeRequest() {
+    _decodeTimer?.cancel();
+    _decodeTimer = null;
+    final image = widget.image;
+    final sourceSize = _sourceSize;
+    if (image is! ReaderImageProvider || sourceSize == null) return;
+    final desired = image.withDecodeScale(_requestedDecodeScale, sourceSize);
+    if (desired == _resolvedImage) {
+      _decodeScale = _requestedDecodeScale;
+      return;
     }
+    if (desired == image) {
+      _decodeScale = 1.0;
+      _resolveImage(keepImage: true);
+      return;
+    }
+    final controller = widget.zoomController;
+    _decodeTimer = Timer(_decodeDelay, () {
+      _decodeTimer = null;
+      if (mounted &&
+          widget.image == image &&
+          widget.zoomController == controller) {
+        _applyDecodeRequest();
+      }
+    });
+  }
+
+  void _applyDecodeRequest() {
+    if (_pendingDecodeStream != null || _sourceSize == null) return;
+    _decodeScale = _requestedDecodeScale;
+    _resolveImage(keepImage: true);
+  }
+
+  void _watchDecode(ImageStream stream, ImageProvider image) {
+    _pendingDecodeStream = stream;
+    final listener = ImageStreamListener(
+      (info, synchronousCall) {
+        info.dispose();
+        _finishDecode(stream, image);
+      },
+      onError: (Object error, StackTrace? stack) =>
+          _finishDecode(stream, image),
+    );
+    _pendingDecodeListener = listener;
+    stream.addListener(listener);
+  }
+
+  void _finishDecode(ImageStream stream, ImageProvider decodedImage) {
+    if (_pendingDecodeStream != stream) return;
+    stream.removeListener(_pendingDecodeListener!);
+    _pendingDecodeStream = null;
+    _pendingDecodeListener = null;
+    final image = widget.image;
+    final controller = widget.zoomController;
+    Future.microtask(() {
+      if (!mounted ||
+          widget.image != image ||
+          widget.zoomController != controller ||
+          _decodeTimer != null) {
+        return;
+      }
+      final sourceSize = _sourceSize;
+      if (image is ReaderImageProvider &&
+          sourceSize != null &&
+          image.withDecodeScale(_requestedDecodeScale, sourceSize) !=
+              decodedImage) {
+        _applyDecodeRequest();
+      }
+    });
+  }
+
+  void _cancelDecodeRequest() {
+    _decodeTimer?.cancel();
+    _decodeTimer = null;
+    final stream = _pendingDecodeStream;
+    final listener = _pendingDecodeListener;
+    _pendingDecodeStream = null;
+    _pendingDecodeListener = null;
+    if (listener != null) stream?.removeListener(listener);
   }
 
   void _scheduleDecodeUpgrade() {
@@ -259,8 +370,10 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
           _imageStream != stream) {
         return;
       }
-      if (controller != null) _decodeScale = _getDecodeScale(controller.value);
-      if (_decodeScale != 1.0) _resolveImage(keepImage: true);
+      if (controller != null) {
+        _requestedDecodeScale = _getDecodeScale(controller.value);
+      }
+      _queueDecodeRequest();
     });
   }
 
@@ -279,6 +392,7 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   void dispose() {
     assert(_imageStream != null);
     WidgetsBinding.instance.removeObserver(this);
+    _cancelDecodeRequest();
     _zoomSubscription?.cancel();
     _stopListeningToStream();
     _completerHandle?.dispose();
@@ -308,6 +422,8 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   void didUpdateWidget(ComicImage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.image != oldWidget.image) {
+      _cancelDecodeRequest();
+      _decodeScale = 1.0;
       _sourceSize = null;
       _layoutSize = null;
       _lastReportedSize = null;
@@ -408,7 +524,7 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
         imageInfo.image.width.toDouble(),
         imageInfo.image.height.toDouble(),
       );
-      _cache[widget.image.hashCode] = _layoutSize!;
+      _recordImageSize(widget.image, _layoutSize!);
     }
     _notifyImageSizeIfNeeded();
     _sourceSize ??= ReaderImageProvider.sourceSizeOf(_imageStream?.completer);
@@ -468,6 +584,9 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
     _imageStream = newStream;
     _resolvedImage = image;
     _imageStreamListener = null;
+    if (image != widget.image && _pendingDecodeStream == null) {
+      _watchDecode(newStream, image);
+    }
     if (_isListeningToStream) {
       _imageStream!.addListener(_getListener());
     }
@@ -566,7 +685,7 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
         var width = widget.width;
         var height = widget.height;
 
-        final cacheSize = _layoutSize ?? _cache[widget.image.hashCode];
+        final cacheSize = _layoutSize ?? _cachedImageSize(widget.image);
         if (cacheSize != null) {
           final isWide = shouldSplitWideImage(cacheSize);
           final hasSinglePart =

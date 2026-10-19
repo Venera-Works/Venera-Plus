@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+
 typedef ReadingDurationWriter = Future<void> Function(Duration duration);
 typedef ReadingSessionErrorHandler =
     void Function(Object error, StackTrace stackTrace);
@@ -13,7 +15,32 @@ class ReadingSessionTracker {
   }) : _onDuration = onDuration,
        _checkpointInterval = checkpointInterval,
        _elapsedNow = elapsedNow ?? _defaultElapsedNow,
-       _onError = onError;
+       _onError = onError {
+    _sessions.add(this);
+  }
+
+  static final _sessions = <ReadingSessionTracker>{};
+  static AsyncError? _failedSession;
+
+  /// Includes sessions whose reader has popped but whose writes are pending.
+  static Future<void> finishAll() async {
+    while (_sessions.isNotEmpty) {
+      await Future.wait(_sessions.toList().map((session) => session.dispose()));
+    }
+    final failure = _failedSession;
+    if (failure != null) {
+      Error.throwWithStackTrace(failure.error, failure.stackTrace);
+    }
+  }
+
+  @visibleForTesting
+  static void debugResetForTesting() {
+    for (final session in _sessions) {
+      session._checkpointTimer?.cancel();
+    }
+    _sessions.clear();
+    _failedSession = null;
+  }
 
   static final Stopwatch _clock = Stopwatch()..start();
 
@@ -27,6 +54,8 @@ class ReadingSessionTracker {
   Duration? _startedAt;
   Timer? _checkpointTimer;
   Future<void> _writeQueue = Future.value();
+  Future<void>? _disposeFuture;
+  AsyncError? _writeFailure;
   bool _disposed = false;
 
   bool get isRunning => _startedAt != null;
@@ -49,7 +78,17 @@ class ReadingSessionTracker {
 
   Future<void> dispose() {
     _disposed = true;
-    return pause();
+    return _disposeFuture ??= _finishSession();
+  }
+
+  Future<void> _finishSession() async {
+    await pause();
+    final failure = _writeFailure;
+    _sessions.remove(this);
+    if (failure != null) {
+      _failedSession ??= failure;
+      Error.throwWithStackTrace(failure.error, failure.stackTrace);
+    }
   }
 
   Future<void> _finishPeriod({required bool restart}) {
@@ -65,6 +104,7 @@ class ReadingSessionTracker {
       Object error,
       StackTrace stackTrace,
     ) {
+      _writeFailure ??= AsyncError(error, stackTrace);
       _onError?.call(error, stackTrace);
     });
     return _writeQueue;

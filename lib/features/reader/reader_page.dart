@@ -335,17 +335,7 @@ class ReaderState extends State<Reader>
     if (catalog != null) {
       unawaited(_resolveInitialReadingProgress(catalog));
     }
-    _readingSession = ReadingSessionTracker(
-      onDuration: (duration) =>
-          HistoryManager().addReadDuration(history ?? widget.history, duration),
-      onError: (error, stackTrace) {
-        Log.error(
-          "Reader",
-          "Failed to save reading duration: $error",
-          stackTrace,
-        );
-      },
-    );
+    _readingSession = createReadingSessionTracker();
     if (!appdata.settings.getReaderSetting(
       cid,
       type.sourceKey,
@@ -384,6 +374,22 @@ class ReaderState extends State<Reader>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
   }
+
+  @protected
+  ReadingSessionTracker createReadingSessionTracker({
+    Duration Function()? elapsedNow,
+  }) => ReadingSessionTracker(
+    elapsedNow: elapsedNow,
+    onDuration: (duration) =>
+        HistoryManager().addReadDuration(history ?? widget.history, duration),
+    onError: (error, stackTrace) {
+      Log.error(
+        'Reader',
+        'Failed to save reading duration: $error',
+        stackTrace,
+      );
+    },
+  );
 
   void _applyInitialHistoryPosition(History savedHistory) {
     final resumePosition = savedHistory.resumePosition;
@@ -547,11 +553,15 @@ class ReaderState extends State<Reader>
     autoReadingController.dispose();
     clearNavigationCommands();
     unawaited(_remoteProgressTracker?.dispose());
-    unawaited(() async {
-      await _readingSession.dispose();
-      await HistoryManager().flushReadingProgress(id: cid, type: type);
-      DataSync().onDataChanged();
-    }());
+    unawaited(
+      () async {
+        await _readingSession.dispose();
+        await HistoryManager().flushReadingProgress(id: cid, type: type);
+        DataSync().onDataChanged();
+      }().catchError((Object error, StackTrace stackTrace) {
+        Log.error('Reader', 'Failed to finish reading: $error', stackTrace);
+      }),
+    );
     focusNode.dispose();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     stopVolumeEvent();
@@ -1617,7 +1627,7 @@ mixin class ReaderWindow {
   void initReaderWindow() {
     if (!App.isDesktop || _isInit) return;
     windowFrame = WindowFrame.of(App.rootContext);
-    windowFrame.addCloseListener(onWindowClose);
+    windowFrame.addCloseListener(onWindowClose, runFirst: true);
     _isInit = true;
   }
 

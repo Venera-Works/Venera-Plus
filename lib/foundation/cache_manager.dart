@@ -66,6 +66,7 @@ class CacheManager {
   int _fileRevision = 0;
   bool _disposed = false;
   int? _currentSize;
+  bool _hasSizeBaseline = false;
 
   /// Last known size of managed cache files, in bytes.
   int get currentSize => _currentSize ?? 0;
@@ -76,6 +77,9 @@ class CacheManager {
   @visibleForTesting
   Future<void> get debugInitialScanTask => _initialScanTask;
 
+  @visibleForTesting
+  Future<void>? get debugCurrentScanTask => _scanTask;
+
   CacheManager._create()
     : _dbPath = '${App.dataPath}/cache.db',
       _root = cachePath {
@@ -84,6 +88,7 @@ class CacheManager {
     _ready = _initializeAsync(dbPath, root);
     if (debugDisableInitialScan) {
       _currentSize = 0;
+      _hasSizeBaseline = true;
       _initialScanTask = _ready;
     } else {
       _initialScanTask = _startScan().then((_) => checkCache()).catchError((
@@ -198,59 +203,70 @@ class CacheManager {
     return task;
   }
 
+  Future<_CacheScan> _readScan() async {
+    final override = debugScanDirOverride;
+    return override == null
+        ? await _scanDirAsync(_dbPath, _root)
+        : (size: await override(_dbPath, _root), unmanagedFiles: <String>[]);
+  }
+
+  Future<bool> _cleanUnmanagedFiles(List<String> files, {int? revision}) async {
+    for (var offset = 0; offset < files.length; offset += 10) {
+      if (_disposed) return false;
+      final batch = files.sublist(offset, math.min(offset + 10, files.length));
+      final applied = await _enqueue(() async {
+        if (revision != null && revision != _fileRevision) return false;
+        await _deleteUnmanagedFilesAsync(_dbPath, batch);
+        return true;
+      });
+      if (!applied) return false;
+    }
+    return !_disposed;
+  }
+
   Future<void> _scanUntilCurrent() async {
     try {
       await _ready;
-      while (!_disposed) {
-        // Do not hold the operation queue while traversing the cache directory.
+      // Normal startup scans leave the queue free. Continuous downloads must
+      // not prevent adoption of the existing cache size indefinitely.
+      for (var attempt = 0; attempt < 2 && !_disposed; attempt++) {
         await _operations;
         if (_disposed) return;
         final revision = _fileRevision;
-        final dbPath = _dbPath;
-        final root = _root;
-        final override = debugScanDirOverride;
         final _CacheScan scanned;
         try {
-          scanned = override == null
-              ? await _scanDirAsync(dbPath, root)
-              : (
-                  size: await override(dbPath, root),
-                  unmanagedFiles: <String>[],
-                );
+          scanned = await _readScan();
         } catch (_) {
           if (!_disposed && revision != _fileRevision) continue;
           rethrow;
         }
-        if (_disposed) return;
-        var stale = false;
-        final files = scanned.unmanagedFiles;
-        for (var offset = 0; offset < files.length; offset += 10) {
-          if (_disposed) return;
-          final batch = files.sublist(
-            offset,
-            math.min(offset + 10, files.length),
-          );
-          final applied = await _enqueue(() async {
-            if (revision != _fileRevision) return false;
-            await _deleteUnmanagedFilesAsync(dbPath, batch);
-            return true;
-          });
-          if (!applied) {
-            stale = true;
-            break;
-          }
+        if (!await _cleanUnmanagedFiles(
+          scanned.unmanagedFiles,
+          revision: revision,
+        )) {
+          continue;
         }
-        if (stale || _disposed) continue;
         final applied = await _enqueue(() async {
-          // A mutation between scanning and adoption also invalidates the size.
           if (revision != _fileRevision) return false;
           _currentSize = scanned.size;
+          _hasSizeBaseline = true;
           return true;
         });
         if (applied) return;
       }
+      if (_disposed) return;
+      // This one scan holds the queue until its size is adopted. Later writes
+      // then add their deltas to a complete baseline rather than a stale total.
+      final scanned = await _enqueue(() async {
+        final scanned = await _readScan();
+        _currentSize = scanned.size;
+        _hasSizeBaseline = true;
+        return scanned;
+      });
+      // Workers recheck that each file is still unmanaged, so subsequent
+      // queued writes/clear can safely interleave with these cleanup batches.
+      await _cleanUnmanagedFiles(scanned.unmanagedFiles);
     } catch (error, stack) {
-      // Keep sizes already tracked by operations during a failed initial scan.
       _currentSize ??= 0;
       if (!_disposed) Log.warning('Cache scan', '$error\n$stack');
     }
@@ -261,16 +277,16 @@ class CacheManager {
     try {
       var size = 0;
       final unmanaged = <String>[];
+      final managed = db
+          .select('SELECT dir, name FROM cache;')
+          .map((row) => (row['dir'] as String, row['name'] as String))
+          .toSet();
       for (final entity in Directory(root).listSync(recursive: true)) {
         if (entity is! File) continue;
         final segments = entity.uri.pathSegments;
         final name = segments.last;
         final directory = segments.elementAtOrNull(segments.length - 2) ?? '*';
-        final managed = db.select(
-          'SELECT 1 FROM cache WHERE dir = ? AND name = ?;',
-          [directory, name],
-        );
-        if (managed.isEmpty) {
+        if (!managed.contains((directory, name))) {
           unmanaged.add(entity.path);
         } else {
           size += entity.lengthSync();
@@ -303,7 +319,8 @@ class CacheManager {
     }
   }
 
-  void _rescanAfterFailure() {
+  void _requestSizeScan() {
+    _hasSizeBaseline = false;
     if (_disposed) return;
     unawaited(
       _startScan().then((_) => checkCache()).catchError((
@@ -317,6 +334,7 @@ class CacheManager {
 
   void setLimitSize(int size) {
     _limitSize = size * 1024 * 1024;
+    checkCacheIfRequired();
   }
 
   Future<void> writeCache(
@@ -341,10 +359,11 @@ class CacheManager {
         );
         _currentSize = math.max(0, (_currentSize ?? 0) + delta);
       } catch (_) {
-        _rescanAfterFailure();
+        _requestSizeScan();
         rethrow;
       }
     });
+    if (!_hasSizeBaseline) _requestSizeScan();
     checkCacheIfRequired();
   }
 
@@ -396,7 +415,7 @@ class CacheManager {
       return found.path == null ? null : File(found.path!);
     } catch (_) {
       _fileRevision++;
-      _rescanAfterFailure();
+      _requestSizeScan();
       rethrow;
     }
   });
@@ -466,11 +485,14 @@ class CacheManager {
           final batch = await _pruneBatchAsync(dbPath, root, size, limit);
           if (batch.changed) _fileRevision++;
           _subtractSize(batch.removedBytes);
-          if (batch.empty) _currentSize = 0;
+          if (batch.empty) {
+            _currentSize = 0;
+            _hasSizeBaseline = true;
+          }
           return batch;
         } catch (_) {
           _fileRevision++;
-          _rescanAfterFailure();
+          _requestSizeScan();
           rethrow;
         }
       });
@@ -520,18 +542,21 @@ class CacheManager {
     }
   }
 
-  Future<void> delete(String key) => _enqueue(() async {
-    _fileRevision++;
-    final dbPath = _dbPath;
-    final root = _root;
-    try {
-      final bytes = await _deleteCacheAsync(dbPath, root, key);
-      _subtractSize(bytes);
-    } catch (_) {
-      _rescanAfterFailure();
-      rethrow;
-    }
-  });
+  Future<void> delete(String key) async {
+    await _enqueue(() async {
+      _fileRevision++;
+      final dbPath = _dbPath;
+      final root = _root;
+      try {
+        final bytes = await _deleteCacheAsync(dbPath, root, key);
+        _subtractSize(bytes);
+      } catch (_) {
+        _requestSizeScan();
+        rethrow;
+      }
+    });
+    if (!_hasSizeBaseline) _requestSizeScan();
+  }
 
   static int _deleteCache(String dbPath, String root, String key) {
     final db = openSqliteDatabase(dbPath);
@@ -558,8 +583,9 @@ class CacheManager {
     try {
       await _clearCacheAsync(dbPath, root);
       _currentSize = 0;
+      _hasSizeBaseline = true;
     } catch (_) {
-      _rescanAfterFailure();
+      _requestSizeScan();
       rethrow;
     }
   });

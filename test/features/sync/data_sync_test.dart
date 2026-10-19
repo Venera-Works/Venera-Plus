@@ -1,12 +1,148 @@
 import 'dart:async';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:venera_plus/components/message.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/app_exit.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 
+import '../../widget_test_io.dart';
+
 void main() {
+  for (final forceShutdown in [false, true]) {
+    testWidgets('upload close waits for local save (force=$forceShutdown)', (
+      tester,
+    ) async {
+      final previousLanguage = appdata.settings['language'];
+      appdata.settings['language'] = 'en-US';
+      final upload = Completer<Res<bool>>();
+      final saved = Completer<void>();
+      var preparations = 0;
+      var exits = 0;
+      DataSync.debugUploadOverride = () => upload.future;
+      configureAppExitPreparation(() {
+        preparations++;
+        return saved.future;
+      });
+      debugExitProcess = (_) => exits++;
+      await tester.pumpWidget(
+        MaterialApp(
+          navigatorKey: App.rootNavigatorKey,
+          builder: (_, child) => OverlayWidget(child!),
+          home: const SizedBox.shrink(),
+        ),
+      );
+      final sync = DataSync();
+      final uploading = sync.uploadData();
+      addTearDown(() async {
+        if (!saved.isCompleted) saved.complete();
+        if (!upload.isCompleted) upload.complete(const Res(true));
+        await runWidgetIo(tester, () async {
+          await uploading;
+        });
+        await tester.pumpWidget(const SizedBox.shrink());
+        appdata.settings['language'] = previousLanguage;
+        configureAppExitPreparation(null);
+        debugExitProcess = null;
+      });
+      expect(sync.debugHandleWindowClose(), isFalse);
+      expect(sync.debugHandleWindowClose(), isFalse);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byType(ContentDialog), findsOneWidget);
+      if (forceShutdown) {
+        final shutDown = tester
+            .widget<FilledButton>(
+              find.widgetWithText(FilledButton, 'Shut Down'),
+            )
+            .onPressed!;
+        await tester.tap(find.text('Shut Down'));
+        expect(shutDown, returnsNormally);
+      } else {
+        upload.complete(const Res(true));
+        await runWidgetIo(tester, () async {
+          await uploading;
+        });
+      }
+      await tester.pump();
+      expect(preparations, 1);
+      expect(exits, 0);
+      expect(sync.isUploading, forceShutdown);
+      expect(sync.debugHandleWindowClose(), isFalse);
+      final closing = exitApp();
+      saved.complete();
+      await runWidgetIo(tester, () => closing);
+      await tester.pump();
+      expect(exits, 1);
+      expect(find.byType(ContentDialog), findsNothing);
+      if (!upload.isCompleted) upload.complete(const Res(true));
+      await runWidgetIo(tester, () async {
+        await uploading;
+      });
+      await tester.pump();
+      expect(exits, 1);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets(
+    'failed save clears the upload close dialog and allows another request',
+    (tester) async {
+      final previousLanguage = appdata.settings['language'];
+      appdata.settings['language'] = 'en-US';
+      final upload = Completer<Res<bool>>();
+      DataSync.debugUploadOverride = () => upload.future;
+      var preparations = 0;
+      var exits = 0;
+      configureAppExitPreparation(() async {
+        preparations++;
+        throw StateError('history save failed');
+      });
+      debugExitProcess = (_) => exits++;
+      await tester.pumpWidget(
+        MaterialApp(
+          navigatorKey: App.rootNavigatorKey,
+          builder: (_, child) => OverlayWidget(child!),
+          home: const SizedBox.shrink(),
+        ),
+      );
+      final sync = DataSync();
+      final uploading = sync.uploadData();
+      addTearDown(() async {
+        if (!upload.isCompleted) upload.complete(const Res(true));
+        await runWidgetIo(tester, () async {
+          await uploading;
+        });
+        await tester.pumpWidget(const SizedBox.shrink());
+        appdata.settings['language'] = previousLanguage;
+        configureAppExitPreparation(null);
+        debugExitProcess = null;
+      });
+      for (var attempt = 1; attempt <= 2; attempt++) {
+        expect(sync.debugHandleWindowClose(), isFalse);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.byType(ContentDialog), findsOneWidget);
+        await tester.tap(find.text('Shut Down'));
+        await tester.pump();
+        expect(preparations, attempt);
+        expect(exits, 0);
+        expect(find.text('Saved Failed'), findsNWidgets(attempt));
+        expect(find.byType(ContentDialog), findsNothing);
+      }
+      upload.complete(const Res(true));
+      await runWidgetIo(tester, () async {
+        await uploading;
+      });
+      await tester.pump();
+      expect(exits, 0);
+      expect(tester.takeException(), isNull);
+    },
+  );
   setUp(() {
     DataSync.resetForTesting();
     DataSync.debugDisableWindowCloseHandler = true;

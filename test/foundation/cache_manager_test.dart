@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite3/sqlite3.dart';
@@ -343,6 +344,100 @@ void main() {
         expect(manager.currentSize, 0);
         expect(await manager.findCache('over-limit'), isNull);
       });
+
+      for (final clearDuringFallback in [false, true]) {
+        test(
+          'repeated mutations converge and enforce the old baseline (clear: $clearDuringFallback)',
+          () async {
+            await CacheManager().writeCache('existing', Uint8List(1 << 20));
+            await CacheManager.resetForTesting();
+            final started = List.generate(3, (_) => Completer<void>());
+            final release = List.generate(3, (_) => Completer<void>());
+            addTearDown(() {
+              for (final gate in release) {
+                if (!gate.isCompleted) gate.complete();
+              }
+            });
+            var scans = 0;
+            CacheManager.debugScanDirOverride = (dbPath, root) async {
+              final attempt = scans++;
+              if (attempt < release.length) {
+                started[attempt].complete();
+                await release[attempt].future;
+              }
+              return Directory(root)
+                  .listSync(recursive: true)
+                  .whereType<File>()
+                  .fold<int>(0, (sum, file) => sum + file.lengthSync());
+            };
+            final manager = CacheManager()..setLimitSize(1);
+            for (var attempt = 0; attempt < 2; attempt++) {
+              await started[attempt].future;
+              await manager.writeCache('new-$attempt', [1, 2]);
+              release[attempt].complete();
+            }
+            await started[2].future;
+            final queuedMutation = clearDuringFallback
+                ? manager.clear()
+                : manager.writeCache('late', [3, 4]);
+            expect(manager.currentSize, 4);
+            release[2].complete();
+            await queuedMutation;
+            await manager.debugInitialScanTask;
+            await manager.checkCache();
+            expect(scans, 3);
+            expect(manager.currentSize, clearDuringFallback ? 0 : 6);
+            expect(await manager.findCache('existing'), isNull);
+            for (final key in ['new-0', 'new-1', 'late']) {
+              expect(
+                await manager.findCache(key),
+                clearDuringFallback ? isNull : isNotNull,
+              );
+            }
+          },
+        );
+      }
+
+      test(
+        'a later write recovers the existing baseline after an initial IO failure',
+        () async {
+          await CacheManager().writeCache('existing', [7, 8]);
+          await CacheManager.resetForTesting();
+          var scans = 0;
+          CacheManager.debugScanDirOverride = (dbPath, root) async {
+            if (++scans == 1) {
+              throw const FileSystemException('temporary scan failure');
+            }
+            return Directory(root)
+                .listSync(recursive: true)
+                .whereType<File>()
+                .fold<int>(0, (sum, file) => sum + file.lengthSync());
+          };
+          final manager = CacheManager();
+          await manager.debugInitialScanTask;
+          expect(manager.currentSize, 0);
+          await manager.writeCache('new', [1, 2, 3]);
+          await manager.debugCurrentScanTask;
+          expect(scans, 2);
+          expect(manager.currentSize, 5);
+          expect(await (await manager.findCache('existing'))!.readAsBytes(), [
+            7,
+            8,
+          ]);
+        },
+      );
+
+      test(
+        'lowering the size limit schedules cleanup before later lookups',
+        () async {
+          final manager = CacheManager();
+          await manager.writeCache('existing', [1, 2, 3]);
+          manager.setLimitSize(0);
+          expect(await manager.findCache('existing'), isNull);
+          await manager.checkCache();
+          expect(manager.currentSize, 0);
+        },
+      );
 
       test(
         'reset waits for queued writes before releasing the instance',

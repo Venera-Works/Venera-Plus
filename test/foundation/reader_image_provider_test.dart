@@ -275,6 +275,69 @@ void main() {
       },
     );
 
+    test('optional pixel budget is immutable memory identity only', () {
+      final target = ComicImageLoadTarget(logicalWidth: 20, logicalHeight: 30);
+      ReaderImageProvider provider({int? budget}) => ReaderImageProvider(
+        'img',
+        'source',
+        'comic',
+        'chapter',
+        1,
+        enableResize: true,
+        target: target,
+        maxDecodePixels: budget ?? ReaderImageProvider.defaultMaxDecodePixels,
+      );
+      final standard = provider();
+      final limited = provider(budget: 1000);
+      final equal = provider(budget: 1000);
+      final different = provider(budget: 1001);
+      final key = limited.key;
+      final hashCode = limited.hashCode;
+      expect(key, '${standard.key}@pixels1000');
+      expect(limited, equal);
+      expect(limited.hashCode, equal.hashCode);
+      expect(limited, isNot(different));
+      expect(limited.diskCacheKey, standard.diskCacheKey);
+      expect(limited.target, same(target));
+      const source = Size(80, 120);
+      final zoomed = limited.withDecodeScale(2, source);
+      expect(zoomed.key, '$key@decode25x38');
+      expect(zoomed.maxDecodePixels, 1000);
+      expect(zoomed.withDecodeScale(1, source), same(limited));
+      for (final scale in [3.0, 4.0, 10.0]) {
+        expect(limited.withDecodeScale(scale, source), zoomed);
+      }
+      expect(limited.key, key);
+      expect(limited.hashCode, hashCode);
+    });
+
+    test(
+      'default budget caps large decoded variants without allocating them',
+      () {
+        final provider = ReaderImageProvider(
+          'img',
+          'source',
+          'comic',
+          'chapter',
+          1,
+          enableResize: true,
+          target: ComicImageLoadTarget(logicalWidth: 200, logicalHeight: 300),
+        );
+        const source = Size(40000, 60000);
+        final capped = provider.withDecodeScale(100, source);
+        final dimensions = RegExp(
+          r'@decode(\d+)x(\d+)$',
+        ).firstMatch(capped.key)!;
+        final width = int.parse(dimensions.group(1)!);
+        final height = int.parse(dimensions.group(2)!);
+        expect(ReaderImageProvider.defaultMaxDecodePixels, 16 * 1024 * 1024);
+        expect(width * height, lessThanOrEqualTo(provider.maxDecodePixels));
+        expect(width, greaterThan(0));
+        expect(height, greaterThan(0));
+        expect(provider.withDecodeScale(1000, source), capped);
+      },
+    );
+
     test('small images and equal rounded pixels reuse the base provider', () {
       final base = ReaderImageProvider(
         'img-1',
