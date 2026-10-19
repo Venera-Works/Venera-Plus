@@ -23,10 +23,32 @@ class HistoryPage extends StatefulWidget {
 }
 
 class _HistoryPageState extends State<HistoryPage> {
+  ModalRoute<dynamic>? _route;
+  bool _tickerModeEnabled = true;
+  bool _needsRefresh = true;
+
+  bool get _isVisible =>
+      widget.isActive && _tickerModeEnabled && (_route?.isCurrent ?? true);
+
   @override
   void initState() {
     HistoryManager().addListener(onUpdate);
     super.initState();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _route = ModalRoute.of(context);
+    // A reader on the root navigator also covers the library's nested route.
+    _tickerModeEnabled = TickerMode.valuesOf(context).enabled;
+    _refreshIfVisible();
+  }
+
+  @override
+  void didUpdateWidget(covariant HistoryPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _refreshIfVisible();
   }
 
   @override
@@ -36,18 +58,25 @@ class _HistoryPageState extends State<HistoryPage> {
   }
 
   void onUpdate() {
-    setState(() {
-      comics = HistoryManager().getAll();
-      if (multiSelectMode) {
-        selectedComics.removeWhere((comic, _) => !comics.contains(comic));
-        if (selectedComics.isEmpty) {
-          multiSelectMode = false;
-        }
-      }
-    });
+    _needsRefresh = true;
+    // Reading progress changes during a swipe. Query only when this tab and
+    // its route are visible again, coalescing all intervening notifications.
+    if (_isVisible) setState(_refreshIfVisible);
   }
 
-  var comics = HistoryManager().getAll();
+  void _refreshIfVisible() {
+    if (!_needsRefresh || !_isVisible) return;
+    comics = HistoryManager().getAll();
+    _needsRefresh = false;
+    if (multiSelectMode) {
+      selectedComics.removeWhere((comic, _) => !comics.contains(comic));
+      if (selectedComics.isEmpty) {
+        multiSelectMode = false;
+      }
+    }
+  }
+
+  List<History> comics = [];
   var controller = FlyoutController();
 
   bool multiSelectMode = false;

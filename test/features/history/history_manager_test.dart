@@ -36,10 +36,146 @@ bool _sqliteAvailable() {
   }
 }
 
+class _CountingCatalog extends ReadingCatalog {
+  _CountingCatalog(super.chapters);
+
+  int serializations = 0;
+
+  @override
+  Map<String, Object?> toJson() {
+    serializations++;
+    return super.toJson();
+  }
+}
+
 void main() {
   test('History.fromMap defaults missing reading duration to zero', () {
     expect(_history('legacy-map').readDurationMs, 0);
   });
+
+  group(
+    'reading progress snapshots',
+    () {
+      late Directory directory;
+      late HistoryManager manager;
+
+      setUp(() async {
+        directory = Directory.systemTemp.createTempSync('history-snapshot-');
+        App.dataPath = directory.path;
+        App.cachePath = directory.path;
+        HistoryManager.cache = null;
+        manager = HistoryManager();
+        await manager.init();
+      });
+
+      tearDown(() async {
+        await manager.flushReadingProgress();
+        await manager.waitForAsyncWrites();
+        manager.close();
+        HistoryManager.cache = null;
+        await directory.delete(recursive: true);
+      });
+
+      test('page turns reuse the catalog without serializing it', () async {
+        final catalog = _CountingCatalog([
+          for (var chapter = 1; chapter <= 1000; chapter++)
+            ReadingChapter(id: 'chapter-$chapter', ep: chapter),
+        ]);
+        final item = _history('large-catalog');
+        manager.addHistory(item);
+        manager.recordReadingProgress(
+          item,
+          position: const ReadingPosition(
+            ep: 1,
+            page: 2,
+            chapterId: 'chapter-1',
+          ),
+          source: ReadingNavigationSource.userForward,
+          catalog: catalog,
+        );
+        final first = item.readingProgress!;
+        catalog.serializations = 0;
+
+        for (var page = 3; page <= 20; page++) {
+          final progress = manager.recordReadingProgress(
+            item,
+            position: ReadingPosition(
+              ep: 1,
+              page: page,
+              chapterId: 'chapter-1',
+            ),
+            source: ReadingNavigationSource.userForward,
+            catalog: catalog,
+          );
+          expect(item.readingProgress, same(progress));
+          expect(progress.catalog, same(catalog));
+        }
+        expect(catalog.serializations, 0);
+        expect(first.resumePosition?.page, 2);
+        expect(item.resumePosition?.page, 20);
+
+        await manager.flushReadingProgress();
+        final saved = manager.getAll().single;
+        expect(saved.resumePosition?.page, 20);
+        expect(saved.readingProgress!.catalog!.chapters, hasLength(1000));
+      });
+
+      test(
+        'pending progress is isolated from later mutable history edits',
+        () async {
+          final item = _history('snapshot')
+            ..group = 2
+            ..readDurationMs = 1200
+            ..readEpisode = {'2-1'};
+          manager.recordReadingProgress(
+            item,
+            position: const ReadingPosition(ep: 1, page: 7, group: 2),
+            source: ReadingNavigationSource.userForward,
+          );
+          final recordedAt = item.time;
+          item
+            ..title = 'Changed'
+            ..subtitle = 'Changed author'
+            ..cover = 'changed.jpg'
+            ..ep = 9
+            ..page = 9
+            ..group = 3
+            ..maxPage = 99
+            ..readDurationMs = 5000
+            ..time = DateTime(2030)
+            ..readingProgress = ReadingProgress.seed(
+              const ReadingPosition(ep: 9, page: 9, group: 3),
+            );
+          item.readEpisode
+            ..clear()
+            ..add('3-9');
+
+          await manager.flushReadingProgress();
+          final saved = manager.getAll().single;
+          expect(saved.id, 'snapshot');
+          expect(saved.type, ComicType.local);
+          expect(saved.title, 'Title snapshot');
+          expect(saved.subtitle, 'Author');
+          expect(saved.cover, 'cover.jpg');
+          expect(saved.ep, 1);
+          expect(saved.page, 7);
+          expect(saved.group, 2);
+          expect(saved.maxPage, 10);
+          expect(saved.readDurationMs, 1200);
+          expect(
+            saved.time.millisecondsSinceEpoch,
+            recordedAt.millisecondsSinceEpoch,
+          );
+          expect(saved.readEpisode, {'2-1'});
+          expect(
+            saved.resumePosition,
+            const ReadingPosition(ep: 1, page: 7, group: 2),
+          );
+        },
+      );
+    },
+    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+  );
 
   test('refreshHistoryInfo does not wait after final retry failure', () async {
     const sourceKey = 'history_refresh_test_source';

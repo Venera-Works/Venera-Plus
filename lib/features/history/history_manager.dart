@@ -77,6 +77,23 @@ class History implements Comic {
        readEpisode = readChapters ?? <String>{},
        time = time ?? DateTime.now();
 
+  // Progress and its catalog are immutable; only the mutable chapter set
+  // needs a copy when taking a snapshot for a queued write.
+  History._copy(History other)
+    : type = other.type,
+      time = other.time,
+      title = other.title,
+      subtitle = other.subtitle,
+      cover = other.cover,
+      ep = other.ep,
+      page = other.page,
+      group = other.group,
+      id = other.id,
+      readEpisode = Set<String>.of(other.readEpisode),
+      maxPage = other.maxPage,
+      readDurationMs = other.readDurationMs,
+      readingProgress = other.readingProgress;
+
   History.fromMap(Map<String, dynamic> map)
     : type = HistoryType(map["type"]),
       time = DateTime.fromMillisecondsSinceEpoch(map["time"]),
@@ -425,23 +442,6 @@ class HistoryManager with ChangeNotifier {
 
   Future<void> _asyncHistoryQueue = Future.value();
 
-  History _copyHistory(History item) => History.fromMap({
-    'type': item.type.value,
-    'time': item.time.millisecondsSinceEpoch,
-    'title': item.title,
-    'subtitle': item.subtitle,
-    'cover': item.cover,
-    'ep': item.ep,
-    'page': item.page,
-    'id': item.id,
-    'readEpisode': item.readEpisode.toList(),
-    'max_page': item.maxPage,
-    'chapter_group': item.group,
-    'read_duration_ms': item.readDurationMs,
-    if (item.readingProgress != null)
-      'readingProgress': item.readingProgress!.toJson(),
-  });
-
   void _mergeHistorySnapshot(History target, History other) {
     target.readingProgress = _progressForHistory(
       target,
@@ -463,7 +463,7 @@ class HistoryManager with ChangeNotifier {
   }
 
   History _historySnapshotForWrite(History item) {
-    final snapshot = _copyHistory(item);
+    final snapshot = History._copy(item);
     final key = _historyKey(item.id, item.type);
     for (final candidate in [
       _pendingReadingProgress[key],
@@ -639,7 +639,7 @@ class HistoryManager with ChangeNotifier {
         ..page = visiblePosition.page
         ..group = visiblePosition.group;
     }
-    _pendingReadingProgress[key] = _copyHistory(item);
+    _pendingReadingProgress[key] = History._copy(item);
     _scheduleReadingProgressFlush();
     _cacheHistory(item);
     notifyListeners();
@@ -672,7 +672,7 @@ class HistoryManager with ChangeNotifier {
     while (true) {
       final batch = _pendingReadingProgress.entries
           .where((entry) => matches(entry.key, entry.value))
-          .map((entry) => MapEntry(entry.key, _copyHistory(entry.value)))
+          .map((entry) => MapEntry(entry.key, History._copy(entry.value)))
           .toList(growable: false);
       if (batch.isEmpty) {
         await waitForAsyncWrites();
@@ -757,7 +757,7 @@ class HistoryManager with ChangeNotifier {
       return current;
     }
 
-    final resolved = _copyHistory(current)..readingProgress = normalized;
+    final resolved = History._copy(current)..readingProgress = normalized;
     final position = normalized.resumePosition;
     if (position != null) {
       resolved
@@ -779,7 +779,7 @@ class HistoryManager with ChangeNotifier {
         updateCache();
         return null;
       }
-      final live = _copyHistory(pending ?? queued!);
+      final live = History._copy(pending ?? queued!);
       if (queued != null && pending != null && !identical(queued, pending)) {
         _mergeHistorySnapshot(live, queued);
       }
@@ -797,7 +797,7 @@ class HistoryManager with ChangeNotifier {
   }
 
   History _historyWithoutProgress(History history) {
-    final copy = _copyHistory(history)
+    final copy = History._copy(history)
       ..ep = 0
       ..page = 0
       ..group = null
@@ -807,12 +807,12 @@ class HistoryManager with ChangeNotifier {
 
   History _normalizeFallbackHistory(History history, ReadingCatalog catalog) {
     if (history.readingProgress == null && history.resumePosition == null) {
-      return _copyHistory(history);
+      return History._copy(history);
     }
     final progress = history.readingProgress ?? _progressForHistory(history);
     final normalized = progress.normalizeForCatalog(catalog);
-    if (normalized == null) return _copyHistory(history);
-    final copy = _copyHistory(history)..readingProgress = normalized;
+    if (normalized == null) return History._copy(history);
+    final copy = History._copy(history)..readingProgress = normalized;
     final position = normalized.resumePosition;
     if (position != null) {
       copy
@@ -837,7 +837,7 @@ class HistoryManager with ChangeNotifier {
     final key = _historyKey(expected.id, expected.type);
     final revision = _advanceHistoryRevision(key);
     final generation = _writeGeneration(key);
-    final snapshot = _copyHistory(normalized);
+    final snapshot = History._copy(normalized);
     _queuedHistories[key] = snapshot;
     await _enqueueAsyncWrite(() async {
       var updated = false;

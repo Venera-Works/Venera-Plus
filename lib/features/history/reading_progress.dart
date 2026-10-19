@@ -475,6 +475,7 @@ class ReadingProgress {
   }
 
   ReadingProgress merge(ReadingProgress other) {
+    if (identical(this, other)) return this;
     final mergedCatalog = _mergeCatalog(catalog, other.catalog);
     final maxima =
         <ReadingPosition>[...maximumPositions, ...other.maximumPositions]
@@ -910,6 +911,7 @@ List<ReadingPosition> _pruneMaximum(
 }
 
 ReadingCatalog? _mergeCatalog(ReadingCatalog? left, ReadingCatalog? right) {
+  if (identical(left, right)) return left;
   if (left == null) return right;
   if (right == null) return left;
   final leftKeys = left.chapters.map(_chapterKey).toList();
