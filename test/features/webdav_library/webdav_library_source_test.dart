@@ -508,7 +508,7 @@ void main() {
     expect(config.remotePath, '/venera_comics/');
   });
 
-  test('loadComics lists directories and ZIP/CBZ file placeholders', () async {
+  test('loadComics lists directories and ignores archives', () async {
     ops.dirs['/manga/'] = const [
       WebDavLibraryEntry(name: 'Cat Eye', isDirectory: true),
       WebDavLibraryEntry(name: 'archive.cbz', isDirectory: false),
@@ -524,22 +524,10 @@ void main() {
     final result = await WebDavLibrarySource.loadComics(1);
 
     expect(result.success, isTrue);
-    expect(
-      result.data.firstWhere((comic) => comic.title == 'Cat Eye').cover,
-      '/manga/Cat Eye/cover.jpg',
-    );
+    expect(result.data.single.cover, '/manga/Cat Eye/cover.jpg');
     expect(result.subData, 1);
-    expect(result.data.map((comic) => comic.title).toSet(), {
-      'Cat Eye',
-      'archive',
-    });
-    expect(
-      result.data.every(
-        (comic) => comic.sourceKey == WebDavLibrarySource.sourceKey,
-      ),
-      isTrue,
-    );
-    expect(ops.readPaths.any((path) => path.contains('archive.cbz')), isFalse);
+    expect(result.data.map((comic) => comic.title), ['Cat Eye']);
+    expect(result.data.single.sourceKey, WebDavLibrarySource.sourceKey);
   });
 
   test(

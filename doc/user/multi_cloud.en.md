@@ -18,16 +18,12 @@ Settings → Sources and Services → Content Sources manages website sources an
 
 Each online comic library can select one account and one or more recognition directories. Results are combined, with duplicate full remote paths shown once and same-named comics in different paths kept separately. App-data sync and comic archive backup each use one account and one directory: the former transfers settings, favorites, reading records, and other app data; the latter backs up and restores CBZ comic files.
 
-Online libraries support image directories and remote ZIP/CBZ files. Each ZIP/CBZ appears as one comic and may contain a single top-level folder, chapter folders, and an optional `metadata.json`. The app reads the archive tail, central directory, and required images on demand. Covers load when displayed and are cached; reading pages reuse the image cache. See [comic import and online reading](import_comic.en.md#on-demand-zipcbz-reading) for layout examples and metadata rules.
-
-On-demand ZIP/CBZ reading requires HTTP Range support from the actual file server. Servers that ignore Range, return the full file, or supply invalid partial responses cause an explicit failure without an automatic full download. This also applies to cloud download links, proxies, and redirects. The initial implementation supports ZIP/ZIP64 with Store/Deflate, excluding encrypted or split archives and other compression methods. 7z/CB7, PDF, and EPUB files cannot be read directly on demand from the cloud. Download them for local import, or extract comic images into a remote directory.
-
 Existing WebDAV sync and archive settings are automatically added to the shared accounts while retaining their remote directories. Local comic paths, cache settings, and download threads are under Local Storage and Downloads; manual data transfer is under App Data Import and Export.
 
 All saved cloud accounts and their credentials are included in app-data snapshots, including accounts not yet used by a comic library. During restore, a still-valid local authorization is retained. The data-sync destination stays local; archive-backup configuration is synchronized only when its opt-in is enabled.
 
 Account names must be unique, ignoring leading and trailing whitespace and letter case. Use the same name for the same account on every device and different names for different accounts. Synchronization merges accounts with the same name and provider, updating library, sync, and backup references while retaining library IDs and favorite associations. Accounts with matching names but different providers are retained with a name suffix to distinguish them. Renaming an account retains its internal ID.
 
-Native OpenList builds, platform loading, and real-provider checks have not been run locally. They are pending CI and dedicated test directories. End-to-end checks of on-demand ZIP/CBZ reading on platforms and real cloud providers have not been completed either. Range compatibility depends on the actual responses from the storage service.
+Native OpenList builds, platform loading, and real-provider checks have not been run locally. They are pending CI and dedicated test directories.
 
 The macOS app continues to support macOS 12. Because of the Go 1.27 runtime requirement, the six OpenList providers require macOS 13 or later; WebDAV and local features remain available on macOS 12.

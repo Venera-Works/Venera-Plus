@@ -4,7 +4,7 @@ import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/sqlite_connection.dart';
 
-const webDavLibrarySnapshotFormatVersion = 8;
+const webDavLibrarySnapshotFormatVersion = 7;
 
 class WebDavLibraryCachedComic {
   const WebDavLibraryCachedComic({
@@ -461,11 +461,10 @@ class WebDavLibraryCache {
   void setLastSuccessfulSync(String configKey, int timestamp) {
     _database.execute(
       '''
-      INSERT INTO webdav_library_state(config_key, last_successful_sync, index_initialized)
-      VALUES (?, ?, 1)
+      INSERT INTO webdav_library_state(config_key, last_successful_sync)
+      VALUES (?, ?)
       ON CONFLICT(config_key) DO UPDATE SET
-        last_successful_sync = excluded.last_successful_sync,
-        index_initialized = 1;
+        last_successful_sync = excluded.last_successful_sync;
       ''',
       [configKey, timestamp],
     );
