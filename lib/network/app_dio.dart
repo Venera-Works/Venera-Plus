@@ -2,7 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show protected;
 import 'package:flutter/services.dart';
+import 'package:flutter_rust_bridge/flutter_rust_bridge.dart'
+    show AnyhowException;
 import 'package:rhttp/rhttp.dart' as rhttp;
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/log.dart';
@@ -556,24 +559,17 @@ class RHttpAdapter implements HttpClientAdapter {
   @override
   void close({bool force = false}) {}
 
-  @override
-  Future<ResponseBody> fetch(
+  @protected
+  rhttp.CancelToken createCancelToken() => rhttp.CancelToken();
+
+  @protected
+  Future<rhttp.HttpResponse> request(
     RequestOptions options,
     Stream<Uint8List>? requestStream,
-    Future<void>? cancelFuture,
+    rhttp.CancelToken cancelToken,
   ) async {
-    if (options.headers['User-Agent'] == null &&
-        options.headers['user-agent'] == null) {
-      options.headers['User-Agent'] = "VeneraPlus/v${App.version}";
-    }
-
-    final nativeCancelToken = cancelFuture == null ? null : rhttp.CancelToken();
-    if (nativeCancelToken != null) {
-      unawaited(cancelFuture!.then((_) => nativeCancelToken.cancel()));
-    }
-
-    var res = await rhttp.Rhttp.request(
-      cancelToken: nativeCancelToken,
+    return rhttp.Rhttp.request(
+      cancelToken: cancelToken,
       method: rhttp.HttpMethod(options.method),
       url: options.uri.toString(),
       settings: await settings,
@@ -587,21 +583,57 @@ class RHttpAdapter implements HttpClientAdapter {
         ),
       ),
     );
+  }
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    if (options.headers['User-Agent'] == null &&
+        options.headers['user-agent'] == null) {
+      options.headers['User-Agent'] = "VeneraPlus/v${App.version}";
+    }
+
+    final transfer = _RHttpResponseStream(createCancelToken());
+    if (cancelFuture != null) {
+      unawaited(cancelFuture.then((_) => transfer.cancel()));
+    }
+
+    final rhttp.HttpResponse res;
+    try {
+      res = await request(options, requestStream, transfer.cancelToken);
+    } catch (_) {
+      transfer.finish();
+      rethrow;
+    }
     if (res is! rhttp.HttpStreamResponse) {
+      transfer.finish();
       throw Exception("Invalid response type: ${res.runtimeType}");
     }
-    var headers = <String, List<String>>{};
-    for (var entry in res.headers) {
-      var key = entry.$1.toLowerCase();
+    // Attach before handing the headers to Dio, which may reject the response
+    // without ever listening to its body.
+    transfer.attach(res.body);
+    if (transfer.isCancelled) {
+      throw DioException.requestCancelled(
+        requestOptions: options,
+        reason: 'Request cancelled before the response was delivered',
+      );
+    }
+    final headers = <String, List<String>>{};
+    for (final entry in res.headers) {
+      final key = entry.$1.toLowerCase();
       headers[key] ??= [];
       headers[key]!.add(entry.$2);
     }
     return ResponseBody(
-      res.body,
+      transfer.stream,
       res.statusCode,
       statusMessage: _getStatusMessage(res.statusCode),
       isRedirect: false,
       headers: headers,
+      onClose: () => unawaited(transfer.cancel()),
     );
   }
 
@@ -623,5 +655,86 @@ class RHttpAdapter implements HttpClientAdapter {
         "Invalid Status Code 429: Too many requests. Please try again later.",
       _ => "Invalid Status Code $statusCode",
     };
+  }
+}
+
+class _RHttpResponseStream {
+  _RHttpResponseStream(this.cancelToken) {
+    _controller = StreamController<Uint8List>(
+      onListen: () => _subscription?.resume(),
+      onPause: () => _subscription?.pause(),
+      onResume: () => _subscription?.resume(),
+      onCancel: cancel,
+    );
+  }
+
+  final rhttp.CancelToken cancelToken;
+  late final StreamController<Uint8List> _controller;
+  StreamSubscription<Uint8List>? _subscription;
+  Future<void>? _cancellation;
+  bool _finished = false;
+  bool _cancelled = false;
+
+  Stream<Uint8List> get stream => _controller.stream;
+  bool get isCancelled => _cancelled;
+
+  void attach(Stream<Uint8List> source) {
+    _subscription = source.listen(
+      (bytes) {
+        if (!_cancelled) _controller.add(bytes);
+      },
+      onError: (Object error, StackTrace stack) {
+        if (!_cancelled) _controller.addError(error, stack);
+      },
+      onDone: finish,
+    );
+    // Keep the native error listener installed without buffering an unbounded
+    // body while response interceptors or header validation are pending.
+    _subscription!.pause();
+    if (_cancelled) {
+      unawaited(_cancelSubscription());
+    }
+  }
+
+  void finish() {
+    _finished = true;
+    unawaited(_controller.close());
+  }
+
+  Future<void> cancel() {
+    if (_finished) return Future<void>.value();
+    if (_cancelled) return _cancellation ?? Future<void>.value();
+    _cancelled = true;
+    unawaited(_controller.close());
+    // Both operations can fail asynchronously. In particular, cancelling FRB's
+    // async* receive stream can return its pending STREAM_CANCEL_ERROR through
+    // subscription.cancel(), outside the stream's onError handler.
+    return _cancellation = Future.wait<void>([
+      _guardCancellation(cancelToken.cancel),
+      _cancelSubscription(),
+    ]).then((_) {});
+  }
+
+  Future<void> _cancelSubscription() async {
+    final subscription = _subscription;
+    _subscription = null;
+    if (subscription != null) {
+      await _guardCancellation(subscription.cancel);
+    }
+  }
+
+  Future<void> _guardCancellation(Future<void> Function() cancel) async {
+    try {
+      await cancel();
+    } catch (error, stack) {
+      if (error is rhttp.RhttpCancelException ||
+          (error is AnyhowException &&
+              error.message.contains('STREAM_CANCEL_ERROR'))) {
+        return;
+      }
+      // The consumer has already rejected or cancelled the response. Unexpected
+      // cleanup failures remain visible; active body errors are forwarded above.
+      Log.warning('Network stream cleanup', '$error\n$stack');
+    }
   }
 }

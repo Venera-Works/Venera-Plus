@@ -1770,8 +1770,6 @@ class WebDavLibrarySource {
       key,
       () => RemoteRangeReader(
         size: archive.size,
-        eTag: archive.eTag,
-        modifiedAt: archive.modifiedAt,
         link: () async => config.remoteStore != null
             ? config.remoteStore!.link(archive.path)
             : RemoteLink(

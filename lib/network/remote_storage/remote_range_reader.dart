@@ -11,15 +11,9 @@ class RemoteRangeReader {
   RemoteRangeReader({
     required this.size,
     required Future<RemoteLink> Function() link,
-    String? eTag,
-    int? modifiedAt,
     Dio? dio,
   }) : _link = link,
-       _dio = dio ?? AppDio(),
-       _eTag = _strongETag(eTag),
-       _modifiedAt = modifiedAt == null || modifiedAt <= 0
-           ? null
-           : modifiedAt ~/ 1000 {
+       _dio = dio ?? AppDio() {
     if (size < 0) throw RangeError.value(size, 'size');
   }
 
@@ -27,8 +21,10 @@ class RemoteRangeReader {
   final Future<RemoteLink> Function() _link;
   final Dio _dio;
   Future<RemoteLink>? _linkFuture;
+  // Pin validators from download responses; directory metadata may come from
+  // another service with different ETags and modification times.
   String? _eTag;
-  // HTTP Last-Modified has second precision; RemoteEntry uses milliseconds.
+  // HTTP Last-Modified has second precision.
   int? _modifiedAt;
 
   Future<Uint8List> read(
@@ -50,10 +46,13 @@ class RemoteRangeReader {
       final currentLink = await _resolveLink(cancelToken);
       _checkCancelled(cancelToken);
       final requestToken = CancelToken();
+      var active = true;
       final tokenReference = WeakReference(requestToken);
       cancelToken?.whenCancel.then((error) {
         final token = tokenReference.target;
-        if (token != null && !token.isCancelled) token.cancel(error.error);
+        if (active && token != null && !token.isCancelled) {
+          token.cancel(error.error);
+        }
       });
       final headers = <String, dynamic>{...currentLink.headers};
       headers.removeWhere(
@@ -110,6 +109,7 @@ class RemoteRangeReader {
           result.setRange(received, received + chunk.length, chunk);
           received += chunk.length;
         }
+        active = false;
         _checkCancelled(cancelToken);
         if (received != length) {
           throw const RemoteStorageException(
@@ -150,10 +150,13 @@ class RemoteRangeReader {
         }
         rethrow;
       } finally {
-        // Abort rejected/oversized responses, including transports whose body
-        // keeps running after the consumer cancels its stream subscription.
-        if (!requestToken.isCancelled) {
-          requestToken.cancel('Range read finished');
+        // A fully consumed response has already finished normally. Abort only
+        // incomplete/rejected responses, and detach the caller's late cancels.
+        if (active) {
+          active = false;
+          if (!requestToken.isCancelled) {
+            requestToken.cancel('Range read aborted');
+          }
         }
         await body?.cancel();
       }

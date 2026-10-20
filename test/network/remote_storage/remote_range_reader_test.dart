@@ -25,8 +25,6 @@ void main() {
       var links = 0;
       final reader = RemoteRangeReader(
         size: 10,
-        eTag: '"version-1"',
-        modifiedAt: 1000,
         dio: _dio(adapter),
         link: () async {
           links++;
@@ -39,6 +37,8 @@ void main() {
               'User-Agent': 'storage-client',
               'range': 'bytes=0-',
               'accept-encoding': 'gzip',
+              'If-Match': '"directory-version"',
+              'If-Unmodified-Since': 'Thu, 01 Jan 1970 00:00:01 GMT',
             },
           );
         },
@@ -51,7 +51,12 @@ void main() {
       final headers = adapter.requests.first.headers;
       expect(_requestHeader(headers, 'Range'), 'bytes=2-4');
       expect(_requestHeader(headers, 'Accept-Encoding'), 'identity');
-      expect(_requestHeader(headers, 'If-Match'), '"version-1"');
+      expect(_requestHeader(headers, 'If-Match'), isNull);
+      expect(_requestHeader(headers, 'If-Unmodified-Since'), isNull);
+      expect(
+        _requestHeader(adapter.requests[1].headers, 'If-Match'),
+        '"version-1"',
+      );
       expect(_requestHeader(headers, 'Authorization'), 'Bearer credential');
       expect(_requestHeader(headers, 'Cookie'), 'session=value');
       expect(_requestHeader(headers, 'Referer'), 'https://files.example/');
@@ -60,6 +65,20 @@ void main() {
         headers.keys.where((name) => name.toLowerCase() == 'range'),
         hasLength(1),
       );
+    },
+  );
+
+  test(
+    'does not abort a completed range when the caller later cancels',
+    () async {
+      final adapter = _RangeAdapter((_, _) => _partial());
+      final caller = CancelToken();
+      expect(await _reader(adapter).read(2, 3, cancelToken: caller), [2, 3, 4]);
+      final requestToken = adapter.requests.single.cancelToken!;
+      expect(requestToken.isCancelled, isFalse);
+      caller.cancel('Reader closed after the page completed');
+      await Future<void>.value();
+      expect(requestToken.isCancelled, isFalse);
     },
   );
 
@@ -202,12 +221,7 @@ void main() {
     'accepts a bounded response without version or Content-Length headers',
     () async {
       final adapter = _RangeAdapter((_, _) => _partial());
-      final reader = RemoteRangeReader(
-        size: 10,
-        modifiedAt: DateTime.utc(2026, 10, 20).millisecondsSinceEpoch,
-        link: _link,
-        dio: _dio(adapter),
-      );
+      final reader = _reader(adapter);
       expect(await reader.read(2, 3), [2, 3, 4]);
     },
   );
@@ -236,7 +250,7 @@ void main() {
   );
 
   test(
-    'uses modification time at HTTP second precision for weak ETags',
+    'uses the HTTP Last-Modified validator for weak response ETags',
     () async {
       final modified = DateTime.utc(2026, 10, 20);
       final adapter = _RangeAdapter(
@@ -247,15 +261,14 @@ void main() {
           },
         ),
       );
-      final reader = RemoteRangeReader(
-        size: 10,
-        eTag: 'W/"weak-tag"',
-        modifiedAt: modified.millisecondsSinceEpoch + 987,
-        link: _link,
-        dio: _dio(adapter),
+      final reader = _reader(adapter);
+      expect(await reader.read(2, 3), [2, 3, 4]);
+      expect(
+        _requestHeader(adapter.requests.first.headers, 'If-Unmodified-Since'),
+        isNull,
       );
       expect(await reader.read(2, 3), [2, 3, 4]);
-      final headers = adapter.requests.single.headers;
+      final headers = adapter.requests[1].headers;
       expect(_requestHeader(headers, 'If-Match'), isNull);
       expect(
         _requestHeader(headers, 'If-Unmodified-Since'),
@@ -269,22 +282,17 @@ void main() {
     () async {
       final modified = DateTime.utc(2026, 10, 20);
       final adapter = _RangeAdapter(
-        (_, _) => _partial(
+        (_, index) => _partial(
           headers: {
             'etag': ['W/"weak-tag"'],
             'last-modified': [
-              HttpDate.format(modified.add(const Duration(seconds: 1))),
+              HttpDate.format(modified.add(Duration(seconds: index))),
             ],
           },
         ),
       );
-      final reader = RemoteRangeReader(
-        size: 10,
-        eTag: 'W/"weak-tag"',
-        modifiedAt: modified.millisecondsSinceEpoch,
-        link: _link,
-        dio: _dio(adapter),
-      );
+      final reader = _reader(adapter);
+      expect(await reader.read(2, 3), [2, 3, 4]);
       await expectLater(
         reader.read(2, 3),
         throwsA(_storageError('remote_file_changed')),

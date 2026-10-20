@@ -25,6 +25,9 @@ void main() {
   late HttpServer server;
   late Uint8List zip;
   var revision = 1;
+  String? downloadETagPrefix = 'version';
+  DateTime? downloadModified;
+  final conditions = <(String?, String?)>[];
   final ranges = <(int, int)>[];
   final clients = <Dio>[];
   Completer<void>? responseGate;
@@ -58,6 +61,9 @@ void main() {
     CacheManager.debugDisableInitialScan = true;
     WebDavLibrarySource.resetCacheForTesting();
     ranges.clear();
+    conditions.clear();
+    downloadETagPrefix = 'version';
+    downloadModified = null;
     responseGate = null;
     responseStarted = null;
     revision = 1;
@@ -65,6 +71,10 @@ void main() {
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     server.listen((request) async {
       expect(request.headers.value('x-cloud-auth'), 'preserved');
+      conditions.add((
+        request.headers.value('if-match'),
+        request.headers.value('if-unmodified-since'),
+      ));
       final match = RegExp(
         r'^bytes=(\d+)-(\d+)$',
       ).firstMatch(request.headers.value('range') ?? '');
@@ -86,7 +96,18 @@ void main() {
           'content-range',
           'bytes $start-$end/${bytes.length}',
         );
-        request.response.headers.set('etag', '"version-$currentRevision"');
+        if (downloadETagPrefix != null) {
+          request.response.headers.set(
+            'etag',
+            '"$downloadETagPrefix-$currentRevision"',
+          );
+        }
+        if (downloadModified != null) {
+          request.response.headers.set(
+            'last-modified',
+            HttpDate.format(downloadModified!),
+          );
+        }
         request.response.add(bytes.sublist(start, end + 1));
       }
       await request.response.close();
@@ -98,6 +119,7 @@ void main() {
         isDirectory: false,
         size: zip.length,
         eTag: '"version-$revision"',
+        modifiedAt: DateTime.utc(2026, 10, 20).millisecondsSinceEpoch,
       ),
       RemoteLink(
         url: 'http://127.0.0.1:${server.port}/book',
@@ -236,6 +258,45 @@ void main() {
       );
     },
   );
+
+  for (final hasDownloadETag in [false, true]) {
+    test('uses CDN validators independently of directory metadata '
+        '(download ETag: $hasDownloadETag)', () async {
+      downloadETagPrefix = hasDownloadETag ? 'cdn' : null;
+      downloadModified = DateTime.utc(2026, 7, 5, 18, 10, 49);
+      expect((await engine.synchronize()).success, isTrue);
+      final list = await source.explorePages.single.loadPage!(1);
+      final cover = await ImageDownloader.loadThumbnail(
+        list.data.single.cover,
+        source.key,
+      ).last;
+      expect(cover.imageBytes, [9, 1]);
+      final pages = await source.loadComicPages!('/library/漫画 %.cbz', null);
+      expect(pages.success, isTrue, reason: pages.errorMessage);
+      expect(
+        await ImageDownloader.loadComicImageBytes(
+          pages.data.first,
+          source.key,
+          '/library/漫画 %.cbz',
+          '',
+        ),
+        [2, 1],
+      );
+      expect(conditions.first, (null, null));
+      final expected = hasDownloadETag
+          ? ('"cdn-1"', null)
+          : (null, HttpDate.format(downloadModified!));
+      expect(conditions, contains(expected));
+      expect(
+        conditions.where((condition) => condition != (null, null)),
+        everyElement(expected),
+      );
+      expect(
+        ranges.fold(0, (sum, range) => sum + range.$2),
+        lessThan(zip.length),
+      );
+    });
+  }
 
   test(
     'refresh changes page identities and never writes metadata into a file',
