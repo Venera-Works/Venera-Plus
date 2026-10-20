@@ -134,11 +134,11 @@ EPUB, PDF, or CBZ before importing.
 
 Document import never overwrites an existing comic with the same title.
 
-## WebDAV Online Library
+## WebDAV and Cloud Online Libraries
 
-The WebDAV comic library is an online reading channel. It is separate from local import/export and WebDAV CBZ archive backup.
+Online libraries provide a reading channel separate from local import/export and comic archive backup, using WebDAV or a configured cloud account.
 
-Online reading only reads images from remote directories. The app lists directories and loads images on demand; remote CBZ/ZIP/7Z files are not used for online preview. You can use a plain image directory or extract a single-comic CBZ exported by VeneraPlus (or legacy VeneraNext) to WebDAV to preserve its title, author, tags, and chapters.
+Online reading supports remote image directories and single-comic ZIP/CBZ files. Directory comics list folders and load images on demand; ZIP/CBZ files can supply their images directly without extraction on the server. A single-comic CBZ exported by VeneraPlus (or legacy VeneraNext) can retain its title, author, tags, and chapters. See [Multi-cloud storage](multi_cloud.en.md) for account and directory setup.
 
 The **Sync comic library config** switch in WebDAV Comic Library settings is off by default. When enabled, DataSync/Appdata `.venera` files include the library URL, username, password, remote path, automatic-update switch, and update interval. The receiving device must also enable this switch locally before those fields are imported. Credentials are stored in the remote `.venera` file, so enable this only for trusted WebDAV storage and accounts.
 
@@ -258,6 +258,30 @@ When metadata is missing and Bangumi is connected, the app first attempts the co
 
 This `metadata.json` is the single-comic CBZ metadata format. It is not the comic-list format inside a `.venera-comics` batch export, and the two formats are not interchangeable.
 
-### Archives and Online Reading
+### On-Demand ZIP/CBZ Reading
 
-CBZ/ZIP/7Z files can still be uploaded, downloaded, and restored through WebDAV archive backup, but they are backup and distribution formats rather than online reading formats. Extract them on the WebDAV server for online reading; the app then reads images on demand without downloading the whole archive.
+Place `.zip` or `.cbz` files in an online library's configured recognition directories. Each file appears as one comic. Archives may contain images directly, a single top-level folder, or chapter folders. An optional single-comic `metadata.json` uses the fields and chapter-range rules above.
+
+```text
+/venera_comics/
+├── Cat's Eye.cbz
+│   └── Cat's Eye/
+│       ├── metadata.json
+│       ├── cover.jpg
+│       ├── Volume 01/
+│       │   ├── 001.jpg
+│       │   └── 002.jpg
+│       └── Volume 02/
+│           └── 001.jpg
+└── Another comic.zip
+    ├── 0001.jpg
+    └── 0002.jpg
+```
+
+The app reads the archive tail and central directory as needed, then fetches metadata and the required image entries. Covers load when needed and are cached; reading pages also reuse the image cache. The full archive does not need to be downloaded or extracted first.
+
+The remote file server must actually support HTTP Range and return valid partial responses. Being able to list files or merely advertising Range support is insufficient. If the server ignores Range, returns the full file, or supplies an invalid range, the app reports an error without silently falling back to a full download. Cloud download links, proxies, and file servers reached through redirects must also satisfy this requirement.
+
+The initial implementation supports ZIP/ZIP64 using Store (uncompressed) or Deflate. Encrypted archives, split archives, and other compression methods are rejected. 7z/CB7 files cannot be read directly online; extract them to image directories on the server first. PDF/EPUB files do not support on-demand cloud reading either; download them and use local import. Archive backup and restore remain separate features.
+
+End-to-end checks of on-demand ZIP/CBZ reading on platforms and real cloud providers have not been completed. Range compatibility depends on the actual responses from the storage service.
