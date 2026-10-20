@@ -20,14 +20,14 @@ VeneraPlus 是一款在手机和电脑上使用的漫画阅读器，可以读本
 
 ## 下载安装
 
-点击下表链接下载 **v3.1.2 正式版**，也可前往 [最新版发布页](https://github.com/Venera-Works/Venera-Plus/releases/latest) 查看更新：
+点击下表链接下载 **v3.1.3 正式版**，也可前往 [最新版发布页](https://github.com/Venera-Works/Venera-Plus/releases/latest) 查看更新：
 
 | 设备 | 选择哪个文件 |
 |---|---|
-| Android 手机 / 平板 | 安卓设备可下载 [arm64](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.2/VeneraPlus-3.1.2-android-arm64-v8a.apk) 版本，，不清楚型号时安装 [通用版](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.2/VeneraPlus-3.1.2-android.apk) |
-| Windows | [Windows-installer.exe](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.2/VeneraPlus-3.1.2-windows-installer.exe) 安装版，或 [Windows-portable.zip](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.2/VeneraPlus-3.1.2-windows-portable.zip) 解压便携版 |
-| Linux | Ubuntu / Debian：[.deb（x64）](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.2/venera-plus_3.1.2_amd64.deb)、[.deb（ARM64）](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.2/venera-plus_3.1.2_arm64.deb)；Arch Linux：[.pkg.tar.zst（x64）](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.2/venera-plus-3.1.2-29-x86_64.pkg.tar.zst) |
-| iPhone / iPad | [.ipa](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.2/VeneraPlus-ios-3.1.2%2B29.ipa)，需自行签名安装 |
+| Android 手机 / 平板 | 安卓设备可下载 [arm64](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/VeneraPlus-3.1.3-android-arm64-v8a.apk) 版本，，不清楚型号时安装 [通用版](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/VeneraPlus-3.1.3-android.apk) |
+| Windows | [Windows-installer.exe](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/VeneraPlus-3.1.3-windows-installer.exe) 安装版，或 [Windows-portable.zip](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/VeneraPlus-3.1.3-windows-portable.zip) 解压便携版 |
+| Linux | Ubuntu / Debian：[.deb（x64）](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/venera-plus_3.1.3_amd64.deb)、[.deb（ARM64）](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/venera-plus_3.1.3_arm64.deb)；Arch Linux：[.pkg.tar.zst（x64）](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/venera-plus-3.1.3-30-x86_64.pkg.tar.zst) |
+| iPhone / iPad | [.ipa](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/VeneraPlus-ios-3.1.3%2B30.ipa)，需自行签名安装 |
 | macOS | 当前暂无正式安装包，可参阅[构建指南](doc/development/build.zh.md)自行构建 |
 
 `Source code` 是源码，不是安装包。
