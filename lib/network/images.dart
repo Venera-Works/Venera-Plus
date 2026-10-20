@@ -163,6 +163,11 @@ typedef ComicImageDebugLoader =
       String eid, {
       ComicImageLoadTarget? target,
     });
+
+/// Loads image bytes for a built-in source and cancels its underlying work.
+typedef ComicImageBytesLoader =
+    Future<Uint8List> Function(CancelToken cancelToken);
+
 typedef ComicImageTransport =
     FutureOr<dynamic> Function(String url, Map<String, dynamic> configs);
 
@@ -389,81 +394,117 @@ abstract class ImageDownloader {
     String url,
     String? sourceKey, [
     String? cid,
-  ]) async* {
-    final cacheKey = "$url@$sourceKey${cid != null ? '@$cid' : ''}";
-    final cache = await CacheManager().findCache(cacheKey);
+  ]) {
+    final cancelToken = CancelToken();
+    return _StreamWrapper<ImageDownloadProgress>(
+      _loadThumbnail(url, sourceKey, cid, cancelToken),
+      (_) {},
+      onCancel: cancelToken.cancel,
+    ).stream;
+  }
 
-    if (cache != null) {
-      var data = await cache.readAsBytes();
-      yield ImageDownloadProgress(
-        currentBytes: data.length,
-        totalBytes: data.length,
-        imageBytes: data,
-      );
-    }
+  static Stream<ImageDownloadProgress> _loadThumbnail(
+    String url,
+    String? sourceKey,
+    String? cid,
+    CancelToken cancelToken,
+  ) async* {
+    try {
+      final cacheKey = "$url@$sourceKey${cid != null ? '@$cid' : ''}";
+      final cache = await CacheManager().findCache(cacheKey);
+      if (cancelToken.isCancelled) return;
 
-    var configs = <String, dynamic>{};
-    if (sourceKey != null) {
-      configs =
-          await _thumbnailLoadingConfigResolver?.call(sourceKey, url) ?? {};
-    }
-    final headers = _resolveImageHeaders(configs['headers']);
-
-    if (((configs['url'] as String?) ?? url).startsWith('cover.') &&
-        sourceKey != null &&
-        cid != null) {
-      final coverUrl = await _thumbnailCoverResolver?.call(sourceKey, cid);
-      if (coverUrl != null) {
-        yield* loadThumbnail(coverUrl, sourceKey);
+      if (cache != null) {
+        final data = await cache.readAsBytes();
+        yield ImageDownloadProgress(
+          currentBytes: data.length,
+          totalBytes: data.length,
+          imageBytes: data,
+        );
         return;
       }
-    }
 
-    var dio = AppDio(
-      BaseOptions(
-        headers: headers,
-        method: configs['method'] ?? 'GET',
-        responseType: ResponseType.stream,
-      ),
-    );
+      var configs = <String, dynamic>{};
+      if (sourceKey != null) {
+        configs =
+            await _thumbnailLoadingConfigResolver?.call(sourceKey, url) ?? {};
+      }
+      if (cancelToken.isCancelled) return;
+      final headers = _resolveImageHeaders(configs['headers']);
+      final loadBytes = configs['loadBytes'] as ComicImageBytesLoader?;
 
-    String requestUrl = configs['url'] ?? url;
-    if (requestUrl.startsWith('//')) {
-      requestUrl = 'https:$requestUrl';
-    }
-    var req = await dio.request<ResponseBody>(
-      requestUrl,
-      data: configs['data'],
-    );
-    var stream = req.data?.stream ?? (throw "Error: Empty response body.");
-    int? expectedBytes = req.data!.contentLength;
-    if (expectedBytes == -1) {
-      expectedBytes = null;
-    }
-    var buffer = <int>[];
-    await for (var data in stream) {
-      buffer.addAll(data);
-      if (expectedBytes != null) {
-        yield ImageDownloadProgress(
-          currentBytes: buffer.length,
-          totalBytes: expectedBytes,
+      if (loadBytes == null &&
+          ((configs['url'] as String?) ?? url).startsWith('cover.') &&
+          sourceKey != null &&
+          cid != null) {
+        final coverUrl = await _thumbnailCoverResolver?.call(sourceKey, cid);
+        if (cancelToken.isCancelled) return;
+        if (coverUrl != null) {
+          yield* _loadThumbnail(coverUrl, sourceKey, null, cancelToken);
+          return;
+        }
+      }
+
+      List<int> buffer;
+      if (loadBytes != null) {
+        buffer = await loadBytes(cancelToken);
+      } else {
+        final dio = AppDio(
+          BaseOptions(
+            headers: headers,
+            method: configs['method'] ?? 'GET',
+            responseType: ResponseType.stream,
+          ),
+        );
+
+        String requestUrl = configs['url'] ?? url;
+        if (requestUrl.startsWith('//')) {
+          requestUrl = 'https:$requestUrl';
+        }
+        final req = await dio.request<ResponseBody>(
+          requestUrl,
+          data: configs['data'],
+          cancelToken: cancelToken,
+        );
+        final stream =
+            req.data?.stream ?? (throw "Error: Empty response body.");
+        int? expectedBytes = req.data!.contentLength;
+        if (expectedBytes == -1) {
+          expectedBytes = null;
+        }
+        final chunks = BytesBuilder(copy: false);
+        await for (final data in stream) {
+          if (cancelToken.isCancelled) return;
+          chunks.add(data);
+          if (expectedBytes != null) {
+            yield ImageDownloadProgress(
+              currentBytes: chunks.length,
+              totalBytes: expectedBytes,
+            );
+          }
+        }
+        buffer = chunks.takeBytes();
+      }
+      if (cancelToken.isCancelled) return;
+
+      if (configs['onResponse'] is JSInvokable) {
+        buffer = await _applyImageResponseCallback(
+          configs['onResponse'] as JSInvokable,
+          buffer,
         );
       }
-    }
+      if (cancelToken.isCancelled) return;
 
-    if (configs['onResponse'] is JSInvokable) {
-      buffer = await _applyImageResponseCallback(
-        configs['onResponse'] as JSInvokable,
-        buffer,
+      await CacheManager().writeCache(cacheKey, buffer);
+      yield ImageDownloadProgress(
+        currentBytes: buffer.length,
+        totalBytes: buffer.length,
+        imageBytes: buffer is Uint8List ? buffer : Uint8List.fromList(buffer),
       );
+    } catch (_) {
+      if (cancelToken.isCancelled) return;
+      rethrow;
     }
-
-    await CacheManager().writeCache(cacheKey, buffer);
-    yield ImageDownloadProgress(
-      currentBytes: buffer.length,
-      totalBytes: buffer.length,
-      imageBytes: Uint8List.fromList(buffer),
-    );
   }
 
   static final _loadingImages =
@@ -579,14 +620,23 @@ abstract class ImageDownloader {
       _loadingImages.remove(cacheKey);
     }
     final debugLoader = debugLoadComicImageUnwrapped;
+    final cancelToken = CancelToken();
     final stream = _StreamWrapper<ImageDownloadProgress>(
       debugLoader?.call(imageKey, sourceKey, cid, eid, target: target) ??
-          _loadComicImage(imageKey, sourceKey, cid, eid, target: target),
+          _loadComicImage(
+            imageKey,
+            sourceKey,
+            cid,
+            eid,
+            target: target,
+            cancelToken: cancelToken,
+          ),
       (wrapper) {
         if (identical(_loadingImages[cacheKey], wrapper)) {
           _loadingImages.remove(cacheKey);
         }
       },
+      onCancel: cancelToken.cancel,
     );
     _loadingImages[cacheKey] = stream;
     return stream.stream;
@@ -603,7 +653,19 @@ abstract class ImageDownloader {
     if (debugLoader != null) {
       return debugLoader(imageKey, sourceKey, cid, eid, target: target);
     }
-    return _loadComicImage(imageKey, sourceKey, cid, eid, target: target);
+    final cancelToken = CancelToken();
+    return _StreamWrapper<ImageDownloadProgress>(
+      _loadComicImage(
+        imageKey,
+        sourceKey,
+        cid,
+        eid,
+        target: target,
+        cancelToken: cancelToken,
+      ),
+      (_) {},
+      onCancel: cancelToken.cancel,
+    ).stream;
   }
 
   static Stream<ImageDownloadProgress> _loadComicImage(
@@ -612,6 +674,7 @@ abstract class ImageDownloader {
     String cid,
     String eid, {
     ComicImageLoadTarget? target,
+    required CancelToken cancelToken,
   }) async* {
     final cacheKey = getComicImageCacheKey(
       imageKey,
@@ -631,6 +694,7 @@ abstract class ImageDownloader {
       return;
     }
     final cache = await CacheManager().findCache(cacheKey);
+    if (cancelToken.isCancelled) return;
 
     if (cache != null) {
       final data = await cache.readAsBytes();
@@ -671,23 +735,32 @@ abstract class ImageDownloader {
         onLoadFailed = onLoadFailedConfig is JSInvokable
             ? onLoadFailedConfig
             : null;
+        if (cancelToken.isCancelled) return;
+        final loadBytes =
+            effectiveConfigs['loadBytes'] as ComicImageBytesLoader?;
 
-        try {
-          final request = jsonEncode([
-            effectiveConfigs['url'] ?? imageKey,
-            effectiveConfigs['method'] ?? 'GET',
-            SplayTreeMap<String, dynamic>.from(headers),
-            effectiveConfigs['data'],
-          ]);
-          final base = getComicImageCacheKey(imageKey, sourceKey, cid, eid);
-          requestCacheKey =
-              '$base@request:${sha256.convert(utf8.encode(request))}';
-        } on JsonUnsupportedObjectError {
-          // Streamed request bodies retain their target-specific cache.
+        if (loadBytes != null) {
+          // Native callbacks and temporary transport URLs are not cache identities.
+          requestCacheKey = '$cacheKey@request:loadBytes';
+        } else {
+          try {
+            final request = jsonEncode([
+              effectiveConfigs['url'] ?? imageKey,
+              effectiveConfigs['method'] ?? 'GET',
+              SplayTreeMap<String, dynamic>.from(headers),
+              effectiveConfigs['data'],
+            ]);
+            final base = getComicImageCacheKey(imageKey, sourceKey, cid, eid);
+            requestCacheKey =
+                '$base@request:${sha256.convert(utf8.encode(request))}';
+          } on JsonUnsupportedObjectError {
+            // Streamed request bodies retain their target-specific cache.
+          }
         }
         final cached = requestCacheKey == null
             ? null
             : await CacheManager().findCache(requestCacheKey);
+        if (cancelToken.isCancelled) return;
         List<int> buffer;
         if (cached != null) {
           buffer = await cached.readAsBytes();
@@ -696,7 +769,12 @@ abstract class ImageDownloader {
           int? expectedBytes;
 
           final transport = _debugComicImageTransport;
-          if (transport != null) {
+          if (loadBytes != null) {
+            final bytes = await loadBytes(cancelToken);
+            if (cancelToken.isCancelled) return;
+            stream = Stream.value(bytes);
+            expectedBytes = bytes.length;
+          } else if (transport != null) {
             final transportResult = await transport(
               effectiveConfigs['url'] ?? imageKey,
               effectiveConfigs,
@@ -729,6 +807,7 @@ abstract class ImageDownloader {
             var req = await dio.request<ResponseBody>(
               effectiveConfigs['url'] ?? imageKey,
               data: effectiveConfigs['data'],
+              cancelToken: cancelToken,
             );
             stream = req.data?.stream ?? (throw "Error: Empty response body.");
             expectedBytes = req.data!.contentLength;
@@ -740,6 +819,7 @@ abstract class ImageDownloader {
           final progressClock = Stopwatch()..start();
           var reportedProgress = false;
           await for (var data in stream) {
+            if (cancelToken.isCancelled) return;
             chunks.add(data);
             if (!reportedProgress ||
                 progressClock.elapsedMilliseconds >= 50 ||
@@ -753,10 +833,12 @@ abstract class ImageDownloader {
             }
           }
           buffer = chunks.takeBytes();
+          if (cancelToken.isCancelled) return;
           if (requestCacheKey != null) {
             await CacheManager().writeCache(requestCacheKey, buffer);
           }
         }
+        if (cancelToken.isCancelled) return;
 
         if (effectiveConfigs['onResponse'] is JSInvokable) {
           buffer = await _applyImageResponseCallback(
@@ -765,6 +847,7 @@ abstract class ImageDownloader {
           );
         }
 
+        if (cancelToken.isCancelled) return;
         Uint8List data;
         if (buffer is Uint8List) {
           data = buffer;
@@ -781,6 +864,7 @@ abstract class ImageDownloader {
           data = newData;
         }
 
+        if (cancelToken.isCancelled) return;
         if (requestCacheKey == null) {
           await CacheManager().writeCache(cacheKey, data);
         }
@@ -792,9 +876,11 @@ abstract class ImageDownloader {
         );
         return;
       } catch (e) {
+        if (cancelToken.isCancelled) return;
         if (requestCacheKey != null) {
           await CacheManager().delete(requestCacheKey);
         }
+        if (cancelToken.isCancelled) return;
         final onLoadFailedCallback = onLoadFailed;
         if (onLoadFailedCallback == null ||
             !_shouldRetryImageLoad(
@@ -860,11 +946,13 @@ class _StreamWrapper<T> {
 
   final void Function(_StreamWrapper<T> wrapper) onClosed;
 
+  final void Function()? onCancel;
+
   bool isClosed = false;
 
   StreamSubscription<T>? _subscription;
 
-  _StreamWrapper(this._stream, this.onClosed) {
+  _StreamWrapper(this._stream, this.onClosed, {this.onCancel}) {
     _listen();
   }
 
@@ -929,6 +1017,7 @@ class _StreamWrapper<T> {
       return;
     }
     isClosed = true;
+    onCancel?.call();
     for (var controller in controllers) {
       if (!controller.isClosed) {
         controller.close();
