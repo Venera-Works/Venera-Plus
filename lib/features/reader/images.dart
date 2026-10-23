@@ -33,6 +33,7 @@ import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 import 'package:venera_plus/network/images.dart';
+import 'package:venera_plus/network/remote_storage/remote_read_scheduler.dart';
 
 class ReaderImages extends StatefulWidget {
   const ReaderImages({super.key});
@@ -751,7 +752,22 @@ class GalleryModeState extends State<_GalleryMode>
     return (startIndex, endIndex);
   }
 
+  void _promoteVisiblePage(int page) {
+    if (page <= 0 || page > totalPages || isChapterCommentsPage(page)) return;
+    final Iterable<int> sourcePages;
+    if (isSplitEnabled && _pagePlan != null) {
+      sourcePages = [_pagePlan!.displayPageAt(page - 1).sourceIndex + 1];
+    } else {
+      final (start, end) = getPageImagesRange(page);
+      sourcePages = [for (var i = start; i < end; i++) i + 1];
+    }
+    for (final sourcePage in sourcePages) {
+      _promoteReaderImage(_createImageProvider(sourcePage, context));
+    }
+  }
+
   void _schedulePreload() {
+    _promoteVisiblePage(_currentControllerIndex);
     if (_preloadScheduled) return;
     _preloadScheduled = true;
     // onPageChanged runs halfway through a swipe. Wait for scrolling to stop,
@@ -764,6 +780,7 @@ class GalleryModeState extends State<_GalleryMode>
         return;
       }
       final startPage = _currentControllerIndex;
+      _promoteVisiblePage(startPage);
       _preloader.update([
         ..._cachePage(startPage + 1, true),
         ..._cachePage(startPage - 1, true),
@@ -798,12 +815,14 @@ class GalleryModeState extends State<_GalleryMode>
         key: provider,
         decode: shouldPreCache,
         load: shouldPreCache
-            ? () => precacheImage(
-                provider,
-                context,
-                onError: (error, stack) {
-                  Log.warning('Reader preload', '$error\n$stack');
-                },
+            ? () => RemoteReadContext(priority: RemoteReadPriority.preload).run(
+                () => precacheImage(
+                  provider,
+                  context,
+                  onError: (error, stack) {
+                    Log.warning('Reader preload', '$error\n$stack');
+                  },
+                ),
               )
             : () => ImageDownloader.preloadComicImage(
                 provider.imageKey,
@@ -1944,7 +1963,20 @@ class ContinuousModeState extends State<_ContinuousMode>
     super.dispose();
   }
 
+  void _promoteVisibleImages() {
+    for (final position in itemPositionsListener.itemPositions.value) {
+      if (position.itemLeadingEdge >= 1 || position.itemTrailingEdge <= 0) {
+        continue;
+      }
+      final imageRef = _imageRefAt(position.index);
+      if (imageRef != null) {
+        _promoteReaderImage(_createImageProviderFromRef(imageRef, context));
+      }
+    }
+  }
+
   void onPositionChanged() {
+    _promoteVisibleImages();
     if (itemPositionsListener.itemPositions.value.isEmpty) {
       return;
     }
@@ -2091,10 +2123,22 @@ class ContinuousModeState extends State<_ContinuousMode>
 
   void cacheImages(int current) {
     if (!mounted) return;
+    _promoteVisibleImages();
+    if (itemPositionsListener.itemPositions.value.isEmpty) {
+      final imageRef = _imageRefAt(current);
+      if (imageRef != null) {
+        _promoteReaderImage(_createImageProviderFromRef(imageRef, context));
+      }
+    }
     for (final i in [current - 1, current + 1]) {
       final imageRef = _imageRefAt(i);
       if (imageRef != null) {
-        precacheImage(_createImageProviderFromRef(imageRef, context), context);
+        RemoteReadContext(priority: RemoteReadPriority.preload).run(
+          () => precacheImage(
+            _createImageProviderFromRef(imageRef, context),
+            context,
+          ),
+        );
       }
     }
     for (int i = current + 1; i <= current + preCacheCount; i++) {
@@ -3164,6 +3208,19 @@ ImageProvider _createImageProvider(int page, BuildContext context) {
   var reader = context.reader;
   var imageKey = reader.images![page - 1];
   return _createImageProviderFromKey(imageKey, context, page);
+}
+
+// A visible widget may reuse precacheImage's pending completer without calling
+// ImageDownloader again, so promote the existing transport explicitly.
+void _promoteReaderImage(ImageProvider image) {
+  if (image is! ReaderImageProvider) return;
+  ImageDownloader.promoteComicImage(
+    image.imageKey,
+    image.sourceKey,
+    image.cid,
+    image.eid,
+    target: image.target,
+  );
 }
 
 /// [_preDownloadImage] is used to download the image for the given page.

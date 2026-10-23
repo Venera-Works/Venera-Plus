@@ -206,8 +206,8 @@ class RemoteZipIndex {
     return RemoteZipIndex._(fileSize, directoryOffset, entries);
   }
 
-  /// Reads only this entry's fixed local header and compressed payload.
-  /// Data descriptors need no extra request: central-directory sizes are final.
+  /// Combines a small entry's local header and payload in one bounded read.
+  /// Extra bytes can satisfy adjacent entries through the account range cache.
   Future<Uint8List> readEntry(RemoteZipEntry entry, ZipRangeRead read) async {
     if (!entries.contains(entry)) {
       throw ArgumentError.value(
@@ -216,13 +216,31 @@ class RemoteZipIndex {
         'Entry is not in this ZIP index',
       );
     }
+    const maxCombinedRead = 2 * 1024 * 1024;
+    const adjacentWindow = 256 * 1024;
+    final alignedOffset =
+        entry.localHeaderOffset ~/ adjacentWindow * adjacentWindow;
+    final combinedSize =
+        entry.localHeaderOffset -
+        alignedOffset +
+        entry.compressedSize +
+        30 +
+        4096;
+    final alignedLength =
+        (combinedSize + adjacentWindow - 1) ~/ adjacentWindow * adjacentWindow;
+    final combined = alignedLength <= maxCombinedRead;
+    final readOffset = combined ? alignedOffset : entry.localHeaderOffset;
+    final available = _centralDirectoryOffset - readOffset;
+    final wanted = combined ? alignedLength : 30;
     final headerBytes = await _readExact(
       read,
-      entry.localHeaderOffset,
-      30,
+      readOffset,
+      wanted < available ? wanted : available,
       _centralDirectoryOffset,
     );
-    final header = ByteData.sublistView(headerBytes);
+    final headerOffset = entry.localHeaderOffset - readOffset;
+    _checkRange(headerOffset, 30, headerBytes.length);
+    final header = ByteData.sublistView(headerBytes, headerOffset);
     if (_u32(header, 0) != 0x04034b50 ||
         _u16(header, 6) != entry.flags ||
         _u16(header, 8) != entry.compressionMethod) {
@@ -240,12 +258,21 @@ class RemoteZipIndex {
     }
     final dataOffset =
         entry.localHeaderOffset + 30 + _u16(header, 26) + _u16(header, 28);
-    final compressed = await _readExact(
-      read,
-      dataOffset,
-      entry.compressedSize,
-      _centralDirectoryOffset,
-    );
+    _checkRange(dataOffset, entry.compressedSize, _centralDirectoryOffset);
+    final relativeOffset = dataOffset - readOffset;
+    final compressed =
+        relativeOffset + entry.compressedSize <= headerBytes.length
+        ? Uint8List.sublistView(
+            headerBytes,
+            relativeOffset,
+            relativeOffset + entry.compressedSize,
+          )
+        : await _readExact(
+            read,
+            dataOffset,
+            entry.compressedSize,
+            _centralDirectoryOffset,
+          );
     return _decodeEntry(
       compressed,
       entry.compressionMethod,

@@ -4,4 +4,6 @@ export 'openlist_rpc.dart';
 export 'openlist_bridge.dart';
 export 'remote_file_store.dart';
 export 'remote_range_reader.dart';
+export 'remote_range_cache.dart';
+export 'remote_read_scheduler.dart';
 export 'webdav_file_store.dart';

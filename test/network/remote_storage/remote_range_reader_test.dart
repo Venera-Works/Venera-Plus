@@ -7,6 +7,111 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 
 void main() {
+  test('429 pauses other archives on the account before retrying', () async {
+    var now = DateTime.utc(2026, 10, 23);
+    final scheduler = RemoteReadScheduler(
+      maxConcurrent: 1,
+      minInterval: Duration.zero,
+      now: () => now,
+    );
+    final first = _RangeAdapter(
+      (_, index) => index == 0
+          ? ResponseBody.fromBytes(
+              [],
+              429,
+              headers: {
+                'retry-after': ['2'],
+              },
+            )
+          : _partial(),
+    );
+    final other = _RangeAdapter((_, _) => _partial());
+    final reading = RemoteRangeReader(
+      size: 10,
+      link: _link,
+      dio: _dio(first),
+      scheduler: scheduler,
+    ).read(2, 3);
+    await pumpEventQueue();
+    expect(first.requests, hasLength(1));
+    final cancel = CancelToken();
+    final waiting = RemoteRangeReader(
+      size: 10,
+      link: _link,
+      dio: _dio(other),
+      scheduler: scheduler,
+    ).read(2, 3, cancelToken: cancel);
+    final cancelled = expectLater(waiting, throwsA(isA<DioException>()));
+    await pumpEventQueue();
+    expect(other.requests, isEmpty);
+    cancel.cancel();
+    await cancelled;
+    expect(first.requests, hasLength(1));
+    now = now.add(const Duration(seconds: 2));
+    scheduler.defer(retryAfter: '0');
+    expect(await reading, [2, 3, 4]);
+    expect(first.requests, hasLength(2));
+    expect(other.requests, isEmpty);
+  });
+
+  test('repeated 429 responses stop after two retries', () async {
+    var links = 0;
+    final adapter = _RangeAdapter(
+      (_, _) => ResponseBody.fromBytes(
+        [],
+        429,
+        headers: {
+          'retry-after': ['0'],
+        },
+      ),
+    );
+    final reader = RemoteRangeReader(
+      size: 10,
+      dio: _dio(adapter),
+      scheduler: RemoteReadScheduler(minInterval: Duration.zero),
+      link: () {
+        links++;
+        return _link();
+      },
+    );
+    await expectLater(reader.read(2, 3), throwsA(_storageError('429')));
+    expect(adapter.requests, hasLength(3));
+    expect(links, 1);
+  });
+
+  test(
+    'invalidated reader does not serve ranges cached before a file change',
+    () async {
+      final cache = RemoteRangeCache();
+      final adapter = _RangeAdapter(
+        (options, index) => _partial(
+          range: index == 0 ? 'bytes 2-4/10' : 'bytes 5-7/10',
+          headers: {
+            'etag': ['"version-$index"'],
+          },
+        ),
+      );
+      final reader = RemoteRangeReader(
+        size: 10,
+        link: _link,
+        dio: _dio(adapter),
+        cache: cache,
+        cacheKey: 'version-1',
+        scheduler: RemoteReadScheduler(minInterval: Duration.zero),
+      );
+      expect(await reader.read(2, 3), [2, 3, 4]);
+      await expectLater(
+        reader.read(5, 3),
+        throwsA(_storageError('remote_file_changed')),
+      );
+      await expectLater(
+        reader.read(2, 3),
+        throwsA(_storageError('remote_file_changed')),
+      );
+      expect(adapter.requests, hasLength(2));
+    },
+  );
+
   test(
     'reads an exact bounded range and preserves direct-link headers',
     () async {

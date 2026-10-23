@@ -372,6 +372,10 @@ class WebDavLibraryConfig {
           ? jsonEncode([url, user, remotePath])
           : 'remote-library:${remoteLibrary!.id}');
 
+  String get archiveAccountKey => remoteStore != null
+      ? 'remote-account:${remoteStore!.account.id}'
+      : 'webdav-account:${sha256.convert(utf8.encode(jsonEncode([url, user])))}';
+
   String get libraryId {
     if (remoteLibrary != null) return remoteLibrary!.id;
     final identity = jsonEncode([url, user.trim(), remotePath]);
@@ -842,6 +846,7 @@ class _WebDavSynchronizationObsoleteException implements Exception {
 class _WebDavLibraryEngineState {
   final snapshotCache = <String, _WebDavComicSnapshot>{};
   final snapshotInFlight = <String, Future<_WebDavComicSnapshot>>{};
+  final snapshotContexts = <String, RemoteReadContext>{};
   final archiveReaders = <String, RemoteRangeReader>{};
   final archiveTokens = <CancelToken>{};
   final contentVersion = ValueNotifier<int>(0);
@@ -911,6 +916,19 @@ class WebDavLibrarySource {
   static ValueNotifier<int> get metadataPendingVersion =>
       _state.metadataPendingVersion;
   static final _cache = WebDavLibraryCache.instance;
+  static final _archiveAccounts =
+      <String, ({RemoteReadScheduler scheduler, RemoteRangeCache cache})>{};
+  @visibleForTesting
+  static RemoteReadScheduler Function()? archiveSchedulerFactory;
+
+  static ({RemoteReadScheduler scheduler, RemoteRangeCache cache})
+  _archiveAccount(WebDavLibraryConfig config) => _archiveAccounts.putIfAbsent(
+    config.archiveAccountKey,
+    () => (
+      scheduler: archiveSchedulerFactory?.call() ?? RemoteReadScheduler(),
+      cache: RemoteRangeCache(),
+    ),
+  );
   static WebDavLibraryOps _ops = _WebDavLibraryOps();
   static WebDavLibraryOps get _activeOps =>
       (Zone.current[_webDavLibraryContextKey] as _WebDavLibraryContext?)?.ops ??
@@ -984,6 +1002,7 @@ class WebDavLibrarySource {
     _state.archiveReaders.clear();
     _snapshotCache.clear();
     _snapshotInFlight.clear();
+    _state.snapshotContexts.clear();
   }
 
   static void _invalidateSynchronization() {
@@ -1081,6 +1100,7 @@ class WebDavLibrarySource {
     discoveryDirectoryLimitOverride = null;
     metadataNowProvider = () => DateTime.now().millisecondsSinceEpoch;
     _clearMemoryCaches();
+    _archiveAccounts.clear();
     _cache.resetForTesting();
     appdata.implicitData.remove(_metadataPendingKey);
     metadataPendingVersion.value++;
@@ -1676,6 +1696,9 @@ class WebDavLibrarySource {
 
     final inFlight = _snapshotInFlight[memoryKey];
     if (inFlight != null) {
+      _state.snapshotContexts[memoryKey]?.promote(
+        RemoteReadContext.current.priority,
+      );
       _WebDavComicSnapshot? snapshot;
       try {
         snapshot = await inFlight;
@@ -1695,6 +1718,7 @@ class WebDavLibrarySource {
       }
       if (identical(_snapshotInFlight[memoryKey], inFlight)) {
         _snapshotInFlight.remove(memoryKey);
+        _state.snapshotContexts.remove(memoryKey);
       }
       return _loadSnapshot(
         config,
@@ -1706,7 +1730,9 @@ class WebDavLibrarySource {
         syncRun: syncRun,
       );
     }
-    final future = () async {
+    final context = RemoteReadContext.current;
+    _state.snapshotContexts[memoryKey] = context;
+    final future = context.run(() async {
       final existing = _cache.find(config.cacheKey, id);
       final previousSnapshot = existing?.snapshot == null
           ? null
@@ -1747,13 +1773,14 @@ class WebDavLibrarySource {
       );
       _snapshotCache[memoryKey] = snapshot;
       return snapshot;
-    }();
+    });
     _snapshotInFlight[memoryKey] = future;
     try {
       return await future;
     } finally {
       if (identical(_snapshotInFlight[memoryKey], future)) {
         _snapshotInFlight.remove(memoryKey);
+        _state.snapshotContexts.remove(memoryKey);
       }
     }
   }
@@ -1766,10 +1793,14 @@ class WebDavLibrarySource {
     RemoteArchiveComic archive,
   ) {
     final key = jsonEncode([config.cacheKey, archive.path, archive.version]);
+    final account = _archiveAccount(config);
     return _state.archiveReaders.putIfAbsent(
       key,
       () => RemoteRangeReader(
         size: archive.size,
+        scheduler: account.scheduler,
+        cache: account.cache,
+        cacheKey: jsonEncode([archive.path, archive.version]),
         link: () async => config.remoteStore != null
             ? config.remoteStore!.link(archive.path)
             : RemoteLink(
@@ -1792,7 +1823,18 @@ class WebDavLibrarySource {
     final path = _archivePath(config, id);
     if (!summaryOnly) {
       if (config.remoteStore != null) {
-        final entry = await config.remoteStore!.stat(path);
+        final state = _state;
+        final token = cancelToken ?? CancelToken();
+        state.archiveTokens.add(token);
+        final RemoteEntry entry;
+        try {
+          entry = await _archiveAccount(config).scheduler.run(() {
+            if (state.disposed) throw StateError('Remote library is closed');
+            return config.remoteStore!.stat(path);
+          }, cancelToken: token);
+        } finally {
+          state.archiveTokens.remove(token);
+        }
         file = WebDavLibraryEntry(
           name: entry.name,
           isDirectory: false,
@@ -3043,8 +3085,13 @@ class WebDavLibrarySource {
     final config = WebDavLibraryConfig.fromSettings();
     if (imageKey.startsWith(remoteArchiveImagePrefix)) {
       final zone = Zone.current;
-      Future<Uint8List> loadBytes(CancelToken token) =>
-          zone.run(() => _loadArchiveImage(imageKey, token));
+      Future<Uint8List> loadBytes(CancelToken token) {
+        final priority = RemoteReadContext.current;
+        return zone.run(
+          () => priority.run(() => _loadArchiveImage(imageKey, token)),
+        );
+      }
+
       return {'loadBytes': loadBytes};
     }
     if (config.remoteStore != null) {
@@ -3060,8 +3107,13 @@ class WebDavLibrarySource {
     final config = WebDavLibraryConfig.fromSettings();
     if (imageKey.startsWith(remoteArchiveImagePrefix)) {
       final zone = Zone.current;
-      Future<Uint8List> loadBytes(CancelToken token) =>
-          zone.run(() => _loadArchiveImage(imageKey, token));
+      Future<Uint8List> loadBytes(CancelToken token) {
+        final priority = RemoteReadContext.current;
+        return zone.run(
+          () => priority.run(() => _loadArchiveImage(imageKey, token)),
+        );
+      }
+
       return {'loadBytes': loadBytes};
     }
     if (imageKey.startsWith('cover.')) {

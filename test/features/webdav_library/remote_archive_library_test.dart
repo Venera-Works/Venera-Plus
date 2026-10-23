@@ -33,14 +33,15 @@ void main() {
   Completer<void>? responseGate;
   Completer<void>? responseStarted;
 
-  Uint8List createZip(int revision) {
+  Uint8List createZip(int revision, {bool distantPage = false}) {
     final book = archive.Archive();
     void add(String name, List<int> bytes) =>
         book.addFile(archive.ArchiveFile(name, bytes.length, bytes));
     add('Book/cover.jpg', [9, revision]);
     add('Book/10.jpg', [10, revision]);
     add('Book/2.jpg', [2, revision]);
-    add('Book/padding.bin', List.filled(200000, 42));
+    add('Book/padding.bin', List.filled(2 * 1024 * 1024, 42));
+    if (distantPage) add('Book/20.jpg', [20, revision]);
     add(
       'Book/metadata.json',
       utf8.encode(
@@ -60,6 +61,8 @@ void main() {
     App.cachePath = directory.path;
     CacheManager.debugDisableInitialScan = true;
     WebDavLibrarySource.resetCacheForTesting();
+    WebDavLibrarySource.archiveSchedulerFactory = () =>
+        RemoteReadScheduler(minInterval: Duration.zero);
     ranges.clear();
     conditions.clear();
     downloadETagPrefix = 'version';
@@ -158,6 +161,7 @@ void main() {
     await ImageDownloader.debugFlushImageCacheWrites();
     await CacheManager.resetForTesting();
     WebDavLibrarySource.archiveDioFactory = null;
+    WebDavLibrarySource.archiveSchedulerFactory = null;
     WebDavLibrarySource.resetCacheForTesting();
     for (final client in clients) {
       client.close(force: true);
@@ -199,10 +203,19 @@ void main() {
         ),
         [2, 1],
       );
-      expect(ranges, hasLength(2));
-      expect(ranges[0].$2, 30);
-      expect(ranges[1].$2, lessThan(32));
+      expect(ranges, hasLength(1));
+      expect(ranges.single.$2, 256 * 1024);
       final count = ranges.length;
+      expect(
+        await ImageDownloader.loadComicImageBytes(
+          pages.data.last,
+          source.key,
+          info.data.id,
+          '',
+        ),
+        [10, 1],
+      );
+      expect(ranges.length, count);
       expect(
         await ImageDownloader.loadComicImageBytes(
           pages.data.first,
@@ -243,6 +256,57 @@ void main() {
   );
 
   test(
+    'closing a library cancels archive queries queued during cooldown',
+    () async {
+      WebDavLibrarySource.archiveSchedulerFactory = () =>
+          RemoteReadScheduler(minInterval: Duration.zero)
+            ..defer(retryAfter: '3600');
+      final reading = source.loadComicInfo!('/library/漫画 %.cbz');
+      await pumpEventQueue();
+      expect(store.stats, 0);
+      engine.cancel();
+      final result = await reading;
+      expect(result.success, isFalse);
+      expect(store.stats, 0);
+      expect(ranges, isEmpty);
+    },
+  );
+
+  test(
+    'libraries on one account share their scheduler and range cache',
+    () async {
+      var schedulers = 0;
+      WebDavLibrarySource.archiveSchedulerFactory = () {
+        schedulers++;
+        return RemoteReadScheduler(minInterval: Duration.zero);
+      };
+      final first = await source.loadComicInfo!('/library/漫画 %.cbz');
+      expect(first.success, isTrue, reason: first.errorMessage);
+      final requests = ranges.length;
+      final other = WebDavLibraryEngine(
+        library: const RemoteLibrary(
+          id: 'second-library',
+          sourceKey: 'second-source',
+          accountId: 'archive-account',
+          directories: ['/library/'],
+          name: 'Second library',
+          autoRefresh: false,
+        ),
+        store: store,
+      );
+      try {
+        final info = await other.create().loadComicInfo!('/library/漫画 %.cbz');
+        expect(info.success, isTrue, reason: info.errorMessage);
+        expect(info.data.title, first.data.title);
+        expect(schedulers, 1);
+        expect(ranges.length, requests);
+      } finally {
+        other.cancel();
+      }
+    },
+  );
+
+  test(
     'opening the lazy list cover resolves the ZIP index and cover entry',
     () async {
       await engine.synchronize();
@@ -264,6 +328,7 @@ void main() {
         '(download ETag: $hasDownloadETag)', () async {
       downloadETagPrefix = hasDownloadETag ? 'cdn' : null;
       downloadModified = DateTime.utc(2026, 7, 5, 18, 10, 49);
+      zip = createZip(revision, distantPage: true);
       expect((await engine.synchronize()).success, isTrue);
       final list = await source.explorePages.single.loadPage!(1);
       final cover = await ImageDownloader.loadThumbnail(
@@ -281,6 +346,15 @@ void main() {
           '',
         ),
         [2, 1],
+      );
+      expect(
+        await ImageDownloader.loadComicImageBytes(
+          pages.data.last,
+          source.key,
+          '/library/漫画 %.cbz',
+          '',
+        ),
+        [20, 1],
       );
       expect(conditions.first, (null, null));
       final expected = hasDownloadETag

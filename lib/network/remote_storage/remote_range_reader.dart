@@ -5,6 +5,8 @@ import 'dart:typed_data';
 import 'package:venera_plus/network/app_dio.dart';
 
 import 'remote_file_store.dart';
+import 'remote_range_cache.dart';
+import 'remote_read_scheduler.dart';
 
 /// Reads exact, bounded byte ranges from a remote file.
 class RemoteRangeReader {
@@ -12,20 +14,29 @@ class RemoteRangeReader {
     required this.size,
     required Future<RemoteLink> Function() link,
     Dio? dio,
+    RemoteReadScheduler? scheduler,
+    RemoteRangeCache? cache,
+    String? cacheKey,
   }) : _link = link,
-       _dio = dio ?? AppDio() {
+       _dio = dio ?? AppDio(),
+       _scheduler = scheduler ?? RemoteReadScheduler(),
+       _cache = cache,
+       _cacheKey = cacheKey {
     if (size < 0) throw RangeError.value(size, 'size');
+    assert(cache == null || cacheKey != null);
   }
 
   final int size;
   final Future<RemoteLink> Function() _link;
   final Dio _dio;
+  final RemoteReadScheduler _scheduler;
+  final RemoteRangeCache? _cache;
+  final String? _cacheKey;
   Future<RemoteLink>? _linkFuture;
-  // Pin validators from download responses; directory metadata may come from
-  // another service with different ETags and modification times.
+  // Download validators can differ from directory metadata.
   String? _eTag;
-  // HTTP Last-Modified has second precision.
   int? _modifiedAt;
+  bool _changed = false;
 
   Future<Uint8List> read(
     int offset,
@@ -39,89 +50,55 @@ class RemoteRangeReader {
       throw RangeError.range(length, 0, size - offset, 'length');
     }
     _checkCancelled(cancelToken);
+    if (_changed) _fileChanged();
     if (length == 0) return Uint8List(0);
-
-    var refreshed = false;
-    while (true) {
-      final currentLink = await _resolveLink(cancelToken);
-      _checkCancelled(cancelToken);
-      final requestToken = CancelToken();
-      var active = true;
-      final tokenReference = WeakReference(requestToken);
-      cancelToken?.whenCancel.then((error) {
-        final token = tokenReference.target;
-        if (active && token != null && !token.isCancelled) {
-          token.cancel(error.error);
-        }
-      });
-      final headers = <String, dynamic>{...currentLink.headers};
-      headers.removeWhere(
-        (name, _) => const {
-          'range',
-          'accept-encoding',
-          'if-range',
-          'if-match',
-          'if-unmodified-since',
-        }.contains(name.toLowerCase()),
-      );
-      headers['Range'] = 'bytes=$offset-${offset + length - 1}';
-      headers['Accept-Encoding'] = 'identity';
-      if (_eTag != null) {
-        headers['If-Match'] = _eTag;
-      } else if (_modifiedAt != null) {
-        headers['If-Unmodified-Since'] = HttpDate.format(
-          DateTime.fromMillisecondsSinceEpoch(_modifiedAt! * 1000, isUtc: true),
+    final context = RemoteReadContext.current;
+    try {
+      if (_cache != null) {
+        return await _cache.read(
+          _cacheKey!,
+          offset,
+          length,
+          cancelToken: cancelToken,
+          context: context,
+          load: (token, priority) =>
+              _readNetwork(offset, length, token, priority),
         );
       }
+      return await _readNetwork(offset, length, cancelToken, context);
+    } on RemoteStorageException catch (error) {
+      if (error.code == 'remote_file_changed') {
+        _changed = true;
+        if (_cacheKey != null) _cache?.invalidate(_cacheKey);
+      }
+      rethrow;
+    }
+  }
 
-      StreamIterator<Uint8List>? body;
+  Future<Uint8List> _readNetwork(
+    int offset,
+    int length,
+    CancelToken? cancelToken,
+    RemoteReadContext context,
+  ) async {
+    var refreshed = false;
+    var rateLimitRetries = 0;
+    while (true) {
+      _checkCancelled(cancelToken);
       try {
-        final response = await _dio.get<ResponseBody>(
-          currentLink.url,
-          cancelToken: requestToken,
-          options: Options(
-            headers: headers,
-            responseType: ResponseType.stream,
-            // Dio otherwise starts consuming even a rejected 200 response.
-            validateStatus: (status) => status == 206,
-            receiveDataWhenStatusError: false,
-          ),
+        return await _scheduler.run(
+          () => _readAttempt(offset, length, cancelToken, rateLimitRetries),
+          cancelToken: cancelToken,
+          context: context,
         );
-        if (response.data == null) {
-          throw const RemoteStorageException(
-            'The range response has no body',
-            code: 'invalid_range_response',
-          );
-        }
-        body = StreamIterator(response.data!.stream);
-        _validateResponse(response.headers, offset, length);
-        final result = Uint8List(length);
-        var received = 0;
-        while (await body.moveNext()) {
-          _checkCancelled(cancelToken);
-          final chunk = body.current;
-          if (chunk.length > length - received) {
-            throw const RemoteStorageException(
-              'The range response exceeds the requested length',
-              code: 'invalid_range_response',
-            );
-          }
-          result.setRange(received, received + chunk.length, chunk);
-          received += chunk.length;
-        }
-        active = false;
-        _checkCancelled(cancelToken);
-        if (received != length) {
-          throw const RemoteStorageException(
-            'The range response is truncated',
-            code: 'invalid_range_response',
-          );
-        }
-        return result;
       } on DioException catch (error) {
         _checkCancelled(cancelToken);
         if (CancelToken.isCancel(error)) rethrow;
         final status = error.response?.statusCode;
+        if (status == 429 && rateLimitRetries < 2) {
+          rateLimitRetries++;
+          continue;
+        }
         if ((status == 401 || status == 403) && !refreshed) {
           refreshed = true;
           _linkFuture = null;
@@ -149,17 +126,110 @@ class RemoteRangeReader {
           );
         }
         rethrow;
-      } finally {
-        // A fully consumed response has already finished normally. Abort only
-        // incomplete/rejected responses, and detach the caller's late cancels.
-        if (active) {
-          active = false;
-          if (!requestToken.isCancelled) {
-            requestToken.cancel('Range read aborted');
-          }
-        }
-        await body?.cancel();
       }
+    }
+  }
+
+  Future<Uint8List> _readAttempt(
+    int offset,
+    int length,
+    CancelToken? cancelToken,
+    int rateLimitAttempt,
+  ) async {
+    final currentLink = await _resolveLink(cancelToken);
+    _checkCancelled(cancelToken);
+    if (_changed) _fileChanged();
+    final requestToken = CancelToken();
+    var active = true;
+    final tokenReference = WeakReference(requestToken);
+    cancelToken?.whenCancel.then((error) {
+      final token = tokenReference.target;
+      if (active && token != null && !token.isCancelled) {
+        token.cancel(error.error);
+      }
+    });
+    final headers = <String, dynamic>{...currentLink.headers};
+    headers.removeWhere(
+      (name, _) => const {
+        'range',
+        'accept-encoding',
+        'if-range',
+        'if-match',
+        'if-unmodified-since',
+      }.contains(name.toLowerCase()),
+    );
+    headers['Range'] = 'bytes=$offset-${offset + length - 1}';
+    headers['Accept-Encoding'] = 'identity';
+    if (_eTag != null) {
+      headers['If-Match'] = _eTag;
+    } else if (_modifiedAt != null) {
+      headers['If-Unmodified-Since'] = HttpDate.format(
+        DateTime.fromMillisecondsSinceEpoch(_modifiedAt! * 1000, isUtc: true),
+      );
+    }
+
+    StreamIterator<Uint8List>? body;
+    try {
+      final response = await _dio.get<ResponseBody>(
+        currentLink.url,
+        cancelToken: requestToken,
+        options: Options(
+          headers: headers,
+          responseType: ResponseType.stream,
+          // Reject full responses before consuming their body.
+          validateStatus: (status) => status == 206,
+          receiveDataWhenStatusError: false,
+        ),
+      );
+      if (response.data == null) {
+        throw const RemoteStorageException(
+          'The range response has no body',
+          code: 'invalid_range_response',
+        );
+      }
+      body = StreamIterator(response.data!.stream);
+      _validateResponse(response.headers, offset, length);
+      final result = Uint8List(length);
+      var received = 0;
+      while (await body.moveNext()) {
+        _checkCancelled(cancelToken);
+        final chunk = body.current;
+        if (chunk.length > length - received) {
+          throw const RemoteStorageException(
+            'The range response exceeds the requested length',
+            code: 'invalid_range_response',
+          );
+        }
+        result.setRange(received, received + chunk.length, chunk);
+        received += chunk.length;
+      }
+      active = false;
+      _checkCancelled(cancelToken);
+      if (received != length) {
+        throw const RemoteStorageException(
+          'The range response is truncated',
+          code: 'invalid_range_response',
+        );
+      }
+      return result;
+    } on DioException catch (error) {
+      if (error.response?.statusCode == 429) {
+        // Set the shared deadline before releasing this request's slot.
+        final values = error.response?.headers['retry-after'];
+        _scheduler.defer(
+          retryAfter: values?.length == 1 ? values!.single : null,
+          attempt: rateLimitAttempt,
+        );
+      }
+      rethrow;
+    } finally {
+      if (active) {
+        active = false;
+        if (!requestToken.isCancelled) {
+          requestToken.cancel('Range read aborted');
+        }
+      }
+      await body?.cancel();
     }
   }
 
@@ -196,10 +266,7 @@ class RemoteRangeReader {
       );
     }
     if (int.tryParse(match[3]!) != size) {
-      throw const RemoteStorageException(
-        'The remote file size changed; reopen the archive',
-        code: 'remote_file_changed',
-      );
+      _fileChanged();
     }
     final contentLength = _header(headers, 'content-length');
     if (contentLength != null && int.tryParse(contentLength) != length) {
@@ -215,7 +282,6 @@ class RemoteRangeReader {
         code: 'invalid_range_response',
       );
     }
-
     final responseETag = _strongETag(_header(headers, 'etag'));
     if (_eTag != null && responseETag != null) {
       if (responseETag != _eTag) _fileChanged();

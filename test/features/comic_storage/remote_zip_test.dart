@@ -13,7 +13,7 @@ void main() {
     () async {
       final fixture = _zip([
         _Spec('1.jpg', utf8.encode('first page')),
-        _Spec('2.jpg', List.filled(180000, 0x7f)),
+        _Spec('2.jpg', List.filled(500000, 0x7f)),
         _Spec('3.jpg', utf8.encode('third page')),
         _Spec('metadata.json', utf8.encode('{}')),
       ], commentLength: 0xffff);
@@ -74,10 +74,7 @@ void main() {
         calls.clear();
         final page = await index.readEntry(index.entries.first, read);
         expect(utf8.decode(page), 'first page');
-        expect(calls, [
-          (fixture.localOffsets.first, 30),
-          (fixture.dataOffsets.first, fixture.compressedSizes.first),
-        ]);
+        expect(calls, [(fixture.localOffsets.first, 256 * 1024)]);
         expect(
           calls.any((call) => call.$1 == fixture.localOffsets[1]),
           isFalse,
@@ -87,6 +84,50 @@ void main() {
         await server.close(force: true);
         await subscription.cancel();
       }
+    },
+  );
+
+  test(
+    'large entries use an exact payload read instead of a larger window',
+    () async {
+      final content = List<int>.filled(2 * 1024 * 1024 + 1, 42);
+      final fixture = _zip([_Spec('large.jpg', content)]);
+      final reader = _Reader(fixture.bytes);
+      final index = await RemoteZipIndex.read(
+        fileSize: fixture.bytes.length,
+        read: reader.read,
+      );
+      reader.calls.clear();
+      expect(await index.readEntry(index.entries.single, reader.read), content);
+      expect(reader.calls, [
+        (fixture.localOffsets.single, 30),
+        (fixture.dataOffsets.single, fixture.compressedSizes.single),
+      ]);
+    },
+  );
+
+  test(
+    'long local extra fields fall back when payload extends past the window',
+    () async {
+      final content = List<int>.filled(230 * 1024, 7);
+      final fixture = _zip([
+        _Spec(
+          'page.jpg',
+          content,
+          localExtra: _extra(0xaaaa, List.filled(64000, 0)),
+        ),
+      ]);
+      final reader = _Reader(fixture.bytes);
+      final index = await RemoteZipIndex.read(
+        fileSize: fixture.bytes.length,
+        read: reader.read,
+      );
+      reader.calls.clear();
+      expect(await index.readEntry(index.entries.single, reader.read), content);
+      expect(reader.calls, [
+        (0, 256 * 1024),
+        (fixture.dataOffsets.single, fixture.compressedSizes.single),
+      ]);
     },
   );
 
@@ -223,10 +264,7 @@ void main() {
           utf8.decode(await index.readEntry(index.entries[1], reader.read)),
           'deflated descriptor',
         );
-        expect(reader.calls, [
-          (fixture.localOffsets[1], 30),
-          (fixture.dataOffsets[1], fixture.compressedSizes[1]),
-        ]);
+        expect(reader.calls, [(0, fixture.centralOffset)]);
         expect(
           utf8.decode(await index.readEntry(index.entries[0], reader.read)),
           'stored descriptor',
@@ -428,7 +466,7 @@ void main() {
         index.readEntry(index.entries.single, reader.read),
         throwsFormatException,
       );
-      expect(reader.calls, [(0, 30)]);
+      expect(reader.calls, [(0, fixture.centralOffset)]);
       data.setUint32(
         fixture.bytes.length - 22 + 16,
         fixture.bytes.length,
@@ -516,6 +554,7 @@ class _Spec {
     this.flags = 0x800,
     this.nameBytes,
     this.extra = const [],
+    this.localExtra = const [],
     this.descriptor = false,
     this.zip64 = false,
     this.attributes = 0,
@@ -530,6 +569,7 @@ class _Spec {
   final int flags;
   final List<int>? nameBytes;
   final List<int> extra;
+  final List<int> localExtra;
   final bool descriptor;
   final bool zip64;
   final int attributes;
@@ -580,9 +620,11 @@ _Fixture _zip(
     final localOffset = output.length;
     localOffsets.add(localOffset);
     compressedSizes.add(compressed.length);
-    final localExtra = spec.zip64
-        ? _extra(1, [..._integer(size, 8), ..._integer(compressed.length, 8)])
-        : <int>[];
+    final localExtra = <int>[
+      if (spec.zip64)
+        ..._extra(1, [..._integer(size, 8), ..._integer(compressed.length, 8)]),
+      ...spec.localExtra,
+    ];
     final local = ByteData(30)
       ..setUint32(0, 0x04034b50, Endian.little)
       ..setUint16(4, spec.zip64 ? 45 : 20, Endian.little)

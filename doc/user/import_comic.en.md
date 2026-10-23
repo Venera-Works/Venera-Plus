@@ -280,6 +280,10 @@ Place `.zip` or `.cbz` files in an online library's configured recognition direc
 
 The app reads the archive tail and central directory as needed, then fetches metadata and the required image entries. Covers load when needed and are cached; reading pages also reuse the image cache. The full archive does not need to be downloaded or extracted first.
 
+Libraries on the same cloud account share an archive read queue with at most two concurrent requests and at least 300 milliseconds between request starts. The visible page takes priority over covers and preloads; an existing preload is promoted when that page becomes visible. HTTP 429 responses pause the shared queue according to `Retry-After`, or use delays of 1, 2, and 4 seconds when the header is missing or invalid. Each range read retries at most twice, and queued reads can be cancelled.
+
+For small images, the local header and compressed payload are combined into aligned range requests, each at most 2 MiB. An account-wide 16 MiB memory range cache reuses nearby entries; larger images still use exact on-demand reads. This reduces request bursts and small transfers. Account and IP limits remain subject to the storage provider's rules.
+
 The remote file server must actually support HTTP Range and return valid partial responses. Being able to list files or merely advertising Range support is insufficient. If the server ignores Range, returns the full file, or supplies an invalid range, the app reports an error without silently falling back to a full download. Cloud download links, proxies, and file servers reached through redirects must also satisfy this requirement.
 
 The initial implementation supports ZIP/ZIP64 using Store (uncompressed) or Deflate. Encrypted archives, split archives, and other compression methods are rejected. 7z/CB7 files cannot be read directly online; extract them to image directories on the server first. PDF/EPUB files do not support on-demand cloud reading either; download them and use local import. Archive backup and restore remain separate features.

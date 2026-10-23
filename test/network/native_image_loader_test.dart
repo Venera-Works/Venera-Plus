@@ -4,12 +4,15 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/painting.dart';
 import 'package:flutter_qjs/flutter_qjs.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
+import 'package:venera_plus/foundation/image_provider/reader_image.dart';
 import 'package:venera_plus/network/images.dart';
+import 'package:venera_plus/network/remote_storage/remote_read_scheduler.dart';
 
 class _ResponseCallback extends JSInvokable {
   _ResponseCallback(this.callback);
@@ -441,6 +444,285 @@ void main() {
           },
         );
       }
+
+      test(
+        'native comic contexts stay foreground across async resolver and loader',
+        () async {
+          final contexts = <RemoteReadContext>[];
+          ImageDownloader.configureSourceImageLoading(
+            comicImageLoadingConfig:
+                (source, image, comic, chapter, {target}) async {
+                  final context = RemoteReadContext.current;
+                  contexts.add(context);
+                  await Future<void>.value();
+                  expect(identical(RemoteReadContext.current, context), isTrue);
+                  Future<Uint8List> loadBytes(CancelToken _) async {
+                    expect(
+                      identical(RemoteReadContext.current, context),
+                      isTrue,
+                    );
+                    await Future<void>.value();
+                    expect(
+                      identical(RemoteReadContext.current, context),
+                      isTrue,
+                    );
+                    expect(context.priority, RemoteReadPriority.foreground);
+                    return Uint8List.fromList([9]);
+                  }
+
+                  return {'loadBytes': loadBytes};
+                },
+          );
+          expect(
+            await ImageDownloader.loadComicImageBytes(
+              'context-body',
+              'cloud',
+              'comic',
+              'chapter',
+            ),
+            [9],
+          );
+          final events = await ImageDownloader.loadComicImageUnwrapped(
+            'context-download',
+            'cloud',
+            'comic',
+            'chapter',
+          ).toList();
+          expect(events.last.imageBytes, [9]);
+          expect(contexts, hasLength(2));
+          expect(identical(contexts[0], contexts[1]), isFalse);
+        },
+      );
+
+      test(
+        'native redirected thumbnail keeps cover priority inside a preload caller',
+        () async {
+          final contexts = <RemoteReadContext>[];
+          ImageDownloader.configureSourceImageLoading(
+            thumbnailLoadingConfig: (source, image) async {
+              final context = RemoteReadContext.current;
+              contexts.add(context);
+              await Future<void>.value();
+              expect(context.priority, RemoteReadPriority.cover);
+              if (image == 'cover.priority') return <String, dynamic>{};
+              Future<Uint8List> loadBytes(CancelToken _) async {
+                await Future<void>.value();
+                expect(identical(RemoteReadContext.current, context), isTrue);
+                return Uint8List.fromList([8]);
+              }
+
+              return {'loadBytes': loadBytes};
+            },
+            thumbnailCover: (_, _) async => 'priority-cover-entry',
+          );
+          final events =
+              await RemoteReadContext(priority: RemoteReadPriority.preload).run(
+                () => ImageDownloader.loadThumbnail(
+                  'cover.priority',
+                  'cloud',
+                  'comic',
+                ).toList(),
+              );
+          expect(events.single.imageBytes, [8]);
+          expect(contexts, hasLength(2));
+          expect(identical(contexts[0], contexts[1]), isTrue);
+        },
+      );
+
+      test(
+        'foreground joins and promotes an active native preload without another request',
+        () async {
+          final started = Completer<RemoteReadContext>();
+          final gate = Completer<Uint8List>();
+          late CancelToken token;
+          var calls = 0;
+          Future<Uint8List> loadBytes(CancelToken cancelToken) async {
+            calls++;
+            token = cancelToken;
+            final context = RemoteReadContext.current;
+            started.complete(context);
+            final bytes = await gate.future;
+            expect(identical(RemoteReadContext.current, context), isTrue);
+            expect(context.priority, RemoteReadPriority.foreground);
+            return bytes;
+          }
+
+          ImageDownloader.configureSourceImageLoading(
+            comicImageLoadingConfig:
+                (source, image, comic, chapter, {target}) => {
+                  'loadBytes': loadBytes,
+                },
+          );
+          final preload = ImageDownloader.preloadComicImage(
+            'priority-shared',
+            'cloud',
+            'comic',
+            'chapter',
+          );
+          final context = await started.future.timeout(
+            const Duration(seconds: 5),
+          );
+          expect(context.priority, RemoteReadPriority.preload);
+          final visible = ImageDownloader.loadComicImageBytes(
+            'priority-shared',
+            'cloud',
+            'comic',
+            'chapter',
+          );
+          expect(context.priority, RemoteReadPriority.foreground);
+          final png = base64Decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==',
+          );
+          gate.complete(png);
+          expect(await visible, png);
+          await preload;
+          expect(token.isCancelled, isFalse);
+          expect(
+            await ImageDownloader.loadComicImageBytes(
+              'priority-shared',
+              'cloud',
+              'comic',
+              'chapter',
+            ),
+            png,
+          );
+          expect(calls, 1);
+        },
+      );
+
+      test(
+        'separate native preload streams promote and cancel independently',
+        () async {
+          final contexts = <String, RemoteReadContext>{};
+          final tokens = <String, CancelToken>{};
+          final started = Completer<void>();
+          ImageDownloader.configureSourceImageLoading(
+            comicImageLoadingConfig: (source, image, comic, chapter, {target}) {
+              Future<Uint8List> loadBytes(CancelToken token) async {
+                contexts[image] = RemoteReadContext.current;
+                tokens[image] = token;
+                if (contexts.length == 2) started.complete();
+                throw await token.whenCancel;
+              }
+
+              return {'loadBytes': loadBytes};
+            },
+          );
+          final caller = RemoteReadContext(
+            priority: RemoteReadPriority.preload,
+          );
+          final first = caller.run(
+            () => ImageDownloader.loadComicImage(
+              'priority-first',
+              'cloud',
+              'comic',
+              'chapter',
+            ).listen((_) {}),
+          );
+          final second = caller.run(
+            () => ImageDownloader.loadComicImage(
+              'priority-second',
+              'cloud',
+              'comic',
+              'chapter',
+            ).listen((_) {}),
+          );
+          await started.future.timeout(const Duration(seconds: 5));
+          ImageDownloader.promoteComicImage(
+            'priority-first',
+            'cloud',
+            'comic',
+            'chapter',
+          );
+          expect(
+            contexts['priority-first']!.priority,
+            RemoteReadPriority.foreground,
+          );
+          expect(
+            contexts['priority-second']!.priority,
+            RemoteReadPriority.preload,
+          );
+          expect(caller.priority, RemoteReadPriority.preload);
+          await first.cancel();
+          expect(tokens['priority-first']!.isCancelled, isTrue);
+          expect(tokens['priority-second']!.isCancelled, isFalse);
+          await second.cancel();
+          await pumpEventQueue();
+        },
+      );
+
+      test(
+        'visible reuse of a precached pending completer promotes the existing native load',
+        () async {
+          final started = Completer<RemoteReadContext>();
+          final gate = Completer<Uint8List>();
+          var calls = 0;
+          Future<Uint8List> loadBytes(CancelToken _) async {
+            calls++;
+            started.complete(RemoteReadContext.current);
+            return gate.future;
+          }
+
+          ImageDownloader.configureSourceImageLoading(
+            comicImageLoadingConfig:
+                (source, image, comic, chapter, {target}) => {
+                  'loadBytes': loadBytes,
+                },
+          );
+          const provider = ReaderImageProvider(
+            'priority-pending-provider',
+            'cloud',
+            'comic',
+            'chapter',
+            1,
+          );
+          final precached = RemoteReadContext(
+            priority: RemoteReadPriority.preload,
+          ).run(() => provider.resolve(ImageConfiguration.empty));
+          final firstDone = Completer<void>();
+          final firstListener = ImageStreamListener((image, _) {
+            image.dispose();
+            firstDone.complete();
+          }, onError: firstDone.completeError);
+          precached.addListener(firstListener);
+          final context = await started.future.timeout(
+            const Duration(seconds: 5),
+          );
+          final visible = provider.resolve(ImageConfiguration.empty);
+          final visibleDone = Completer<void>();
+          final visibleListener = ImageStreamListener((image, _) {
+            image.dispose();
+            visibleDone.complete();
+          }, onError: visibleDone.completeError);
+          visible.addListener(visibleListener);
+          try {
+            expect(identical(precached.completer, visible.completer), isTrue);
+            expect(context.priority, RemoteReadPriority.preload);
+            ImageDownloader.promoteComicImage(
+              provider.imageKey,
+              provider.sourceKey,
+              provider.cid,
+              provider.eid,
+              target: provider.target,
+            );
+            expect(context.priority, RemoteReadPriority.foreground);
+            gate.complete(
+              base64Decode(
+                'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==',
+              ),
+            );
+            await Future.wait([
+              firstDone.future,
+              visibleDone.future,
+            ]).timeout(const Duration(seconds: 5));
+            expect(calls, 1);
+          } finally {
+            precached.removeListener(firstListener);
+            visible.removeListener(visibleListener);
+            await provider.evict();
+          }
+        },
+      );
 
       test(
         'thumbnail loader errors remain observable without cancellation',

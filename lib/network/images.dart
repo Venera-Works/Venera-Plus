@@ -11,6 +11,7 @@ import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/consts.dart';
 import 'package:venera_plus/foundation/image_processing.dart';
 import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/network/remote_storage/remote_read_scheduler.dart';
 
 import 'app_dio.dart';
 
@@ -399,6 +400,7 @@ abstract class ImageDownloader {
     return _StreamWrapper<ImageDownloadProgress>(
       _loadThumbnail(url, sourceKey, cid, cancelToken),
       (_) {},
+      readContext: RemoteReadContext(priority: RemoteReadPriority.cover),
       onCancel: cancelToken.cancel,
     ).stream;
   }
@@ -528,7 +530,7 @@ abstract class ImageDownloader {
     String cid,
     String eid, {
     ComicImageLoadTarget? target,
-  }) async {
+  }) => RemoteReadContext(priority: RemoteReadPriority.preload).run(() async {
     final cacheKey = getComicImageCacheKey(
       imageKey,
       sourceKey,
@@ -562,7 +564,7 @@ abstract class ImageDownloader {
       }
       await cacheProcessedImage(cacheKey, bytes);
     }
-  }
+  });
 
   /// Load comic image bytes from the network or cache.
   ///
@@ -615,6 +617,7 @@ abstract class ImageDownloader {
     final activeStream = _loadingImages[cacheKey];
     if (activeStream != null) {
       if (!activeStream.isClosed) {
+        activeStream.readContext.promote(RemoteReadContext.current.priority);
         return activeStream.stream;
       }
       _loadingImages.remove(cacheKey);
@@ -636,10 +639,33 @@ abstract class ImageDownloader {
           _loadingImages.remove(cacheKey);
         }
       },
+      readContext: RemoteReadContext(
+        priority: RemoteReadContext.current.priority,
+      ),
       onCancel: cancelToken.cancel,
     );
     _loadingImages[cacheKey] = stream;
     return stream.stream;
+  }
+
+  /// Raise an existing image load when its pending ImageStream is reused by UI.
+  static void promoteComicImage(
+    String imageKey,
+    String? sourceKey,
+    String cid,
+    String eid, {
+    ComicImageLoadTarget? target,
+  }) {
+    final cacheKey = getComicImageCacheKey(
+      imageKey,
+      sourceKey,
+      cid,
+      eid,
+      target: target,
+    );
+    _loadingImages[cacheKey]?.readContext.promote(
+      RemoteReadPriority.foreground,
+    );
   }
 
   static Stream<ImageDownloadProgress> loadComicImageUnwrapped(
@@ -664,6 +690,9 @@ abstract class ImageDownloader {
         cancelToken: cancelToken,
       ),
       (_) {},
+      readContext: RemoteReadContext(
+        priority: RemoteReadContext.current.priority,
+      ),
       onCancel: cancelToken.cancel,
     ).stream;
   }
@@ -948,12 +977,19 @@ class _StreamWrapper<T> {
 
   final void Function()? onCancel;
 
+  final RemoteReadContext readContext;
+
   bool isClosed = false;
 
   StreamSubscription<T>? _subscription;
 
-  _StreamWrapper(this._stream, this.onClosed, {this.onCancel}) {
-    _listen();
+  _StreamWrapper(
+    this._stream,
+    this.onClosed, {
+    required this.readContext,
+    this.onCancel,
+  }) {
+    readContext.run(_listen);
   }
 
   void _listen() {
