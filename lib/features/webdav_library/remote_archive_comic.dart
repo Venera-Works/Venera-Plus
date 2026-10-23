@@ -17,6 +17,7 @@ class RemoteArchiveComic {
     this.modifiedAt,
     this.index,
     this.metadata,
+    this.embeddedMetadata,
     this.chapters = const {},
     this.chapterImages = const {},
     this.coverEntry,
@@ -27,12 +28,28 @@ class RemoteArchiveComic {
   final String? eTag;
   final int? modifiedAt;
   final RemoteZipIndex? index;
+
+  /// Effective metadata after any sidecar fields have been merged by the source.
   final ComicMetaData? metadata;
+
+  /// Metadata read from the ZIP before applying a sidecar override.
+  final ComicMetaData? embeddedMetadata;
   final Map<String, String> chapters;
   final Map<String, List<String>> chapterImages;
   final String? coverEntry;
 
   bool get isInspected => index != null;
+
+  /// All visible image pages, independent of metadata chapter ranges.
+  int? get pageCount => index?.entries
+      .where(
+        (entry) =>
+            _isVisibleEntry(entry) &&
+            isComicImageFileName(entry.name) &&
+            !isNamedComicCover(entry.name),
+      )
+      .length;
+
   String get title => metadata?.title.trim().isNotEmpty == true
       ? metadata!.title
       : comicFileStem(path);
@@ -76,41 +93,41 @@ class RemoteArchiveComic {
     );
   }
 
-  Future<RemoteArchiveComic> inspect(ZipRangeRead read) async {
-    final zip = await RemoteZipIndex.read(fileSize: size, read: read);
-    final visible = zip.entries
-        .where(
-          (entry) =>
-              !entry.isDirectory &&
-              !entry.name.split('/').any(isIgnoredComicStorageEntry),
-        )
-        .toList();
-    final paths = visible.map((entry) => entry.name).toList();
-    final firstSlash = paths.isEmpty ? -1 : paths.first.indexOf('/');
-    final prefix = firstSlash < 0
-        ? ''
-        : paths.first.substring(0, firstSlash + 1);
-    final root =
-        prefix.isNotEmpty && paths.every((name) => name.startsWith(prefix))
-        ? prefix
-        : '';
-    String relative(RemoteZipEntry entry) => entry.name.substring(root.length);
-    final images =
-        visible.where((entry) => isComicImageFileName(entry.name)).toList()
-          ..sort((a, b) => _comparePaths(relative(a), relative(b)));
-    final pages = images
-        .where((entry) => !isNamedComicCover(entry.name))
-        .toList();
-    if (pages.isEmpty) {
-      throw const FormatException('No images found in the ZIP/CBZ comic');
+  /// Applies already-merged sidecar metadata without reading archive bytes.
+  /// Passing null restores the embedded metadata and its original layout.
+  RemoteArchiveComic withMetadata(ComicMetaData? metadata) {
+    final effective = metadata ?? embeddedMetadata;
+    final zip = index;
+    if (zip == null) {
+      effective?.validateChapterRanges();
+      return RemoteArchiveComic(
+        path: path,
+        size: size,
+        eTag: eTag,
+        modifiedAt: modifiedAt,
+        metadata: effective,
+        embeddedMetadata: embeddedMetadata,
+        chapters: chapters,
+        chapterImages: chapterImages,
+        coverEntry: coverEntry,
+      );
     }
-    ComicMetaData? meta;
-    final metadataEntries = visible.where(
-      (entry) => relative(entry).toLowerCase() == 'metadata.json',
+    return _withLayout(zip, _archiveLayout(zip), effective, embeddedMetadata);
+  }
+
+  Future<RemoteArchiveComic> inspect(ZipRangeRead read) async {
+    if (index != null) return withMetadata(metadata);
+    final zip = await RemoteZipIndex.read(fileSize: size, read: read);
+    final layout = _archiveLayout(zip);
+    ComicMetaData? embedded;
+    final metadataEntries = layout.visible.where(
+      (entry) =>
+          entry.name.substring(layout.root.length).toLowerCase() ==
+          'metadata.json',
     );
     if (metadataEntries.isNotEmpty) {
       try {
-        meta = ComicMetaData.fromJson(
+        embedded = ComicMetaData.fromJson(
           Map<String, dynamic>.from(
             jsonDecode(
                   utf8.decode(await zip.readEntry(metadataEntries.first, read)),
@@ -118,18 +135,32 @@ class RemoteArchiveComic {
                 as Map,
           ),
         );
-        meta.validateChapterRanges(pageCount: pages.length);
+        embedded.validateChapterRanges(pageCount: layout.pages.length);
       } on FormatException {
-        meta = null;
+        embedded = null;
       } on TypeError {
-        meta = null;
+        embedded = null;
       }
     }
+    return _withLayout(zip, layout, metadata ?? embedded, embedded);
+  }
+
+  RemoteArchiveComic _withLayout(
+    RemoteZipIndex zip,
+    _ArchiveLayout layout,
+    ComicMetaData? effective,
+    ComicMetaData? embedded,
+  ) {
+    final images = layout.images;
+    final pages = layout.pages;
+    String relative(RemoteZipEntry entry) =>
+        entry.name.substring(layout.root.length);
+    effective?.validateChapterRanges(pageCount: pages.length);
     final names = <String, String>{};
     final groups = <String, List<String>>{};
-    if (meta?.chapters?.isNotEmpty == true) {
-      for (var i = 0; i < meta!.chapters!.length; i++) {
-        final chapter = meta.chapters![i];
+    if (effective?.chapters?.isNotEmpty == true) {
+      for (var i = 0; i < effective!.chapters!.length; i++) {
+        final chapter = effective.chapters![i];
         final id = '__cbz_range_$i';
         names[id] = chapter.title;
         groups[id] = pages
@@ -164,7 +195,8 @@ class RemoteArchiveComic {
       eTag: eTag,
       modifiedAt: modifiedAt,
       index: zip,
-      metadata: meta,
+      metadata: effective,
+      embeddedMetadata: embedded,
       chapters: names,
       chapterImages: groups,
       coverEntry: cover.name,
@@ -178,35 +210,79 @@ class RemoteArchiveComic {
     'modifiedAt': modifiedAt,
     if (index != null) 'index': index!.toJson(),
     if (metadata != null) 'metadata': metadata!.toJson(),
+    'embeddedMetadata': embeddedMetadata?.toJson(),
     'chapters': chapters,
     'chapterImages': chapterImages,
     'coverEntry': coverEntry,
   };
 
-  factory RemoteArchiveComic.fromJson(
-    Map<String, dynamic> json,
-  ) => RemoteArchiveComic(
-    path: json['path'] as String,
-    size: json['size'] as int,
-    eTag: json['eTag'] as String?,
-    modifiedAt: json['modifiedAt'] as int?,
-    index: json['index'] is Map
-        ? RemoteZipIndex.fromJson(
-            Map<String, dynamic>.from(json['index'] as Map),
-          )
-        : null,
-    metadata: json['metadata'] is Map
+  factory RemoteArchiveComic.fromJson(Map<String, dynamic> json) {
+    final metadata = json['metadata'] is Map
         ? ComicMetaData.fromJson(
             Map<String, dynamic>.from(json['metadata'] as Map),
           )
-        : null,
-    chapters: Map<String, String>.from(json['chapters'] as Map? ?? const {}),
-    chapterImages: {
-      for (final entry in (json['chapterImages'] as Map? ?? const {}).entries)
-        entry.key as String: List<String>.from(entry.value as List),
-    },
-    coverEntry: json['coverEntry'] as String?,
-  );
+        : null;
+    final embedded = json.containsKey('embeddedMetadata')
+        ? json['embeddedMetadata']
+        : json['metadata'];
+    return RemoteArchiveComic(
+      path: json['path'] as String,
+      size: json['size'] as int,
+      eTag: json['eTag'] as String?,
+      modifiedAt: json['modifiedAt'] as int?,
+      index: json['index'] is Map
+          ? RemoteZipIndex.fromJson(
+              Map<String, dynamic>.from(json['index'] as Map),
+            )
+          : null,
+      metadata: metadata,
+      embeddedMetadata: embedded is Map
+          ? ComicMetaData.fromJson(Map<String, dynamic>.from(embedded))
+          : null,
+      chapters: Map<String, String>.from(json['chapters'] as Map? ?? const {}),
+      chapterImages: {
+        for (final entry in (json['chapterImages'] as Map? ?? const {}).entries)
+          entry.key as String: List<String>.from(entry.value as List),
+      },
+      coverEntry: json['coverEntry'] as String?,
+    );
+  }
+}
+
+typedef _ArchiveLayout = ({
+  List<RemoteZipEntry> visible,
+  List<RemoteZipEntry> images,
+  List<RemoteZipEntry> pages,
+  String root,
+});
+
+bool _isVisibleEntry(RemoteZipEntry entry) =>
+    !entry.isDirectory &&
+    !entry.name.split('/').any(isIgnoredComicStorageEntry);
+
+_ArchiveLayout _archiveLayout(RemoteZipIndex zip) {
+  final visible = zip.entries.where(_isVisibleEntry).toList();
+  final paths = visible.map((entry) => entry.name).toList();
+  final firstSlash = paths.isEmpty ? -1 : paths.first.indexOf('/');
+  final prefix = firstSlash < 0 ? '' : paths.first.substring(0, firstSlash + 1);
+  final root =
+      prefix.isNotEmpty && paths.every((name) => name.startsWith(prefix))
+      ? prefix
+      : '';
+  final images =
+      visible.where((entry) => isComicImageFileName(entry.name)).toList()..sort(
+        (a, b) => _comparePaths(
+          a.name.substring(root.length),
+          b.name.substring(root.length),
+        ),
+      );
+  final pages = images
+      .where((entry) => !isNamedComicCover(entry.name))
+      .toList();
+  if (pages.isEmpty) {
+    throw const FormatException('No images found in the ZIP/CBZ comic');
+  }
+  return (visible: visible, images: images, pages: pages, root: root);
 }
 
 int _comparePaths(String left, String right) {

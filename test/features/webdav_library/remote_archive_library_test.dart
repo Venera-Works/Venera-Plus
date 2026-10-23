@@ -8,6 +8,8 @@ import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/comic_storage/comic_storage.dart';
+import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
@@ -25,6 +27,7 @@ void main() {
   late HttpServer server;
   late Uint8List zip;
   var revision = 1;
+  var archiveName = '漫画 %.cbz';
   String? downloadETagPrefix = 'version';
   DateTime? downloadModified;
   final conditions = <(String?, String?)>[];
@@ -33,7 +36,12 @@ void main() {
   Completer<void>? responseGate;
   Completer<void>? responseStarted;
 
-  Uint8List createZip(int revision, {bool distantPage = false}) {
+  Uint8List createZip(
+    int revision, {
+    bool distantPage = false,
+    bool includeMetadata = true,
+    List<Map<String, dynamic>>? chapters,
+  }) {
     final book = archive.Archive();
     void add(String name, List<int> bytes) =>
         book.addFile(archive.ArchiveFile(name, bytes.length, bytes));
@@ -42,16 +50,19 @@ void main() {
     add('Book/2.jpg', [2, revision]);
     add('Book/padding.bin', List.filled(2 * 1024 * 1024, 42));
     if (distantPage) add('Book/20.jpg', [20, revision]);
-    add(
-      'Book/metadata.json',
-      utf8.encode(
-        jsonEncode({
-          'title': 'Cloud book',
-          'author': 'Author',
-          'tags': ['comic'],
-        }),
-      ),
-    );
+    if (includeMetadata) {
+      add(
+        'Book/metadata.json',
+        utf8.encode(
+          jsonEncode({
+            'title': 'Cloud book',
+            'author': 'Author',
+            'tags': ['comic'],
+            'chapters': ?chapters,
+          }),
+        ),
+      );
+    }
     return archive.ZipEncoder().encodeBytes(book, level: 0);
   }
 
@@ -61,6 +72,9 @@ void main() {
     App.cachePath = directory.path;
     CacheManager.debugDisableInitialScan = true;
     WebDavLibrarySource.resetCacheForTesting();
+    WebDavLibrarySource.configureMetadataScraper(null);
+    WebDavLibrarySource.configureMetadataWriteGuard(null);
+    appdata.implicitData.clear();
     WebDavLibrarySource.archiveSchedulerFactory = () =>
         RemoteReadScheduler(minInterval: Duration.zero);
     ranges.clear();
@@ -70,6 +84,7 @@ void main() {
     responseGate = null;
     responseStarted = null;
     revision = 1;
+    archiveName = '漫画 %.cbz';
     zip = createZip(revision);
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     server.listen((request) async {
@@ -117,8 +132,8 @@ void main() {
     });
     store = _ArchiveStore(
       () => RemoteEntry(
-        name: '漫画 %.cbz',
-        path: '/library/漫画 %.cbz',
+        name: archiveName,
+        path: '/library/$archiveName',
         isDirectory: false,
         size: zip.length,
         eTag: '"version-$revision"',
@@ -162,6 +177,9 @@ void main() {
     await CacheManager.resetForTesting();
     WebDavLibrarySource.archiveDioFactory = null;
     WebDavLibrarySource.archiveSchedulerFactory = null;
+    WebDavLibrarySource.configureMetadataScraper(null);
+    WebDavLibrarySource.configureMetadataWriteGuard(null);
+    appdata.implicitData.clear();
     WebDavLibrarySource.resetCacheForTesting();
     for (final client in clients) {
       client.close(force: true);
@@ -252,6 +270,231 @@ void main() {
       );
       expect(ranges.length, afterCover);
       expect(store.downloads, 0);
+    },
+  );
+
+  test(
+    'partial sidecar overrides embedded fields and removal restores them',
+    () async {
+      const sidecar = '/library/漫画 %.cbz.metadata.json';
+      store.texts[sidecar] = RemoteTextFile(
+        content: jsonEncode({'title': 'Sidecar title'}),
+      );
+      store.texts['/library/metadata.json'] = RemoteTextFile(
+        content: jsonEncode({
+          'title': 'Directory only',
+          'author': 'Other',
+          'tags': ['other'],
+        }),
+      );
+      expect((await engine.synchronize()).success, isTrue);
+      expect(ranges, isEmpty);
+      final list = await source.explorePages.single.loadPage!(1);
+      expect(list.data.single.title, 'Sidecar title');
+      final info = await source.loadComicInfo!('/library/漫画 %.cbz');
+      expect(info.success, isTrue, reason: info.errorMessage);
+      expect(info.data.title, 'Sidecar title');
+      expect(info.data.tags['作者'], ['Author']);
+      expect(info.data.tags['标签'], ['comic']);
+      expect(info.data.maxPage, 2);
+      final pages = await source.loadComicPages!('/library/漫画 %.cbz', null);
+      final requests = ranges.length;
+      store.texts.remove(sidecar);
+      await engine.synchronize(force: true);
+      final restored = await source.loadComicInfo!('/library/漫画 %.cbz');
+      expect(restored.data.title, 'Cloud book');
+      expect(
+        (await source.loadComicPages!('/library/漫画 %.cbz', null)).data,
+        pages.data,
+      );
+      expect(ranges, hasLength(requests));
+      expect(store.textReads, isNot(contains('/library/metadata.json')));
+      expect(store.writes, 0);
+    },
+  );
+
+  for (final extension in ['zip', 'CBZ']) {
+    test(
+      'scrapes $extension once after inspection into its own sidecar',
+      () async {
+        archiveName = '漫画 %.$extension';
+        final id = '/library/$archiveName';
+        final sidecar = '$id.metadata.json';
+        zip = createZip(revision, includeMetadata: false);
+        final original = Uint8List.fromList(zip);
+        store.backend = StorageBackend.webdav;
+        final titles = <String>[];
+        WebDavLibrarySource.configureMetadataScraper((title) async {
+          titles.add(title);
+          return const ComicMetaData(
+            title: 'Matched title',
+            author: 'Scraped author',
+            tags: ['matched'],
+            bangumiSubjectId: 123,
+            chapters: [ComicChapter(title: 'Part', start: 1, end: 2)],
+          );
+        });
+        await engine.synchronize();
+        expect(titles, isEmpty);
+        expect(ranges, isEmpty);
+        final info = await source.loadComicInfo!(id);
+        expect(info.success, isTrue, reason: info.errorMessage);
+        expect(titles, ['漫画 %']);
+        expect(info.data.title, 'Matched title');
+        expect(info.data.maxPage, 2);
+        expect(info.data.chapters!.titles, ['Part']);
+        expect(
+          jsonDecode(store.texts[sidecar]!.content)['bangumiSubjectId'],
+          123,
+        );
+        expect(store.textWrites.single.path, sidecar);
+        expect(store.textWrites.single.createOnly, isTrue);
+        expect(zip, original);
+        final requests = ranges.length;
+        await engine.synchronize(force: true);
+        expect((await source.loadComicInfo!(id)).data.title, 'Matched title');
+        expect(titles, hasLength(1));
+        expect(ranges, hasLength(requests));
+      },
+    );
+  }
+
+  test(
+    'manual binding creates a sidecar and preserves embedded chapters and keys',
+    () async {
+      zip = createZip(
+        revision,
+        chapters: [
+          {'title': 'First', 'start': 1, 'end': 1},
+          {'title': 'Second', 'start': 2, 'end': 2},
+        ],
+      );
+      store.backend = StorageBackend.webdav;
+      final info = await source.loadComicInfo!('/library/漫画 %.cbz');
+      expect(info.success, isTrue, reason: info.errorMessage);
+      final chapter = info.data.chapters!.ids.first;
+      final pages = await source.loadComicPages!('/library/漫画 %.cbz', chapter);
+      final requests = ranges.length;
+      final original = Uint8List.fromList(zip);
+      await engine.writeMetadata(
+        '/library/漫画 %.cbz',
+        const ComicMetaData(
+          title: 'Bound title',
+          author: 'Bound author',
+          tags: ['bound'],
+          bangumiSubjectId: 456,
+        ),
+      );
+      expect(store.textWrites.single.path, '/library/漫画 %.cbz.metadata.json');
+      expect(store.textWrites.single.createOnly, isTrue);
+      final updated = await source.loadComicInfo!('/library/漫画 %.cbz');
+      expect(updated.data.title, 'Bound title');
+      expect(updated.data.chapters!.titles, ['First', 'Second']);
+      expect(
+        (await source.loadComicPages!('/library/漫画 %.cbz', chapter)).data,
+        pages.data,
+      );
+      expect(updated.data.maxPage, 2);
+      expect(zip, original);
+      expect(ranges, hasLength(requests));
+    },
+  );
+
+  test(
+    'sidecar binding remerges a concurrent edit using its latest ETag',
+    () async {
+      const sidecar = '/library/漫画 %.cbz.metadata.json';
+      store.backend = StorageBackend.webdav;
+      store.texts[sidecar] = RemoteTextFile(
+        content: jsonEncode({'title': 'Before', 'custom': 'original'}),
+        eTag: '"first"',
+      );
+      await source.loadComicInfo!('/library/漫画 %.cbz');
+      store.beforeWrite = (path) async {
+        store.texts[path] = RemoteTextFile(
+          content: jsonEncode({
+            'title': 'Concurrent',
+            'custom': 'newer',
+            'chapters': [
+              {'title': 'Preserved', 'start': 1, 'end': 2},
+            ],
+          }),
+          eTag: '"newer"',
+        );
+      };
+      await engine.writeMetadata(
+        '/library/漫画 %.cbz',
+        const ComicMetaData(
+          title: 'Bound title',
+          author: 'New author',
+          tags: ['new'],
+          bangumiSubjectId: 789,
+        ),
+      );
+      expect(store.textWrites.map((write) => write.ifMatch), [
+        '"first"',
+        '"newer"',
+      ]);
+      final document = jsonDecode(store.texts[sidecar]!.content);
+      expect(document['custom'], 'newer');
+      expect(document['chapters'].single['title'], 'Preserved');
+      expect(document['bangumiSubjectId'], 789);
+      final info = await source.loadComicInfo!('/library/漫画 %.cbz');
+      expect(info.data.title, 'Bound title');
+      expect(info.data.chapters!.titles, ['Preserved']);
+    },
+  );
+
+  for (final content in [
+    '{broken',
+    jsonEncode({
+      'title': 'Invalid range',
+      'chapters': [
+        {'title': 'Bad', 'start': 1, 'end': 99},
+      ],
+    }),
+  ]) {
+    test(
+      'invalid sidecar falls back without overwriting existing metadata: $content',
+      () async {
+        const sidecar = '/library/漫画 %.cbz.metadata.json';
+        store.texts[sidecar] = RemoteTextFile(content: content);
+        var scraped = 0;
+        WebDavLibrarySource.configureMetadataScraper((_) async {
+          scraped++;
+          return null;
+        });
+        await engine.synchronize();
+        final info = await source.loadComicInfo!('/library/漫画 %.cbz');
+        expect(info.success, isTrue, reason: info.errorMessage);
+        expect(info.data.title, 'Cloud book');
+        expect(info.data.maxPage, 2);
+        expect(scraped, 0);
+        expect(store.writes, 0);
+        expect(store.texts[sidecar]!.content, content);
+      },
+    );
+  }
+
+  test(
+    'archive scrape noMatch survives refresh without writing another metadata file',
+    () async {
+      zip = createZip(revision, includeMetadata: false);
+      var scraped = 0;
+      WebDavLibrarySource.configureMetadataScraper((_) async {
+        scraped++;
+        return null;
+      });
+      final first = await source.loadComicInfo!('/library/漫画 %.cbz');
+      expect(first.success, isTrue, reason: first.errorMessage);
+      expect(scraped, 1);
+      await engine.synchronize(force: true);
+      expect(
+        (await source.loadComicInfo!('/library/漫画 %.cbz')).success,
+        isTrue,
+      );
+      expect(scraped, 1);
+      expect(store.writes, 0);
     },
   );
 
@@ -490,12 +733,25 @@ class _ArchiveStore implements RemoteFileStore {
   var stats = 0;
   var downloads = 0;
   var writes = 0;
+  var backend = StorageBackend.openlist;
+  final texts = <String, RemoteTextFile>{};
+  final textReads = <String>[];
+  final textWrites =
+      <
+        ({
+          String path,
+          bool createOnly,
+          String? ifMatch,
+          int? ifUnmodifiedSince,
+        })
+      >[];
+  Future<void> Function(String path)? beforeWrite;
   Completer<void>? listed;
 
   @override
-  final account = const StorageAccount(
+  StorageAccount get account => StorageAccount(
     id: 'archive-account',
-    backend: StorageBackend.openlist,
+    backend: backend,
     driver: 'GoogleDrive',
     name: 'Archive account',
     authorization: {},
@@ -512,7 +768,19 @@ class _ArchiveStore implements RemoteFileStore {
               isDirectory: true,
             ),
           ]
-        : [file()];
+        : [
+            file(),
+            for (final entry in texts.entries)
+              if (entry.key.substring(0, entry.key.lastIndexOf('/') + 1) ==
+                  directory)
+                RemoteEntry(
+                  name: entry.key.split('/').last,
+                  path: entry.key,
+                  isDirectory: false,
+                  eTag: entry.value.eTag,
+                  modifiedAt: entry.value.modifiedAt,
+                ),
+          ];
   }
 
   @override
@@ -539,6 +807,13 @@ class _ArchiveStore implements RemoteFileStore {
   }
 
   @override
+  Future<RemoteTextFile> readText(String path) async {
+    textReads.add(path);
+    return texts[path] ??
+        (throw const RemoteStorageException('Not found', code: '404'));
+  }
+
+  @override
   Future<RemoteWriteResult> writeText(
     String path,
     String content, {
@@ -547,7 +822,29 @@ class _ArchiveStore implements RemoteFileStore {
     int? ifUnmodifiedSince,
   }) async {
     writes++;
-    return const RemoteWriteResult();
+    textWrites.add((
+      path: path,
+      createOnly: createOnly,
+      ifMatch: ifMatch,
+      ifUnmodifiedSince: ifUnmodifiedSince,
+    ));
+    final hook = beforeWrite;
+    beforeWrite = null;
+    await hook?.call(path);
+    final previous = texts[path];
+    if (createOnly && previous != null ||
+        ifMatch != null && previous?.eTag != ifMatch ||
+        ifUnmodifiedSince != null &&
+            previous?.modifiedAt != ifUnmodifiedSince) {
+      throw WebDavPreconditionFailedException(path);
+    }
+    final eTag = '"sidecar-$writes"';
+    texts[path] = RemoteTextFile(
+      content: content,
+      eTag: eTag,
+      modifiedAt: writes,
+    );
+    return RemoteWriteResult(eTag: eTag, modifiedAt: writes);
   }
 
   @override

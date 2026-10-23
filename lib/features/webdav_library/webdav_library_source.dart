@@ -1281,6 +1281,26 @@ class WebDavLibrarySource {
   static bool _isArchiveId(String id) =>
       !id.endsWith('/') && isRemoteComicArchive(id);
 
+  static ({String directory, String fileName, String title}) _metadataTarget(
+    WebDavLibraryConfig config,
+    String id,
+  ) {
+    if (_isArchiveId(id)) {
+      final path = _archivePath(config, id);
+      final slash = path.lastIndexOf('/');
+      return (
+        directory: path.substring(0, slash + 1),
+        fileName: '${path.substring(slash + 1)}.metadata.json',
+        title: comicFileStem(path),
+      );
+    }
+    return (
+      directory: config.childDirectoryPath(id),
+      fileName: _metadataFileName,
+      title: _directoryName(id),
+    );
+  }
+
   static String _stableComicPath(WebDavLibraryConfig config, String id) {
     if (config.remoteLibrary == null) return id;
     final fullPath = _isArchiveId(id)
@@ -1426,6 +1446,7 @@ class WebDavLibrarySource {
               summaryOnly: true,
               remoteDirectory: directory,
               archiveFile: comic.archiveFile,
+              rootEntries: comic.entries,
               syncRun: run,
             );
             _throwIfSynchronizationObsolete(run);
@@ -1579,7 +1600,7 @@ class WebDavLibrarySource {
           'uploadTime': null,
           'updateTime': null,
           'url': null,
-          'maxPage': null,
+          'maxPage': snapshot.pageCount,
         }),
       );
     } catch (e) {
@@ -1742,9 +1763,11 @@ class WebDavLibrarySource {
               config,
               id,
               summaryOnly: summaryOnly,
-              previous: previousSnapshot?.archive,
+              previousSnapshot: previousSnapshot,
               file: archiveFile,
+              rootEntries: rootEntries,
               cancelToken: cancelToken,
+              syncRun: syncRun,
             )
           : await _buildSnapshot(
               config,
@@ -1816,11 +1839,16 @@ class WebDavLibrarySource {
     WebDavLibraryConfig config,
     String id, {
     required bool summaryOnly,
-    RemoteArchiveComic? previous,
+    _WebDavComicSnapshot? previousSnapshot,
     WebDavLibraryEntry? file,
+    List<WebDavLibraryEntry>? rootEntries,
     CancelToken? cancelToken,
+    _WebDavLibrarySyncRun? syncRun,
   }) async {
     final path = _archivePath(config, id);
+    final target = _metadataTarget(config, id);
+    final previous = previousSnapshot?.archive;
+    var siblings = rootEntries;
     if (!summaryOnly) {
       if (config.remoteStore != null) {
         final state = _state;
@@ -1843,12 +1871,10 @@ class WebDavLibrarySource {
           modifiedAt: entry.modifiedAt,
         );
       } else {
-        final slash = path.lastIndexOf('/');
-        file = (await _activeOps.readDir(config, path.substring(0, slash + 1)))
-            .firstWhere(
-              (entry) =>
-                  !entry.isDirectory && entry.name == path.substring(slash + 1),
-            );
+        siblings ??= await _activeOps.readDir(config, target.directory);
+        file = siblings.firstWhere(
+          (entry) => !entry.isDirectory && entry.name == _directoryName(path),
+        );
       }
     }
     final size = file?.size ?? previous?.size ?? 0;
@@ -1866,6 +1892,7 @@ class WebDavLibrarySource {
             eTag: file?.eTag,
             modifiedAt: file?.modifiedAt,
           );
+    archive = archive.withMetadata(null);
     if (!summaryOnly && !archive.isInspected) {
       if (size <= 0) {
         throw const FormatException('Remote ZIP/CBZ file size is unavailable');
@@ -1885,6 +1912,67 @@ class WebDavLibrarySource {
         state.archiveTokens.remove(token);
       }
     }
+    if (cancelToken?.isCancelled == true) throw cancelToken!.cancelError!;
+    _ensureMetadataContextActive();
+    siblings ??= await _activeOps.readDir(config, target.directory);
+    if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
+    final sidecarPresent = _hasMetadataFile(
+      siblings,
+      fileName: target.fileName,
+    );
+    final sidecar = await _readMetadata(
+      config,
+      target.directory,
+      siblings,
+      fileName: target.fileName,
+      pageCount: archive.pageCount,
+      fallback:
+          archive.embeddedMetadata ??
+          ComicMetaData(title: target.title, author: '', tags: const []),
+    );
+    if (sidecar != null) archive = archive.withMetadata(sidecar);
+    var metadataPresent = sidecarPresent || archive.embeddedMetadata != null;
+    var status = metadataPresent
+        ? 'notNeeded'
+        : (previousSnapshot?.metadataScrapeStatus ?? 'pending');
+    var scraperVersion = metadataPresent
+        ? ''
+        : (previousSnapshot?.metadataScraperVersion ?? '');
+    int? attemptedAt = previousSnapshot?.metadataScrapeAttemptedAt;
+    int? retryAt = previousSnapshot?.metadataScrapeRetryAt;
+    String? error = previousSnapshot?.metadataScrapeError;
+    if (!summaryOnly &&
+        _shouldAttemptMetadataScrape(
+          previousSnapshot:
+              previousSnapshot?.metadataFilePresent == true && !metadataPresent
+              ? null
+              : previousSnapshot,
+          metadataFilePresent: metadataPresent,
+          scraperVersion: _metadataScraperVersion,
+          now: metadataNowProvider(),
+          automaticScrapingEnabled: _canScrapeMetadata,
+        )) {
+      final scraped = await _scrapeMissingMetadata(
+        config,
+        id,
+        target.directory,
+        pageCount: archive.pageCount,
+        fileName: target.fileName,
+        title: target.title,
+        syncRun: syncRun,
+      );
+      if (scraped.metadata != null) {
+        archive = archive.withMetadata(scraped.metadata);
+      }
+      metadataPresent = scraped.filePresent;
+      status = scraped.status;
+      scraperVersion = _metadataScraperVersion;
+      attemptedAt = scraped.attemptedAt;
+      retryAt = scraped.retryAt;
+      error = scraped.error;
+    }
+    if (cancelToken?.isCancelled == true) throw cancelToken!.cancelError!;
+    _ensureMetadataContextActive();
     final meta = archive.metadata;
     return _WebDavComicSnapshot(
       archive: archive,
@@ -1899,12 +1987,12 @@ class WebDavLibrarySource {
       metadataChapters: const {},
       rootImages: const [],
       bangumiSubjectId: meta?.bangumiSubjectId,
-      metadataFilePresent: meta != null,
-      metadataScrapeStatus: 'notNeeded',
-      metadataScraperVersion: '',
-      metadataScrapeAttemptedAt: null,
-      metadataScrapeRetryAt: null,
-      metadataScrapeError: null,
+      metadataFilePresent: metadataPresent,
+      metadataScrapeStatus: status,
+      metadataScraperVersion: scraperVersion,
+      metadataScrapeAttemptedAt: attemptedAt,
+      metadataScrapeRetryAt: retryAt,
+      metadataScrapeError: error,
     );
   }
 
@@ -2147,12 +2235,6 @@ class WebDavLibrarySource {
     if (!config.isValid) {
       throw StateError('Invalid WebDAV comic library configuration');
     }
-    if (_isArchiveId(id)) {
-      throw WebDavUnsupportedException(
-        id,
-        message: 'ZIP/CBZ archives are read-only',
-      );
-    }
     final pending = _WebDavPendingMetadataWrite(
       libraryId: expectedLibraryId ?? config.libraryId,
       comicId: id,
@@ -2178,29 +2260,39 @@ class WebDavLibrarySource {
     _WebDavPendingMetadataWrite pending,
   ) async {
     await _ensureMetadataWriteCurrent(config, pending);
-    final comicPath = config.childDirectoryPath(pending.comicId);
+    final target = _metadataTarget(config, pending.comicId);
+    final memoryKey = jsonEncode([config.cacheKey, pending.comicId]);
+    final cached = _cache.find(config.cacheKey, pending.comicId);
+    final archive = _isArchiveId(pending.comicId)
+        ? (_snapshotCache[memoryKey]?.archive ??
+              (cached?.isReady == true
+                  ? _WebDavComicSnapshot.fromJson(cached!.snapshot!).archive
+                  : null))
+        : null;
     await _runMetadataWrite(config, pending.comicId, () async {
       for (var attempt = 0; attempt < _maxMetadataMergeAttempts; attempt++) {
         await _ensureMetadataWriteCurrent(config, pending);
         final entries = List<WebDavLibraryEntry>.from(
-          await _activeOps.readDir(config, comicPath),
+          await _activeOps.readDir(config, target.directory),
         );
-        final pageCount = _metadataPageCount(entries);
+        final pageCount = _isArchiveId(pending.comicId)
+            ? archive?.pageCount
+            : _metadataPageCount(entries);
         final metadataEntry = entries.firstWhereOrNull(
           (entry) =>
               !entry.isDirectory &&
-              entry.name.toLowerCase() == _metadataFileName,
+              entry.name.toLowerCase() == target.fileName.toLowerCase(),
         );
         final metadataPath = config.childFilePath(
-          comicPath,
-          metadataEntry?.name ?? _metadataFileName,
+          target.directory,
+          metadataEntry?.name ?? target.fileName,
         );
         try {
           if (metadataEntry == null) {
             final document = _mergeMetadataDocument(
-              const {},
+              archive?.embeddedMetadata?.toJson() ?? const {},
               pending.metadata,
-              fallbackTitle: _directoryName(pending.comicId),
+              fallbackTitle: target.title,
               pageCount: pageCount,
             );
             await _ensureMetadataWriteCurrent(config, pending);
@@ -2213,9 +2305,12 @@ class WebDavLibrarySource {
           } else {
             final current = await _activeOps.readText(config, metadataPath);
             final document = _mergeMetadataDocument(
-              _decodeMetadataDocument(current.content),
+              {
+                ...?archive?.embeddedMetadata?.toJson(),
+                ..._decodeMetadataDocument(current.content),
+              },
               pending.metadata,
-              fallbackTitle: _directoryName(pending.comicId),
+              fallbackTitle: target.title,
               pageCount: pageCount,
             );
             final strongETag = _strongETag(current.eTag);
@@ -2378,6 +2473,8 @@ class WebDavLibrarySource {
     String id,
     String comicPath, {
     required int? pageCount,
+    String fileName = _metadataFileName,
+    String? title,
     _WebDavLibrarySyncRun? syncRun,
   }) async {
     final scraper = _metadataScraper;
@@ -2393,7 +2490,7 @@ class WebDavLibrarySource {
     }
     final attemptedAt = metadataNowProvider();
     try {
-      final scraped = await scraper(_directoryName(id));
+      final scraped = await scraper(title ?? _directoryName(id));
       if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
       if (scraped == null) {
         return (
@@ -2411,13 +2508,16 @@ class WebDavLibrarySource {
           await _activeOps.readDir(config, comicPath),
         );
         if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
-        if (_hasMetadataFile(latestEntries)) {
+        if (_hasMetadataFile(latestEntries, fileName: fileName)) {
           return (
             metadata: await _readMetadata(
               config,
               comicPath,
               latestEntries,
-              pageCount: _metadataPageCount(latestEntries),
+              fileName: fileName,
+              pageCount: _isArchiveId(id)
+                  ? pageCount
+                  : _metadataPageCount(latestEntries),
             ),
             filePresent: true,
             status: 'notNeeded',
@@ -2430,7 +2530,7 @@ class WebDavLibrarySource {
           if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
           await _activeOps.writeText(
             config,
-            config.childFilePath(comicPath, _metadataFileName),
+            config.childFilePath(comicPath, fileName),
             _encodeMetadata(scraped),
             createOnly: true,
           );
@@ -2448,13 +2548,16 @@ class WebDavLibrarySource {
             await _activeOps.readDir(config, comicPath),
           );
           if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
-          if (!_hasMetadataFile(refreshedEntries)) rethrow;
+          if (!_hasMetadataFile(refreshedEntries, fileName: fileName)) rethrow;
           return (
             metadata: await _readMetadata(
               config,
               comicPath,
               refreshedEntries,
-              pageCount: _metadataPageCount(refreshedEntries),
+              fileName: fileName,
+              pageCount: _isArchiveId(id)
+                  ? pageCount
+                  : _metadataPageCount(refreshedEntries),
             ),
             filePresent: true,
             status: 'notNeeded',
@@ -2529,19 +2632,23 @@ class WebDavLibrarySource {
     String comicPath,
     List<WebDavLibraryEntry> entries, {
     int? pageCount,
+    String fileName = _metadataFileName,
+    ComicMetaData? fallback,
   }) async {
     final metadataEntry = entries.firstWhereOrNull(
       (entry) =>
-          !entry.isDirectory && entry.name.toLowerCase() == _metadataFileName,
+          !entry.isDirectory &&
+          entry.name.toLowerCase() == fileName.toLowerCase(),
     );
     if (metadataEntry == null) return null;
 
     final metadataPath = config.childFilePath(comicPath, metadataEntry.name);
     try {
       final file = await _activeOps.readText(config, metadataPath);
-      final metadata = ComicMetaData.fromJson(
-        _decodeMetadataDocument(file.content),
-      );
+      final metadata = ComicMetaData.fromJson({
+        ...?fallback?.toJson(),
+        ..._decodeMetadataDocument(file.content),
+      });
       metadata.validateChapterRanges(pageCount: pageCount);
       return metadata;
     } catch (error) {
@@ -2785,6 +2892,7 @@ class WebDavLibrarySource {
     required Future<void> Function(_WebDavDiscoveredDirectory) onDiscovered,
   }) async {
     final result = <_WebDavDiscoveredDirectory>[];
+    final seenArchives = <String>{};
     var inspectedDirectories = 0;
     final maxDirectories =
         discoveryDirectoryLimitOverride ?? _maxDiscoveryDirectories;
@@ -2806,9 +2914,11 @@ class WebDavLibrarySource {
       final comics = <_WebDavDiscoveredDirectory>[];
       for (final file in files) {
         _throwIfSynchronizationObsolete(syncRun);
+        final archiveId = _joinRelativeDirectoryPath(parent, file.name);
+        if (!seenArchives.add(archiveId)) continue;
         final comic = _WebDavDiscoveredDirectory(
-          id: _joinRelativeDirectoryPath(parent, file.name),
-          entries: const [],
+          id: archiveId,
+          entries: entries,
           eTag: file.eTag,
           modifiedAt: file.modifiedAt,
           archiveFile: file,
@@ -2830,6 +2940,7 @@ class WebDavLibrarySource {
     }) async {
       _throwIfSynchronizationObsolete(syncRun);
       final archiveComics = await archives(entries, id);
+      final chapterArchives = <_WebDavDiscoveredDirectory>[];
       final version = _directoryContentVersion(directory, entries);
       Future<List<_WebDavDiscoveredDirectory>> current({
         Map<String, List<WebDavLibraryEntry>> childEntries = const {},
@@ -2842,7 +2953,7 @@ class WebDavLibrarySource {
           modifiedAt: version.modifiedAt,
         );
         await onDiscovered(comic);
-        return [comic, ...archiveComics];
+        return [comic, ...archiveComics, ...chapterArchives];
       }
 
       if (_hasMetadataFile(entries) ||
@@ -2889,7 +3000,7 @@ class WebDavLibrarySource {
           >[];
       final childEntriesMap = <String, List<WebDavLibraryEntry>>{};
       final nested = <_WebDavDiscoveredDirectory>[...archiveComics];
-      var isCategory = archiveComics.isNotEmpty;
+      var isCategory = false;
       final namedCover = _findNamedCover(entries);
       var hasPreview = namedCover != null;
       if (namedCover != null) {
@@ -2917,15 +3028,20 @@ class WebDavLibrarySource {
         _throwIfSynchronizationObsolete(syncRun);
         children.add((directory: child, id: childId, entries: childEntries));
         childEntriesMap[child.name] = childEntries;
+        final childArchives = await archives(childEntries, childId);
+        chapterArchives.addAll(childArchives);
+        nested.addAll(childArchives);
         final pages = _imageEntries(
           childEntries,
         ).where((entry) => !isNamedComicCover(entry.name));
         isCategory =
             isCategory ||
             _hasMetadataFile(childEntries) ||
-            childEntries.any(
-              (entry) => !entry.isDirectory && isRemoteComicArchive(entry.name),
-            ) ||
+            (pages.isEmpty &&
+                childEntries.any(
+                  (entry) =>
+                      !entry.isDirectory && isRemoteComicArchive(entry.name),
+                )) ||
             _sortedDirectories(childEntries).isNotEmpty ||
             (!_looksLikeChapterName(child.name) && pages.isNotEmpty);
         if (!isCategory && !hasPreview && pages.isNotEmpty) {
@@ -3059,10 +3175,14 @@ class WebDavLibrarySource {
       ..sort((a, b) => compareComicFileNames(a.name, b.name));
   }
 
-  static bool _hasMetadataFile(List<WebDavLibraryEntry> entries) {
+  static bool _hasMetadataFile(
+    List<WebDavLibraryEntry> entries, {
+    String fileName = _metadataFileName,
+  }) {
     return entries.any(
       (entry) =>
-          !entry.isDirectory && entry.name.toLowerCase() == _metadataFileName,
+          !entry.isDirectory &&
+          entry.name.toLowerCase() == fileName.toLowerCase(),
     );
   }
 
@@ -3656,6 +3776,16 @@ class _WebDavComicSnapshot {
         },
     ],
   };
+
+  int? get pageCount {
+    if (archive != null) return archive!.pageCount;
+    if (!chaptersInspected) return null;
+    return rootImages.length +
+        chapterImages.values.fold<int>(
+          0,
+          (total, images) => total + images.length,
+        );
+  }
 
   Map<String, List<String>> get detailTags => {
     if (author.trim().isNotEmpty) '作者': [author],

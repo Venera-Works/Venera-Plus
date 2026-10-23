@@ -262,6 +262,8 @@ This `metadata.json` is the single-comic CBZ metadata format. It is not the comi
 
 Place `.zip` or `.cbz` files in an online library's configured recognition directories. Each file appears as one comic. Archives may contain images directly, a single top-level folder, or chapter folders. An optional single-comic `metadata.json` uses the fields and chapter-range rules above.
 
+Image directories and ZIP/CBZ files can coexist. An archive inside a comic directory appears as a separate comic without turning the image comic or its chapters into categories. For example, a book folder containing `cover.png`, a ZIP with the same name, and `全1卷/` keeps the folder name as the image comic's title and `全1卷` as its chapter; the ZIP is listed separately. Page totals count actual comic pages, excluding covers and archives. Chapters not yet scanned are inspected when comic details are opened.
+
 ```text
 /venera_comics/
 ├── Cat's Eye.cbz
@@ -279,6 +281,40 @@ Place `.zip` or `.cbz` files in an online library's configured recognition direc
 ```
 
 The app reads the archive tail and central directory as needed, then fetches metadata and the required image entries. Covers load when needed and are cached; reading pages also reuse the image cache. The full archive does not need to be downloaded or extracted first.
+
+#### Archive Sidecar Metadata
+
+A ZIP/CBZ can have a UTF-8 JSON sidecar in the same directory. Its name is the **complete archive file name plus `.metadata.json`**, retaining the `.zip` or `.cbz` extension:
+
+```text
+/venera_comics/
+├── Book.zip
+├── Book.zip.metadata.json
+├── Book.cbz
+├── Book.cbz.metadata.json
+└── Book/
+    ├── metadata.json
+    └── 001.jpg
+```
+
+`Book.zip.metadata.json` belongs only to `Book.zip`, and `Book.cbz.metadata.json` belongs only to `Book.cbz`. The image directory's `Book/metadata.json` continues to describe that directory separately.
+
+The sidecar is a JSON object using the same field types as the single-comic metadata format above. It may contain only selected fields:
+
+```json
+{
+  "title": "Cat's Eye",
+  "bangumiSubjectId": 123456
+}
+```
+
+Sidecar fields with valid types and ranges take precedence. Omitted fields continue to use the archive's embedded `metadata.json`, so changing only the title preserves embedded authors, tags, and chapters. `chapters` uses one-based page ranges over the ordered comic images, excluding `cover.*`; ranges must be ordered, non-overlapping, and within the actual page count. Without a sidecar, embedded metadata remains supported. When neither provides usable metadata, the app infers the title and chapters from the archive file name and image layout.
+
+After Bangumi is connected and automatic scraping is enabled, a ZIP/CBZ is searched by its file name without the extension when its index is first loaded on demand and neither sidecar nor embedded metadata exists. Directory discovery does not read the full archive for scraping. The conservative matching rules above still apply, and a successful match creates only the sibling sidecar file.
+
+Manual Bangumi binding from comic details also writes the title, author, description, tags, and subject ID to that sidecar. The app does not repack the archive or modify embedded metadata. New sidecars use create-only requests; updates retain ETag or Last-Modified write preconditions and preserve valid chapter ranges and unknown extension fields. Transient failures use the background retry queue and do not undo a successful progress binding. The account needs write access to the directory containing the sidecar.
+
+#### Range Reads and Caching
 
 Libraries on the same cloud account share an archive read queue with at most two concurrent requests and at least 300 milliseconds between request starts. The visible page takes priority over covers and preloads; an existing preload is promoted when that page becomes visible. HTTP 429 responses pause the shared queue according to `Retry-After`, or use delays of 1, 2, and 4 seconds when the header is missing or invalid. Each range read retries at most twice, and queued reads can be cancelled.
 

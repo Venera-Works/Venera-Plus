@@ -313,6 +313,272 @@ void main() {
     },
   );
 
+  test(
+    'applies sidecar chapters without rereading the ZIP or changing image versions',
+    () async {
+      const embedded = ComicMetaData(
+        title: '包内漫画',
+        author: '包内作者',
+        tags: ['包内标签'],
+        chapters: [
+          ComicChapter(title: '包内第一章', start: 1, end: 2),
+          ComicChapter(title: '包内第二章', start: 3, end: 4),
+        ],
+      );
+      const sidecar = ComicMetaData(
+        title: '旁车漫画',
+        author: '旁车作者',
+        tags: ['旁车标签'],
+        description: '旁车简介',
+        chapters: [ComicChapter(title: '选读章节', start: 2, end: 3)],
+      );
+      final fixture = _zip({
+        'Book/cover.jpg': [0],
+        'Book/1.jpg': [1],
+        'Book/2.jpg': [2],
+        'Book/3.jpg': [3],
+        'Book/4.jpg': [4],
+        'Book/.hidden/5.jpg': [5],
+        '__MACOSX/6.jpg': [6],
+        'Book/metadata.json': utf8.encode(jsonEncode(embedded.toJson())),
+      });
+      final comic = await RemoteArchiveComic(
+        path: '/library/comic.cbz',
+        size: fixture.bytes.length,
+        eTag: '"archive-1"',
+        modifiedAt: 123456789,
+      ).inspect(fixture.read);
+      expect(comic.embeddedMetadata!.toJson(), embedded.toJson());
+      expect(comic.metadata, same(comic.embeddedMetadata));
+      expect(comic.pageCount, 4);
+      fixture.calls.clear();
+
+      final overridden = comic.withMetadata(sidecar);
+      expect(overridden.index, same(comic.index));
+      expect(overridden.embeddedMetadata, same(comic.embeddedMetadata));
+      expect(overridden.metadata, same(sidecar));
+      expect(overridden.title, '旁车漫画');
+      expect(overridden.metadata!.author, '旁车作者');
+      expect(overridden.metadata!.tags, ['旁车标签']);
+      expect(overridden.metadata!.description, '旁车简介');
+      expect(overridden.chapters, {'__cbz_range_0': '选读章节'});
+      expect(overridden.chapterImages, {
+        '__cbz_range_0': ['Book/2.jpg', 'Book/3.jpg'],
+      });
+      expect(overridden.pageCount, 4);
+      expect(overridden.coverEntry, comic.coverEntry);
+      expect(overridden.version, comic.version);
+      expect(overridden.imageKey(), comic.imageKey());
+      expect(overridden.imageKey('Book/2.jpg'), comic.imageKey('Book/2.jpg'));
+      expect(overridden.eTag, comic.eTag);
+      expect(overridden.modifiedAt, comic.modifiedAt);
+      expect(fixture.calls, isEmpty);
+
+      final inspectedAgain = await overridden.inspect(_unexpectedRead);
+      expect(inspectedAgain.index, same(comic.index));
+      expect(inspectedAgain.metadata, same(sidecar));
+      expect(inspectedAgain.chapterImages, overridden.chapterImages);
+      final persisted = RemoteArchiveComic.fromJson(
+        jsonDecode(jsonEncode(overridden.toJson())),
+      );
+      expect(persisted.metadata!.toJson(), sidecar.toJson());
+      expect(persisted.embeddedMetadata!.toJson(), embedded.toJson());
+      expect(persisted.pageCount, 4);
+      expect(persisted.version, comic.version);
+      expect(persisted.imageKey(), comic.imageKey());
+      final cached = await persisted.inspect(_unexpectedRead);
+      expect(cached.index, same(persisted.index));
+      expect(cached.chapterImages, overridden.chapterImages);
+
+      final restored = persisted.withMetadata(null);
+      expect(restored.index, same(persisted.index));
+      expect(restored.metadata!.toJson(), embedded.toJson());
+      expect(restored.title, comic.title);
+      expect(restored.chapters, comic.chapters);
+      expect(restored.chapterImages, comic.chapterImages);
+      expect(restored.coverEntry, comic.coverEntry);
+      expect(restored.pageCount, 4);
+      expect(restored.version, comic.version);
+      expect(restored.imageKey(), comic.imageKey());
+      expect(fixture.calls, isEmpty);
+    },
+  );
+
+  test(
+    'clearing sidecar metadata restores inferred directory chapters',
+    () async {
+      final fixture = _zip({
+        'Book/cover.png': [0],
+        'Book/Chapter 10/cover.jpg': [0],
+        'Book/Chapter 10/2.jpg': [4],
+        'Book/Chapter 2/2.jpg': [2],
+        'Book/Chapter 10/1.jpg': [3],
+        'Book/Chapter 2/1.jpg': [1],
+      });
+      final comic = await _inspect(fixture);
+      fixture.calls.clear();
+      final overridden = comic.withMetadata(
+        const ComicMetaData(
+          title: '旁车标题',
+          author: '作者',
+          tags: [],
+          chapters: [ComicChapter(title: '合并章节', start: 2, end: 3)],
+        ),
+      );
+      expect(overridden.embeddedMetadata, isNull);
+      expect(overridden.pageCount, 4);
+      expect(overridden.chapterImages, {
+        '__cbz_range_0': ['Book/Chapter 2/2.jpg', 'Book/Chapter 10/1.jpg'],
+      });
+
+      final restored = overridden.withMetadata(null);
+      expect(restored.index, same(comic.index));
+      expect(restored.metadata, isNull);
+      expect(restored.title, comic.title);
+      expect(restored.chapters.keys.toList(), [
+        'dir:Chapter 2',
+        'dir:Chapter 10',
+      ]);
+      expect(restored.chapterImages, comic.chapterImages);
+      expect(restored.coverEntry, 'Book/cover.png');
+      expect(restored.imageKey(), comic.imageKey());
+      expect(restored.pageCount, 4);
+      expect(fixture.calls, isEmpty);
+      final inspectedAgain = await restored.inspect(_unexpectedRead);
+      expect(inspectedAgain.index, same(comic.index));
+      expect(inspectedAgain.chapterImages, comic.chapterImages);
+    },
+  );
+
+  test(
+    'summary sidecar metadata stays distinct from embedded metadata after JSON',
+    () async {
+      const sidecar = ComicMetaData(
+        title: '旁车标题',
+        author: '旁车作者',
+        tags: ['旁车标签'],
+        chapters: [ComicChapter(title: '选读', start: 2, end: 2)],
+      );
+      const embedded = ComicMetaData(title: '包内标题', author: '包内作者', tags: []);
+      final fixture = _zip({
+        'cover.jpg': [0],
+        '1.jpg': [1],
+        '2.jpg': [2],
+        '3.jpg': [3],
+        'metadata.json': utf8.encode(jsonEncode(embedded.toJson())),
+      });
+      final summary = RemoteArchiveComic(
+        path: '/library/comic.cbz',
+        size: fixture.bytes.length,
+      );
+      final overridden = summary.withMetadata(sidecar);
+      expect(overridden.title, '旁车标题');
+      expect(overridden.isInspected, isFalse);
+      expect(overridden.pageCount, isNull);
+      expect(overridden.embeddedMetadata, isNull);
+      expect(overridden.version, summary.version);
+      expect(overridden.imageKey('1.jpg'), summary.imageKey('1.jpg'));
+      expect(overridden.toJson(), containsPair('embeddedMetadata', null));
+      expect(fixture.calls, isEmpty);
+
+      final cached = RemoteArchiveComic.fromJson(
+        jsonDecode(jsonEncode(overridden.toJson())),
+      );
+      expect(cached.embeddedMetadata, isNull);
+      expect(cached.metadata!.toJson(), sidecar.toJson());
+      expect(cached.pageCount, isNull);
+      expect(cached.withMetadata(null).metadata, isNull);
+      expect(cached.withMetadata(null).title, 'comic');
+      expect(fixture.calls, isEmpty);
+
+      final inspected = await cached.inspect(fixture.read);
+      expect(inspected.metadata!.toJson(), sidecar.toJson());
+      expect(inspected.embeddedMetadata!.toJson(), embedded.toJson());
+      expect(inspected.chapterImages, {
+        '__cbz_range_0': ['2.jpg'],
+      });
+      expect(inspected.pageCount, 3);
+      final restored = inspected.withMetadata(null);
+      expect(restored.title, '包内标题');
+      expect(restored.chapterImages, {
+        '__root__': ['1.jpg', '2.jpg', '3.jpg'],
+      });
+    },
+  );
+
+  test(
+    'legacy metadata-only caches treat the saved metadata as embedded',
+    () async {
+      const embedded = ComicMetaData(
+        title: '旧缓存标题',
+        author: '包内作者',
+        tags: ['旧标签'],
+        chapters: [ComicChapter(title: '包内章节', start: 1, end: 1)],
+      );
+      final fixture = _zip({
+        '1.jpg': [1],
+        '2.jpg': [2],
+        'metadata.json': utf8.encode(jsonEncode(embedded.toJson())),
+      });
+      final comic = await _inspect(fixture);
+      final legacy = comic.toJson()..remove('embeddedMetadata');
+      final cached = RemoteArchiveComic.fromJson(
+        jsonDecode(jsonEncode(legacy)),
+      );
+      expect(cached.embeddedMetadata!.toJson(), embedded.toJson());
+      expect(cached.metadata!.toJson(), embedded.toJson());
+      expect(cached.pageCount, 2);
+      expect(cached.toJson()['embeddedMetadata'], embedded.toJson());
+      final overridden = cached.withMetadata(
+        const ComicMetaData(title: '新旁车标题', author: '新作者', tags: []),
+      );
+      final restored = overridden.withMetadata(null);
+      expect(restored.metadata!.toJson(), embedded.toJson());
+      expect(restored.chapterImages, comic.chapterImages);
+      expect(restored.version, comic.version);
+      final inspected = await restored.inspect(_unexpectedRead);
+      expect(inspected.index, same(cached.index));
+      expect(inspected.title, '旧缓存标题');
+    },
+  );
+
+  test('rejects invalid sidecar chapters before slicing pages', () async {
+    final fixture = _zip({
+      '1.jpg': [1],
+      '2.jpg': [2],
+    });
+    final comic = await _inspect(fixture);
+    fixture.calls.clear();
+    const outOfRange = ComicMetaData(
+      title: '超出页数',
+      author: '',
+      tags: [],
+      chapters: [ComicChapter(title: '章节', start: 1, end: 3)],
+    );
+    const overlapping = ComicMetaData(
+      title: '重叠章节',
+      author: '',
+      tags: [],
+      chapters: [
+        ComicChapter(title: '第一章', start: 1, end: 2),
+        ComicChapter(title: '第二章', start: 2, end: 2),
+      ],
+    );
+    expect(() => comic.withMetadata(outOfRange), throwsFormatException);
+    expect(() => comic.withMetadata(overlapping), throwsFormatException);
+    expect(comic.metadata, isNull);
+    expect(comic.chapterImages, {
+      '__root__': ['1.jpg', '2.jpg'],
+    });
+    expect(fixture.calls, isEmpty);
+
+    final summary = RemoteArchiveComic(path: comic.path, size: comic.size);
+    expect(() => summary.withMetadata(overlapping), throwsFormatException);
+    final deferred = summary.withMetadata(outOfRange);
+    expect(deferred.pageCount, isNull);
+    await expectLater(deferred.inspect(fixture.read), throwsFormatException);
+  });
+
   test('rejects archives with no visible comic pages', () async {
     for (final files in [
       {
@@ -330,6 +596,10 @@ void main() {
       await expectLater(_inspect(fixture), throwsFormatException);
     }
   });
+}
+
+Future<Uint8List> _unexpectedRead(int offset, int length) async {
+  throw StateError('Cached index must not request ZIP range $offset:$length');
 }
 
 Future<RemoteArchiveComic> _inspect(
