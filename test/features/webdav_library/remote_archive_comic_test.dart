@@ -255,9 +255,9 @@ void main() {
         (entry) => entry.name == '1.jpg',
       );
       expect(await restored.index!.readEntry(entry, fixture.read), [1, 2, 3]);
-      expect(fixture.calls.length, 2);
-      expect(fixture.calls.first, (entry.localHeaderOffset, 30));
-      expect(fixture.calls.last.$2, entry.compressedSize);
+      expect(fixture.calls, [
+        (0, restored.index!.toJson()['centralDirectoryOffset'] as int),
+      ]);
       expect(
         restored.matches(
           size: fixture.bytes.length,
