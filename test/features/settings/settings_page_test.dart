@@ -484,7 +484,9 @@ void main() {
 
       storage.addListener(onSaved);
       try {
-        await tester.tap(find.text('Save'));
+        await tester.tap(
+          find.widgetWithText(FilledButton, 'Save and test connection'),
+        );
         await runWidgetIo(tester, () => connected.future);
         await tester.pumpAndSettle();
       } finally {
