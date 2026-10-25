@@ -846,6 +846,8 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
     }
     return ComicChaptersView(
       chapters: comic.chapters!,
+      pageCounts: comic.chapterPageCounts,
+      chapterGroups: comic.chapterGroups,
       history: history,
       readChapter: (chapter, group) => read(chapter, null, group),
     );

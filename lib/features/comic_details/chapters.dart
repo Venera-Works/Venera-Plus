@@ -15,11 +15,17 @@ class ComicChaptersView extends StatelessWidget {
   const ComicChaptersView({
     super.key,
     required this.chapters,
+    this.pageCounts = const {},
+    this.chapterGroups = const {},
     this.history,
     required this.readChapter,
   });
 
   final ComicChapters chapters;
+
+  final Map<String, int> pageCounts;
+
+  final Map<String, String> chapterGroups;
 
   final History? history;
 
@@ -27,14 +33,48 @@ class ComicChaptersView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (!chapters.isGrouped && chapterGroups.isNotEmpty) {
+      final groups = <String, Map<String, String>>{};
+      final chapterIndices = <String, int>{};
+      String? currentGroup;
+      var chapterIndex = 0;
+      for (final id in chapters.ids) {
+        final group = chapterGroups[id] ?? 'Chapters'.tl;
+        final title = chapters[id]!;
+        (groups[group] ??= {})[id] = title.startsWith('$group/')
+            ? title.substring(group.length + 1)
+            : title;
+        chapterIndices[id] = ++chapterIndex;
+        if (history?.group == null && history?.ep == chapterIndex) {
+          currentGroup = group;
+        }
+      }
+      return _GroupedComicChapters(
+        chapters: ComicChapters.grouped(groups),
+        pageCounts: pageCounts,
+        history: history,
+        initialGroup: currentGroup == null
+            ? 1
+            : groups.keys.toList().indexOf(currentGroup) + 1,
+        readChapter: (chapter, group) {
+          final id = groups.values
+              .elementAt(group! - 1)
+              .keys
+              .elementAt(chapter - 1);
+          readChapter(chapterIndices[id]!, null);
+        },
+      );
+    }
     return chapters.isGrouped
         ? _GroupedComicChapters(
             chapters: chapters,
+            pageCounts: pageCounts,
             history: history,
             readChapter: readChapter,
           )
         : _NormalComicChapters(
             chapters: chapters,
+            pageCounts: pageCounts,
             history: history,
             readChapter: readChapter,
           );
@@ -44,11 +84,14 @@ class ComicChaptersView extends StatelessWidget {
 class _NormalComicChapters extends StatefulWidget {
   const _NormalComicChapters({
     required this.chapters,
+    required this.pageCounts,
     this.history,
     required this.readChapter,
   });
 
   final ComicChapters chapters;
+
+  final Map<String, int> pageCounts;
 
   final History? history;
 
@@ -138,16 +181,10 @@ class _NormalComicChaptersState extends State<_NormalComicChapters> {
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 8),
                         child: Center(
-                          child: Text(
-                            value,
-                            maxLines: 1,
-                            textAlign: TextAlign.center,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: visited
-                                  ? context.colorScheme.outline
-                                  : null,
-                            ),
+                          child: _ChapterLabel(
+                            title: value,
+                            pageCount: widget.pageCounts[key],
+                            visited: visited,
                           ),
                         ),
                       ),
@@ -155,9 +192,13 @@ class _NormalComicChaptersState extends State<_NormalComicChapters> {
                   ),
                 );
               }, childCount: length),
-              gridDelegate: const SliverGridDelegateWithFixedHeight(
+              gridDelegate: SliverGridDelegateWithFixedHeight(
                 maxCrossAxisExtent: 250,
-                itemHeight: 48,
+                itemHeight: _chapterGridHeight(
+                  context,
+                  chapters.ids,
+                  widget.pageCounts,
+                ),
               ),
             ).sliverPadding(const EdgeInsets.symmetric(horizontal: 8)),
             if (!canShowAll)
@@ -186,11 +227,17 @@ class _NormalComicChaptersState extends State<_NormalComicChapters> {
 class _GroupedComicChapters extends StatefulWidget {
   const _GroupedComicChapters({
     required this.chapters,
+    required this.pageCounts,
+    this.initialGroup,
     this.history,
     required this.readChapter,
   });
 
+  final int? initialGroup;
+
   final ComicChapters chapters;
+
+  final Map<String, int> pageCounts;
 
   final History? history;
 
@@ -201,7 +248,7 @@ class _GroupedComicChapters extends StatefulWidget {
 }
 
 class _GroupedComicChaptersState extends State<_GroupedComicChapters>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   late bool reverse;
 
   bool showAll = false;
@@ -217,14 +264,17 @@ class _GroupedComicChaptersState extends State<_GroupedComicChapters>
     super.initState();
     reverse = appdata.settings["reverseChapterOrder"] ?? false;
     history = widget.history;
-    if (history?.group != null) {
-      index = history!.group! - 1;
-    } else {
-      index = 0;
-    }
+    index = ((widget.initialGroup ?? history?.group ?? 1) - 1).clamp(
+      0,
+      math.max(0, widget.chapters.groupCount - 1),
+    );
+    _createTabController();
+  }
+
+  void _createTabController() {
     tabController = TabController(
       initialIndex: index,
-      length: widget.chapters.ids.length,
+      length: widget.chapters.groupCount,
       vsync: this,
     );
     tabController.addListener(onTabChange);
@@ -241,9 +291,13 @@ class _GroupedComicChaptersState extends State<_GroupedComicChapters>
   @override
   void didUpdateWidget(covariant _GroupedComicChapters oldWidget) {
     super.didUpdateWidget(oldWidget);
-    setState(() {
-      history = widget.history;
-    });
+    history = widget.history;
+    if (tabController.length != widget.chapters.groupCount) {
+      tabController.removeListener(onTabChange);
+      tabController.dispose();
+      index = index.clamp(0, math.max(0, widget.chapters.groupCount - 1));
+      _createTabController();
+    }
   }
 
   void setReverse(bool value) {
@@ -265,6 +319,9 @@ class _GroupedComicChaptersState extends State<_GroupedComicChapters>
   @override
   Widget build(BuildContext context) {
     final chapters = widget.chapters;
+    if (chapters.groupCount == 0) {
+      return const SliverToBoxAdapter(child: SizedBox.shrink());
+    }
     return SliverLayoutBuilder(
       builder: (context, constrains) {
         var group = chapters.getGroupByIndex(index);
@@ -295,6 +352,7 @@ class _GroupedComicChaptersState extends State<_GroupedComicChapters>
             ),
             SliverToBoxAdapter(
               child: AppTabBar(
+                key: ValueKey(chapters.groupCount),
                 withUnderLine: false,
                 controller: tabController,
                 tabs: chapters.groups.map((e) => Tab(text: e)).toList(),
@@ -335,16 +393,10 @@ class _GroupedComicChaptersState extends State<_GroupedComicChapters>
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 8),
                         child: Center(
-                          child: Text(
-                            value,
-                            maxLines: 1,
-                            textAlign: TextAlign.center,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: visited
-                                  ? context.colorScheme.outline
-                                  : null,
-                            ),
+                          child: _ChapterLabel(
+                            title: value,
+                            pageCount: widget.pageCounts[key],
+                            visited: visited,
                           ),
                         ),
                       ),
@@ -352,9 +404,13 @@ class _GroupedComicChaptersState extends State<_GroupedComicChapters>
                   ),
                 );
               }, childCount: length),
-              gridDelegate: const SliverGridDelegateWithFixedHeight(
+              gridDelegate: SliverGridDelegateWithFixedHeight(
                 maxCrossAxisExtent: 250,
-                itemHeight: 48,
+                itemHeight: _chapterGridHeight(
+                  context,
+                  chapters.ids,
+                  widget.pageCounts,
+                ),
               ),
             ).sliverPadding(const EdgeInsets.symmetric(horizontal: 8)),
             if (!canShowAll)
@@ -376,6 +432,65 @@ class _GroupedComicChaptersState extends State<_GroupedComicChapters>
           ],
         );
       },
+    );
+  }
+}
+
+double _chapterGridHeight(
+  BuildContext context,
+  Iterable<String> ids,
+  Map<String, int> pageCounts,
+) {
+  if (!ids.any((id) => (pageCounts[id] ?? 0) > 0)) return 48;
+  final scaler = MediaQuery.textScalerOf(context);
+  return math.max(56, 16 + scaler.scale(14) * 1.3 + scaler.scale(11) * 1.3);
+}
+
+class _ChapterLabel extends StatelessWidget {
+  const _ChapterLabel({
+    required this.title,
+    this.pageCount,
+    required this.visited,
+  });
+
+  final String title;
+  final int? pageCount;
+  final bool visited;
+
+  @override
+  Widget build(BuildContext context) {
+    final count = pageCount;
+    final hasCount = count != null && count > 0;
+    final titleText = Text(
+      title,
+      maxLines: 1,
+      textAlign: TextAlign.center,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        color: visited ? context.colorScheme.outline : null,
+        fontSize: hasCount ? 14 : null,
+        height: hasCount ? 1.3 : null,
+      ),
+    );
+    if (!hasCount) return titleText;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        titleText,
+        const SizedBox(height: 2),
+        Text(
+          '${"Pages".tl}: $count',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: 11,
+            height: 1.3,
+            color: visited
+                ? context.colorScheme.outline
+                : context.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
     );
   }
 }

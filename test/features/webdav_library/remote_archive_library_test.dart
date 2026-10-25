@@ -9,6 +9,8 @@ import 'package:dio/io.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_storage/comic_storage.dart';
+import 'package:venera_plus/features/history/reading_progress.dart';
+import 'package:venera_plus/features/reader/reader.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library.dart';
 import 'package:venera_plus/foundation/app.dart';
@@ -61,6 +63,16 @@ void main() {
             'chapters': ?chapters,
           }),
         ),
+      );
+    }
+    return archive.ZipEncoder().encodeBytes(book, level: 0);
+  }
+
+  Uint8List zipFiles(Map<String, List<int>> files) {
+    final book = archive.Archive();
+    for (final file in files.entries) {
+      book.addFile(
+        archive.ArchiveFile(file.key, file.value.length, file.value),
       );
     }
     return archive.ZipEncoder().encodeBytes(book, level: 0);
@@ -203,7 +215,9 @@ void main() {
       final info = await source.loadComicInfo!('/library/漫画 %.cbz');
       expect(info.success, isTrue, reason: info.errorMessage);
       expect(info.data.title, 'Cloud book');
-      expect(info.data.chapters, isNull);
+      expect(info.data.chapters!.allChapters, {'__root__': 'Full book'});
+      expect(info.data.chapterPageCounts, {'__root__': 2});
+      expect(info.data.chapterGroups, isEmpty);
       expect(
         ranges.fold(0, (sum, range) => sum + range.$2),
         lessThan(zip.length),
@@ -270,6 +284,196 @@ void main() {
       );
       expect(ranges.length, afterCover);
       expect(store.downloads, 0);
+    },
+  );
+
+  test(
+    'flat archive chapter stays readable using old root and numeric progress',
+    () async {
+      final info = await source.loadComicInfo!('/library/漫画 %.cbz');
+      expect(info.success, isTrue, reason: info.errorMessage);
+      expect(info.data.chapters!.ids, ['__root__']);
+      final implicit = await source.loadComicPages!('/library/漫画 %.cbz', null);
+      final explicit = await source.loadComicPages!(
+        '/library/漫画 %.cbz',
+        '__root__',
+      );
+      expect(explicit.data, implicit.data);
+      final catalog = readingCatalogFromComicChapters(info.data.chapters)!;
+      final oldProgress = ReadingProgress.seed(
+        const ReadingPosition(ep: 1, page: 2),
+      );
+      final restored = oldProgress.normalizeForCatalog(catalog)!;
+      expect(
+        restored.maximumPositions.single,
+        const ReadingPosition(ep: 1, page: 2, chapterId: '__root__'),
+      );
+    },
+  );
+
+  for (final folder in ['全1卷', '第03卷']) {
+    test('single $folder folder remains a named root chapter', () async {
+      zip = zipFiles({
+        '$folder/cover.png': [9],
+        '$folder/001.png': [1],
+        '$folder/002.png': [2],
+      });
+      final info = await source.loadComicInfo!('/library/漫画 %.cbz');
+      expect(info.success, isTrue, reason: info.errorMessage);
+      expect(info.data.chapters!.allChapters, {'__root__': folder});
+      expect(info.data.chapterPageCounts, {'__root__': 2});
+      expect(info.data.chapterGroups, isEmpty);
+      final pages = await source.loadComicPages!(
+        '/library/漫画 %.cbz',
+        '__root__',
+      );
+      expect(pages.data, hasLength(2));
+      expect(
+        await ImageDownloader.loadComicImageBytes(
+          pages.data.last,
+          source.key,
+          info.data.id,
+          '__root__',
+        ),
+        [2],
+      );
+    });
+  }
+
+  test(
+    'archive file volume marker names a flat chapter without changing its id',
+    () async {
+      archiveName = '书名 第12话.zip';
+      zip = zipFiles({
+        'Book/001.jpg': [1],
+        'Book/002.jpg': [2],
+      });
+      final info = await source.loadComicInfo!('/library/$archiveName');
+      expect(info.success, isTrue, reason: info.errorMessage);
+      expect(info.data.chapters!.allChapters, {'__root__': '第12话'});
+      expect(info.data.chapterPageCounts, {'__root__': 2});
+    },
+  );
+
+  test(
+    'nested directory display groups preserve chapter ids order and legacy progress',
+    () async {
+      zip = zipFiles({
+        'Book/第02卷/第01话/001.png': [21],
+        'Book/第01卷/第02话/001.png': [12],
+        'Book/第01卷/第01话/002.png': [112],
+        'Book/第01卷/第01话/001.png': [111],
+        'Book/第01卷/第01话/cover.png': [9],
+      });
+      final info = await source.loadComicInfo!('/library/漫画 %.cbz');
+      expect(info.success, isTrue, reason: info.errorMessage);
+      const oldNames = {
+        'dir:第01卷/第01话': '第01卷/第01话',
+        'dir:第01卷/第02话': '第01卷/第02话',
+        'dir:第02卷/第01话': '第02卷/第01话',
+      };
+      final chapters = info.data.chapters!;
+      expect(chapters.isGrouped, isFalse);
+      expect(chapters.ids, oldNames.keys);
+      expect(chapters.titles, oldNames.values);
+      expect(info.data.chapterGroups, {
+        'dir:第01卷/第01话': '第01卷',
+        'dir:第01卷/第02话': '第01卷',
+        'dir:第02卷/第01话': '第02卷',
+      });
+      expect(info.data.chapterPageCounts, {
+        'dir:第01卷/第01话': 2,
+        'dir:第01卷/第02话': 1,
+        'dir:第02卷/第01话': 1,
+      });
+      expect(info.data.maxPage, 4);
+      final oldCatalog = readingCatalogFromComicChapters(
+        const ComicChapters(oldNames),
+      )!;
+      final catalog = readingCatalogFromComicChapters(chapters)!;
+      expect(catalog.hasSameChapters(oldCatalog), isTrue);
+      for (final hasCatalog in [false, true]) {
+        final previous = ReadingProgress.seed(
+          const ReadingPosition(ep: 3, page: 1),
+          catalog: hasCatalog ? oldCatalog : null,
+        );
+        expect(
+          previous.normalizeForCatalog(catalog)!.maximumPositions.single,
+          const ReadingPosition(ep: 3, page: 1, chapterId: 'dir:第02卷/第01话'),
+        );
+      }
+      final pages = await source.loadComicPages!(
+        '/library/漫画 %.cbz',
+        'dir:第02卷/第01话',
+      );
+      expect(
+        await ImageDownloader.loadComicImageBytes(
+          pages.data.single,
+          source.key,
+          info.data.id,
+          'dir:第02卷/第01话',
+        ),
+        [21],
+      );
+      final requests = ranges.length;
+      final library = engine.library;
+      engine.cancel();
+      engine = WebDavLibraryEngine(library: library, store: store);
+      source = engine.create();
+      final reopened = await source.loadComicInfo!('/library/漫画 %.cbz');
+      expect(reopened.data.chapterGroups, info.data.chapterGroups);
+      expect(reopened.data.chapterPageCounts, info.data.chapterPageCounts);
+      expect(
+        (await source.loadComicPages!(
+          '/library/漫画 %.cbz',
+          'dir:第02卷/第01话',
+        )).data,
+        pages.data,
+      );
+      expect(ranges, hasLength(requests));
+    },
+  );
+
+  test(
+    'sidecar chapter ranges retain exact labels and override directory display groups',
+    () async {
+      zip = zipFiles({
+        'Book/第01卷/第01话/001.jpg': [1],
+        'Book/第01卷/第02话/001.jpg': [2],
+        'Book/第02卷/第01话/001.jpg': [3],
+      });
+      store.texts['/library/漫画 %.cbz.metadata.json'] = RemoteTextFile(
+        content: jsonEncode({
+          'chapters': [
+            {'title': '选集/第01话', 'start': 1, 'end': 2},
+            {'title': '附录', 'start': 3, 'end': 3},
+          ],
+        }),
+      );
+      final info = await source.loadComicInfo!('/library/漫画 %.cbz');
+      expect(info.success, isTrue, reason: info.errorMessage);
+      expect(info.data.chapters!.allChapters, {
+        '__cbz_range_0': '选集/第01话',
+        '__cbz_range_1': '附录',
+      });
+      expect(info.data.chapterGroups, isEmpty);
+      expect(info.data.chapterPageCounts, {
+        '__cbz_range_0': 2,
+        '__cbz_range_1': 1,
+      });
+      final pages = await source.loadComicPages!(
+        '/library/漫画 %.cbz',
+        '__cbz_range_1',
+      );
+      expect(
+        await ImageDownloader.loadComicImageBytes(
+          pages.data.single,
+          source.key,
+          info.data.id,
+          '__cbz_range_1',
+        ),
+        [3],
+      );
     },
   );
 

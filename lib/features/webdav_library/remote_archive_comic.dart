@@ -40,6 +40,37 @@ class RemoteArchiveComic {
 
   bool get isInspected => index != null;
 
+  /// Display titles retain an explicit volume/chapter root without changing IDs.
+  Map<String, String> get chapterTitles {
+    final zip = index;
+    if (zip == null || metadata?.chapters?.isNotEmpty == true) return chapters;
+    final root = _archiveLayout(zip).root;
+    final rootName = root.isEmpty
+        ? ''
+        : root.substring(0, root.length - 1).trim();
+    final prefix = _wholeChapterTitle.hasMatch(rootName) ? rootName : null;
+    final fullBook =
+        prefix ??
+        _chapterTitleToken.firstMatch(comicFileStem(path))?.group(0)?.trim() ??
+        'Full book';
+    return {
+      for (final chapter in chapters.entries)
+        chapter.key: chapter.key == '__root__'
+            ? chapters.length == 1
+                  ? fullBook
+                  : chapter.value
+            : prefix == null
+            ? chapter.value
+            : '$prefix/${chapter.value}',
+    };
+  }
+
+  /// Image counts use the existing chapter IDs and exclude named covers.
+  Map<String, int> get chapterPageCounts => {
+    for (final chapter in chapterImages.entries)
+      chapter.key: chapter.value.length,
+  };
+
   /// All visible image pages, independent of metadata chapter ranges.
   int? get pageCount => index?.entries
       .where(
@@ -248,6 +279,17 @@ class RemoteArchiveComic {
     );
   }
 }
+
+const _chapterNumber = r'[0-9０-９零〇一二三四五六七八九十百千两]+(?:[.．][0-9０-９]+)?';
+const _chapterTitlePattern =
+    '(?:(?:第|全)?\\s*$_chapterNumber\\s*[卷巻话話回章册冊]|'
+    '(?<![a-z0-9])(?:vol(?:ume)?|chapter|ch)\\.?\\s*$_chapterNumber(?![a-z0-9])|'
+    '番外(?:篇)?|特典|特别篇|特別篇|序章|终章|終章)';
+final _chapterTitleToken = RegExp(_chapterTitlePattern, caseSensitive: false);
+final _wholeChapterTitle = RegExp(
+  '^(?:$_chapterTitlePattern)\$',
+  caseSensitive: false,
+);
 
 typedef _ArchiveLayout = ({
   List<RemoteZipEntry> visible,

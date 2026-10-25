@@ -282,6 +282,26 @@ Image directories and ZIP/CBZ files can coexist. An archive inside a comic direc
 
 The app reads the archive tail and central directory as needed, then fetches metadata and the required image entries. Covers load when needed and are cached; reading pages also reuse the image cache. The full archive does not need to be downloaded or extracted first.
 
+#### Volume and Chapter Directory
+
+Archive details always provide a clickable reading directory. Valid `chapters` page ranges from sidecar or embedded metadata take priority. Without explicit ranges, image directories inside the archive form chapters in natural order. Nested paths such as `Volume 01/Chapter 01/` are grouped by their parent path, and chapter buttons also show the comic page count.
+
+A single explicit volume or chapter folder, such as `全1卷/` or `Volume 03/`, keeps its name. For flat images or a book-name wrapper folder, an explicit volume or chapter marker in the archive file name is used; otherwise the entry is named “Full book.” Root images alongside other chapters remain an “Images” chapter. Display groups preserve the original chapter order, image identities, and reading positions.
+
+A flat archive containing several chapters can use explicit sidecar page ranges without repacking. For example, an 80-page comic can use the following in `Comic.cbz.metadata.json`:
+
+```json
+{
+  "chapters": [
+    {"title": "Chapter 01", "start": 1, "end": 32},
+    {"title": "Chapter 02", "start": 33, "end": 64},
+    {"title": "Extra", "start": 65, "end": 80}
+  ]
+}
+```
+
+Pages are numbered from 1 over the naturally ordered comic images, excluding `cover.*`. Numbered image names or a Bangumi episode total alone do not cause the app to guess chapter boundaries or split pages into fixed-size chapters.
+
 #### Archive Sidecar Metadata
 
 A ZIP/CBZ can have a UTF-8 JSON sidecar in the same directory. Its name is the **complete archive file name plus `.metadata.json`**, retaining the `.zip` or `.cbz` extension:

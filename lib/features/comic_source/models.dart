@@ -160,6 +160,11 @@ class ComicDetails with HistoryMixin {
   /// id-name
   final ComicChapters? chapters;
 
+  final Map<String, int> chapterPageCounts;
+
+  /// Display-only chapter groups; reading identities and order stay unchanged.
+  final Map<String, String> chapterGroups;
+
   final List<String>? thumbnails;
 
   final List<Comic>? recommend;
@@ -215,6 +220,15 @@ class ComicDetails with HistoryMixin {
     };
   }
 
+  static Map<String, int> _generatePageCounts(Object? value) {
+    if (value is! Map) return const {};
+    return {
+      for (final entry in value.entries)
+        if (entry.key is String && entry.value is int && entry.value > 0)
+          entry.key as String: entry.value as int,
+    };
+  }
+
   ComicDetails.fromJson(Map<String, dynamic> json)
     : title = json["title"],
       subTitle = json["subtitle"],
@@ -222,6 +236,8 @@ class ComicDetails with HistoryMixin {
       description = json["description"],
       tags = _generateMap(json["tags"]),
       chapters = ComicChapters.fromJsonOrNull(json["chapters"]),
+      chapterPageCounts = _generatePageCounts(json["chapterPageCounts"]),
+      chapterGroups = _generateStringMap(json["chapterGroups"]),
       sourceKey = json["sourceKey"],
       comicId = json["comicId"],
       thumbnails = ListOrNull.from(json["thumbnails"]),
@@ -252,6 +268,8 @@ class ComicDetails with HistoryMixin {
       "description": description,
       "tags": tags,
       "chapters": chapters,
+      "chapterPageCounts": chapterPageCounts,
+      "chapterGroups": chapterGroups,
       "thumbnails": thumbnails,
       "recommend": null,
       "sourceKey": sourceKey,

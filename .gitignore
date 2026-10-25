@@ -14,6 +14,7 @@ migrate_working_dir/
 .worktrees/
 docs/
 cache/
+dist/
 
 # IntelliJ 相关
 *.iml

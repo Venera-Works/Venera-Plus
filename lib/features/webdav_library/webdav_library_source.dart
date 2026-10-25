@@ -13,6 +13,7 @@ import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/extensions.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/res.dart';
+import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/throttled_task_runner.dart';
 import 'package:venera_plus/network/webdav.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
@@ -1571,6 +1572,9 @@ class WebDavLibrarySource {
     }
     try {
       final snapshot = await _loadSnapshot(config, id);
+      final archiveDisplay = snapshot.archive == null
+          ? null
+          : _archiveChapterDisplay(snapshot.archive!);
       return Res(
         ComicDetails.fromJson({
           'title': snapshot.title,
@@ -1579,10 +1583,13 @@ class WebDavLibrarySource {
           'description': snapshot.description,
           'tags': snapshot.detailTags,
           'chapters':
-              snapshot.chapters.length == 1 &&
-                  snapshot.chapters.containsKey(rootChapterId)
-              ? null
-              : snapshot.chapters,
+              archiveDisplay?.titles ??
+              (snapshot.chapters.length == 1 &&
+                      snapshot.chapters.containsKey(rootChapterId)
+                  ? null
+                  : snapshot.chapters),
+          'chapterGroups': archiveDisplay?.groups,
+          'chapterPageCounts': snapshot.archive?.chapterPageCounts,
           'sourceKey': _activeSourceKey,
           'comicId': id,
           'externalIds': {
@@ -1606,6 +1613,39 @@ class WebDavLibrarySource {
     } catch (e) {
       return Res.error(e.toString());
     }
+  }
+
+  static ({Map<String, String> titles, Map<String, String> groups})
+  _archiveChapterDisplay(RemoteArchiveComic archive) {
+    final titles = Map<String, String>.from(archive.chapterTitles);
+    if (archive.metadata?.chapters?.isNotEmpty == true) {
+      return (titles: titles, groups: const {});
+    }
+    final rootTitle = titles[rootChapterId];
+    if (rootTitle == 'Full book' || rootTitle == 'Images') {
+      titles[rootChapterId] = rootTitle!.tl;
+    }
+    final groups = <String, String>{};
+    for (final entry in titles.entries) {
+      if (!entry.key.startsWith('dir:')) continue;
+      final slash = entry.value.lastIndexOf('/');
+      if (slash > 0) groups[entry.key] = entry.value.substring(0, slash);
+    }
+    if (groups.isEmpty) return (titles: titles, groups: const {});
+    for (final id in titles.keys) {
+      groups.putIfAbsent(id, () => 'Other chapters'.tl);
+    }
+    final grouped = <String, List<String>>{};
+    for (final id in titles.keys) {
+      grouped.putIfAbsent(groups[id]!, () => []).add(id);
+    }
+    if (!listEquals(
+      grouped.values.expand((ids) => ids).toList(),
+      titles.keys.toList(),
+    )) {
+      return (titles: titles, groups: const {});
+    }
+    return (titles: titles, groups: groups);
   }
 
   static Future<Res<List<String>>> loadComicPages(String id, String? ep) async {

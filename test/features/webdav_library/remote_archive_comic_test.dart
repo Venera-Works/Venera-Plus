@@ -579,6 +579,211 @@ void main() {
     await expectLater(deferred.inspect(fixture.read), throwsFormatException);
   });
 
+  test(
+    'uses Full book for a plain root without inferring numeric titles',
+    () async {
+      for (final folder in ['Book', '123', '漫画3', 'Book第03卷']) {
+        final fixture = _zip({
+          '$folder/2.jpg': [2],
+          '$folder/1.jpg': [1],
+        });
+        final comic = await _inspect(fixture, path: '/library/Comic 2024.cbz');
+        expect(comic.chapters, {'__root__': 'Images'}, reason: folder);
+        expect(comic.chapterTitles, {'__root__': 'Full book'}, reason: folder);
+        expect(comic.chapterPageCounts, {'__root__': 2});
+      }
+      final summary = RemoteArchiveComic(
+        path: '/library/第03卷.cbz',
+        size: 0,
+        chapters: const {'old-id': '旧名称'},
+      );
+      expect(summary.chapterTitles, summary.chapters);
+      expect(summary.chapterPageCounts, isEmpty);
+    },
+  );
+
+  test('keeps a mixed root image group distinct from a full book', () async {
+    for (final folder in ['Book', '第1卷']) {
+      final fixture = _zip({
+        '$folder/1.jpg': [1],
+        '$folder/第2话/2.jpg': [2],
+        '$folder/第2话/1.jpg': [1],
+      });
+      final comic = await _inspect(fixture, path: '/library/漫画 第99话.cbz');
+      expect(comic.chapters, {'__root__': 'Images', 'dir:第2话': '第2话'});
+      expect(comic.chapterTitles, {
+        '__root__': 'Images',
+        'dir:第2话': folder == 'Book' ? '第2话' : '第1卷/第2话',
+      });
+      expect(comic.chapterPageCounts, {'__root__': 1, 'dir:第2话': 2});
+      expect(comic.chapterImages.keys.toList(), ['__root__', 'dir:第2话']);
+    }
+  });
+
+  test(
+    'retains an explicit stripped root as the single chapter title',
+    () async {
+      for (final folder in ['全1卷', '第01卷', '第1话', 'Chapter 3', 'Vol.2', '番外']) {
+        final fixture = _zip({
+          '$folder/cover.jpg': [0],
+          '$folder/10.jpg': [10],
+          '$folder/2.jpg': [2],
+          '$folder/.hidden.jpg': [3],
+          '__MACOSX/1.jpg': [4],
+        });
+        final comic = await _inspect(fixture, path: '/library/漫画 第99话.cbz');
+        fixture.calls.clear();
+        final version = comic.version;
+        final key = comic.imageKey('$folder/2.jpg');
+        expect(comic.chapters, {'__root__': 'Images'});
+        expect(comic.chapterTitles, {'__root__': folder});
+        expect(comic.chapterPageCounts, {'__root__': 2});
+        expect(comic.chapterImages, {
+          '__root__': ['$folder/2.jpg', '$folder/10.jpg'],
+        });
+        expect(comic.version, version);
+        expect(comic.imageKey('$folder/2.jpg'), key);
+        expect(fixture.calls, isEmpty);
+      }
+    },
+  );
+
+  test(
+    'extracts only explicit Chinese or English chapter tokens from filenames',
+    () async {
+      final fixture = _zip({
+        'Book/1.jpg': [1],
+      });
+      for (final entry in {
+        '[作者] 漫画 第03卷 完整版.cbz': '第03卷',
+        '漫画第12话.zip': '第12话',
+        '漫画2024第03卷.cbz': '第03卷',
+        'Manga Vol. 2 [Artist].cbz': 'Vol. 2',
+        'Book Chapter 10.zip': 'Chapter 10',
+        'Book Volume 3.cbz': 'Volume 3',
+        'Comic2.cbz': 'Full book',
+        'Comic 2024.cbz': 'Full book',
+        'NovelVolume2Story.cbz': 'Full book',
+      }.entries) {
+        final comic = await _inspect(fixture, path: '/library/${entry.key}');
+        expect(comic.chapterTitles, {
+          '__root__': entry.value,
+        }, reason: entry.key);
+        expect(comic.chapters, {'__root__': 'Images'});
+      }
+    },
+  );
+
+  test(
+    'keeps nested chapter IDs and page order while displaying a stripped volume',
+    () async {
+      final fixture = _zip({
+        '第1卷/第10话/2.jpg': [2],
+        '第1卷/第2话/10.jpg': [10],
+        '第1卷/第2话/2.jpg': [2],
+        '第1卷/第10话/1.jpg': [1],
+        '第1卷/第2话/1.jpg': [1],
+        '第1卷/cover.jpg': [0],
+      });
+      final comic = await _inspect(fixture);
+      final saved = jsonDecode(jsonEncode(comic.toJson()));
+      final version = comic.version;
+      final key = comic.imageKey('第1卷/第2话/2.jpg');
+      fixture.calls.clear();
+
+      expect(comic.chapters, {'dir:第2话': '第2话', 'dir:第10话': '第10话'});
+      expect(comic.chapterTitles, {
+        'dir:第2话': '第1卷/第2话',
+        'dir:第10话': '第1卷/第10话',
+      });
+      expect(comic.chapterPageCounts, {'dir:第2话': 3, 'dir:第10话': 2});
+      expect(comic.chapterImages, {
+        'dir:第2话': ['第1卷/第2话/1.jpg', '第1卷/第2话/2.jpg', '第1卷/第2话/10.jpg'],
+        'dir:第10话': ['第1卷/第10话/1.jpg', '第1卷/第10话/2.jpg'],
+      });
+      expect(comic.toJson(), saved);
+      expect(comic.version, version);
+      expect(comic.imageKey('第1卷/第2话/2.jpg'), key);
+      expect(fixture.calls, isEmpty);
+
+      final cached = RemoteArchiveComic.fromJson(saved);
+      expect(cached.chapterTitles, comic.chapterTitles);
+      expect(cached.chapterPageCounts, comic.chapterPageCounts);
+      expect(cached.toJson(), saved);
+      expect(cached.version, version);
+      expect(cached.imageKey('第1卷/第2话/2.jpg'), key);
+    },
+  );
+
+  test(
+    'keeps explicit metadata chapter titles ahead of directory and filename tokens',
+    () async {
+      const embedded = ComicMetaData(
+        title: '漫画',
+        author: '',
+        tags: [],
+        chapters: [
+          ComicChapter(title: '开篇', start: 1, end: 2),
+          ComicChapter(title: '后记', start: 3, end: 3),
+        ],
+      );
+      final fixture = _zip({
+        '第1卷/1.jpg': [1],
+        '第1卷/2.jpg': [2],
+        '第1卷/3.jpg': [3],
+        '第1卷/metadata.json': utf8.encode(jsonEncode(embedded.toJson())),
+      });
+      final comic = await _inspect(fixture, path: '/library/漫画 第99话.cbz');
+      expect(comic.chapterTitles, {
+        '__cbz_range_0': '开篇',
+        '__cbz_range_1': '后记',
+      });
+      expect(comic.chapterTitles, comic.chapters);
+      expect(comic.chapterPageCounts, {'__cbz_range_0': 2, '__cbz_range_1': 1});
+      final overridden = comic.withMetadata(
+        const ComicMetaData(
+          title: '旁车漫画',
+          author: '',
+          tags: [],
+          chapters: [ComicChapter(title: '特别选读', start: 2, end: 3)],
+        ),
+      );
+      expect(overridden.chapterTitles, {'__cbz_range_0': '特别选读'});
+      expect(overridden.chapterPageCounts, {'__cbz_range_0': 2});
+      expect(overridden.withMetadata(null).chapterTitles, comic.chapterTitles);
+    },
+  );
+
+  test(
+    'derives new titles from legacy cached indexes without rewriting raw chapters',
+    () async {
+      final fixture = _zip({
+        '全1卷/1.jpg': [1],
+        '全1卷/2.jpg': [2],
+      });
+      final comic = await _inspect(fixture);
+      final legacy =
+          jsonDecode(jsonEncode(comic.toJson())) as Map<String, dynamic>
+            ..remove('embeddedMetadata');
+      expect(legacy.containsKey('chapterTitles'), isFalse);
+      final cached = RemoteArchiveComic.fromJson(legacy);
+      final saved = jsonDecode(jsonEncode(cached.toJson()));
+      fixture.calls.clear();
+      expect(cached.chapters, {'__root__': 'Images'});
+      expect(cached.chapterTitles, {'__root__': '全1卷'});
+      expect(cached.chapterPageCounts, {'__root__': 2});
+      expect(cached.toJson(), saved);
+      expect(cached.toJson()['chapters'], {'__root__': 'Images'});
+      expect(cached.version, comic.version);
+      expect(cached.imageKey(), comic.imageKey());
+      expect(fixture.calls, isEmpty);
+      final inspected = await cached.inspect(_unexpectedRead);
+      expect(inspected.index, same(cached.index));
+      expect(inspected.chapterTitles, cached.chapterTitles);
+      expect(inspected.chapterImages, comic.chapterImages);
+    },
+  );
+
   test('rejects archives with no visible comic pages', () async {
     for (final files in [
       {
