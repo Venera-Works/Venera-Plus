@@ -35,7 +35,7 @@ flutter test --no-pub
 git diff --check
 ```
 
-New dependencies must document their source, version or commit, rationale, license, upstream status, and alternatives. Do not add `any` dependencies or unfixed Git branches. See [Dependency Governance](doc/development/dependencies.en.md).
+New dependencies must document their source, version or commit, rationale, license, upstream status, and alternatives. Do not add `any` dependencies or unfixed Git branches. See [Dependency Governance](docs/development/dependencies.en.md).
 
 Keep commits focused, use concise Conventional Commits-style messages, and update `CHANGELOG.md` for user-visible or repository-maintenance changes.
 

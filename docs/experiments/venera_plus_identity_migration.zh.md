@@ -93,9 +93,9 @@
      - 生成 Android 分层 Adaptive Icon（前景、背景、monochrome）并适配安全区，生成 iOS/macOS AppIcon 套件。
    - **工程文档与元数据**：
      - 更新根目录 `README.md`、`CONTRIBUTING.md`、`CONTRIBUTING.en.md`；
-     - 更新 `doc/` 下的构建指南、依赖治理规范、命令行与使用手册；
+     - 更新 `docs/` 下的构建指南、依赖治理规范、命令行与使用手册；
      - 在 `CHANGELOG.md` 中为发布版本 `v2.2.3` 维护品牌迁移与独立身份说明；
-     - 更新 `doc/development/git_dependencies.json` 中的项目职责声明，保留所有事实第三方依赖；
+     - 更新 `docs/development/git_dependencies.json` 中的项目职责声明，保留所有事实第三方依赖；
      - 更新根目录 `AGENTS.md` 写入构建许可边界规则。
 
 3. **阶段 2：统一集成与静态验证**

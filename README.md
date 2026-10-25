@@ -28,7 +28,7 @@ VeneraPlus 是一款在手机和电脑上使用的漫画阅读器，可以读本
 | Windows | [Windows-installer.exe](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/VeneraPlus-3.1.3-windows-installer.exe) 安装版，或 [Windows-portable.zip](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/VeneraPlus-3.1.3-windows-portable.zip) 解压便携版 |
 | Linux | Ubuntu / Debian：[.deb（x64）](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/venera-plus_3.1.3_amd64.deb)、[.deb（ARM64）](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/venera-plus_3.1.3_arm64.deb)；Arch Linux：[.pkg.tar.zst（x64）](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/venera-plus-3.1.3-30-x86_64.pkg.tar.zst) |
 | iPhone / iPad | [.ipa](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/VeneraPlus-ios-3.1.3%2B30.ipa)，需自行签名安装 |
-| macOS | 当前暂无正式安装包，可参阅[构建指南](doc/development/build.zh.md)自行构建 |
+| macOS | 当前暂无正式安装包，可参阅[构建指南](docs/development/build.zh.md)自行构建 |
 
 `Source code` 是源码，不是安装包。
 
@@ -56,9 +56,9 @@ VeneraPlus 是一款在手机和电脑上使用的漫画阅读器，可以读本
 
 ## 文档与反馈
 
-- 使用说明：[本地漫画导入](doc/user/import_comic.zh.md) · [多网盘设置](doc/user/multi_cloud.zh.md) · [应用数据同步](doc/user/data_sync.zh.md) · [全部文档](doc/README.md)
+- 使用说明：[本地漫画导入](docs/user/import_comic.zh.md) · [多网盘设置](docs/user/multi_cloud.zh.md) · [应用数据同步](docs/user/data_sync.zh.md) · [全部文档](docs/README.md)
 - 遇到问题：在 [GitHub Issues](https://github.com/Venera-Works/Venera-Plus/issues) 附上系统、应用版本、复现步骤和日志。漫画源内容或失效问题请联系对应源作者。
-- 开发与贡献：使用 **Flutter 3.41.4**，参阅[构建指南](doc/development/build.zh.md)和[贡献指南](CONTRIBUTING.md)。
+- 开发与贡献：使用 **Flutter 3.41.4**，参阅[构建指南](docs/development/build.zh.md)和[贡献指南](CONTRIBUTING.md)。
 
 ## 许可与致谢
 

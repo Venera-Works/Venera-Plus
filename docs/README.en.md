@@ -2,7 +2,7 @@
 
 Default Chinese index: [README.md](README.md)
 
-This is the English companion index for `doc/`. Documents are grouped by type and use `topic.zh.md` / `topic.en.md` language suffixes. The `experiments/` directory is the exception: experiment plans and task notes are maintained in Chinese only.
+This is the English companion index for `docs/`. Documents are grouped by type and use `topic.zh.md` / `topic.en.md` language suffixes. The `experiments/` directory is the exception: experiment plans and task notes are maintained in Chinese only.
 
 ## Directory Rules
 

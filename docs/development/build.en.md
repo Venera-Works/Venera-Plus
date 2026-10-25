@@ -269,6 +269,13 @@ fvm flutter pub get --enforce-lockfile
 
 The Flutter/Dart version or package-source environment usually does not match. Check the Flutter version required by this guide and the output of `fvm flutter doctor -v`; do not immediately delete the lock file.
 
+The repository lock file uses `https://pub.dev`. If the local `PUB_HOSTED_URL` points to another mirror, temporarily align the source for the current PowerShell terminal and retry. Keep `--enforce-lockfile` and preserve the lock file:
+
+```powershell
+$env:PUB_HOSTED_URL = 'https://pub.dev'
+fvm flutter pub get --enforce-lockfile
+```
+
 ### Slow Gradle Downloads
 
 You may temporarily use a local Gradle wrapper mirror or configure a network proxy. Environment-specific URLs must not be committed. Before submitting changes, verify that `gradle-wrapper.properties` does not contain local mirror edits.

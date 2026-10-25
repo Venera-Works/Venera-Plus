@@ -268,6 +268,13 @@ fvm flutter pub get --enforce-lockfile
 
 通常是 Flutter/Dart 版本或包源环境不匹配。先核对本页要求的 Flutter 版本和 `fvm flutter doctor -v` 输出，不要直接删除锁文件。
 
+本仓库锁文件中的包源为 `https://pub.dev`。如果本地 `PUB_HOSTED_URL` 指向其他镜像，在 PowerShell 中为当前终端临时对齐包源后重试，不要去掉 `--enforce-lockfile` 或重写锁文件：
+
+```powershell
+$env:PUB_HOSTED_URL = 'https://pub.dev'
+fvm flutter pub get --enforce-lockfile
+```
+
 ### Gradle 下载过慢
 
 可以在本地临时切换 Gradle wrapper 镜像或配置网络代理，但环境相关地址不应提交到仓库。提交前应确认 `gradle-wrapper.properties` 没有混入本地镜像改动。

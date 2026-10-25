@@ -150,7 +150,7 @@ class _ImportComicsDialogState extends State<ImportComicsDialog> {
           ),
           onPressed: () {
             launchUrlString(
-              "https://github.com/Venera-Works/Venera-Plus/blob/main/doc/user/import_comic.zh.md",
+              "https://github.com/Venera-Works/Venera-Plus/blob/main/docs/user/import_comic.zh.md",
             );
           },
         ).fixWidth(90).paddingRight(8),

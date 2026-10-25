@@ -296,7 +296,7 @@ class _ComicSourcesSliverListState extends State<ComicSourcesSliverList> {
                 tooltip: 'Help'.tl,
                 icon: const Icon(Icons.help_outline),
                 onPressed: () => launchUrlString(
-                  'https://github.com/Venera-Works/Venera-Plus/blob/main/doc/api/comic_source.zh.md',
+                  'https://github.com/Venera-Works/Venera-Plus/blob/main/docs/api/comic_source.zh.md',
                 ),
               ),
               const SourceInstallationSummary(compact: true),

@@ -33,7 +33,7 @@ flutter test --no-pub
 git diff --check
 ```
 
-新增依赖必须说明来源、版本或 commit、使用原因、许可证、上游状态和替代方案。不要提交 `any` 依赖或未固定的 Git 分支。具体规则见[依赖治理](doc/development/dependencies.zh.md)。
+新增依赖必须说明来源、版本或 commit、使用原因、许可证、上游状态和替代方案。不要提交 `any` 依赖或未固定的 Git 分支。具体规则见[依赖治理](docs/development/dependencies.zh.md)。
 
 提交应保持单一目的，提交信息使用简洁的 Conventional Commits 风格。涉及用户可见行为或仓库维护方式时同步更新 `CHANGELOG.md`。
 

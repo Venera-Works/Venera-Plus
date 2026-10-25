@@ -81,7 +81,9 @@ void main() {
   final errors = checkGitDependencies(
     loadYaml(File('pubspec.yaml').readAsStringSync()) as Map,
     loadYaml(File('pubspec.lock').readAsStringSync()) as Map,
-    jsonDecode(File('doc/development/git_dependencies.json').readAsStringSync())
+    jsonDecode(
+          File('docs/development/git_dependencies.json').readAsStringSync(),
+        )
         as Map,
   );
   // Build tools must not bypass the application lockfile and review inventory.
