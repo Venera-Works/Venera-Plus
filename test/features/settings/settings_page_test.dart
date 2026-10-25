@@ -573,17 +573,27 @@ void main() {
         await tester.pumpAndSettle();
         await tester.tap(find.text('A'));
         await tester.pumpAndSettle();
-        await tester.tap(find.byType(FloatingActionButton));
+        await tester.tap(
+          find.descendant(
+            of: find.widgetWithText(ListTile, 'Current folder'),
+            matching: find.byType(Checkbox),
+          ),
+        );
         await tester.pumpAndSettle();
-        await tester.tap(find.text('..'));
+        await tester.tap(find.text('Parent directory'));
         await tester.pumpAndSettle();
         await tester.tap(find.text('B'));
         await tester.pumpAndSettle();
         await tester.tap(find.text('C'));
         await tester.pumpAndSettle();
-        await tester.tap(find.byType(FloatingActionButton));
+        await tester.tap(
+          find.descendant(
+            of: find.widgetWithText(ListTile, 'Current folder'),
+            matching: find.byType(Checkbox),
+          ),
+        );
         await tester.pumpAndSettle();
-        await tester.tap(find.text('Done'));
+        await tester.tap(find.widgetWithText(FilledButton, 'Done'));
         await tester.pumpAndSettle();
       }
 
