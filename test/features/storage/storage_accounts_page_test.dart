@@ -5,12 +5,108 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/features/storage/storage.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 import 'package:venera_plus/routing/webview.dart';
 
 void main() {
+  testWidgets('provider pages show matching fields and return without saving', (
+    tester,
+  ) async {
+    final accounts = _Accounts();
+    await tester.pumpWidget(
+      MaterialApp(home: StorageAccountsPage(accounts: accounts)),
+    );
+    await tester.tap(find.byIcon(Icons.add));
+    await tester.pumpAndSettle();
+    expect(find.text('Add Cloud Storage Account'), findsOneWidget);
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.byType(TextField), findsNothing);
+
+    for (final (driver, fields) in [
+      ('WebDAV', ['URL', 'Username', 'Password']),
+      ('Quark', ['Cookie']),
+      ('115 Open', ['Access Token', 'Refresh Token']),
+      ('BaiduNetdisk', ['Refresh Token']),
+      ('123 Open', ['Refresh Token']),
+      ('Onedrive', ['Refresh Token']),
+      ('GoogleDrive', ['Refresh Token']),
+    ]) {
+      final provider = find.widgetWithText(ListTile, driver);
+      await tester.ensureVisible(provider);
+      await tester.tap(provider);
+      await tester.pumpAndSettle();
+      expect(find.text('Add $driver Account'), findsOneWidget);
+      expect(find.byType(DropdownButtonFormField<String>), findsNothing);
+      expect(find.byType(TextField), findsNWidgets(fields.length + 1));
+      for (final label in fields) {
+        expect(find.widgetWithText(TextField, label), findsOneWidget);
+      }
+      expect(
+        find.text('Log in and authorize'),
+        driver == 'WebDAV' || driver == 'GoogleDrive'
+            ? findsNothing
+            : findsOneWidget,
+      );
+      expect(
+        find.text('Open OpenList token page'),
+        driver == 'GoogleDrive' ? findsOneWidget : findsNothing,
+      );
+
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(find.text('Add Cloud Storage Account'), findsOneWidget);
+      expect(accounts.saved, isNull);
+    }
+
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    expect(find.text('Cloud Storage Accounts'), findsOneWidget);
+    expect(accounts.saved, isNull);
+    expect(accounts.rpc.testCalls, 0);
+  });
+
+  testWidgets('WebDAV selection saves the server credentials', (tester) async {
+    final accounts = _Accounts();
+    await tester.pumpWidget(
+      MaterialApp(home: StorageAccountsPage(accounts: accounts)),
+    );
+    await tester.tap(find.byIcon(Icons.add));
+    await tester.pumpAndSettle();
+    final provider = find.widgetWithText(ListTile, 'WebDAV');
+    await tester.ensureVisible(provider);
+    await tester.tap(provider);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextField, 'Name'), 'My WebDAV');
+    await tester.enterText(
+      find.widgetWithText(TextField, 'URL'),
+      'https://example.com/dav/',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Username'),
+      'reader',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Password'),
+      ' password ',
+    );
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Cloud Storage Accounts'), findsOneWidget);
+    expect(find.text('Add Cloud Storage Account'), findsNothing);
+    expect(accounts.saved!.backend, StorageBackend.webdav);
+    expect(accounts.saved!.driver, 'webdav');
+    expect(accounts.saved!.authorization, {
+      'url': 'https://example.com/dav/',
+      'user': 'reader',
+      'password': ' password ',
+    });
+    expect(accounts.rpc.testCalls, 1);
+  });
+
   testWidgets('duplicate account names stay in the editor until renamed', (
     tester,
   ) async {
@@ -28,6 +124,8 @@ void main() {
     );
     await tester.tap(find.byIcon(Icons.add));
     await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ListTile, 'BaiduNetdisk'));
+    await tester.pumpAndSettle();
     await tester.enterText(
       find.widgetWithText(TextField, 'Name'),
       ' my DRIVE ',
@@ -42,7 +140,7 @@ void main() {
       find.text('An account with this name already exists.'),
       findsOneWidget,
     );
-    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.text('Add BaiduNetdisk Account'), findsOneWidget);
     expect(accounts.saved, same(previous));
     expect(accounts.rpc.testCalls, 0);
 
@@ -52,7 +150,7 @@ void main() {
     );
     await tester.tap(find.text('Save'));
     await tester.pumpAndSettle();
-    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.text('Add BaiduNetdisk Account'), findsNothing);
     expect(accounts.saved?.name, 'Other Drive');
     expect(accounts.rpc.testCalls, 1);
   });
@@ -86,6 +184,8 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byIcon(Icons.add));
     await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ListTile, 'BaiduNetdisk'));
+    await tester.pumpAndSettle();
     await tester.enterText(
       find.widgetWithText(TextField, 'Refresh Token'),
       'refresh',
@@ -100,7 +200,7 @@ void main() {
     expect(find.byType(StorageAccountsPage), findsNothing);
   });
 
-  testWidgets('adding an account returns to the current location form', (
+  testWidgets('adding an account opens above a popup and returns to its form', (
     tester,
   ) async {
     final accounts = _Accounts();
@@ -110,30 +210,48 @@ void main() {
     var directories = <String>['/previous/'];
     await tester.pumpWidget(
       MaterialApp(
-        home: Scaffold(
-          body: StatefulBuilder(
-            builder: (context, setState) => Column(
-              children: [
-                TextField(controller: name),
-                RemoteLocationFields(
-                  accounts: accounts,
-                  accountId: selected?.id,
-                  directories: directories,
-                  onChanged: (account, paths) => setState(() {
-                    selected = account;
-                    directories = paths;
-                  }),
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: TextButton(
+              onPressed: () => showPopUpWidget(
+                context,
+                Scaffold(
+                  body: StatefulBuilder(
+                    builder: (context, setState) => Column(
+                      children: [
+                        TextField(controller: name),
+                        RemoteLocationFields(
+                          accounts: accounts,
+                          accountId: selected?.id,
+                          directories: directories,
+                          onChanged: (account, paths) => setState(() {
+                            selected = account;
+                            directories = paths;
+                          }),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
-              ],
+              ),
+              child: const Text('Configure location'),
             ),
           ),
         ),
       ),
     );
+    await tester.tap(find.text('Configure location'));
+    await tester.pumpAndSettle();
     await tester.tap(find.byType(DropdownButton<String>));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Add Cloud Storage Account').last);
     await tester.pumpAndSettle();
+    final pageWidth =
+        tester.view.physicalSize.width / tester.view.devicePixelRatio;
+    expect(tester.getSize(find.byType(AppBar)).width, pageWidth);
+    await tester.tap(find.widgetWithText(ListTile, 'BaiduNetdisk'));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(find.byType(AppBar)).width, pageWidth);
     await tester.enterText(find.widgetWithText(TextField, 'Name'), 'New Drive');
     await tester.enterText(
       find.widgetWithText(TextField, 'Refresh Token'),
@@ -151,13 +269,24 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Add Cloud Storage Account').last);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Cancel'));
+    await tester.tap(find.widgetWithText(ListTile, 'BaiduNetdisk'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Name'),
+      'Discarded account',
+    );
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    expect(find.text('Add Cloud Storage Account'), findsOneWidget);
+    await tester.pageBack();
     await tester.pumpAndSettle();
     expect(selected?.name, 'New Drive');
     expect(name.text, 'Unfinished library');
+    expect(accounts.saved?.name, 'New Drive');
+    expect(accounts.rpc.testCalls, 1);
   });
 
-  testWidgets('default login shows required tokens and validates them', (
+  testWidgets('Baidu login shows required tokens and validates them', (
     tester,
   ) async {
     final accounts = _Accounts();
@@ -165,6 +294,8 @@ void main() {
       MaterialApp(home: StorageAccountsPage(accounts: accounts)),
     );
     await tester.tap(find.byIcon(Icons.add));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ListTile, 'BaiduNetdisk'));
     await tester.pumpAndSettle();
 
     expect(find.text('Refresh Token'), findsOneWidget);
@@ -435,6 +566,8 @@ void main() {
       MaterialApp(home: StorageAccountsPage(accounts: accounts)),
     );
     await tester.tap(find.byIcon(Icons.add));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ListTile, 'BaiduNetdisk'));
     await tester.pumpAndSettle();
     await tester.enterText(
       find.widgetWithText(TextField, 'Refresh Token'),

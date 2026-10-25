@@ -58,3 +58,6 @@ app.*.map.json
 .agents/
 .omp/
 AGENTS.md
+
+# FVM Version Cache
+.fvm/

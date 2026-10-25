@@ -9,19 +9,25 @@ English version: [build.en.md](build.en.md)
 > **构建权限须知**：未经用户明确允许，禁止运行任何应用构建。
 
 
-- Flutter `3.41.4`
+- FVM，用于管理本地项目 SDK
+- Flutter `3.41.4`，由根目录 `.fvmrc` 固定
 - Dart `>=3.8.0 <4.0.0`
 - JDK `17`，用于 Android 构建
 - Rust 工具链；Android 构建需要安装对应 Android targets
 - 目标平台原生构建环境，例如 Android SDK / NDK、Xcode、Visual Studio 或 Linux GTK/WebKit 依赖
 - Windows 本地构建需要开启系统“开发者模式”；PDF 导入依赖的 `pdfrx` native assets 会在构建时创建符号链接
 
-先检查 Flutter 环境：
+本地命令均在仓库根目录通过 FVM 执行。首次进入项目时，创建 SDK 链接并检查 Flutter 环境：
 
 ```bash
-flutter doctor -v
-flutter --version
+fvm use 3.41.4 --skip-pub-get
+fvm flutter doctor -v
+fvm flutter --version
 ```
+
+`.fvmrc` 纳入版本控制，`.fvm/` 中的 SDK 链接和缓存不提交。VS Code 的 `dart.flutterSdkPath` 和 Android Studio 的 Flutter SDK 路径应指向项目的 `.fvm/flutter_sdk`。Android 的 `local.properties` 为本地生成配置，不提交机器上的 SDK 路径。
+
+调用内部使用 `flutter` 或 `dart` 的脚本时，通过 `fvm exec` 传递项目 SDK 环境，例如 `fvm exec python windows/build.py`。此类脚本涉及应用构建时，仍须先取得用户明确授权。
 
 ## 获取依赖
 
@@ -30,7 +36,8 @@ flutter --version
 ```bash
 git clone https://github.com/Venera-Works/Venera-Plus.git
 cd Venera-Plus
-flutter pub get --enforce-lockfile
+fvm use 3.41.4 --skip-pub-get
+fvm flutter pub get --enforce-lockfile
 ```
 
 > **注意**：官方仓库当前在 GitHub 上为公开仓库（Public；此前曾设为私有并在未鉴权请求时返回 404），克隆与拉取代码可公开访问。正式安装包与版本发布以 GitHub Releases 实际页面状态为准，不能仅从源码分支推断已发布或公网更新可用。
@@ -39,7 +46,7 @@ flutter pub get --enforce-lockfile
 
 ## OpenList 内核
 
-应用不再在本仓库编译 OpenList。各平台构建在 `flutter pub get` 后运行
+应用不再在本仓库编译 OpenList。各平台构建在获取 Flutter 依赖后运行
 `python3 .github/scripts/fetch_openlist_core.py <platform>` 下载固定内核；平台参数为
 `android`、`ios`、`macos-universal`、`windows-x64`、`linux-x64` 或 `linux-arm64`。
 版本、源码提交和资产摘要均保存在 `native/openlist_core/core.lock.json`。先在
@@ -81,9 +88,11 @@ version: "2.11.1"
 
 ```bash
 python .github/scripts/check_structure_imports.py
-dart tool/check_git_dependencies.dart
-flutter analyze --no-pub
-flutter test --no-pub
+fvm dart tool/check_git_dependencies.dart
+fvm dart format .
+fvm dart format --output=none --set-exit-if-changed .
+fvm flutter analyze --no-pub
+fvm flutter test --no-pub
 git diff --check
 ```
 
@@ -166,8 +175,8 @@ storeFile=../keystore.jks
 构建 APK：
 
 ```bash
-flutter pub get --enforce-lockfile
-flutter build apk --release
+fvm flutter pub get --enforce-lockfile
+fvm flutter build apk --release
 ```
 
 Flutter 3.41.4 的 Android Release 构建不要添加 `--no-pub`：该参数还会跳过按 Release 模式重新生成插件注册代码，导致 `GeneratedPluginRegistrant.java` 可能仍引用已被发布编译排除的 `integration_test`。保留前置锁文件校验；两个 Android Release 工作流会在构建后检查 `pubspec.lock` 未变化。详见 [Flutter #163774](https://github.com/flutter/flutter/issues/163774)。
@@ -181,17 +190,17 @@ Flutter 3.41.4 的 Android Release 构建不要添加 `--no-pub`：该参数还�
 在对应操作系统和原生工具链就绪后执行：
 
 ```bash
-flutter pub get --enforce-lockfile
-flutter build windows --no-pub
-flutter build linux --no-pub
-flutter build macos --no-pub
+fvm flutter pub get --enforce-lockfile
+fvm flutter build windows --no-pub
+fvm flutter build linux --no-pub
+fvm flutter build macos --no-pub
 ```
 
 iOS 可先执行无签名构建验证：
 
 ```bash
-flutter pub get --enforce-lockfile
-flutter build ios --release --no-codesign --no-pub
+fvm flutter pub get --enforce-lockfile
+fvm flutter build ios --release --no-codesign --no-pub
 ```
 
 ### Linux Debian 打包
@@ -199,7 +208,7 @@ flutter build ios --release --no-codesign --no-pub
 Linux Debian 安装包使用系统自带的 `dpkg-deb` 工具与项目脚本 `debian/build.py` 打包：
 
 ```bash
-flutter build linux --release --no-pub
+fvm flutter build linux --release --no-pub
 python debian/build.py --skip-build
 ```
 
@@ -252,12 +261,12 @@ AI Issue 检查默认关闭。仅在确认 `API_URL`、`API_KEY` 可用后，将
 通常是依赖版本漂移。恢复仓库中的 `pubspec.lock`，确认 Flutter 版本符合要求，再运行：
 
 ```bash
-flutter pub get --enforce-lockfile
+fvm flutter pub get --enforce-lockfile
 ```
 
 ### 提示 `Unable to satisfy pubspec.yaml using pubspec.lock`
 
-通常是 Flutter/Dart 版本或包源环境不匹配。先核对本页要求的 Flutter 版本和 `flutter doctor -v` 输出，不要直接删除锁文件。
+通常是 Flutter/Dart 版本或包源环境不匹配。先核对本页要求的 Flutter 版本和 `fvm flutter doctor -v` 输出，不要直接删除锁文件。
 
 ### Gradle 下载过慢
 

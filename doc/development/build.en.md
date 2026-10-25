@@ -9,19 +9,25 @@ This guide is for developers building, testing, or maintaining VeneraPlus (repos
 > **Build Permission Notice**: Application builds are prohibited without explicit user permission. 
 
 
-- Flutter `3.41.4`
+- FVM to manage the local project SDK
+- Flutter `3.41.4`, pinned in the root `.fvmrc`
 - Dart `>=3.8.0 <4.0.0`
 - JDK `17` for Android builds
 - A Rust toolchain; Android builds require the corresponding Android targets
 - Native tooling for the target platform, such as Android SDK / NDK, Xcode, Visual Studio, or Linux GTK/WebKit dependencies
 - Windows local builds require Developer Mode because the `pdfrx` native assets used by PDF import create symbolic links during the build
 
-Check the Flutter environment first:
+Run local commands through FVM from the repository root. On first opening the project, create the SDK link and check the Flutter environment:
 
 ```bash
-flutter doctor -v
-flutter --version
+fvm use 3.41.4 --skip-pub-get
+fvm flutter doctor -v
+fvm flutter --version
 ```
+
+Commit `.fvmrc`, but keep SDK links and caches under `.fvm/` out of version control. Point VS Code's `dart.flutterSdkPath` and Android Studio's Flutter SDK path to the project's `.fvm/flutter_sdk`. Android's `local.properties` is generated locally; do not commit machine-specific SDK paths.
+
+Use `fvm exec` for scripts that invoke `flutter` or `dart` internally, for example `fvm exec python windows/build.py`. Scripts that build an application still require explicit user authorization.
 
 ## Dependencies
 
@@ -30,7 +36,8 @@ Clone the repository and resolve dependencies from its lock file:
 ```bash
 git clone https://github.com/Venera-Works/Venera-Plus.git
 cd Venera-Plus
-flutter pub get --enforce-lockfile
+fvm use 3.41.4 --skip-pub-get
+fvm flutter pub get --enforce-lockfile
 ```
 
 > **Note**: The official repository is currently public on GitHub (previously set to private where unauthenticated API requests returned 404); cloning and fetching code is publicly accessible. Official installation packages and releases are subject to the actual state on GitHub Releases; do not infer release status or public update availability solely from source branches.
@@ -39,7 +46,7 @@ Do not delete or regenerate `pubspec.lock` without understanding the dependency 
 
 ## OpenList core
 
-This repository no longer compiles OpenList. After `flutter pub get`, each platform build runs
+This repository no longer compiles OpenList. After resolving Flutter dependencies, each platform build runs
 `python3 .github/scripts/fetch_openlist_core.py <platform>` to download the fixed core; supported
 platforms are `android`, `ios`, `macos-universal`, `windows-x64`, `linux-x64`, and `linux-arm64`.
 The version, source commit, and asset digests are in `native/openlist_core/core.lock.json`. Release
@@ -82,9 +89,11 @@ Run at least the following before submitting code:
 
 ```bash
 python .github/scripts/check_structure_imports.py
-dart tool/check_git_dependencies.dart
-flutter analyze --no-pub
-flutter test --no-pub
+fvm dart tool/check_git_dependencies.dart
+fvm dart format .
+fvm dart format --output=none --set-exit-if-changed .
+fvm flutter analyze --no-pub
+fvm flutter test --no-pub
 git diff --check
 ```
 
@@ -167,8 +176,8 @@ storeFile=../keystore.jks
 Build the APK:
 
 ```bash
-flutter pub get --enforce-lockfile
-flutter build apk --release
+fvm flutter pub get --enforce-lockfile
+fvm flutter build apk --release
 ```
 
 Do not add `--no-pub` to Android Release builds on Flutter 3.41.4: this flag also skips regenerating plugin registration code for Release mode, which can leave `GeneratedPluginRegistrant.java` referencing `integration_test` that has already been excluded from the release compilation. Keep the preceding lockfile check; both Android Release workflows verify that `pubspec.lock` remains unchanged after building. See [Flutter #163774](https://github.com/flutter/flutter/issues/163774).
@@ -182,17 +191,17 @@ Signing files and passwords are sensitive and must not be committed.
 With the native toolchain installed on the corresponding operating system, run:
 
 ```bash
-flutter pub get --enforce-lockfile
-flutter build windows --no-pub
-flutter build linux --no-pub
-flutter build macos --no-pub
+fvm flutter pub get --enforce-lockfile
+fvm flutter build windows --no-pub
+fvm flutter build linux --no-pub
+fvm flutter build macos --no-pub
 ```
 
 Use a no-codesign build to validate iOS first:
 
 ```bash
-flutter pub get --enforce-lockfile
-flutter build ios --release --no-codesign --no-pub
+fvm flutter pub get --enforce-lockfile
+fvm flutter build ios --release --no-codesign --no-pub
 ```
 
 ### Linux Debian Packaging
@@ -200,7 +209,7 @@ flutter build ios --release --no-codesign --no-pub
 Linux Debian packages are built using the host system `dpkg-deb` utility and the project script `debian/build.py`:
 
 ```bash
-flutter build linux --release --no-pub
+fvm flutter build linux --release --no-pub
 python debian/build.py --skip-build
 ```
 
@@ -253,12 +262,12 @@ First confirm that `flutter_rust_bridge` is still `2.11.1` and that dependencies
 This usually means dependency versions have drifted. Restore the repository `pubspec.lock`, confirm the required Flutter version, and run:
 
 ```bash
-flutter pub get --enforce-lockfile
+fvm flutter pub get --enforce-lockfile
 ```
 
 ### `Unable to satisfy pubspec.yaml using pubspec.lock`
 
-The Flutter/Dart version or package-source environment usually does not match. Check the Flutter version required by this guide and the output of `flutter doctor -v`; do not immediately delete the lock file.
+The Flutter/Dart version or package-source environment usually does not match. Check the Flutter version required by this guide and the output of `fvm flutter doctor -v`; do not immediately delete the lock file.
 
 ### Slow Gradle Downloads
 

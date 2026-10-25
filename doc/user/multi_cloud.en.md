@@ -4,7 +4,7 @@ VeneraPlus connects Baidu Netdisk, Quark, 115, 123 Cloud, OneDrive, and Google D
 
 The embedded core is built independently by Venera-OpenList-Core and packaged with the app. The app uses a fixed released core version and does not download or run an OpenList service on the device.
 
-Add accounts in Storage & Sync. For Baidu Netdisk, 115, 123 Cloud, and OneDrive, choose "Log in and authorize" to complete authorization in the app's WebView and fill the tokens automatically, then save and test the connection. Authorization and online token refresh continue to use the official OpenList API. The app does not expose an OpenList HTTP server.
+Choose Add on the cloud account management page in Storage & Sync, then select a provider from its own page to open the matching account form. Enter credentials or authorize the account, then save and test the connection. Editing an existing account opens its form directly. Go back from the form to choose another provider, or go back from the provider list to cancel adding an account. For Baidu Netdisk, 115, 123 Cloud, and OneDrive, choose "Log in and authorize" to complete authorization in the app's WebView and fill the tokens automatically. Authorization and online token refresh continue to use the official OpenList API. The app does not expose an OpenList HTTP server.
 
 Automatic token authorization always uses the parameters provided by OpenList: OAuth App verification for 115 and Baidu; official OAuth verification for 123 Cloud; and personal OAuth App authorization for OneDrive. No client ID or application secret is required from the user.
 
