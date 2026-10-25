@@ -11,6 +11,8 @@ import 'package:venera_plus/foundation/js_engine.dart';
 import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/network/images.dart';
 
+const _ciRequireQuickJs = bool.fromEnvironment('CI_REQUIRE_QUICKJS');
+
 void main() {
   setUp(() {
     App.version = '9.0.0';
@@ -635,7 +637,13 @@ bool _qjsAvailable() {
     engine.evaluate('1 + 1');
     engine.close();
     return true;
-  } catch (_) {
+  } catch (error) {
+    if (_ciRequireQuickJs) {
+      fail(
+        'CI_REQUIRE_QUICKJS=true requires a compatible QuickJS native '
+        'library, but it failed to load: $error',
+      );
+    }
     return false;
   }
 }

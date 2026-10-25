@@ -103,16 +103,19 @@ WebDAV fixtures store directory and file keys as decoded logical paths. Decode o
 
 Pull requests also run `依赖安全审查` and `PR 平台冒烟构建`. Dependency review blocks newly introduced high or critical vulnerabilities. Changes to application code, native platforms, dependencies, build scripts, workflows, or native integration tests trigger Android and Windows Debug smoke builds. The workflow configuration remains the source of truth for exact triggers; documentation-only changes skip platform jobs.
 
-After the existing Windows Debug build, the PR job checks `flutter_qjs_plugin.dll`, `zip_flutter.dll`, and `flutter_windows.dll`, adds the runner directory to `PATH`, and runs the remaining native ZIP and QuickJS cases with `CI_REQUIRE_QUICKJS=true` and `CI_REQUIRE_NATIVE_ZIP=true`:
+After the existing Windows Debug build, the PR job checks `flutter_qjs_plugin.dll`, `zip_flutter.dll`, and `flutter_windows.dll`, adds the runner directory to `PATH`, and runs native ZIP, source transaction and metadata probing tests, plus QuickJS WebSocket, Gzip, Comment, image script, and source callback bridge cases with `CI_REQUIRE_QUICKJS=true` and `CI_REQUIRE_NATIVE_ZIP=true`. Changes to any test file listed below also trigger platform validation:
 
 ```powershell
 flutter test --no-pub --reporter=expanded `
   --dart-define=CI_REQUIRE_QUICKJS=true --dart-define=CI_REQUIRE_NATIVE_ZIP=true `
-  --name 'App data transfer with native ZIP|ComicSourceParser\.probeKey metadata sandboxing|source runtime transactions|SourceFileMetadata' `
+  --name 'App data transfer with native ZIP|ComicSourceParser\.probeKey metadata sandboxing|source runtime transactions|SourceFileMetadata|QuickJS|ComicSourceParser (detects comic\.updateReadProgress|bridges comic\.onImageLoad)' `
   test/features/sync/app_data_transfer_test.dart `
   test/features/comic_source/source_parser_test.dart `
   test/features/comic_source/source_lifecycle_test.dart `
-  test/features/comic_source/source_files_test.dart
+  test/features/comic_source/source_files_test.dart `
+  test/features/comic_source/comic_source_save_test.dart `
+  test/foundation/js_engine_test.dart `
+  test/foundation/image_processing_test.dart
 ```
 
 The strict switches require real native libraries and fail when they are missing. Do not trigger a native build locally to run these tests; use read-only validation only when compatible DLLs and native assets already exist.

@@ -102,16 +102,19 @@ WebDAV 测试夹具的目录和文件键统一使用解码后的逻辑路径；�
 
 PR 还会运行 `依赖安全审查` 和 `PR 平台冒烟构建`。依赖审查会阻止引入高危或严重漏洞依赖；改动涉及业务代码、原生平台目录、依赖、构建脚本、工作流或原生集成测试时，平台工作流会执行 Android 与 Windows Debug 冒烟构建。CI 的具体触发规则以工作流配置为准；文档等不影响构建的改动会跳过平台任务。
 
-Windows PR 任务在**已有 Debug 构建后**检查 `flutter_qjs_plugin.dll`、`zip_flutter.dll` 和 `flutter_windows.dll`，将产物目录加入 `PATH`，并以 `CI_REQUIRE_QUICKJS=true` 和 `CI_REQUIRE_NATIVE_ZIP=true` 运行当前原生 ZIP 与 QuickJS 场景：
+Windows PR 任务在**已有 Debug 构建后**检查 `flutter_qjs_plugin.dll`、`zip_flutter.dll` 和 `flutter_windows.dll`，将产物目录加入 `PATH`，并以 `CI_REQUIRE_QUICKJS=true` 和 `CI_REQUIRE_NATIVE_ZIP=true` 运行原生 ZIP、源事务与元数据探测，以及 QuickJS WebSocket、Gzip、Comment、图片脚本和源回调桥接场景。下列测试文件的修改也会触发平台验证：
 
 ```powershell
 flutter test --no-pub --reporter=expanded `
   --dart-define=CI_REQUIRE_QUICKJS=true --dart-define=CI_REQUIRE_NATIVE_ZIP=true `
-  --name 'App data transfer with native ZIP|ComicSourceParser\.probeKey metadata sandboxing|source runtime transactions|SourceFileMetadata' `
+  --name 'App data transfer with native ZIP|ComicSourceParser\.probeKey metadata sandboxing|source runtime transactions|SourceFileMetadata|QuickJS|ComicSourceParser (detects comic\.updateReadProgress|bridges comic\.onImageLoad)' `
   test/features/sync/app_data_transfer_test.dart `
   test/features/comic_source/source_parser_test.dart `
   test/features/comic_source/source_lifecycle_test.dart `
-  test/features/comic_source/source_files_test.dart
+  test/features/comic_source/source_files_test.dart `
+  test/features/comic_source/comic_source_save_test.dart `
+  test/foundation/js_engine_test.dart `
+  test/foundation/image_processing_test.dart
 ```
 
 严格开关要求真实原生库，缺库时必须失败而非跳过。本机不得为了运行这些测试触发原生构建；仅可在已有兼容 DLL 和原生资源的前提下进行只读验证。
