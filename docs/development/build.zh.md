@@ -96,7 +96,7 @@ fvm flutter test --no-pub
 git diff --check
 ```
 
-CI 会使用 `flutter test --coverage` 生成 `coverage/lcov.info`，在工作流摘要中显示行覆盖率，并上传报告产物。当前覆盖率用于建立可见基线，尚未设置统一硬阈值；涉及关键业务路径的改动仍必须增加针对性测试。
+CI 将静态检查与 2 个 Dart 测试分片并行运行。按路径排序的 `*_test.dart` 文件交替分配给两个分片，分别执行 `flutter test --no-pub --coverage <分片文件清单>`，使每个 runner 只加载自己的测试文件，并上传各自的覆盖率报告。`analyze` 门禁要求静态检查和全部分片成功，再按源文件与行号合并命中次数，重新计算行覆盖率，将结果写入 `coverage/lcov.info`、工作流摘要及 `dart-coverage` 产物。当前覆盖率用于建立可见基线，尚未设置统一硬阈值；涉及关键业务路径的改动仍必须增加针对性测试。
 
 WebDAV 测试夹具的目录和文件键统一使用解码后的逻辑路径；仅在 HTTP 请求入口解码一次，生成 `PROPFIND` 响应的 `href` 时逐段编码。路径回归应覆盖空格、Unicode、字面百分号和大小写，避免上传与目录发现使用不同路径，或重复解码百分号。
 

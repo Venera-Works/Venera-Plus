@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 jobs:
-  analyze:
+  checks:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -36,9 +36,76 @@ jobs:
       - name: 检查 Dart 格式
         run: dart format --output=none --set-exit-if-changed lib test
       - run: flutter analyze --no-fatal-infos --fatal-warnings
-      - run: flutter test --coverage
+
+  tests:
+    name: test shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version-file: pubspec.yaml
+          architecture: x64
+          cache: true
+      - run: flutter pub get --enforce-lockfile
+      - name: 运行测试文件分片
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+        run: |
+          mapfile -d '' -t test_files < <(find test -type f -name '*_test.dart' -print0 | LC_ALL=C sort -z)
+          shard_files=()
+          for index in "${!test_files[@]}"; do
+            if (( index % 2 == SHARD_INDEX )); then
+              shard_files+=("${test_files[$index]}")
+            fi
+          done
+          if (( ${#shard_files[@]} == 0 )); then
+            echo "测试分片 $SHARD_INDEX 没有匹配的测试文件"
+            exit 1
+          fi
+          echo "测试分片 $SHARD_INDEX：${#shard_files[@]} 个文件"
+          flutter test --no-pub --coverage "${shard_files[@]}"
+      - name: 上传分片覆盖率报告
+        uses: actions/upload-artifact@v7
+        with:
+          name: dart-coverage-${{ matrix.shard }}
+          path: coverage/lcov.info
+          if-no-files-found: error
+          retention-days: 14
+
+  analyze:
+    needs: [checks, tests]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: 校验质量检查结果
+        env:
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          TESTS_RESULT: ${{ needs.tests.result }}
+        run: |
+          if [[ "$CHECKS_RESULT" != "success" || "$TESTS_RESULT" != "success" ]]; then
+            echo "质量检查未通过：checks=$CHECKS_RESULT tests=$TESTS_RESULT"
+            exit 1
+          fi
+      - uses: actions/checkout@v7
+      - name: 下载分片覆盖率报告
+        uses: actions/download-artifact@v8
+        with:
+          pattern: dart-coverage-*
+          path: coverage/shards
       - name: 汇总 Dart 覆盖率
-        run: python3 .github/scripts/report_dart_coverage.py coverage/lcov.info --github-summary
+        run: >-
+          python3 .github/scripts/report_dart_coverage.py
+          coverage/shards/dart-coverage-0/lcov.info
+          coverage/shards/dart-coverage-1/lcov.info
+          --output coverage/lcov.info --github-summary
       - name: 上传 Dart 覆盖率报告
         uses: actions/upload-artifact@v7
         with:

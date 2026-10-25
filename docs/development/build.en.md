@@ -97,7 +97,7 @@ fvm flutter test --no-pub
 git diff --check
 ```
 
-CI runs `flutter test --coverage`, publishes line coverage in the workflow summary, and uploads `coverage/lcov.info`. Coverage is currently a visible baseline rather than a repository-wide hard threshold. Changes to critical behavior still require focused tests.
+CI runs static checks and two Dart test shards in parallel. Test files matching `*_test.dart` are sorted by path and assigned alternately to the two shards. Each runs `flutter test --no-pub --coverage <shard file list>` so its runner loads only its assigned files, then uploads its coverage report. The `analyze` gate requires static checks and every shard to succeed, then merges hit counts by source file and line, recalculates line coverage, and publishes `coverage/lcov.info` in the workflow summary and the `dart-coverage` artifact. Coverage is currently a visible baseline rather than a repository-wide hard threshold. Changes to critical behavior still require focused tests.
 
 WebDAV fixtures store directory and file keys as decoded logical paths. Decode once at HTTP ingress, and encode each segment when generating `PROPFIND` response `href` values. Path regressions should cover spaces, Unicode, literal percent signs, and case preservation to catch mismatched upload/listing paths and repeated percent decoding.
 
