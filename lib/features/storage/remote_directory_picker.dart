@@ -24,7 +24,9 @@ class RemoteDirectoryPicker extends StatefulWidget {
 class _RemoteDirectoryPickerState extends State<RemoteDirectoryPicker> {
   var _directory = '/';
   late final List<String> _selected = normalizeRemoteDirectories(
-    widget.initialDirectories,
+    widget.multiSelect
+        ? widget.initialDirectories
+        : widget.initialDirectories.take(1),
   );
   Future<List<RemoteEntry>>? _entries;
   @override
@@ -46,71 +48,124 @@ class _RemoteDirectoryPickerState extends State<RemoteDirectoryPicker> {
     _directory = normalizeRemoteDirectory(path);
     _entries = widget.store.list(_directory);
   });
-  void _select() {
-    if (widget.multiSelect) {
-      setState(() {
-        if (_selected.contains(_directory)) {
-          _selected.remove(_directory);
-        } else {
-          _selected.add(_directory);
-        }
-      });
+  void _select(String path) => setState(() {
+    if (_selected.contains(path)) {
+      _selected.remove(path);
     } else {
-      Navigator.pop(context, [_directory]);
+      if (!widget.multiSelect) _selected.clear();
+      _selected.add(path);
     }
+  });
+
+  Widget _folderTile(String path, String name, {bool current = false}) {
+    final normalizedPath = normalizeRemoteDirectory(path);
+    final selected = _selected.contains(normalizedPath);
+    return ListTile(
+      leading: Icon(current ? Icons.folder_open : Icons.folder_outlined),
+      title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: current
+          ? Text(normalizedPath == '/' ? 'Root directory'.tl : normalizedPath)
+          : null,
+      selected: selected,
+      selectedTileColor: Theme.of(
+        context,
+      ).colorScheme.primaryContainer.withValues(alpha: 0.35),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (!current) const Icon(Icons.chevron_right),
+          Checkbox(value: selected, onChanged: (_) => _select(normalizedPath)),
+        ],
+      ),
+      onTap: current ? null : () => _open(normalizedPath),
+    );
   }
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: Text('Select Remote Directory'.tl),
-      actions: [
-        if (widget.multiSelect)
-          TextButton(
-            onPressed: () => Navigator.pop(context, _selected),
-            child: Text('Done'.tl),
+    appBar: AppBar(title: Text('Select Remote Directory'.tl)),
+    body: SafeArea(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Text(
+              'Current path: @path'.tlParams({'path': _directory}),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
           ),
-      ],
-    ),
-    floatingActionButton: FloatingActionButton(
-      onPressed: _select,
-      child: Icon(
-        widget.multiSelect && _selected.contains(_directory)
-            ? Icons.remove
-            : Icons.check,
+          const Divider(height: 1),
+          _folderTile(_directory, 'Current folder'.tl, current: true),
+          const Divider(height: 1),
+          Expanded(
+            child: FutureBuilder<List<RemoteEntry>>(
+              future: _entries,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState != ConnectionState.done) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snapshot.hasError) {
+                  return Center(child: Text('${snapshot.error}'));
+                }
+                final directories = snapshot.data!
+                    .where((entry) => entry.isDirectory)
+                    .toList();
+                return ListView(
+                  children: [
+                    if (_directory != '/')
+                      ListTile(
+                        leading: const Icon(Icons.arrow_upward),
+                        title: Text('Parent directory'.tl),
+                        onTap: () {
+                          final parts = _directory.split('/')
+                            ..removeWhere((item) => item.isEmpty);
+                          parts.removeLast();
+                          _open(parts.isEmpty ? '/' : '/${parts.join('/')}/');
+                        },
+                      ),
+                    for (final entry in directories)
+                      _folderTile(entry.path, entry.name),
+                    if (directories.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Text('No subfolders'.tl),
+                      ),
+                  ],
+                );
+              },
+            ),
+          ),
+          const Divider(height: 1),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '@count folders selected'.tlParams({
+                      'count': _selected.length,
+                    }),
+                  ),
+                ),
+                const SizedBox(width: 16),
+                FilledButton(
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size(112, 52),
+                  ),
+                  onPressed: !widget.multiSelect && _selected.isEmpty
+                      ? null
+                      : () =>
+                            Navigator.pop(context, List<String>.of(_selected)),
+                  child: Text('Done'.tl),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
-    ),
-    body: FutureBuilder<List<RemoteEntry>>(
-      future: _entries,
-      builder: (context, snapshot) {
-        if (snapshot.hasError) return Center(child: Text('${snapshot.error}'));
-        if (!snapshot.hasData) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        return ListView(
-          children: [
-            if (_directory != '/')
-              ListTile(
-                leading: const Icon(Icons.arrow_upward),
-                title: Text('..'),
-                onTap: () {
-                  final parts = _directory.split('/')
-                    ..removeWhere((item) => item.isEmpty);
-                  parts.removeLast();
-                  _open(parts.isEmpty ? '/' : '/${parts.join('/')}/');
-                },
-              ),
-            for (final entry in snapshot.data!.where(
-              (item) => item.isDirectory,
-            ))
-              ListTile(
-                leading: const Icon(Icons.folder),
-                title: Text(entry.name),
-                onTap: () => _open(entry.path),
-              ),
-          ],
-        );
-      },
     ),
   );
 }
