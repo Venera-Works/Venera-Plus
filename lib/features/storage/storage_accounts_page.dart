@@ -310,114 +310,134 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                   : 'Edit @provider Account')
               .tlParams({'provider': _driver.tl}),
         ),
-        actions: [
-          TextButton(
-            onPressed: _loggingIn ? null : _save,
-            child: Text('Save'.tl),
-          ),
-        ],
       ),
       body: SafeArea(
-        child: Align(
-          alignment: Alignment.topCenter,
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 640),
-            child: ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
-                TextField(
-                  controller: _name,
-                  decoration: InputDecoration(labelText: 'Name'.tl),
-                ),
-                const SizedBox(height: 16),
-                if (webdav) ...[
-                  TextField(
-                    controller: _url,
-                    decoration: InputDecoration(labelText: 'URL'.tl),
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: _user,
-                    decoration: InputDecoration(labelText: 'Username'.tl),
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: _password,
-                    obscureText: true,
-                    decoration: InputDecoration(labelText: 'Password'.tl),
-                  ),
-                ] else ...[
-                  if (hasLogin) ...[
-                    const SizedBox(height: 16),
-                    SizedBox(
-                      width: double.infinity,
-                      child: FilledButton.icon(
-                        style: FilledButton.styleFrom(
-                          minimumSize: const Size(0, 48),
-                        ),
-                        onPressed: _loggingIn ? null : _login,
-                        icon: const Icon(Icons.login),
-                        label: Text('Log in and authorize'.tl),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                  ],
-                  if (quark)
-                    TextField(
-                      controller: _cookie,
-                      obscureText: true,
-                      autocorrect: false,
-                      enableSuggestions: false,
-                      decoration: InputDecoration(labelText: 'Cookie'.tl),
-                    )
-                  else ...[
-                    if (_driver == '115 Open') ...[
+        child: Column(
+          children: [
+            Expanded(
+              child: Align(
+                alignment: Alignment.topCenter,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 640),
+                  child: ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: [
                       TextField(
-                        controller: _accessToken,
-                        decoration: InputDecoration(
-                          labelText: 'Access Token'.tl,
-                        ),
+                        controller: _name,
+                        decoration: InputDecoration(labelText: 'Name'.tl),
                       ),
                       const SizedBox(height: 16),
-                    ],
-                    TextField(
-                      controller: _refreshToken,
-                      onChanged: _driver == '115 Open'
-                          ? null
-                          : (_) => _accessToken.clear(),
-                      decoration: InputDecoration(
-                        labelText: 'Refresh Token'.tl,
-                      ),
-                    ),
-                    if (!hasLogin) ...[
-                      Text(
-                        'Use parameters provided by OpenList on the token page, then fill in the required tokens.'
-                            .tl,
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                      TextButton.icon(
-                        onPressed: () => launchUrl(
-                          Uri.parse('https://api.oplist.org/'),
-                          mode: LaunchMode.externalApplication,
+                      if (webdav) ...[
+                        TextField(
+                          controller: _url,
+                          decoration: InputDecoration(labelText: 'URL'.tl),
                         ),
-                        icon: const Icon(Icons.open_in_new),
-                        label: Text('Open OpenList token page'.tl),
-                      ),
+                        const SizedBox(height: 16),
+                        TextField(
+                          controller: _user,
+                          decoration: InputDecoration(labelText: 'Username'.tl),
+                        ),
+                        const SizedBox(height: 16),
+                        TextField(
+                          controller: _password,
+                          obscureText: true,
+                          decoration: InputDecoration(labelText: 'Password'.tl),
+                        ),
+                      ] else ...[
+                        if (hasLogin) ...[
+                          const SizedBox(height: 16),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              style: OutlinedButton.styleFrom(
+                                minimumSize: const Size(0, 48),
+                              ),
+                              onPressed: _loggingIn ? null : _login,
+                              icon: const Icon(Icons.login),
+                              label: Text('Log in and authorize'.tl),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                        ],
+                        if (quark)
+                          TextField(
+                            controller: _cookie,
+                            obscureText: true,
+                            autocorrect: false,
+                            enableSuggestions: false,
+                            decoration: InputDecoration(labelText: 'Cookie'.tl),
+                          )
+                        else ...[
+                          if (_driver == '115 Open') ...[
+                            TextField(
+                              controller: _accessToken,
+                              decoration: InputDecoration(
+                                labelText: 'Access Token'.tl,
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                          ],
+                          TextField(
+                            controller: _refreshToken,
+                            onChanged: _driver == '115 Open'
+                                ? null
+                                : (_) => _accessToken.clear(),
+                            decoration: InputDecoration(
+                              labelText: 'Refresh Token'.tl,
+                            ),
+                          ),
+                          if (!hasLogin) ...[
+                            Text(
+                              'Use parameters provided by OpenList on the token page, then fill in the required tokens.'
+                                  .tl,
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                            TextButton.icon(
+                              onPressed: () => launchUrl(
+                                Uri.parse('https://api.oplist.org/'),
+                                mode: LaunchMode.externalApplication,
+                              ),
+                              icon: const Icon(Icons.open_in_new),
+                              label: Text('Open OpenList token page'.tl),
+                            ),
+                          ],
+                        ],
+                      ],
+                      if (_error != null) ...[
+                        const SizedBox(height: 16),
+                        Text(
+                          _error!.tl,
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                        ),
+                      ],
                     ],
-                  ],
-                ],
-                if (_error != null) ...[
-                  const SizedBox(height: 16),
-                  Text(
-                    _error!.tl,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.error,
+                  ),
+                ),
+              ),
+            ),
+            const Divider(height: 1),
+            Center(
+              heightFactor: 1,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 640),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size.fromHeight(52),
+                      ),
+                      onPressed: _loggingIn ? null : _save,
+                      child: Text('Save and test connection'.tl),
                     ),
                   ),
-                ],
-              ],
+                ),
+              ),
             ),
-          ),
+          ],
         ),
       ),
     );

@@ -45,7 +45,7 @@ void main() {
         expect(find.widgetWithText(TextField, label), findsOneWidget);
       }
       expect(
-        find.text('Log in and authorize'),
+        find.widgetWithText(OutlinedButton, 'Log in and authorize'),
         driver == 'WebDAV' || driver == 'GoogleDrive'
             ? findsNothing
             : findsOneWidget,
@@ -67,6 +67,65 @@ void main() {
     expect(accounts.saved, isNull);
     expect(accounts.rpc.testCalls, 0);
   });
+
+  for (final size in [const Size(320, 640), const Size(1200, 800)]) {
+    testWidgets('save stays above the keyboard at ${size.width}', (
+      tester,
+    ) async {
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetViewInsets);
+      addTearDown(tester.view.resetPadding);
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = size;
+      tester.view.padding = const FakeViewPadding(bottom: 24);
+      final accounts = _Accounts();
+      await tester.pumpWidget(
+        MaterialApp(
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context).copyWith(
+              textScaler: TextScaler.linear(size.width < 600 ? 1.3 : 1),
+            ),
+            child: child!,
+          ),
+          home: StorageAccountsPage(accounts: accounts),
+        ),
+      );
+      await tester.tap(find.byIcon(Icons.add));
+      await tester.pumpAndSettle();
+      final provider = find.widgetWithText(ListTile, 'WebDAV');
+      await tester.scrollUntilVisible(provider, 200);
+      await tester.pumpAndSettle();
+      await tester.tap(provider);
+      await tester.pumpAndSettle();
+
+      final save = find.widgetWithText(
+        FilledButton,
+        'Save and test connection',
+      );
+      final url = find.widgetWithText(TextField, 'URL');
+      final password = find.widgetWithText(TextField, 'Password');
+      expect(tester.widget<AppBar>(find.byType(AppBar)).actions, isNull);
+      final originalSaveRect = tester.getRect(save);
+      expect(originalSaveRect.height, greaterThanOrEqualTo(52));
+      expect(originalSaveRect.width, tester.getRect(url).width);
+      expect(originalSaveRect.left, tester.getRect(url).left);
+      expect(originalSaveRect.bottom, closeTo(size.height - 24 - 16, 0.01));
+
+      await tester.showKeyboard(password);
+      tester.view.viewInsets = const FakeViewPadding(bottom: 280);
+      tester.view.padding = FakeViewPadding.zero;
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(password);
+      await tester.pumpAndSettle();
+
+      final saveRect = tester.getRect(save);
+      expect(saveRect.bottom, closeTo(size.height - 280 - 16, 0.01));
+      expect(tester.getRect(password).bottom, lessThan(saveRect.top));
+      expect(save.hitTestable(), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  }
 
   testWidgets('WebDAV selection saves the server credentials', (tester) async {
     final accounts = _Accounts();
@@ -92,7 +151,7 @@ void main() {
       find.widgetWithText(TextField, 'Password'),
       ' password ',
     );
-    await tester.tap(find.text('Save'));
+    await tester.tap(find.text('Save and test connection'));
     await tester.pumpAndSettle();
 
     expect(find.text('Cloud Storage Accounts'), findsOneWidget);
@@ -134,7 +193,7 @@ void main() {
       find.widgetWithText(TextField, 'Refresh Token'),
       'new',
     );
-    await tester.tap(find.text('Save'));
+    await tester.tap(find.text('Save and test connection'));
     await tester.pumpAndSettle();
     expect(
       find.text('An account with this name already exists.'),
@@ -148,7 +207,7 @@ void main() {
       find.widgetWithText(TextField, 'Name'),
       'Other Drive',
     );
-    await tester.tap(find.text('Save'));
+    await tester.tap(find.text('Save and test connection'));
     await tester.pumpAndSettle();
     expect(find.text('Add BaiduNetdisk Account'), findsNothing);
     expect(accounts.saved?.name, 'Other Drive');
@@ -190,7 +249,7 @@ void main() {
       find.widgetWithText(TextField, 'Refresh Token'),
       'refresh',
     );
-    await tester.tap(find.text('Save'));
+    await tester.tap(find.text('Save and test connection'));
     await tester.pumpAndSettle();
     expect(find.text('Use this account for'), findsOneWidget);
     await tester.tap(find.text('App Data Sync'));
@@ -257,7 +316,7 @@ void main() {
       find.widgetWithText(TextField, 'Refresh Token'),
       'refresh',
     );
-    await tester.tap(find.text('Save'));
+    await tester.tap(find.text('Save and test connection'));
     await tester.pumpAndSettle();
     expect(selected?.name, 'New Drive');
     expect(find.text('New Drive'), findsOneWidget);
@@ -304,7 +363,7 @@ void main() {
     expect(find.text('Log in and authorize'), findsOneWidget);
     expect(find.text('Open OpenList token page'), findsNothing);
     expect(find.text('Import token JSON or callback'), findsNothing);
-    await tester.tap(find.text('Save'));
+    await tester.tap(find.text('Save and test connection'));
     await tester.pumpAndSettle();
     expect(find.text('Refresh Token is required'), findsOneWidget);
     expect(accounts.saved, isNull);
@@ -313,7 +372,7 @@ void main() {
       find.widgetWithText(TextField, 'Refresh Token'),
       'refresh',
     );
-    await tester.tap(find.text('Save'));
+    await tester.tap(find.text('Save and test connection'));
     await tester.pumpAndSettle();
     expect(accounts.saved!.authorization['refresh_token'], 'refresh');
     expect(accounts.saved!.authorization['use_online_api'], isTrue);
@@ -343,7 +402,7 @@ void main() {
     expect(tester.widget<TextField>(refresh).controller!.text, 'saved-refresh');
     await tester.ensureVisible(refresh);
     await tester.enterText(refresh, 'edited');
-    await tester.tap(find.text('Save'));
+    await tester.tap(find.text('Save and test connection'));
     await tester.pumpAndSettle();
 
     expect(accounts.saved!.authorization['refresh_token'], 'edited');
@@ -356,7 +415,7 @@ void main() {
       find.widgetWithText(TextField, 'Refresh Token'),
       'edited-again',
     );
-    await tester.tap(find.text('Save'));
+    await tester.tap(find.text('Save and test connection'));
     await tester.pumpAndSettle();
     expect(accounts.saved!.authorization['refresh_token'], 'edited-again');
     expect(accounts.saved!.authorization['root_folder_path'], '/Comics');
@@ -379,7 +438,7 @@ void main() {
     await tester.tap(find.text('123'));
     await tester.pumpAndSettle();
     await tester.enterText(find.widgetWithText(TextField, 'Name'), 'Renamed');
-    await tester.tap(find.text('Save'));
+    await tester.tap(find.text('Save and test connection'));
     await tester.pumpAndSettle();
 
     expect(find.byType(AlertDialog), findsNothing);
@@ -410,7 +469,7 @@ void main() {
     expect(find.text('Refresh Token'), findsNothing);
     expect(find.text('Import token JSON or callback'), findsNothing);
     expect(find.text('Cookie'), findsOneWidget);
-    await tester.tap(find.text('Save'));
+    await tester.tap(find.text('Save and test connection'));
     await tester.pumpAndSettle();
     expect(find.text('Cookie is required'), findsOneWidget);
     expect(accounts.saved!.driver, 'QuarkOpen');
@@ -419,7 +478,7 @@ void main() {
       find.widgetWithText(TextField, 'Cookie'),
       ' __pus=session; __puus=secret ',
     );
-    await tester.tap(find.text('Save'));
+    await tester.tap(find.text('Save and test connection'));
     await tester.pumpAndSettle();
 
     expect(find.byType(AlertDialog), findsNothing);
@@ -545,7 +604,7 @@ void main() {
       find.widgetWithText(TextField, 'Refresh Token'),
     );
     expect(refresh.controller!.text, 'new-refresh');
-    await tester.tap(find.text('Save'));
+    await tester.tap(find.text('Save and test connection'));
     await tester.pumpAndSettle();
     expect(accounts.saved!.authorization['refresh_token'], 'new-refresh');
     expect(accounts.saved!.authorization['client_id'], isEmpty);
@@ -573,7 +632,7 @@ void main() {
       find.widgetWithText(TextField, 'Refresh Token'),
       'refresh',
     );
-    await tester.tap(find.text('Save'));
+    await tester.tap(find.text('Save and test connection'));
     await tester.pumpAndSettle();
 
     expect(find.text(originalError), findsOneWidget);
@@ -585,7 +644,7 @@ void main() {
     accounts.rpc.testError = null;
     await tester.tap(find.text('BaiduNetdisk'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Save'));
+    await tester.tap(find.text('Save and test connection'));
     await tester.pumpAndSettle();
     expect(accounts.rpc.testCalls, 1);
     expect(accounts.saved!.statusMessage, isNull);
