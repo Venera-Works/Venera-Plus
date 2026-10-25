@@ -460,11 +460,12 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Add Cloud Storage Account').last);
       await tester.pumpAndSettle();
+      expect(find.text('Add Cloud Storage Account'), findsOneWidget);
+      await tester.tap(find.widgetWithText(ListTile, 'BaiduNetdisk'));
+      await tester.pumpAndSettle();
+      expect(find.text('Add BaiduNetdisk Account'), findsOneWidget);
       await tester.enterText(
-        find.descendant(
-          of: find.byType(AlertDialog).last,
-          matching: find.widgetWithText(TextField, 'Name'),
-        ),
+        find.widgetWithText(TextField, 'Name'),
         'New Account',
       );
       await tester.enterText(
@@ -483,7 +484,7 @@ void main() {
 
       storage.addListener(onSaved);
       try {
-        await tester.tap(find.text('Save').last);
+        await tester.tap(find.text('Save'));
         await runWidgetIo(tester, () => connected.future);
         await tester.pumpAndSettle();
       } finally {
