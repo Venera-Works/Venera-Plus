@@ -618,9 +618,14 @@ void main() {
           },
         };
 
-        HistorySyncData.applySyncRecords(db, originalRecords);
+        final first = HistorySyncData.applySyncRecords(db, originalRecords);
+        expect(first.historyChanged, isTrue);
         final repeated = HistorySyncData.applySyncRecords(db, originalRecords);
-        expect(repeated.hasChanges, isFalse);
+        expect(
+          repeated.hasChanges,
+          isFalse,
+          reason: 'An unchanged projection must not report changes',
+        );
         final reExported = HistorySyncData.readSyncRecords(db);
         expect(reExported.keys, containsAll(originalRecords.keys));
         for (final entry in originalRecords.entries) {
@@ -729,42 +734,6 @@ void main() {
           isTrue,
           reason:
               'Reading a new chapter must not mutate the sync record of previously read chapters',
-        );
-      },
-      skip: _sqliteAvailable()
-          ? false
-          : 'sqlite3 native library is unavailable',
-    );
-
-    test(
-      'applySyncRecords detects unchanged projection and skips redundant DB writes',
-      () {
-        final db = sqlite3.openInMemory();
-        addTearDown(db.dispose);
-
-        HistorySyncData.ensureSchema(db);
-
-        final records = <String, Map<String, Object?>>{
-          syncRecordKey('history', ['diff-comic', 1]): {
-            'title': 'Diff Test',
-            'subtitle': '',
-            'cover': 'cov.jpg',
-            'maxPage': 10,
-            'readDurationMs': 1000,
-            'readingProgress': _readingProgress(1, 1, null, 5000),
-          },
-        };
-
-        final firstResult = HistorySyncData.applySyncRecords(db, records);
-        expect(firstResult.historyChanged, isTrue);
-
-        // Applying identical projection a second time
-        final secondResult = HistorySyncData.applySyncRecords(db, records);
-        expect(
-          secondResult.hasChanges,
-          isFalse,
-          reason:
-              'Unchanged projection must return hasChanges == false and skip write',
         );
       },
       skip: _sqliteAvailable()

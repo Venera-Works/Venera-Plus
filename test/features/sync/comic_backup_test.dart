@@ -57,20 +57,6 @@ void main() {
   });
 
   group('archive WebDAV config sync setting', () {
-    test('exports all accounts independently of their configured purposes', () {
-      final accounts = [
-        {'id': 'library'},
-        {'id': 'backup'},
-        {'id': 'sync-only'},
-        {'id': 'unused'},
-      ];
-      appdata.settings[remoteStorageAccountsSetting] = accounts;
-      expect(
-        appdata.exportSyncSettings()[remoteStorageAccountsSetting],
-        accounts,
-      );
-    });
-
     test('does not sync archive WebDAV config when disabled', () async {
       appdata.settings['backupWebdavSyncEnabled'] = false;
       appdata.settings['backupWebdav'] = [

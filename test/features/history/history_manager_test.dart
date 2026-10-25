@@ -721,47 +721,6 @@ void main() {
   });
 
   test(
-    'addHistoryAsync writes through an isolate-owned sqlite connection',
-    () async {
-      final dataDir = Directory.systemTemp.createTempSync(
-        'venera-history-data-',
-      );
-      final cacheDir = Directory.systemTemp.createTempSync(
-        'venera-history-cache-',
-      );
-      addTearDown(() {
-        try {
-          HistoryManager().close();
-        } catch (_) {
-          // ignore cleanup failures in partially initialized tests
-        }
-        HistoryManager.cache = null;
-        if (dataDir.existsSync()) {
-          dataDir.deleteSync(recursive: true);
-        }
-        if (cacheDir.existsSync()) {
-          cacheDir.deleteSync(recursive: true);
-        }
-      });
-
-      App.dataPath = dataDir.path;
-      App.cachePath = cacheDir.path;
-      HistoryManager.cache = null;
-
-      final manager = HistoryManager();
-      await manager.init();
-
-      await manager.addHistoryAsync(_history('comic-1'));
-
-      final saved = manager.find('comic-1', ComicType.local);
-      expect(saved, isNotNull);
-      expect(saved!.page, 2);
-      expect(saved.maxPage, 10);
-    },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
-  );
-
-  test(
     'addHistoryAsync queues concurrent writes and updates cache',
     () async {
       final dataDir = Directory.systemTemp.createTempSync(
@@ -803,6 +762,8 @@ void main() {
         final saved = manager.find('comic-$i', ComicType.local);
         expect(saved, isNotNull);
         expect(saved!.title, 'Title comic-$i');
+        expect(saved.page, 2);
+        expect(saved.maxPage, 10);
       }
     },
     skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',

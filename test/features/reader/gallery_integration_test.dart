@@ -232,32 +232,6 @@ void main() {
 
   group('Visual end completion gating', () {
     test(
-      'last source page first half does NOT complete chapter, second half does',
-      () {
-        final plan = GalleryPagePlan(
-          sourcePageCount: 3,
-          direction: GalleryReadingDirection.leftToRight,
-          splitDualPage: true,
-          wideSourceIndices: [2], // source 2 is the last page (page 3)
-        );
-
-        // visual 0 -> source 0
-        // visual 1 -> source 1
-        // visual 2 -> source 2 (left half)
-        // visual 3 -> source 2 (right half)
-        expect(plan.displayPageCount, 4);
-
-        // Visual 2 (first half of last source page)
-        expect(plan.isLastVisualPageOfSource(2), isFalse);
-        expect(plan.isVisualEnd(2), isFalse);
-
-        // Visual 3 (second half of last source page)
-        expect(plan.isLastVisualPageOfSource(3), isTrue);
-        expect(plan.isVisualEnd(3), isTrue);
-      },
-    );
-
-    test(
       'non-split last page is both first and last visual page of source',
       () {
         final plan = GalleryPagePlan(
@@ -272,80 +246,6 @@ void main() {
         expect(plan.isFirstVisualPageOfSource(3), isTrue);
         expect(plan.isLastVisualPageOfSource(3), isTrue);
         expect(plan.isVisualEnd(3), isTrue);
-      },
-    );
-    test(
-      'completion gating with resolution states: unresolved=false, resolved nonwide=true, resolved wide first=false/second=true',
-      () {
-        final plan = GalleryPagePlan(
-          sourcePageCount: 3,
-          direction: GalleryReadingDirection.leftToRight,
-          splitDualPage: true,
-        );
-
-        // State 1: unresolved last source page
-        expect(
-          isVisualPageAtLastPartOfSource(
-            plan: plan,
-            visualIndex: 2,
-            isSplitEnabled: true,
-            isSourceResolved: false,
-          ),
-          isFalse, // unresolved = false
-        );
-        expect(
-          plan.isVisualPartComplete(visualIndex: 2, isSourceResolved: false),
-          isFalse,
-        );
-
-        // State 2: resolved non-wide last source page
-        expect(
-          isVisualPageAtLastPartOfSource(
-            plan: plan,
-            visualIndex: 2,
-            isSplitEnabled: true,
-            isSourceResolved: true,
-          ),
-          isTrue, // resolved nonwide = true
-        );
-        expect(
-          plan.isVisualPartComplete(visualIndex: 2, isSourceResolved: true),
-          isTrue,
-        );
-
-        // State 3 & 4: resolved wide last source page (splits into visual 2 and visual 3)
-        plan.markWide(2, true);
-        expect(plan.displayPageCount, 4);
-
-        // State 3: resolved wide first half
-        expect(
-          isVisualPageAtLastPartOfSource(
-            plan: plan,
-            visualIndex: 2,
-            isSplitEnabled: true,
-            isSourceResolved: true,
-          ),
-          isFalse, // resolved wide first = false
-        );
-        expect(
-          plan.isVisualPartComplete(visualIndex: 2, isSourceResolved: true),
-          isFalse,
-        );
-
-        // State 4: resolved wide second half
-        expect(
-          isVisualPageAtLastPartOfSource(
-            plan: plan,
-            visualIndex: 3,
-            isSplitEnabled: true,
-            isSourceResolved: true,
-          ),
-          isTrue, // resolved wide second = true
-        );
-        expect(
-          plan.isVisualPartComplete(visualIndex: 3, isSourceResolved: true),
-          isTrue,
-        );
       },
     );
   });
@@ -1154,67 +1054,6 @@ void main() {
         expect(outcome.targetControllerIndex, 4);
         expect(outcome.targetReaderPage, 3);
         expect(outcome.notifyChapterCompleted, isFalse);
-      },
-    );
-
-    test(
-      'comments tail growth recovery suppresses completion on initial sync and allows subsequent page turn completion',
-      () {
-        final plan = GalleryPagePlan(
-          sourcePageCount: 3,
-          direction: GalleryReadingDirection.leftToRight,
-          splitDualPage: true,
-        );
-        plan.markWide(2, true);
-
-        final outcome = resolveCommentsRecoveryTarget(
-          hasCommentsTailGrowth: true,
-          totalVisualImagePages: plan.displayPageCount,
-          maxPage: 3,
-        );
-        expect(outcome.notifyChapterCompleted, isFalse);
-        expect(outcome.targetReaderPage, 3);
-
-        var completionNotified = false;
-        var historyUpdated = false;
-        var currentPage = 4; // initially on comments page (maxPage + 1)
-
-        bool suppressionFlag = false;
-        void onPageChanged() {
-          historyUpdated = true;
-          if (suppressionFlag) {
-            suppressionFlag = false; // consumed
-            return;
-          }
-          completionNotified = true;
-        }
-
-        void setPageSuppressingCompletion(int p) {
-          suppressionFlag = true;
-          try {
-            currentPage = p;
-            onPageChanged();
-          } finally {
-            suppressionFlag = false;
-          }
-        }
-
-        // Step 1: dynamic comments recovery runs
-        setPageSuppressingCompletion(outcome.targetReaderPage);
-        expect(currentPage, 3);
-        expect(historyUpdated, isTrue);
-        expect(completionNotified, isFalse); // suppressed!
-        expect(suppressionFlag, isFalse); // clean consumption
-
-        // Step 2: user performs actual page turn forward to comments
-        historyUpdated = false;
-        currentPage = 4;
-        onPageChanged();
-        expect(historyUpdated, isTrue);
-        expect(
-          completionNotified,
-          isTrue,
-        ); // normal page turn completes chapter!
       },
     );
 

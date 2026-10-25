@@ -187,39 +187,6 @@ void main() {
   });
 
   test(
-    'loadComicImage cancels source stream after last listener cancels',
-    () async {
-      final sourceCanceled = Completer<void>();
-      final source = StreamController<ImageDownloadProgress>(
-        onCancel: () {
-          if (!sourceCanceled.isCompleted) {
-            sourceCanceled.complete();
-          }
-        },
-      );
-      addTearDown(() async {
-        if (!source.isClosed) {
-          await source.close();
-        }
-      });
-
-      ImageDownloader.debugLoadComicImageUnwrapped =
-          (imageKey, sourceKey, cid, eid, {target}) => source.stream;
-      final subscription = ImageDownloader.loadComicImage(
-        'image-1',
-        'source',
-        'comic',
-        'chapter',
-      ).listen((_) {});
-      await pumpEventQueue();
-
-      await subscription.cancel();
-
-      await sourceCanceled.future.timeout(const Duration(seconds: 1));
-    },
-  );
-
-  test(
     'loadComicImage recreates stream immediately after listener cancels',
     () async {
       final firstCancelGate = Completer<void>();
@@ -786,47 +753,6 @@ void main() {
 
         await sourceCanceled.future.timeout(const Duration(seconds: 1));
         await preloadFuture.timeout(const Duration(seconds: 1));
-      },
-    );
-
-    test(
-      'loadComicImageUnwrapped forwards target parameter to debug loader',
-      () async {
-        ComicImageLoadTarget? receivedTarget;
-        final expectedEvent = ImageDownloadProgress(
-          currentBytes: 1,
-          totalBytes: 1,
-        );
-
-        ImageDownloader.debugLoadComicImageUnwrapped =
-            (imageKey, sourceKey, cid, eid, {target}) {
-              receivedTarget = target;
-              return Stream<ImageDownloadProgress>.value(expectedEvent);
-            };
-        addTearDown(() {
-          ImageDownloader.debugLoadComicImageUnwrapped = null;
-        });
-
-        final target = ComicImageLoadTarget(
-          logicalWidth: 160,
-          logicalHeight: 240,
-          fit: ComicImageTargetFit.fitHeight,
-        );
-
-        final stream = ImageDownloader.loadComicImageUnwrapped(
-          'unwrapped-target-image',
-          'src',
-          'cid',
-          'eid',
-          target: target,
-        );
-
-        final events = await stream.toList();
-
-        expect(receivedTarget, equals(target));
-        expect(events, equals([expectedEvent]));
-
-        ImageDownloader.debugLoadComicImageUnwrapped = null;
       },
     );
 

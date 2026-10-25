@@ -24,6 +24,8 @@ void main() {
       expect(flow.imageRefAt(3)!.imageKey, 'c2-p3');
       expect(flow.imageRefAt(4)!.chapter, 3);
       expect(flow.imageRefAt(4)!.page, 1);
+      expect(flow.imageRefAt(4)!.eid, 'ep-3');
+      expect(flow.imageRefAt(4)!.imageKey, 'c3-p1');
       expect(flow.imageRefAt(4)!.isFirstInSegment, isTrue);
       expect(flow.imageRefAt(5)!.imageKey, 'c3-p2');
       expect(flow.imageRefAt(6), isNull);

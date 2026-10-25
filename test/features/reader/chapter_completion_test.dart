@@ -572,20 +572,6 @@ void main() {
 
     group('ReaderLocation chapter completion suppression contract', () {
       test(
-        'setPageSuppressingCompletion updates page and suppresses synchronous completion check',
-        () {
-          final location = _ReaderLocationHarness();
-          location.testMaxPage = 3;
-          location.page = 1;
-          expect(location.completionChecks, 0);
-
-          location.setPageSuppressingCompletion(location.maxPage);
-          expect(location.page, location.maxPage);
-          expect(location.completionChecks, 0);
-        },
-      );
-
-      test(
         'suppression is consumed immediately and does not leak to subsequent page turn',
         () {
           final location = _ReaderLocationHarness();

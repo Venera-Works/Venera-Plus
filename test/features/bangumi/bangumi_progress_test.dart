@@ -367,6 +367,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Dropped'), findsOneWidget);
+    expect(gateway.collectionRequests, 1);
   });
 
   testWidgets('legacy binding fetches its missing status once', (tester) async {
@@ -667,19 +668,6 @@ void main() {
     expect(gateway.patches, [
       {'ep_status': 5},
     ]);
-  });
-
-  testWidgets('sync now retries the binding queue then refreshes', (
-    tester,
-  ) async {
-    appdata.settings['bangumiBindings'] = {
-      bangumiBindingKey('source', 'comic'): _binding().toJson(),
-    };
-    await tester.pumpWidget(_panel(gateway));
-    await tester.tap(find.byKey(const Key('bangumi-sync-now')));
-    await tester.pumpAndSettle();
-
-    expect(gateway.collectionRequests, 1);
   });
 
   testWidgets(

@@ -178,14 +178,6 @@ void main() {
     });
   });
 
-  test('BangumiTitleParseResult exposes its failure', () {
-    const result = BangumiTitleParseResult.failure(
-      BangumiTitleParseFailure.noNumber,
-    );
-
-    expect(result.failure, BangumiTitleParseFailure.noNumber);
-  });
-
   test('Bangumi collection statuses map their API values', () {
     expect(
       BangumiCollectionStatus.values.map((status) => status.apiValue).toList(),

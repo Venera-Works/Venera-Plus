@@ -166,33 +166,7 @@ void main() {
     });
   });
 
-  group('WaterfallChapterFlow and Provider reference resolver', () {
-    test('WaterfallChapterFlow index and ref resolution for C2, P1', () {
-      final flow = WaterfallChapterFlow(
-        segments: [
-          WaterfallChapterSegment(
-            chapter: 1,
-            eid: 'e1',
-            images: ['c1_p1', 'c1_p2', 'c1_p3'],
-          ),
-          WaterfallChapterSegment(
-            chapter: 2,
-            eid: 'e2',
-            images: ['c2_p1', 'c2_p2'],
-          ),
-        ],
-      );
-
-      expect(flow.imageIndexOf(chapter: 2, page: 1), 4);
-
-      final ref = flow.imageRefAt(4);
-      expect(ref, isNotNull);
-      expect(ref!.chapter, 2);
-      expect(ref.page, 1);
-      expect(ref.eid, 'e2');
-      expect(ref.imageKey, 'c2_p1');
-    });
-
+  group('Reader image provider reference resolver', () {
     test(
       'createReaderImageReferenceFromProvider with chapter: 2 constructs correct reference',
       () {

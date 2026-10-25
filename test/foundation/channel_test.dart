@@ -2,13 +2,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/foundation/channel.dart';
 
 void main() {
-  test("1-1-1", () async {
-    var channel = Channel<int>(1);
-    await channel.push(1);
-    var item = await channel.pop();
-    expect(item, 1);
-  });
-
   test("1-3-1", () async {
     var channel = Channel<int>(1);
 

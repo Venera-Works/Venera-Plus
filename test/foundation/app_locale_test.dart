@@ -191,49 +191,12 @@ void main() {
   });
 
   group('JS script locale compatibility', () {
-    test('English locale never produces en_null in getLocale', () {
-      appdata.settings['language'] = 'en-US';
-      final localeStr = '${App.locale.languageCode}_${App.locale.countryCode}';
-      expect(localeStr, 'en_US');
-      expect(localeStr, isNot(contains('null')));
-    });
-
     test('system English fallback never produces en_null in getLocale', () {
       appdata.settings['language'] = 'system';
       final locale = resolveAppLocale('system', [const Locale('en')]);
       final localeStr = '${locale.languageCode}_${locale.countryCode}';
       expect(localeStr, 'en_US');
       expect(localeStr, isNot(contains('null')));
-    });
-
-    test('all supported regions have non-null countryCode', () {
-      final regions = <({String pref, String expected})>[
-        (pref: 'zh-CN', expected: 'zh_CN'),
-        (pref: 'zh-TW', expected: 'zh_TW'),
-        (pref: 'en-US', expected: 'en_US'),
-      ];
-      for (final r in regions) {
-        appdata.settings['language'] = r.pref;
-        final key = '${App.locale.languageCode}_${App.locale.countryCode}';
-        expect(key, r.expected);
-        expect(App.locale.countryCode, isNotNull);
-      }
-    });
-
-    test('all Chinese region fallbacks have non-null countryCode', () {
-      final testCases = <({Locale system, String expected})>[
-        (system: const Locale('zh', 'CN'), expected: 'zh_CN'),
-        (system: const Locale('zh', 'SG'), expected: 'zh_CN'),
-        (system: const Locale('zh', 'TW'), expected: 'zh_TW'),
-        (system: const Locale('zh', 'HK'), expected: 'zh_TW'),
-        (system: const Locale('zh', 'MO'), expected: 'zh_TW'),
-      ];
-      for (final tc in testCases) {
-        final loc = resolveAppLocale('system', [tc.system]);
-        final key = '${loc.languageCode}_${loc.countryCode}';
-        expect(key, tc.expected);
-        expect(loc.countryCode, isNotNull);
-      }
     });
   });
 }

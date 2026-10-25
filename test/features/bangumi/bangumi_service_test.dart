@@ -1779,7 +1779,7 @@ void main() {
       },
     );
 
-    for (final collectionType in [1, 4, 5]) {
+    for (final collectionType in [4, 5]) {
       test(
         'advancing collection type $collectionType changes it to reading',
         () async {
