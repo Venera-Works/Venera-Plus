@@ -62,6 +62,31 @@ void main() {
   }
 
   testWidgets(
+    'keyword-hidden count explains missing books and updates when cleared',
+    (tester) async {
+      final comics = [
+        _comic('first', 'Keep'),
+        _comic('second', 'Blocked title'),
+      ];
+      appdata.settings['blockedWords'] = ['Blocked'];
+      await tester.pumpWidget(
+        _host(
+          CustomScrollView(
+            slivers: [SliverGridComics(comics: comics, showHiddenCount: true)],
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Hidden by keyword filters: 1 comics'), findsOneWidget);
+      expect(find.text('Blocked title'), findsNothing);
+      appdata.settings['blockedWords'] = <String>[];
+      await tester.pumpAndSettle();
+      expect(find.text('Hidden by keyword filters: 1 comics'), findsNothing);
+      expect(find.text('Blocked title'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
     'visible badge updates do not revisit or filter the source list',
     (tester) async {
       final comics = _CountingComics([

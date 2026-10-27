@@ -705,11 +705,16 @@ class Settings with ChangeNotifier {
     'searchShortcuts': [],
     'showFavoriteStatusOnTile': true,
     'showHistoryStatusOnTile': false,
+    'showDetailedReadingProgress': false,
     'showUpdateStatusOnTile': true,
     'blockedWords': [],
     'blockedCommentWords': [],
     'defaultSearchTarget': null,
     'autoPageTurningInterval': 5, // in seconds
+    'autoReadingSkipUnavailableImages': false,
+    'autoReadingImageWaitSeconds': 10,
+    'autoReadingKeepScreenOn': true,
+    'showImagePixelDimensions': false,
     'readerMode': 'waterfallTopToBottom', // values of [ReaderMode]
     'autoReaderMode': false,
     'pagedReaderMode': 'galleryRightToLeft',

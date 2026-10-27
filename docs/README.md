@@ -35,6 +35,9 @@
 - [多网盘存储](user/multi_cloud.zh.md) / [Multi-cloud Storage](user/multi_cloud.en.md)
 - [条漫左右边距](user/reader_width.zh.md) / [Reader Side Margins](user/reader_width.en.md)
 - [无头命令模式](user/headless.zh.md) / [Headless Mode](user/headless.en.md)
+- [自动阅读与阅读信息](user/automatic_reading.zh.md) / [Automatic Reading](user/automatic_reading.en.md)
+- [下载与缺页补下载](user/downloads.zh.md) / [Downloads](user/downloads.en.md)
+
 ## 实验和任务跟踪
 
 - [图片增强实验](experiments/image_enhancement.zh.md)

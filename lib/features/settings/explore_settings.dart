@@ -41,6 +41,10 @@ class _BrowsingAndFavoritesSettingsState
           title: "Network Favorite Pages".tl,
           builder: setFavoritesPagesWidget,
         ).toSliver(),
+        SwitchSetting(
+          title: 'Show detailed reading progress'.tl,
+          settingKey: 'showDetailedReadingProgress',
+        ).toSliver(),
         SettingPartTitle(title: "Search & Filtering".tl, icon: Icons.search),
         PopupWindowSetting(
           title: "Search Sources".tl,

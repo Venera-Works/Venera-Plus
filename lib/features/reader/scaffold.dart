@@ -169,6 +169,7 @@ class ReaderScaffoldState extends State<ReaderScaffold>
         _brightnessPanelOpen = false;
       }
     });
+    context.reader.autoReading.pause('menu', _isOpen);
     _applySystemUiMode();
   }
 

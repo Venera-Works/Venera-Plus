@@ -281,3 +281,9 @@ fvm flutter pub get --enforce-lockfile
 ### Gradle 下载过慢
 
 可以在本地临时切换 Gradle wrapper 镜像或配置网络代理，但环境相关地址不应提交到仓库。提交前应确认 `gradle-wrapper.properties` 没有混入本地镜像改动。
+
+## 日志与故障诊断
+
+日志以追加方式保存在应用数据目录的 `logs.txt`（Android 优先使用应用外部存储目录）；写入前脱敏常见认证、Cookie、令牌和密码字段。约 2 MiB 后轮转为 `logs.previous.txt`，保留本次和上一份文件。启动早期日志会补写，正常退出和导出日志前等待写入完成；强制结束进程仍可能丢失未落盘记录。启动失败页可查看、复制发生阶段与脱敏错误详情，Android 保留重试入口。
+
+Windows 的全局隐藏／恢复快捷键位于「设置 → 外观与界面 → 窗口」，默认关闭。配置单独保存在应用数据目录的 `windows_hotkey.json`，不进入应用数据导出或同步；隐藏后可再次按键或启动应用找回主窗口。

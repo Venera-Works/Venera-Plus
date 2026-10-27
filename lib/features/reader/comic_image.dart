@@ -12,6 +12,7 @@ import 'package:venera_plus/foundation/global_state.dart';
 import 'package:venera_plus/foundation/image_provider/reader_image.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/features/reader/gallery_page_plan.dart';
+import 'auto_reading.dart';
 
 class ComicImage extends StatefulWidget {
   /// Modified from flutter Image
@@ -45,6 +46,7 @@ class ComicImage extends StatefulWidget {
     this.onDispose,
     this.onRetry,
     this.zoomController,
+    this.showDimensions = false,
   }) : image = ResizeImage.resizeIfNeeded(cacheWidth, cacheHeight, image),
        assert(cacheWidth == null || cacheWidth > 0),
        assert(cacheHeight == null || cacheHeight > 0);
@@ -95,6 +97,7 @@ class ComicImage extends StatefulWidget {
   final VoidCallback? onRetry;
 
   final PhotoViewController? zoomController;
+  final bool showDimensions;
 
   static void clear() => ComicImageState.clear();
 
@@ -207,11 +210,22 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
 
   bool get readyForAutoReading => _imageInfo != null && _lastException == null;
 
+  AutoReadingImageState get autoReadingImageState => _lastException != null
+      ? AutoReadingImageState.failed
+      : readyForAutoReading
+      ? AutoReadingImageState.ready
+      : AutoReadingImageState.loading;
+
+  Object get autoReadingIdentity => _resolvedImage ?? widget.image;
+
   bool get visibleInReader {
     if (!mounted) return false;
     final box = context.findRenderObject();
     if (box is! RenderBox || !box.hasSize) return false;
-    final bounds = box.localToGlobal(Offset.zero) & box.size;
+    final bounds = MatrixUtils.transformRect(
+      box.getTransformTo(null),
+      Offset.zero & box.size,
+    );
     final screen = Offset.zero & MediaQuery.sizeOf(context);
     final visible = bounds.intersect(screen);
     return visible.width > 1 && visible.height > 1;
@@ -801,6 +815,40 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
             height: height,
             child: Center(child: result),
           );
+          if (widget.showDimensions) {
+            final size = _sourceSize ?? cacheSize ?? imageSize;
+            final dimensions = '${size.width.round()} × ${size.height.round()}';
+            result = Stack(
+              children: [
+                result,
+                Positioned(
+                  top: 8,
+                  right: 8,
+                  child: IgnorePointer(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.65),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 3,
+                        ),
+                        child: Text(
+                          dimensions,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          }
           return result;
         } else {
           // build progress

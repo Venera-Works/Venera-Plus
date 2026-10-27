@@ -1,3 +1,4 @@
+import 'package:venera_plus/foundation/appdata.dart';
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/button.dart';
@@ -363,17 +364,7 @@ class _HistoryPageState extends State<HistoryPage> {
     );
   }
 
-  String getDescription(History h) {
-    var res = "";
-    if (h.ep >= 1) {
-      res += "Chapter @ep".tlParams({"ep": h.ep});
-    }
-    if (h.page >= 1) {
-      if (h.ep >= 1) {
-        res += " - ";
-      }
-      res += "Page @page".tlParams({"page": h.page});
-    }
-    return res;
-  }
+  String getDescription(History h) => h.progressDescription(
+    showTotals: appdata.settings['showDetailedReadingProgress'] == true,
+  );
 }

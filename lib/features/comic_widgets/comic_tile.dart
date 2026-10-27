@@ -39,12 +39,16 @@ class ComicTileState {
     this.isFavorite = false,
     this.historyPage,
     this.historyMaxPage,
+    this.historyDescription,
+    this.historyTooltip,
     this.hasNewUpdate = false,
   });
 
   final bool isFavorite;
   final int? historyPage;
   final int? historyMaxPage;
+  final String? historyDescription;
+  final String? historyTooltip;
   final bool hasNewUpdate;
 }
 
@@ -298,6 +302,7 @@ class ComicTile extends StatelessWidget {
       builder: (context, constraints) {
         final compact = type == 'gallery' && constraints.maxWidth < 88;
         final badgeSize = compact ? 18.0 : 24.0;
+        final detailedProgress = state.historyDescription;
         return Stack(
           children: [
             Positioned.fill(child: child),
@@ -309,7 +314,7 @@ class ComicTile extends StatelessWidget {
                   : 6,
               top: compact ? 6 : 8,
               child: Container(
-                height: badgeSize,
+                height: detailedProgress == null ? badgeSize : null,
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(4),
                 ),
@@ -327,7 +332,40 @@ class ComicTile extends StatelessWidget {
                           color: Colors.white,
                         ),
                       ),
-                    if (historyPage != null)
+                    if (historyPage != null && detailedProgress != null)
+                      Tooltip(
+                        message: state.historyTooltip ?? detailedProgress,
+                        child: Semantics(
+                          label: state.historyTooltip ?? detailedProgress,
+                          excludeSemantics: true,
+                          child: Container(
+                            constraints: BoxConstraints(
+                              maxWidth: math.max(
+                                1,
+                                constraints.maxWidth -
+                                    32 -
+                                    (isFavorite ? badgeSize : 0) -
+                                    (hasUpdate ? badgeSize : 0),
+                              ),
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 4,
+                              vertical: 3,
+                            ),
+                            color: context.colorScheme.primaryContainer,
+                            child: Text(
+                              detailedProgress,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: compact ? 10 : 12,
+                                color: context.colorScheme.onPrimaryContainer,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (historyPage != null && detailedProgress == null)
                       Container(
                         height: badgeSize,
                         color: Colors.blue.toOpacity(0.9),

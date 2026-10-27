@@ -46,6 +46,7 @@ class HistorySyncData {
           chapter_group INTEGER,
           read_duration_ms INTEGER NOT NULL DEFAULT 0,
           reading_progress TEXT,
+          reading_metadata TEXT,
           sync_projection TEXT,
           PRIMARY KEY (id, type)
         );
@@ -66,6 +67,10 @@ class HistorySyncData {
       }
       if (!columnNames.contains("reading_progress")) {
         db.execute("ALTER TABLE history ADD COLUMN reading_progress TEXT;");
+      }
+
+      if (!columnNames.contains('reading_metadata')) {
+        db.execute('ALTER TABLE history ADD COLUMN reading_metadata TEXT;');
       }
 
       // Check primary key configuration: must be exact composite PK (id, type)
@@ -98,6 +103,7 @@ class HistorySyncData {
               chapter_group INTEGER,
               read_duration_ms INTEGER NOT NULL DEFAULT 0,
               reading_progress TEXT,
+          reading_metadata TEXT,
               sync_projection TEXT,
               PRIMARY KEY (id, type)
             );
@@ -105,7 +111,7 @@ class HistorySyncData {
           // Use explicit defaults matching History.fromRow defaults for any legacy NULLs
           db.execute('''
             INSERT OR REPLACE INTO history_migrating (
-              id, title, subtitle, cover, time, type, ep, page, readEpisode, max_page, chapter_group, read_duration_ms, reading_progress, sync_projection
+              id, title, subtitle, cover, time, type, ep, page, readEpisode, max_page, chapter_group, read_duration_ms, reading_progress, reading_metadata, sync_projection
             )
             SELECT
               COALESCE(id, '') AS id,
@@ -121,6 +127,7 @@ class HistorySyncData {
               chapter_group,
               COALESCE(read_duration_ms, 0) AS read_duration_ms,
               reading_progress,
+              reading_metadata,
               sync_projection
             FROM history
             WHERE id IS NOT NULL AND id != ''
@@ -198,7 +205,7 @@ class HistorySyncData {
 
     // 1. Export history and historyChapter domains
     final historyRows = db.select(
-      'SELECT id, title, subtitle, cover, type, readEpisode, max_page, read_duration_ms, reading_progress, sync_projection FROM history;',
+      'SELECT id, title, subtitle, cover, type, readEpisode, max_page, read_duration_ms, reading_progress, reading_metadata, sync_projection FROM history;',
     );
 
     for (final row in historyRows) {
@@ -224,6 +231,8 @@ class HistorySyncData {
         'maxPage': maxPage,
         'readDurationMs': readDurationMs,
         'readingProgress': progress.toJson(),
+        if (row['reading_metadata'] != null)
+          'readingMetadata': jsonDecode(row['reading_metadata'] as String),
       };
       final syncProjection = row['sync_projection'] as String?;
       final projected = syncProjection == null
@@ -514,7 +523,7 @@ class HistorySyncData {
     final existingRows = db.select('''
       SELECT id, type, title, subtitle, cover, max_page, read_duration_ms,
              ep, page, chapter_group, time, readEpisode, reading_progress,
-             sync_projection
+             sync_projection, reading_metadata
       FROM history;
       ''');
     final existingMap = <String, Row>{};
@@ -570,6 +579,22 @@ class HistorySyncData {
       final group = position != null
           ? position.group
           : (localRow?['chapter_group'] as num?)?.toInt();
+      Object? readingMetadata;
+      for (final value in [
+        histRecord?['readingMetadata'],
+        localRow?['reading_metadata'],
+      ]) {
+        final metadata = value is String ? jsonDecode(value) : value;
+        if (metadata is Map &&
+            metadata['ep'] == ep &&
+            metadata['group'] == group) {
+          readingMetadata = metadata;
+          break;
+        }
+      }
+      final readingMetadataJson = readingMetadata == null
+          ? null
+          : canonicalSyncJson(readingMetadata);
       final chapterList = chapMap.keys.toList()..sort();
       final readEpisodeStr = chapterList.join(',');
       final progressJson = canonicalSyncJson(progress.toJson());
@@ -581,6 +606,7 @@ class HistorySyncData {
               'maxPage': maxPage,
               'readDurationMs': readDurationMs,
               'readingProgress': progress.toJson(),
+              'readingMetadata': ?readingMetadata,
             })
           : null;
 
@@ -596,7 +622,8 @@ class HistorySyncData {
             (localRow['max_page'] as num?)?.toInt() == maxPage &&
             (localRow['chapter_group'] as num?)?.toInt() == group &&
             (localRow['read_duration_ms'] as num?)?.round() == readDurationMs &&
-            (localRow['reading_progress'] as String?) == progressJson;
+            (localRow['reading_progress'] as String?) == progressJson &&
+            localRow['reading_metadata'] == readingMetadataJson;
         if (matches) {
           if ((localRow['sync_projection'] as String?) != syncProjection) {
             db.execute(
@@ -613,8 +640,8 @@ class HistorySyncData {
         INSERT OR REPLACE INTO history (
           id, title, subtitle, cover, time, type, ep, page, readEpisode,
           max_page, chapter_group, read_duration_ms, reading_progress,
-          sync_projection
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+          sync_projection, reading_metadata
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         ''',
         [
           comicId,
@@ -631,6 +658,7 @@ class HistorySyncData {
           readDurationMs,
           progressJson,
           syncProjection,
+          readingMetadataJson,
         ],
       );
       changed = true;

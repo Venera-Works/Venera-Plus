@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/menu.dart';
@@ -172,13 +173,13 @@ class _DownloadTaskTileState extends State<_DownloadTaskTile> {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 136,
+      constraints: const BoxConstraints(minHeight: 136),
       padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
       child: Row(
         children: [
           Container(
             width: 82,
-            height: double.infinity,
+            height: 112,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(8),
               color: context.colorScheme.primaryContainer,
@@ -208,6 +209,16 @@ class _DownloadTaskTileState extends State<_DownloadTaskTile> {
                     ),
                     MenuButton(
                       entries: [
+                        if (task case final ImagesDownloadTask images)
+                          MenuEntry(
+                            icon: images.skipUnavailableImages
+                                ? Icons.check_box
+                                : Icons.check_box_outline_blank,
+                            text: 'Continue past unavailable images'.tl,
+                            onClick: () => images.updateSkipUnavailableImages(
+                              !images.skipUnavailableImages,
+                            ),
+                          ),
                         MenuEntry(
                           icon: Icons.close,
                           text: "Cancel".tl,
@@ -226,9 +237,37 @@ class _DownloadTaskTileState extends State<_DownloadTaskTile> {
                     ),
                   ],
                 ),
-                const Spacer(),
+                const SizedBox(height: 8),
                 if (!widget.task.isPaused || widget.task.isError)
-                  Text(widget.task.message, style: ts.s12, maxLines: 3),
+                  InkWell(
+                    onTap: () => showDialog<void>(
+                      context: context,
+                      builder: (_) => AlertDialog(
+                        title: Text(task.title),
+                        content: SingleChildScrollView(
+                          child: SelectableText(task.message),
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Clipboard.setData(
+                              ClipboardData(text: task.message),
+                            ),
+                            child: Text('Copy'.tl),
+                          ),
+                          TextButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: Text('Close'.tl),
+                          ),
+                        ],
+                      ),
+                    ),
+                    child: Text(
+                      widget.task.message,
+                      style: ts.s12,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
                 const SizedBox(height: 4),
                 LinearProgressIndicator(value: widget.task.progress),
                 const SizedBox(height: 8),

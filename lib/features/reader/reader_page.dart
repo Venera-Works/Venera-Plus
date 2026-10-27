@@ -1,3 +1,4 @@
+import 'screen_awake.dart';
 import 'dart:async';
 import 'package:uuid/uuid.dart';
 import 'package:venera_plus/components/loading.dart';
@@ -148,11 +149,26 @@ class ReaderState extends State<Reader>
         WidgetsBindingObserver {
   late final AutoReadingController autoReadingController;
   AutoReadingController get autoReading => autoReadingController;
+  final _screenAwake = ReaderScreenAwakeController(supported: App.isMobile);
+  bool _foreground = true;
+
+  void _syncScreenAwake() {
+    unawaited(
+      _screenAwake.setEnabled(
+        mounted &&
+            _foreground &&
+            autoReadingController.isActive &&
+            readerSetting('autoReadingKeepScreenOn') == true &&
+            (ModalRoute.of(context)?.isCurrent ?? true),
+      ),
+    );
+  }
 
   dynamic readerSetting(String key) =>
       appdata.settings.getReaderSetting(cid, type.sourceKey, key);
   @override
   void update() {
+    _syncScreenAwake();
     setState(() {});
   }
 
@@ -268,6 +284,12 @@ class ReaderState extends State<Reader>
     autoReadingController = AutoReadingController(
       settings: () => AutoReadingSettings(
         gallery: mode.isGallery,
+        skipUnavailableImages:
+            readerSetting('autoReadingSkipUnavailableImages') == true,
+        imageWaitSeconds:
+            (readerSetting('autoReadingImageWaitSeconds') as num?)
+                ?.toDouble() ??
+            10,
         pageInterval:
             (readerSetting('autoPageTurningInterval') as num?)?.toDouble() ??
             5.0,
@@ -279,6 +301,18 @@ class ReaderState extends State<Reader>
         pixelsPerStep:
             (readerSetting('autoScrollDistance') as num?)?.toDouble() ?? 40.0,
       ),
+      imageReadiness: () {
+        final viewport = imageViewController;
+        if (isOnChapterCommentsPage) {
+          return const AutoReadingImageReadiness(
+            AutoReadingImageState.ready,
+            0,
+          );
+        }
+        return viewport is AutoReadingImageViewport
+            ? (viewport as AutoReadingImageViewport).autoReadingImages
+            : const AutoReadingImageReadiness(AutoReadingImageState.blocked, 0);
+      },
       canAdvance: () {
         final controller = imageViewController;
         if (controller is! AutoReadingViewport) return false;
@@ -305,7 +339,8 @@ class ReaderState extends State<Reader>
         if (toNextPage(source: ReadingNavigationSource.automatic)) {
           return AutoReadingStep.advanced;
         }
-        if (!controller.isAtLastVisualPartOfSource()) {
+        if (!controller.isAtLastVisualPartOfSource() &&
+            readerSetting('autoReadingSkipUnavailableImages') != true) {
           return AutoReadingStep.waiting;
         }
         if (across && chapter < maxChapter) {
@@ -549,6 +584,7 @@ class ReaderState extends State<Reader>
       fullscreen();
     }
     autoPageTurningTimer?.cancel();
+    unawaited(_screenAwake.dispose());
     autoReadingController.removeListener(update);
     autoReadingController.dispose();
     clearNavigationCommands();
@@ -593,6 +629,7 @@ class ReaderState extends State<Reader>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _foreground = state == AppLifecycleState.resumed;
     autoReadingController.pause(
       'lifecycle',
       state != AppLifecycleState.resumed,
@@ -679,6 +716,7 @@ class ReaderState extends State<Reader>
       );
     }
     _checkImagesPerPageChange();
+    _syncScreenAwake();
     return KeyboardListener(
       focusNode: focusNode,
       autofocus: true,
@@ -851,6 +889,16 @@ class ReaderState extends State<Reader>
     item.page = sourcePage;
     item.maxPage = images!.length;
     item.ep = localEpisode;
+    final chapterList = widget.chapters;
+    final groupIndex = chapterEntry?.group;
+    item.chapterTitle = _chapterTitles.elementAtOrNull(chapter - 1);
+    item.groupTitle = groupIndex == null
+        ? null
+        : chapterList?.groups.elementAtOrNull(groupIndex - 1);
+    item.maxChapter = groupIndex == null
+        ? chapterList?.length
+        : chapterList?.getGroupByIndex(groupIndex - 1).length;
+
     if (chapterEntry?.group != null) {
       item.group = chapterEntry!.group;
       item.readEpisode.add('${chapterEntry.group}-$localEpisode');

@@ -3,3 +3,4 @@ export 'home_page.dart';
 export 'library_page.dart';
 export 'main_page.dart';
 export 'startup_page.dart';
+export 'startup_failure.dart';

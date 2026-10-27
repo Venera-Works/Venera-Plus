@@ -77,6 +77,8 @@ Feature domains must not depend on `app_shell/`.
 `app_runtime/` owns startup and runtime modes:
 
 - `init.dart`: startup initialization and callback registration.
+- `android_downloads.dart`: binds the existing download queue to the Android foreground service, notification pause actions, network recovery and lifecycle without a second download engine.
+- `windows_hotkey.dart`: assembles the Windows main-window global shortcut, its device-local configuration and native registration channel.
 - `headless.dart`: headless command mode.
 
 Feature domains must not depend on `app_runtime/`.

@@ -1,3 +1,4 @@
+#include "window_hotkey_channel.h"
 #pragma comment(lib, "winhttp.lib")
 #include "flutter_window.h"
 #include "startup_log.h"
@@ -220,6 +221,8 @@ bool FlutterWindow::OnCreate() {
       }
   });
 
+  window_hotkey_.SetWindow(GetHandle());
+  RegisterWindowHotkeyChannel(flutter_controller_->engine()->messenger(), window_hotkey_);
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -236,6 +239,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  window_hotkey_.Shutdown();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
@@ -259,6 +263,7 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  if (message == WM_HOTKEY && window_hotkey_.HandleHotkey(wparam)) return 0;
   // Give Flutter, including plugins, an opportunity to handle window messages.
     UINT button = GET_XBUTTON_WPARAM(wparam);
     if (button == XBUTTON1 && message == 528)

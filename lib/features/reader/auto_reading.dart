@@ -5,6 +5,33 @@ enum AutoReadingStatus { stopped, running, paused, waiting }
 
 enum AutoReadingStep { advanced, waiting, finished }
 
+enum AutoReadingImageState { ready, loading, failed, blocked }
+
+class AutoReadingImageReadiness {
+  const AutoReadingImageReadiness(this.state, this.identity);
+  final AutoReadingImageState state;
+  final Object identity;
+}
+
+AutoReadingImageState combineAutoReadingImageStates(
+  Iterable<AutoReadingImageState> images,
+) {
+  final states = images.toSet();
+  if (states.contains(AutoReadingImageState.blocked)) {
+    return AutoReadingImageState.blocked;
+  }
+  if (states.isEmpty || states.contains(AutoReadingImageState.loading)) {
+    return AutoReadingImageState.loading;
+  }
+  return states.contains(AutoReadingImageState.failed)
+      ? AutoReadingImageState.failed
+      : AutoReadingImageState.ready;
+}
+
+abstract interface class AutoReadingImageViewport {
+  AutoReadingImageReadiness get autoReadingImages;
+}
+
 class AutoReadingSettings {
   const AutoReadingSettings({
     this.gallery = false,
@@ -13,9 +40,13 @@ class AutoReadingSettings {
     this.stepped = false,
     this.stepsPerSecond = 2,
     this.pixelsPerStep = 40,
+    this.skipUnavailableImages = false,
+    this.imageWaitSeconds = 10,
   });
 
   final bool gallery, stepped;
+  final bool skipUnavailableImages;
+  final double imageWaitSeconds;
   final double pageInterval, pixelsPerSecond, stepsPerSecond, pixelsPerStep;
 }
 
@@ -25,6 +56,7 @@ class AutoReadingController extends ChangeNotifier {
     required this.settings,
     required this.advance,
     required this.canAdvance,
+    this.imageReadiness,
   }) {
     _ticker = Ticker(_tick);
   }
@@ -32,11 +64,15 @@ class AutoReadingController extends ChangeNotifier {
   final AutoReadingSettings Function() settings;
   final AutoReadingStep Function(double distance) advance;
   final bool Function() canAdvance;
+  final AutoReadingImageReadiness Function()? imageReadiness;
   late final Ticker _ticker;
   final _pauses = <Object>{};
   AutoReadingStatus _status = AutoReadingStatus.stopped;
   Duration? _previous;
   double _accumulated = 0;
+  double _imageWait = 0;
+  Object? _imageIdentity;
+  AutoReadingImageState? _imageState;
 
   AutoReadingStatus get status => _status;
   bool get isActive => status != AutoReadingStatus.stopped;
@@ -51,6 +87,7 @@ class AutoReadingController extends ChangeNotifier {
     if (isActive) return;
     _previous = null;
     _accumulated = 0;
+    _resetImageWait();
     _setStatus(
       _pauses.isEmpty ? AutoReadingStatus.running : AutoReadingStatus.paused,
     );
@@ -61,6 +98,7 @@ class AutoReadingController extends ChangeNotifier {
     _ticker.stop();
     _previous = null;
     _accumulated = 0;
+    _resetImageWait();
     _setStatus(AutoReadingStatus.stopped);
   }
 
@@ -74,6 +112,7 @@ class AutoReadingController extends ChangeNotifier {
     }
     _previous = null;
     _accumulated = 0;
+    _resetImageWait();
     if (isActive) {
       if (_pauses.isEmpty && !_ticker.isActive) {
         _ticker.start();
@@ -86,21 +125,67 @@ class AutoReadingController extends ChangeNotifier {
     }
   }
 
+  void _resetImageWait() {
+    _imageWait = 0;
+    _imageIdentity = null;
+    _imageState = null;
+  }
+
+  bool _imagesReady(AutoReadingSettings config, double delta) {
+    final images =
+        imageReadiness?.call() ??
+        const AutoReadingImageReadiness(AutoReadingImageState.ready, 0);
+    if (images.state == AutoReadingImageState.blocked) {
+      _resetImageWait();
+      return false;
+    }
+    final identity = images.identity;
+    final previous = _imageIdentity;
+    final same = previous is Set<Object> && identity is Set<Object>
+        ? setEquals(previous, identity)
+        : previous == identity;
+    if (!same ||
+        (images.state == AutoReadingImageState.loading &&
+            _imageState != AutoReadingImageState.loading) ||
+        images.state == AutoReadingImageState.ready ||
+        !config.skipUnavailableImages) {
+      _imageWait = 0;
+      _imageIdentity = identity;
+    }
+    _imageState = images.state;
+    switch (images.state) {
+      case AutoReadingImageState.ready:
+        return true;
+      case AutoReadingImageState.failed:
+        return config.skipUnavailableImages;
+      case AutoReadingImageState.loading:
+        if (!config.skipUnavailableImages) return false;
+        _imageWait += delta;
+        return _imageWait + 0.000001 >=
+            config.imageWaitSeconds.clamp(1.0, 60.0);
+      case AutoReadingImageState.blocked:
+        return false;
+    }
+  }
+
   void _tick(Duration elapsed) {
     final previous = _previous;
     _previous = elapsed;
     if (_pauses.isNotEmpty) return;
-    if (!canAdvance()) {
+    final seconds = previous == null
+        ? 0.0
+        : (elapsed - previous).inMicroseconds / Duration.microsecondsPerSecond;
+    // A stalled frame must not jump over content or exhaust an image timeout.
+    final delta = seconds.clamp(0.0, 0.1);
+    final config = settings();
+    final allowed = canAdvance();
+    if (!allowed || !_imagesReady(config, delta)) {
+      if (!allowed) _resetImageWait();
       _accumulated = 0;
       _setStatus(AutoReadingStatus.waiting);
       return;
     }
     if (previous == null) return;
-    final config = settings();
-    final seconds =
-        (elapsed - previous).inMicroseconds / Duration.microsecondsPerSecond;
-    // A stalled frame must not jump over content when rendering resumes.
-    final delta = seconds.clamp(0.0, 0.1);
     _accumulated += delta;
     double distance;
     if (config.gallery || config.stepped) {

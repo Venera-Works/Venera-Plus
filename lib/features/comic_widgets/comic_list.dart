@@ -32,6 +32,7 @@ class SliverGridComics extends StatefulWidget {
     this.selections,
     this.useFavoriteDisplaySettings = false,
     this.hideFavoriteBadge = false,
+    this.showHiddenCount = false,
   });
 
   final List<Comic> comics;
@@ -51,6 +52,7 @@ class SliverGridComics extends StatefulWidget {
   final bool useFavoriteDisplaySettings;
 
   final bool hideFavoriteBadge;
+  final bool showHiddenCount;
 
   @override
   State<SliverGridComics> createState() => _SliverGridComicsState();
@@ -161,7 +163,7 @@ class _SliverGridComicsState extends State<SliverGridComics> {
               ? ComicTileDisplayMode.gallery
               : ComicTileDisplayMode.detailed)
         : null;
-    return _presentation = _SliverGridComics(
+    final grid = _SliverGridComics(
       comics: comics,
       heroIDs: heroIDs,
       selection: widget.selections,
@@ -177,6 +179,27 @@ class _SliverGridComicsState extends State<SliverGridComics> {
           ? favoriteDisplayState.galleryColumns
           : null,
     );
+    final hidden = _sourceComics.length - comics.length;
+    return _presentation = !widget.showHiddenCount || hidden == 0
+        ? grid
+        : SliverMainAxisGroup(
+            slivers: [
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
+                  child: Text(
+                    'Hidden by keyword filters: @a comics'.tlParams({
+                      'a': hidden,
+                    }),
+                  ),
+                ),
+              ),
+              grid,
+            ],
+          );
   }
 }
 

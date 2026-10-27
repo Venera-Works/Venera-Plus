@@ -1,3 +1,7 @@
+import 'foundation/app_exit.dart';
+import 'components/window_hotkey_scope.dart';
+import 'foundation/window_hotkey_controller.dart';
+import 'features/local_comics/local_comics.dart';
 import 'dart:async';
 import 'package:desktop_webview_window/desktop_webview_window.dart';
 import 'package:dynamic_color/dynamic_color.dart';
@@ -44,7 +48,19 @@ void main(List<String> args) {
             ),
           );
         } else {
-          await init(deferBackgroundTasks: true);
+          try {
+            await init(deferBackgroundTasks: true);
+          } catch (error, stack) {
+            Log.error('Startup', error, stack);
+            runApp(StartupFailureApp(error: error, stack: stack));
+            if (App.isDesktop) {
+              await windowManager.ensureInitialized();
+              await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+              await windowManager.setMinimumSize(const Size(500, 400));
+              await windowManager.show();
+            }
+            return;
+          }
           runApp(const MyApp());
         }
         if (App.isDesktop) {
@@ -86,8 +102,25 @@ class MyApp extends StatefulWidget {
 }
 
 class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
+  AndroidDownloads? _downloads;
+  WindowHotkeyController? _windowHotkey;
   @override
   void initState() {
+    if (App.isAndroid) {
+      _downloads = AndroidDownloads(manager: LocalManager())..start();
+    }
+    if (App.isWindows) {
+      _windowHotkey = createWindowsHotkeyController();
+      unawaited(_windowHotkey!.start());
+    }
+    configureAppExitPreparation(() async {
+      final release = await _windowHotkey?.hold();
+      try {
+        await prepareReadingDataForExit();
+      } finally {
+        release?.call();
+      }
+    });
     App.registerForceRebuild(forceRebuild);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     WidgetsBinding.instance.addObserver(this);
@@ -115,6 +148,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.detached) {
+      unawaited(_downloads?.close());
       unawaited(shutdownRemoteComicLibraryRuntime());
     }
     if (state == AppLifecycleState.resumed) {
@@ -160,6 +194,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    unawaited(_downloads?.close());
+    unawaited(_windowHotkey?.close());
     WidgetsBinding.instance.removeObserver(this);
     unawaited(shutdownRemoteComicLibraryRuntime());
     super.dispose();
@@ -296,6 +332,12 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
             Locale('en'),
           ],
           builder: (context, widget) {
+            if (_windowHotkey case final controller?) {
+              widget = WindowHotkeyScope(
+                controller: controller,
+                child: widget!,
+              );
+            }
             ErrorWidget.builder = (details) {
               Log.error(
                 "Unhandled Exception",

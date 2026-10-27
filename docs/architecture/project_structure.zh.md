@@ -88,6 +88,8 @@ test/features/<domain>/
 `app_runtime/` 保留应用启动和运行模式组装：
 
 - `init.dart`：应用启动初始化、功能域回调注册、更新检查和调试重载入口。
+- `android_downloads.dart`：将现有下载队列绑定到 Android 前台服务，处理通知栏暂停、网络恢复和生命周期，不创建第二个下载引擎。
+- `windows_hotkey.dart`：组装 Windows 主窗口全局快捷键，独立保存本机配置并通过原生通道注册。
 - `headless.dart`：无头命令模式入口。
 
 运行时组装层可以依赖功能域、基础设施和路由入口；业务功能域不应反向依赖运行时组装。

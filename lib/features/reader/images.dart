@@ -292,7 +292,10 @@ class GalleryMode extends StatefulWidget {
 typedef _GalleryMode = GalleryMode;
 
 class GalleryModeState extends State<_GalleryMode>
-    implements ReaderImageViewController, AutoReadingViewport {
+    implements
+        ReaderImageViewController,
+        AutoReadingViewport,
+        AutoReadingImageViewport {
   late PageController controller;
 
   int get preCacheCount => appdata.settings["preloadImageCount"];
@@ -362,6 +365,10 @@ class GalleryModeState extends State<_GalleryMode>
   }
 
   @override
+  AutoReadingImageReadiness get autoReadingImages =>
+      _visibleAutoReadingImages(imageStates);
+
+  @override
   bool get autoReadingReady {
     if (!controller.hasClients ||
         fingers > 0 ||
@@ -382,7 +389,10 @@ class GalleryModeState extends State<_GalleryMode>
       return false;
     }
     if (isSplitEnabled) {
-      if (_pagePlan == null || !isCurrentSourceSizeResolved()) {
+      if (_pagePlan == null ||
+          (!isCurrentSourceSizeResolved() &&
+              reader.readerSetting('autoReadingSkipUnavailableImages') !=
+                  true)) {
         return false;
       }
     }
@@ -390,8 +400,10 @@ class GalleryModeState extends State<_GalleryMode>
     final photo = _pool[key];
     final initialScale = photo?.getInitialScale?.call();
     // PhotoView installs this callback only after its image is decoded.
-    if (initialScale == null ||
-        ((photo?.scale ?? initialScale) - initialScale).abs() > 0.01) {
+    if ((initialScale == null &&
+            reader.readerSetting('autoReadingSkipUnavailableImages') != true) ||
+        (initialScale != null &&
+            ((photo?.scale ?? initialScale) - initialScale).abs() > 0.01)) {
       return false;
     }
     final visible = imageStates
@@ -399,7 +411,8 @@ class GalleryModeState extends State<_GalleryMode>
         .where((image) => image.visibleInReader)
         .toList();
     return visible.isNotEmpty &&
-        visible.every((image) => image.readyForAutoReading);
+        (reader.readerSetting('autoReadingSkipUnavailableImages') == true ||
+            visible.every((image) => image.readyForAutoReading));
   }
 
   @override
@@ -943,6 +956,9 @@ class GalleryModeState extends State<_GalleryMode>
                   child: SizedBox.fromSize(
                     size: viewportSize,
                     child: ComicImage(
+                      showDimensions:
+                          reader.readerSetting('showImagePixelDimensions') ==
+                          true,
                       image: provider,
                       zoomController: photoViewController,
                       onRetry: () => context
@@ -1115,6 +1131,8 @@ class GalleryModeState extends State<_GalleryMode>
       imageWidgets = [
         Expanded(
           child: ComicImage(
+            showDimensions:
+                reader.readerSetting('showImagePixelDimensions') == true,
             zoomController: zoomController,
             width: double.infinity,
             height: double.infinity,
@@ -1136,6 +1154,8 @@ class GalleryModeState extends State<_GalleryMode>
         ),
         Expanded(
           child: ComicImage(
+            showDimensions:
+                reader.readerSetting('showImagePixelDimensions') == true,
             zoomController: zoomController,
             width: double.infinity,
             height: double.infinity,
@@ -1165,6 +1185,8 @@ class GalleryModeState extends State<_GalleryMode>
         );
         return Expanded(
           child: ComicImage(
+            showDimensions:
+                reader.readerSetting('showImagePixelDimensions') == true,
             image: imageProvider,
             zoomController: zoomController,
             width: double.infinity,
@@ -1568,7 +1590,10 @@ class _ContinuousMode extends StatefulWidget {
 }
 
 class ContinuousModeState extends State<_ContinuousMode>
-    implements ReaderImageViewController, AutoReadingViewport {
+    implements
+        ReaderImageViewController,
+        AutoReadingViewport,
+        AutoReadingImageViewport {
   bool _isUserScrolling = false;
   String? _userScrollCommandId;
   Timer? _userScrollEndTimer;
@@ -2327,6 +2352,8 @@ class ContinuousModeState extends State<_ContinuousMode>
         ImageProvider image = _createImageProviderFromRef(imageRef, context);
 
         var comicImage = ComicImage(
+          showDimensions:
+              reader.readerSetting('showImagePixelDimensions') == true,
           filterQuality: FilterQuality.medium,
           image: image,
           zoomController: photoViewController,
@@ -2661,11 +2688,15 @@ class ContinuousModeState extends State<_ContinuousMode>
   bool isReadyForChapter(int chapter) => mounted;
 
   @override
+  AutoReadingImageReadiness get autoReadingImages =>
+      _visibleAutoReadingImages(imageStates);
+
+  @override
   bool get autoReadingReady {
     final controller = _scrollController;
     if (controller == null ||
         !controller.hasClients ||
-        isZoomedIn ||
+        isLongPressing ||
         fingers > 0 ||
         _isRestoringPrependedSegmentPosition ||
         _isNavigatingWaterfallLocation ||
@@ -2677,13 +2708,21 @@ class ContinuousModeState extends State<_ContinuousMode>
         .where((image) => image.visibleInReader)
         .toList();
     return visible.isNotEmpty &&
-        visible.every((image) => image.readyForAutoReading);
+        (reader.readerSetting('autoReadingSkipUnavailableImages') == true ||
+            visible.every((image) => image.readyForAutoReading));
   }
 
   @override
   AutoReadingStep autoScroll(double distance, {required bool acrossChapters}) {
     if (!autoReadingReady) return AutoReadingStep.waiting;
     final position = scrollController.position;
+    final scale = (photoViewController.scale ?? 1.0).clamp(1.0, 2.5);
+    final pan = photoViewController.position;
+    final direction = reader.mode == ReaderMode.continuousRightToLeft
+        ? -1.0
+        : 1.0;
+    final panAlongAxis = reader.mode.isTopToBottom ? pan.dy : pan.dx;
+    final zoomOverflow = position.viewportDimension * (scale - 1) / 2;
     final lastIndex = crossChapter && !acrossChapters
         ? _waterfallIndexOfChapterPage(reader.chapter, reader.maxPage)
         : _flowImageCount;
@@ -2693,12 +2732,14 @@ class ContinuousModeState extends State<_ContinuousMode>
               .where((item) => item.index == lastIndex)
               .firstOrNull;
     var available = position.maxScrollExtent - position.pixels;
+    double? remaining;
     if (last != null) {
-      available = math.min(
-        available,
-        math.max(0.0, (last.itemTrailingEdge - 1) * position.viewportDimension),
-      );
-      if (last.itemTrailingEdge <= 1.001) {
+      remaining =
+          (last.itemTrailingEdge - 1) * position.viewportDimension * scale +
+          zoomOverflow +
+          direction * panAlongAxis;
+      available = math.min(available, math.max(0.0, remaining / scale));
+      if (remaining <= 0.5) {
         if (crossChapter &&
             acrossChapters &&
             _waterfallFlow.lastChapter != null &&
@@ -2716,13 +2757,28 @@ class ContinuousModeState extends State<_ContinuousMode>
         return AutoReadingStep.finished;
       }
     }
-    if (available <= 0) return AutoReadingStep.waiting;
+    if (available <= 0) {
+      final tail = math.min(
+        remaining ?? 0.0,
+        zoomOverflow + direction * panAlongAxis,
+      );
+      if (tail <= 0.5) return AutoReadingStep.waiting;
+      final shift = math.min(distance, tail) * direction;
+      photoViewController.updateMultiple(
+        position: reader.mode.isTopToBottom
+            ? pan.translate(0, -shift)
+            : pan.translate(-shift, 0),
+      );
+      return AutoReadingStep.advanced;
+    }
     _futurePosition = null;
     reader.beginNavigationCommand(
       ReadingNavigationSource.automatic,
       chapter: reader.chapter,
     );
-    scrollController.jumpTo(position.pixels + math.min(distance, available));
+    scrollController.jumpTo(
+      position.pixels + math.min(distance / scale, available),
+    );
     return AutoReadingStep.advanced;
   }
 
@@ -3462,5 +3518,20 @@ ReaderImageReference createReaderImageReferenceFromProvider(
     chapter: chapter,
     page: provider.page,
     file: file,
+  );
+}
+
+AutoReadingImageReadiness _visibleAutoReadingImages(
+  Iterable<State<ComicImage>> states,
+) {
+  final visible = states
+      .whereType<ComicImageState>()
+      .where((image) => image.visibleInReader)
+      .toList();
+  return AutoReadingImageReadiness(
+    combineAutoReadingImageStates(
+      visible.map((image) => image.autoReadingImageState),
+    ),
+    <Object>{for (final image in visible) image.autoReadingIdentity},
   );
 }

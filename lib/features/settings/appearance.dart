@@ -1,3 +1,5 @@
+import 'package:venera_plus/components/window_hotkey_scope.dart';
+import 'window_hotkey_setting.dart';
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/scroll.dart';
@@ -98,6 +100,12 @@ class _AppearanceSettingsState extends State<AppearanceSettings> {
             "Continuous": "Continuous".tl,
           },
         ).toSliver(),
+        if (App.isWindows && WindowHotkeyScope.maybeOf(context) != null) ...[
+          SettingPartTitle(title: 'Window'.tl, icon: Icons.window),
+          WindowHotkeySetting(
+            controller: WindowHotkeyScope.maybeOf(context)!,
+          ).toSliver(),
+        ],
         SettingPartTitle(title: "Status Badges".tl, icon: Icons.badge_outlined),
         SwitchSetting(
           title: "Show favorite status on comic tile".tl,

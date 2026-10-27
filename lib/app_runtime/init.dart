@@ -1,3 +1,4 @@
+import 'package:venera_plus/foundation/file_system.dart';
 import 'dart:async';
 import 'dart:convert';
 
@@ -201,12 +202,26 @@ Future<ComicMetaData?> scrapeBangumiMetadataForWebDav(
 }
 
 Future<void> prepareReadingDataForExit() async {
+  final local = LocalManager();
+  final tasks = local.downloadingTasks.toList();
+  if (tasks.isNotEmpty) {
+    for (final task in tasks) {
+      task.pause();
+    }
+    await Future.wait(tasks.map((task) => task.pendingCleanup));
+    await local.saveCurrentDownloadingTasks();
+  }
   await ReadingSessionTracker.finishAll();
   await HistoryManager().flushReadingProgress();
+  await Log.flush();
 }
 
 Future<void> init({bool deferBackgroundTasks = false}) async {
+  StartupTiming.failedStage = null;
   await StartupTiming.measure('App paths', App.init);
+  await Log.startFileSession(
+    File('${App.externalStoragePath ?? App.dataPath}/logs.txt'),
+  );
   await StartupTiming.measure('Settings', appdata.init);
   final remoteStorage = RemoteStorageAccounts.instance;
   remoteStorage.configureOpenList(
@@ -416,6 +431,10 @@ ComicTileState _resolveComicTileState(Comic comic) {
         LocalFavoritesManager().isExist(comic.id, type),
     historyPage: history?.page,
     historyMaxPage: history?.maxPage,
+    historyDescription: appdata.settings['showDetailedReadingProgress'] == true
+        ? history?.progressDescription(showTotals: true, compact: true)
+        : null,
+    historyTooltip: history?.progressDescription(showTotals: true),
     hasNewUpdate:
         appdata.settings['showUpdateStatusOnTile'] &&
         type != ComicType.local &&

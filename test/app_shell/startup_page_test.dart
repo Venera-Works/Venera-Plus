@@ -52,7 +52,11 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Unable to start the app. Please retry.'), findsOneWidget);
+    expect(find.text('Startup failed'), findsOneWidget);
+    expect(
+      find.textContaining('Local storage unavailable', findRichText: true),
+      findsWidgets,
+    );
     expect(find.text('Local library'), findsNothing);
 
     await tester.tap(find.text('Retry'));

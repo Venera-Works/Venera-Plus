@@ -642,11 +642,20 @@ class LocalManager with ChangeNotifier {
     }
   }
 
-  Future<void> saveCurrentDownloadingTasks() async {
-    var tasks = downloadingTasks.map((e) => e.toJson()).toList();
-    await File(
-      FilePath.join(App.dataPath, 'downloading_tasks.json'),
-    ).writeAsString(jsonEncode(tasks));
+  Future<void> _downloadTaskWrites = Future.value();
+  Future<void> get pendingDownloadTaskWrites => _downloadTaskWrites;
+
+  Future<void> saveCurrentDownloadingTasks() {
+    final snapshot = jsonEncode(
+      downloadingTasks.map((task) => task.toJson()).toList(),
+    );
+    final file = File(FilePath.join(App.dataPath, 'downloading_tasks.json'));
+    return _downloadTaskWrites = _downloadTaskWrites
+        .catchError((Object error, StackTrace stack) {
+          Log.error('Download checkpoint', error, stack);
+        })
+        .then((_) => file.writeAsString(snapshot, flush: true))
+        .then<void>((_) {});
   }
 
   void restoreDownloadingTasks() {

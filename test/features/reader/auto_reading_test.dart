@@ -149,4 +149,74 @@ void main() {
       reader.stop();
     },
   );
+  testWidgets(
+    'failed images wait by default and skip only when explicitly enabled',
+    (tester) async {
+      var skip = false;
+      var turns = 0;
+      final reader = AutoReadingController(
+        settings: () => AutoReadingSettings(
+          gallery: true,
+          pageInterval: 1,
+          skipUnavailableImages: skip,
+        ),
+        canAdvance: () => true,
+        imageReadiness: () => const AutoReadingImageReadiness(
+          AutoReadingImageState.failed,
+          'page',
+        ),
+        advance: (_) {
+          turns++;
+          return AutoReadingStep.advanced;
+        },
+      );
+      addTearDown(reader.dispose);
+      reader.start();
+      await tester.pump();
+      await frames(tester, 100);
+      expect(turns, 0);
+      skip = true;
+      await frames(tester, 51);
+      expect(turns, 1);
+      reader.stop();
+    },
+  );
+
+  testWidgets(
+    'loading timeout counts foreground time and restarts for a new image',
+    (tester) async {
+      var identity = 'first';
+      var distance = 0.0;
+      final reader = AutoReadingController(
+        settings: () => const AutoReadingSettings(
+          skipUnavailableImages: true,
+          imageWaitSeconds: 1,
+        ),
+        canAdvance: () => true,
+        imageReadiness: () =>
+            AutoReadingImageReadiness(AutoReadingImageState.loading, identity),
+        advance: (step) {
+          distance += step;
+          return AutoReadingStep.advanced;
+        },
+      );
+      addTearDown(reader.dispose);
+      reader.start();
+      await tester.pump();
+      await frames(tester, 40);
+      reader.pause('background', true);
+      await tester.pump(const Duration(minutes: 1));
+      reader.pause('background', false);
+      await tester.pump();
+      await frames(tester, 40);
+      expect(distance, 0);
+      await frames(tester, 15);
+      expect(distance, greaterThan(0));
+      final previous = distance;
+      identity = 'second';
+      await frames(tester, 40);
+      expect(distance, previous);
+      reader.stop();
+    },
+  );
 }

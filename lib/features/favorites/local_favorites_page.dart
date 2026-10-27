@@ -449,6 +449,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
 
   @override
   Widget build(BuildContext context) {
+    final displayedComics = searchMode ? searchResults : filterComics(comics);
     var title = widget.folder;
     if (title == localAllFolderLabel) {
       title = "All".tl;
@@ -852,9 +853,24 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
               ),
             ),
           )
-        else
+        else ...[
+          if (!searchMode && comics.length > displayedComics.length)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
+                child: Text(
+                  'Hidden by reading-status filter: @a comics'.tlParams({
+                    'a': comics.length - displayedComics.length,
+                  }),
+                ),
+              ),
+            ),
           SliverGridComics(
-            comics: searchMode ? searchResults : filterComics(comics),
+            showHiddenCount: true,
+            comics: displayedComics,
             selections: selectedComics,
             useFavoriteDisplaySettings: true,
             hideFavoriteBadge: true,
@@ -984,6 +1000,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
               });
             },
           ),
+        ],
       ],
     );
     body = AppRefreshIndicator(

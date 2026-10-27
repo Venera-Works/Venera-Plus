@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'package:dio/dio.dart';
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
@@ -208,6 +210,111 @@ void main() {
       isFalse,
     );
   });
+
+  test(
+    'missing pages survive restart and repair keeps successful files',
+    () async {
+      final root = Directory.systemTemp.createTempSync('download-missing-');
+      final output = Directory('${root.path}/book')..createSync();
+      App.dataPath = App.cachePath = root.path;
+      File('${root.path}/local_path').writeAsStringSync(root.path);
+      final manager = LocalManager();
+      final skipInit = LocalManager.debugSkipComicSourceInit;
+      LocalManager.debugSkipComicSourceInit = true;
+      try {
+        await manager.init();
+      } finally {
+        LocalManager.debugSkipComicSourceInit = skipInit;
+      }
+      addTearDown(() async {
+        await manager.pendingDownloadTaskWrites;
+        LocalManager.resetForTesting();
+        await root.delete(recursive: true);
+      });
+      final requests = <String, int>{};
+      var repair = false;
+      final png = base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==',
+      );
+      File('${output.path}/cover.png').writeAsBytesSync(png);
+      ImageDownloader.debugLoadComicImageUnwrapped =
+          (image, source, cid, eid, {target}) async* {
+            requests.update(image, (count) => count + 1, ifAbsent: () => 1);
+            if (image == 'missing' && !repair) {
+              final request = RequestOptions(
+                path: 'https://example.invalid/image',
+              );
+              throw DioException(
+                requestOptions: request,
+                type: DioExceptionType.badResponse,
+                response: Response(requestOptions: request, statusCode: 404),
+              );
+            }
+            yield ImageDownloadProgress(
+              currentBytes: png.length,
+              totalBytes: png.length,
+              imageBytes: png,
+            );
+          };
+      final task = ImagesDownloadTask.fromJson({
+        'type': 'ImagesDownloadTask',
+        'source': sourceKey,
+        'comicId': 'comic-1',
+        'comic': {
+          'title': 'Test Comic',
+          'subtitle': '',
+          'cover': 'cover.png',
+          'description': '',
+          'tags': <String, List<String>>{},
+          'chapters': null,
+          'sourceKey': sourceKey,
+          'comicId': 'comic-1',
+        },
+        'path': output.path,
+        'cover': 'file://${output.path}/cover.png',
+        'images': {
+          '': ['missing', 'available'],
+        },
+        'downloadedCount': 0,
+        'totalCount': 2,
+        'index': 0,
+        'chapter': 0,
+        'skipUnavailableImages': true,
+      })!;
+      manager.downloadingTasks.add(task);
+      task.resume();
+      await task.debugResumeFuture!;
+      expect(task.isError, isTrue);
+      expect(task.missingImageCount, 1);
+      expect(task.progress, 0.5);
+      expect(manager.find(task.id, task.comicType), isNull);
+      expect(File('${output.path}/1.png').existsSync(), isTrue);
+      final saved =
+          jsonDecode(
+                File('${root.path}/downloading_tasks.json').readAsStringSync(),
+              )
+              as List;
+      final restored =
+          DownloadTask.fromJson(Map<String, dynamic>.from(saved.single))!
+              as ImagesDownloadTask;
+      expect(restored.isPaused, isTrue);
+      expect(restored.missingImageCount, 1);
+      expect(restored.skipUnavailableImages, isTrue);
+      manager.downloadingTasks
+        ..clear()
+        ..add(restored);
+      repair = true;
+      restored.resume();
+      await restored.debugResumeFuture!;
+      await manager.pendingDownloadTaskWrites;
+      expect(restored.missingImageCount, 0);
+      expect(restored.progress, 1);
+      expect(requests, {'missing': 2, 'available': 1});
+      expect(manager.find(restored.id, restored.comicType), isNotNull);
+      expect(manager.downloadingTasks, isEmpty);
+      expect(File('${output.path}/0.png').existsSync(), isTrue);
+    },
+  );
 
   test('ImagesDownloadTask cancel before path stops speed recorder', () async {
     final dataDir = Directory.systemTemp.createTempSync(

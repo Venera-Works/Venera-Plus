@@ -38,6 +38,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
 class MainActivity : FlutterFragmentActivity() {
+    private var downloadBridge: DownloadBridge? = null
+
     var volumeListen = VolumeListen()
     var listening = false
 
@@ -181,8 +183,35 @@ class MainActivity : FlutterFragmentActivity() {
         }
     }
 
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        downloadBridge?.close()
+        downloadBridge = null
+        super.cleanUpFlutterEngine(flutterEngine)
+    }
+
+    override fun onDestroy() {
+        downloadBridge?.close()
+        downloadBridge = null
+        super.onDestroy()
+    }
+
+    private fun requestDownloadNotifications() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        val preferences = getSharedPreferences("download_service", MODE_PRIVATE)
+        if (preferences.getBoolean("notification_requested", false)) return
+        preferences.edit().putBoolean("notification_requested", true).apply()
+        startContractForResult(ActivityResultContracts.RequestPermission(), Manifest.permission.POST_NOTIFICATIONS) { _ -> }
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         GeneratedPluginRegistrant.registerWith(flutterEngine)
+        downloadBridge?.close()
+        downloadBridge = DownloadBridge(
+            this, flutterEngine.dartExecutor.binaryMessenger,
+            isVisible = { lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) },
+            requestNotifications = ::requestDownloadNotifications,
+        )
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "venera/method_channel"

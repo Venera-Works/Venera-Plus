@@ -250,13 +250,20 @@ void main() {
           await tester.longPressAt(const Offset(400, 250));
           expect(reader.autoReading.isActive, isFalse);
           settings['autoReadingAcrossChapters'] = false;
+          if (!mode.isGallery) {
+            final flow = reader.imageViewController as ContinuousModeState;
+            flow.photoViewController.scale = 2;
+            flow.onScaleUpdate(2);
+            await pumpFrames(10);
+            expect(flow.autoReadingReady, isTrue);
+          }
           reader.autoReading.start();
           await tester.pump();
           if (!mode.isGallery) {
             final flow = reader.imageViewController as ContinuousModeState;
             final start = flow.scrollController.offset;
             await pumpFrames(25);
-            expect(flow.scrollController.offset - start, closeTo(50, 3));
+            expect((flow.scrollController.offset - start) * 2, closeTo(50, 3));
             // There is only one tall/wide image: page == maxPage must not stop scrolling.
             expect(reader.chapter, 1);
             expect(reader.autoReading.isActive, isTrue);

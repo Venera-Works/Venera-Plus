@@ -54,6 +54,9 @@ class History implements Comic {
 
   @override
   int? maxPage;
+  int? maxChapter;
+  String? chapterTitle;
+  String? groupTitle;
 
   /// Cumulative foreground reading time for this comic.
   int readDurationMs;
@@ -91,6 +94,9 @@ class History implements Comic {
       id = other.id,
       readEpisode = Set<String>.of(other.readEpisode),
       maxPage = other.maxPage,
+      maxChapter = other.maxChapter,
+      chapterTitle = other.chapterTitle,
+      groupTitle = other.groupTitle,
       readDurationMs = other.readDurationMs,
       readingProgress = other.readingProgress;
 
@@ -109,7 +115,9 @@ class History implements Comic {
       readDurationMs = (map["read_duration_ms"] as num?)?.round() ?? 0,
       readingProgress = _readReadingProgress(
         map["readingProgress"] ?? map["reading_progress"],
-      );
+      ) {
+    restoreReadingMetadata(map['readingMetadata'] ?? map['reading_metadata']);
+  }
 
   @override
   String toString() {
@@ -133,7 +141,32 @@ class History implements Comic {
       maxPage = row["max_page"],
       group = row["chapter_group"],
       readDurationMs = ((row["read_duration_ms"] as num?) ?? 0).round(),
-      readingProgress = _readReadingProgress(row["reading_progress"]);
+      readingProgress = _readReadingProgress(row["reading_progress"]) {
+    restoreReadingMetadata(row['reading_metadata']);
+  }
+
+  Map<String, Object?>? get readingMetadata =>
+      maxChapter == null && chapterTitle == null && groupTitle == null
+      ? null
+      : {
+          'ep': ep,
+          'group': group,
+          'maxChapter': maxChapter,
+          'chapterTitle': chapterTitle,
+          'groupTitle': groupTitle,
+        };
+
+  void restoreReadingMetadata(Object? encoded) {
+    final metadata = encoded is String ? jsonDecode(encoded) : encoded;
+    if (metadata is! Map ||
+        metadata['ep'] != ep ||
+        metadata['group'] != group) {
+      return;
+    }
+    maxChapter = (metadata['maxChapter'] as num?)?.toInt();
+    chapterTitle = metadata['chapterTitle'] as String?;
+    groupTitle = metadata['groupTitle'] as String?;
+  }
 
   ReadingPosition? get resumePosition {
     final progress = readingProgress;
@@ -157,21 +190,41 @@ class History implements Comic {
   int get hashCode => Object.hash(id, type);
 
   @override
-  String get description {
-    var res = "";
-    if (group != null) {
-      res += "${"Group @group".tlParams({"group": group!})} - ";
+  String get description => progressDescription();
+
+  /// Format saved coordinates only, omitting missing or inconsistent totals.
+  String progressDescription({bool showTotals = false, bool compact = false}) {
+    String number(int current, int? total) =>
+        showTotals && total != null && total > 0 && total >= current
+        ? '$current${compact ? '/' : ' / '}$total'
+        : '$current';
+
+    final parts = <String>[];
+    if (!compact && (groupTitle?.trim().isNotEmpty == true || group != null)) {
+      parts.add(
+        groupTitle?.trim().isNotEmpty == true
+            ? groupTitle!.trim()
+            : "Group @group".tlParams({"group": group!}),
+      );
     }
-    if (ep >= 1) {
-      res += "Chapter @ep".tlParams({"ep": ep});
+    final chapter = ep >= 1
+        ? (compact ? 'Ch. @ep' : 'Chapter @ep').tlParams({
+            'ep': number(ep, maxChapter),
+          })
+        : null;
+    if (!showTotals && !compact && chapterTitle?.trim().isNotEmpty == true) {
+      parts.add(chapterTitle!.trim());
+    } else if (chapter != null) {
+      parts.add(chapter);
     }
     if (page >= 1) {
-      if (ep >= 1) {
-        res += " - ";
-      }
-      res += "Page @page".tlParams({"page": page});
+      parts.add(
+        (compact ? 'P. @page' : 'Page @page').tlParams({
+          'page': number(page, maxPage),
+        }),
+      );
     }
-    return res;
+    return parts.join(compact ? '\n' : ' - ');
   }
 
   @override
@@ -315,6 +368,21 @@ class HistoryManager with ChangeNotifier {
     }
   }
 
+  static String? _readingMetadataForPosition(
+    History item,
+    History? other,
+    int ep,
+    int? group,
+  ) {
+    final metadata =
+        item.ep == ep && item.group == group && item.readingMetadata != null
+        ? item.readingMetadata
+        : other?.ep == ep && other?.group == group
+        ? other?.readingMetadata
+        : null;
+    return metadata == null ? null : canonicalSyncJson(metadata);
+  }
+
   static History _writeHistory(Database db, History item) {
     _runWriteTransaction(db, () {
       final rows = db.select(
@@ -351,8 +419,8 @@ class HistoryManager with ChangeNotifier {
         INSERT OR REPLACE INTO history (
           id, title, subtitle, cover, time, type, ep, page, readEpisode,
           max_page, chapter_group, read_duration_ms, reading_progress,
-          sync_projection
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL);
+          reading_metadata, sync_projection
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL);
         ''',
         [
           item.id,
@@ -368,6 +436,7 @@ class HistoryManager with ChangeNotifier {
           group,
           _maxInt(item.readDurationMs, existing?.readDurationMs ?? 0),
           jsonEncode(progress.toJson()),
+          _readingMetadataForPosition(item, existing, ep, group),
         ],
       );
     });
@@ -399,8 +468,8 @@ class HistoryManager with ChangeNotifier {
         INSERT OR REPLACE INTO history (
           id, title, subtitle, cover, time, type, ep, page, readEpisode,
           max_page, chapter_group, read_duration_ms, reading_progress,
-          sync_projection
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL);
+          reading_metadata, sync_projection
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL);
         ''',
         [
           item.id,
@@ -416,6 +485,12 @@ class HistoryManager with ChangeNotifier {
           position != null ? position.group : item.group,
           item.readDurationMs + durationMs,
           jsonEncode(progress.toJson()),
+          _readingMetadataForPosition(
+            item,
+            null,
+            position?.ep ?? item.ep,
+            position != null ? position.group : item.group,
+          ),
         ],
       );
     });
@@ -503,10 +578,20 @@ class HistoryManager with ChangeNotifier {
     target.readEpisode.addAll(other.readEpisode);
     final resume = target.readingProgress!.resumePosition;
     if (resume != null) {
+      final metadata = _readingMetadataForPosition(
+        target,
+        other,
+        resume.ep,
+        resume.group,
+      );
+      target.maxChapter = null;
+      target.chapterTitle = null;
+      target.groupTitle = null;
       target
         ..ep = resume.ep
         ..page = resume.page
         ..group = resume.group;
+      target.restoreReadingMetadata(metadata);
     }
   }
 
@@ -1404,6 +1489,7 @@ class HistoryManager with ChangeNotifier {
           'id': history.id,
           'readEpisode': history.readEpisode.toList(),
           'max_page': history.maxPage,
+          'readingMetadata': history.readingMetadata,
           'read_duration_ms': history.readDurationMs,
         });
         updatedHistory.group = history.group;

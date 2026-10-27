@@ -1,7 +1,7 @@
+import 'startup_failure.dart';
 import 'package:flutter/material.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/startup_timing.dart';
-import 'package:venera_plus/foundation/translations.dart';
 
 /// Draws a frame before starting initialization. The real app, including its
 /// authorization page, is mounted only after local dependencies are ready.
@@ -17,6 +17,8 @@ class StartupPage extends StatefulWidget {
 
 class _StartupPageState extends State<StartupPage> {
   Future<bool>? _initialization;
+  Object? _error;
+  StackTrace? _stack;
 
   @override
   void initState() {
@@ -33,6 +35,8 @@ class _StartupPageState extends State<StartupPage> {
       _initialization = Future.sync(widget.initialize).then(
         (_) => true,
         onError: (Object error, StackTrace stack) {
+          _error = error;
+          _stack = stack;
           Log.error('Startup', error, stack);
           return false;
         },
@@ -47,6 +51,13 @@ class _StartupPageState extends State<StartupPage> {
       builder: (context, snapshot) {
         final complete = snapshot.connectionState == ConnectionState.done;
         if (complete && snapshot.data == true) return widget.child;
+        if (complete && _error != null) {
+          return StartupFailureApp(
+            error: _error!,
+            stack: _stack!,
+            onRetry: _initialize,
+          );
+        }
         return MaterialApp(
           debugShowCheckedModeBanner: false,
           theme: ThemeData(
@@ -71,22 +82,11 @@ class _StartupPageState extends State<StartupPage> {
                     const SizedBox(height: 16),
                     const Text('VeneraPlus'),
                     const SizedBox(height: 24),
-                    if (complete && snapshot.data == false) ...[
-                      Text(
-                        'Unable to start the app. Please retry.'.tl,
-                        textAlign: TextAlign.center,
-                      ),
-                      const SizedBox(height: 16),
-                      FilledButton(
-                        onPressed: _initialize,
-                        child: Text('Retry'.tl),
-                      ),
-                    ] else
-                      const SizedBox(
-                        width: 24,
-                        height: 24,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
+                    const SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
                   ],
                 ),
               ),

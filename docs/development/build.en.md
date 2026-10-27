@@ -282,3 +282,9 @@ fvm flutter pub get --enforce-lockfile
 ### Slow Gradle Downloads
 
 You may temporarily use a local Gradle wrapper mirror or configure a network proxy. Environment-specific URLs must not be committed. Before submitting changes, verify that `gradle-wrapper.properties` does not contain local mirror edits.
+
+## Logs and startup diagnostics
+
+Logs append to `logs.txt` in the application data directory (Android prefers the application external storage directory). Common authentication, Cookie, token and password fields are redacted before output. At approximately 2 MiB, the file rotates to `logs.previous.txt`, retaining the current and previous files. Early startup logs are replayed, and normal exit and log export await pending writes. Force-stop may lose records not yet written. The startup failure page offers a stage, redacted error details and copying; Android retains its retry action.
+
+The Windows global hide/restore shortcut is under “Settings → Appearance and Interface → Window” and is disabled by default. Its `windows_hotkey.json` configuration stays in the application data directory and is excluded from application data exports and synchronization. Press the shortcut again or launch the application to recover the main window.

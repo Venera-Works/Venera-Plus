@@ -424,6 +424,52 @@ class _ReaderSettingsState extends State<ReaderSettings> {
           comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
           useDeviceSettings: useDeviceSpecificSettings,
         ).toSliver(),
+        SwitchSetting(
+          title: 'Skip unavailable images during automatic reading'.tl,
+          settingKey: 'autoReadingSkipUnavailableImages',
+          onChanged: () {
+            setState(() {});
+            widget.onChanged?.call('autoReadingSkipUnavailableImages');
+          },
+          comicId: isEnabledSpecificSettings ? widget.comicId : null,
+          comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
+          useDeviceSettings: useDeviceSpecificSettings,
+        ).toSliver(),
+        if (_readerSettingValue(
+              'autoReadingSkipUnavailableImages',
+              isEnabledSpecificSettings: isEnabledSpecificSettings,
+              useDeviceSpecificSettings: useDeviceSpecificSettings,
+            ) ==
+            true)
+          SliderSetting(
+            title: 'Automatic reading image wait time'.tl,
+            settingsIndex: 'autoReadingImageWaitSeconds',
+            interval: 1,
+            min: 1,
+            max: 60,
+            onChanged: () =>
+                widget.onChanged?.call('autoReadingImageWaitSeconds'),
+            comicId: isEnabledSpecificSettings ? widget.comicId : null,
+            comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
+            useDeviceSettings: useDeviceSpecificSettings,
+          ).toSliver(),
+        if (App.isMobile)
+          SwitchSetting(
+            title: 'Keep screen on during automatic reading'.tl,
+            settingKey: 'autoReadingKeepScreenOn',
+            onChanged: () => widget.onChanged?.call('autoReadingKeepScreenOn'),
+            comicId: isEnabledSpecificSettings ? widget.comicId : null,
+            comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
+            useDeviceSettings: useDeviceSpecificSettings,
+          ).toSliver(),
+        SwitchSetting(
+          title: 'Show image pixel dimensions'.tl,
+          settingKey: 'showImagePixelDimensions',
+          onChanged: () => widget.onChanged?.call('showImagePixelDimensions'),
+          comicId: isEnabledSpecificSettings ? widget.comicId : null,
+          comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
+          useDeviceSettings: useDeviceSpecificSettings,
+        ).toSliver(),
         SliderSetting(
           title: "Auto page turning interval".tl,
           settingsIndex: "autoPageTurningInterval",

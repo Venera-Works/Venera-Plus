@@ -445,6 +445,7 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
               )
             else
               SliverGridComics(
+                showHiddenCount: true,
                 comics: comics,
                 selections: selectedComics,
                 onLongPressed: (c, heroID) {

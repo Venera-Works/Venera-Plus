@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="share_text">搜索</string>
+    <string name="download_channel">漫画下载</string>
+    <string name="download_active">正在下载漫画</string>
+    <string name="download_waiting">连接中断，等待重试</string>
+    <string name="download_pause">暂停</string>
 </resources>

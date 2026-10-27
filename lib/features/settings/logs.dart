@@ -176,6 +176,7 @@ class _LogsPageState extends State<LogsPage> {
   }
 
   void saveLog(String log) async {
+    await Log.flush();
     saveFile(data: utf8.encode(log), filename: 'log.txt');
   }
 }

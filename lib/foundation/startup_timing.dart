@@ -3,6 +3,7 @@ import 'log.dart';
 /// Timings are relative to the Dart entry point and contain no user data.
 abstract final class StartupTiming {
   static final _clock = Stopwatch();
+  static String? failedStage;
 
   static void start() => _clock
     ..reset()
@@ -21,6 +22,10 @@ abstract final class StartupTiming {
     final watch = Stopwatch()..start();
     try {
       await initialize();
+    } catch (error, stack) {
+      failedStage = name;
+      Log.error('Startup', '$name failed: $error', stack);
+      rethrow;
     } finally {
       if (_clock.isRunning) {
         Log.info('Startup', '$name took ${watch.elapsedMilliseconds} ms');

@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="share_text">Search</string>
+    <string name="download_channel">Comic downloads</string>
+    <string name="download_active">Downloading comics</string>
+    <string name="download_waiting">Connection interrupted. Waiting to retry.</string>
+    <string name="download_pause">Pause</string>
 </resources>

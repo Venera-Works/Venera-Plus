@@ -1,3 +1,4 @@
+import 'download_retry.dart';
 import 'dart:async';
 import 'dart:isolate';
 
@@ -21,6 +22,10 @@ import 'package:venera_plus/foundation/file_interaction.dart';
 import 'package:zip_flutter/zip_flutter.dart';
 
 abstract class DownloadTask with ChangeNotifier {
+  Future<void> get pendingCleanup => Future.value();
+  bool get isWaitingToRetry => false;
+  void retryNow() {}
+
   /// 0-1
   double get progress;
 
@@ -59,6 +64,8 @@ abstract class DownloadTask with ChangeNotifier {
     switch (json["type"]) {
       case "ImagesDownloadTask":
         return ImagesDownloadTask.fromJson(json);
+      case "ArchiveDownloadTask":
+        return ArchiveDownloadTask.fromJson(json);
       default:
         return null;
     }
@@ -100,66 +107,100 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
     this.comic,
     this.chapters,
     this.comicTitle,
+    this.skipUnavailableImages = false,
   });
 
   @override
+  Future<void> get pendingCleanup =>
+      _cancellation ?? _resumeFuture ?? Future.value();
+
+  Future<void>? _cancellation;
+  bool _cancelled = false;
+
+  bool skipUnavailableImages;
+  final _missingImages = <String, Set<int>>{};
+  int get missingImageCount =>
+      _missingImages.values.fold(0, (count, pages) => count + pages.length);
+  DownloadRetry? _retry;
+  int _generation = 0;
+  bool _isCurrentRun(int generation) => _isRunning && generation == _generation;
+  @override
+  bool get isWaitingToRetry => _isRunning && (_retry?.isWaiting ?? false);
+  @override
+  void retryNow() {
+    if (_isRunning) _retry?.wake();
+  }
+
+  Future<void> updateSkipUnavailableImages(bool value) async {
+    skipUnavailableImages = value;
+    notifyListeners();
+    await LocalManager().saveCurrentDownloadingTasks();
+  }
+
+  String get _progressMessage => missingImageCount == 0
+      ? '$_downloadedCount/$_totalCount'
+      : 'Downloaded @a/@b; missing @c images'.tlParams({
+          'a': _downloadedCount,
+          'b': _totalCount,
+          'c': missingImageCount,
+        });
+
+  @override
   void cancel() {
-    _isRunning = false;
-    _wakeRetryDelay();
-    stopRecorder();
-    LocalManager().removeTask(this);
-    if (path != null) {
-      var local = LocalManager().find(id, comicType);
-      if (local == null) {
-        Future.sync(() async {
-          var tasks = this.tasks.values.toList();
-          for (var i = 0; i < tasks.length; i++) {
-            if (!tasks[i].isComplete) {
-              tasks[i].cancel();
-              await tasks[i].wait();
+    if (_cancelled) return;
+    _cancelled = true;
+    pause();
+    _cancellation = () async {
+      await _resumeFuture;
+      final output = path;
+      if (output == null) return;
+      final local = LocalManager().find(id, comicType);
+      try {
+        if (local == null) {
+          await Directory(output).delete(recursive: true);
+        } else if (chapters != null) {
+          for (final chapter in chapters!) {
+            final directory = Directory(
+              FilePath.join(
+                output,
+                LocalManager.getChapterDirectoryName(chapter),
+              ),
+            );
+            if (await directory.exists()) {
+              await directory.delete(recursive: true);
             }
           }
-          try {
-            await Directory(path!).delete(recursive: true);
-          } catch (e) {
-            Log.error("Download", "Failed to delete directory: $e");
-          }
-        });
-      } else if (chapters != null) {
-        for (var c in chapters!) {
-          var dir = Directory(FilePath.join(path!, c));
-          if (dir.existsSync()) {
-            dir.deleteSync(recursive: true);
-          }
         }
+      } catch (error, stack) {
+        Log.error('Download cancellation', error, stack);
       }
-    }
+    }();
+    LocalManager().removeTask(this);
   }
 
   @override
   String? get cover => _cover ?? comic?.cover;
 
   @override
-  String get message => _message;
+  String get message => isWaitingToRetry
+      ? 'Connection interrupted. Waiting to retry...'.tl
+      : _message;
 
   @override
   void pause() {
     if (isPaused) {
+      stopRecorder();
       return;
     }
     _isRunning = false;
     _message = "Paused".tl;
     _currentSpeed = 0;
-    _wakeRetryDelay();
-    var shouldMove = <int>[];
+    _retry?.cancel();
+    _generation++;
     for (var entry in tasks.entries) {
       if (!entry.value.isComplete) {
         entry.value.cancel();
-        shouldMove.add(entry.key);
       }
-    }
-    for (var i in shouldMove) {
-      tasks.remove(i);
     }
     stopRecorder();
     notifyListeners();
@@ -201,91 +242,115 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
   @visibleForTesting
   Future<void>? get debugResumeFuture => _resumeFuture;
 
-  Completer<void>? _retryDelayWakeup;
-
-  void _wakeRetryDelay() {
-    final wakeup = _retryDelayWakeup;
-    if (wakeup != null && !wakeup.isCompleted) {
-      wakeup.complete();
+  Future<Res<T>> _runDownloadStepWithRetry<T>(Future<T> Function() task) async {
+    try {
+      return Res(await _retry!.run(task, retryUnknown: true));
+    } catch (error) {
+      return Res.error(error.toString());
     }
   }
 
-  Future<void> _waitRetryDelay(Duration duration) {
-    final wakeup = Completer<void>();
-    _retryDelayWakeup = wakeup;
-    return Future.any<void>([
-      Future<void>.delayed(duration),
-      wakeup.future,
-    ]).whenComplete(() {
-      if (identical(_retryDelayWakeup, wakeup)) {
-        _retryDelayWakeup = null;
-      }
-    });
-  }
-
-  Future<Res<T>> _runDownloadStepWithRetry<T>(Future<T> Function() task) {
-    return _runWithRetry(
-      task,
-      delay: _waitRetryDelay,
-      shouldContinue: () => _isRunning,
+  _ImageDownloadWrapper _createImageTask(String chapter, int index) {
+    final saveTo = comic!.chapters == null
+        ? Directory(path!)
+        : Directory(
+            FilePath.join(path!, LocalManager.getChapterDirectoryName(chapter)),
+          );
+    saveTo.createSync(recursive: true);
+    return _ImageDownloadWrapper(
+      this,
+      chapter,
+      _images![chapter]![index],
+      saveTo,
+      index,
     );
   }
 
   void _scheduleTasks() {
-    var images = _images![_images!.keys.elementAt(_chapter)]!;
-    var downloading = 0;
-    for (var i = _index; i < images.length; i++) {
-      if (downloading >= _maxConcurrentTasks) {
-        return;
-      }
-      if (tasks[i] != null) {
-        if (!tasks[i]!.isComplete) {
-          downloading++;
-        }
-        if (tasks[i]!.error == null) {
-          continue;
-        }
-      }
-      Directory saveTo;
-      if (comic!.chapters != null) {
-        saveTo = Directory(
-          FilePath.join(
-            path!,
-            LocalManager.getChapterDirectoryName(
-              _images!.keys.elementAt(_chapter),
-            ),
-          ),
-        );
-        if (!saveTo.existsSync()) {
-          saveTo.createSync(recursive: true);
-        }
-      } else {
-        saveTo = Directory(path!);
-      }
-      var task = _ImageDownloadWrapper(
-        this,
-        _images!.keys.elementAt(_chapter),
-        images[i],
-        saveTo,
-        i,
-      );
-      tasks[i] = task;
-      task.wait().then((task) {
-        if (task.isComplete) {
-          _scheduleTasks();
-        }
-      });
+    if (!_isRunning) return;
+    final chapter = _images!.keys.elementAt(_chapter);
+    final images = _images![chapter]!;
+    var downloading = tasks.values
+        .where((task) => !task.isComplete && task.error == null)
+        .length;
+    final generation = _generation;
+    for (
+      var i = _index;
+      i < images.length && downloading < _maxConcurrentTasks;
+      i++
+    ) {
+      // A failed operation keeps its exhausted retry budget until the main loop handles it.
+      if (tasks.containsKey(i)) continue;
+      final task = tasks[i] = _createImageTask(chapter, i);
       downloading++;
+      task.wait().then((finished) {
+        if (_isCurrentRun(generation) && finished.isComplete) _scheduleTasks();
+      });
     }
   }
 
   @override
   void resume() {
-    if (_isRunning) return;
-    _resumeFuture = _resume();
+    if (_isRunning || _cancelled) return;
+    final previous = _resumeFuture;
+    final generation = ++_generation;
+    _isRunning = true;
+    _isError = false;
+    _message = 'Resuming...'.tl;
+    notifyListeners();
+    _resumeFuture = () async {
+      await previous;
+      if (!_isCurrentRun(generation)) return;
+      _retry = DownloadRetry(
+        isActive: () => _isCurrentRun(generation),
+        onWaitingChanged: notifyListeners,
+      );
+      try {
+        await _download(generation);
+      } catch (error, stack) {
+        if (_isCurrentRun(generation)) {
+          Log.error('Download', error, stack);
+          _setError('Error: $error');
+        }
+      } finally {
+        _retry?.cancel();
+        final active = tasks.values.toList();
+        for (final task in active) {
+          if (!task.isComplete) task.cancel();
+        }
+        await Future.wait(active.map((task) => task.wait()));
+        stopRecorder();
+      }
+    }();
   }
 
-  Future<void> _resume() async {
+  Future<bool> _retryMissingImages(int generation) async {
+    final missing = [
+      for (final entry in _missingImages.entries)
+        for (final index in entry.value) (entry.key, index),
+    ];
+    for (final (chapter, index) in missing) {
+      final task = tasks[index] = _createImageTask(chapter, index);
+      await task.wait();
+      if (!_isCurrentRun(generation)) return false;
+      tasks.remove(index);
+      if (task.error != null) {
+        if (!skipUnavailableImages || !task.canSkip) {
+          _setError('Error: ${task.error}');
+          return false;
+        }
+      } else {
+        _missingImages[chapter]!.remove(index);
+        if (_missingImages[chapter]!.isEmpty) _missingImages.remove(chapter);
+        _downloadedCount++;
+      }
+      _message = _progressMessage;
+      await LocalManager().saveCurrentDownloadingTasks();
+    }
+    return _isCurrentRun(generation);
+  }
+
+  Future<void> _download(int generation) async {
     _isError = false;
     _message = "Resuming...".tl;
     _isRunning = true;
@@ -303,7 +368,7 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
           return r.data;
         }
       });
-      if (!_isRunning) {
+      if (!_isCurrentRun(generation)) {
         return;
       }
       if (res.error) {
@@ -355,7 +420,7 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
         file.writeAsBytesSync(data);
         return "file://${file.path}";
       });
-      if (!_isRunning) {
+      if (!_isCurrentRun(generation)) {
         return;
       }
       if (res.error) {
@@ -381,7 +446,7 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
             return r.data;
           }
         });
-        if (!_isRunning) {
+        if (!_isCurrentRun(generation)) {
           return;
         }
         if (res.error) {
@@ -419,7 +484,7 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
               return r.data;
             }
           });
-          if (!_isRunning) {
+          if (!_isCurrentRun(generation)) {
             return;
           }
           if (res.error) {
@@ -437,6 +502,8 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
       await LocalManager().saveCurrentDownloadingTasks();
     }
 
+    tasks.clear();
+    if (!await _retryMissingImages(generation)) return;
     while (_chapter < _images!.length) {
       var images = _images![_images!.keys.elementAt(_chapter)]!;
       tasks.clear();
@@ -444,23 +511,41 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
         _scheduleTasks();
         var task = tasks[_index]!;
         await task.wait();
-        if (isPaused) {
+        if (!_isCurrentRun(generation)) {
           return;
         }
         if (task.error != null) {
           Log.error("Download", task.error.toString());
-          _setError("Error: ${task.error}");
-          return;
+          if (!skipUnavailableImages || !task.canSkip) {
+            _setError("Error: ${task.error}");
+            return;
+          }
+          (_missingImages[_images!.keys.elementAt(_chapter)] ??= {}).add(
+            _index,
+          );
+        } else {
+          _downloadedCount++;
         }
         _index++;
-        _downloadedCount++;
-        _message = "$_downloadedCount/$_totalCount";
+        _message = _progressMessage;
         await LocalManager().saveCurrentDownloadingTasks();
       }
       _index = 0;
       _chapter++;
     }
 
+    if (missingImageCount > 0) {
+      final pages = [
+        for (final entry in _missingImages.entries)
+          '${comic!.chapters?.allChapters[entry.key] ?? title}: ${entry.value.map((index) => index + 1).join(', ')}',
+      ].join('\n');
+      _setError(
+        '${'Download incomplete. Start again to retry missing images; completed pages are retained.'.tl}\n$_progressMessage\n$pages',
+      );
+      await LocalManager().saveCurrentDownloadingTasks();
+      return;
+    }
+    _isRunning = false;
     LocalManager().completeTask(this);
     stopRecorder();
   }
@@ -500,6 +585,11 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
       "totalCount": _totalCount,
       "index": _index,
       "chapter": _chapter,
+      "skipUnavailableImages": skipUnavailableImages,
+      "missingImages": {
+        for (final entry in _missingImages.entries)
+          entry.key: entry.value.toList()..sort(),
+      },
     };
   }
 
@@ -516,21 +606,38 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
       }
     }
 
-    return ImagesDownloadTask(
-        source: ComicSource.find(json["source"])!,
-        comicId: json["comicId"],
-        comic: json["comic"] == null
-            ? null
-            : ComicDetails.fromJson(json["comic"]),
-        chapters: ListOrNull.from(json["chapters"]),
-      )
-      ..path = json["path"]
-      .._cover = json["cover"]
-      .._images = images
-      .._downloadedCount = json["downloadedCount"]
-      .._totalCount = json["totalCount"]
-      .._index = json["index"]
-      .._chapter = json["chapter"];
+    final task =
+        ImagesDownloadTask(
+            source: ComicSource.find(json["source"])!,
+            comicId: json["comicId"],
+            comic: json["comic"] == null
+                ? null
+                : ComicDetails.fromJson(json["comic"]),
+            chapters: ListOrNull.from(json["chapters"]),
+            skipUnavailableImages: json["skipUnavailableImages"] == true,
+          )
+          ..path = json["path"]
+          .._cover = json["cover"]
+          .._images = images
+          .._downloadedCount = json["downloadedCount"]
+          .._totalCount = json["totalCount"]
+          .._index = json["index"]
+          .._chapter = json["chapter"];
+    final missing = json['missingImages'];
+    if (missing is Map && images != null) {
+      for (final entry in missing.entries) {
+        final chapterImages = images[entry.key];
+        if (chapterImages == null || entry.value is! List) continue;
+        final indices = (entry.value as List)
+            .whereType<int>()
+            .where((index) => index >= 0 && index < chapterImages.length)
+            .toSet();
+        if (indices.isNotEmpty) {
+          task._missingImages[entry.key as String] = indices;
+        }
+      }
+    }
+    return task;
   }
 
   @override
@@ -569,40 +676,7 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
   int get hashCode => Object.hash(comicId, source.key);
 }
 
-Future<Res<T>> _runWithRetry<T>(
-  Future<T> Function() task, {
-  int retry = 3,
-  Future<void> Function(Duration duration)? delay,
-  bool Function()? shouldContinue,
-}) async {
-  final wait = delay ?? Future<void>.delayed;
-  for (var i = 0; i < retry; i++) {
-    if (shouldContinue?.call() == false) {
-      return Res.error("Canceled");
-    }
-    try {
-      return Res(await task());
-    } catch (e) {
-      if (i == retry - 1 || shouldContinue?.call() == false) {
-        return Res.error(e.toString());
-      }
-      await wait(Duration(seconds: i + 1));
-    }
-  }
-  throw UnimplementedError();
-}
-
 class _ImageDownloadWrapper {
-  final ImagesDownloadTask task;
-
-  final String chapter;
-
-  final int index;
-
-  final String image;
-
-  final Directory saveTo;
-
   _ImageDownloadWrapper(
     this.task,
     this.chapter,
@@ -610,48 +684,48 @@ class _ImageDownloadWrapper {
     this.saveTo,
     this.index,
   ) {
-    start();
+    _finished = _start().then((_) => this);
   }
-
+  final ImagesDownloadTask task;
+  final String chapter;
+  final String image;
+  final Directory saveTo;
+  final int index;
   bool isComplete = false;
-
-  String? error;
-
   bool isCancelled = false;
-
-  StreamIterator<ImageDownloadProgress>? _imageIterator;
-
-  Future<void>? _activeWrite;
+  bool canSkip = false;
+  Object? error;
+  StreamIterator<ImageDownloadProgress>? _iterator;
+  Future<void>? _cancelling;
+  late final Future<_ImageDownloadWrapper> _finished;
 
   void cancel() {
-    if (isCancelled) {
-      return;
-    }
+    if (isCancelled) return;
     isCancelled = true;
-    final waitFutures = <Future<void>>[];
-    final imageIterator = _imageIterator;
-    if (imageIterator != null) {
-      waitFutures.add(imageIterator.cancel().then<void>((_) {}));
-    }
-    final activeWrite = _activeWrite;
-    if (activeWrite != null) {
-      waitFutures.add(activeWrite.catchError((_) {}));
-    }
-    if (waitFutures.isEmpty) {
-      _completeWaiters();
-    } else {
-      unawaited(Future.wait(waitFutures).whenComplete(_completeWaiters));
+    _cancelling = _iterator?.cancel();
+    _cancelling?.catchError((Object error, StackTrace stack) {
+      Log.error('Download cancellation', error, stack);
+    });
+  }
+
+  Future<void> _start() async {
+    try {
+      await task._retry!.run(_download, retryUnknown: true);
+      isComplete = !isCancelled;
+    } catch (failure, stack) {
+      if (!isCancelled) {
+        error = failure;
+        canSkip = canSkipUnavailableDownloadImage(failure);
+        Log.error('Download', failure, stack);
+      }
     }
   }
 
-  var completers = <Completer<_ImageDownloadWrapper>>[];
-
-  var retry = 3;
-
-  void start() async {
-    int lastBytes = 0;
+  Future<void> _download() async {
+    if (isCancelled) throw const DownloadCancelled();
+    var lastBytes = 0;
     String? unsupportedMime;
-    final imageIterator = StreamIterator(
+    final iterator = StreamIterator(
       ImageDownloader.loadComicImageUnwrapped(
         image,
         task.source.key,
@@ -659,88 +733,36 @@ class _ImageDownloadWrapper {
         chapter,
       ),
     );
-    _imageIterator = imageIterator;
+    _iterator = iterator;
     try {
-      while (await imageIterator.moveNext()) {
-        final p = imageIterator.current;
-        if (isCancelled) {
-          return;
+      while (await iterator.moveNext()) {
+        if (isCancelled) throw const DownloadCancelled();
+        final progress = iterator.current;
+        task.onData(progress.currentBytes - lastBytes);
+        lastBytes = progress.currentBytes;
+        final bytes = progress.imageBytes;
+        if (bytes == null) continue;
+        final fileType = detectFileType(bytes);
+        final filename = '$index${fileType.ext}';
+        if (!isComicImageFileName(filename)) {
+          unsupportedMime = fileType.mime;
+          continue;
         }
-        task.onData(p.currentBytes - lastBytes);
-        lastBytes = p.currentBytes;
-        if (p.imageBytes != null) {
-          var fileType = detectFileType(p.imageBytes!);
-          var fileName = "$index${fileType.ext}";
-          if (!isComicImageFileName(fileName)) {
-            unsupportedMime = fileType.mime;
-            continue;
-          }
-          var file = saveTo.joinFile(fileName);
-          final activeWrite = file
-              .writeAsBytes(p.imageBytes!)
-              .then<void>((_) {});
-          _activeWrite = activeWrite;
-          try {
-            await activeWrite;
-          } finally {
-            if (identical(_activeWrite, activeWrite)) {
-              _activeWrite = null;
-            }
-          }
-          if (isCancelled) {
-            return;
-          }
-          isComplete = true;
-          _completeWaiters();
-          await imageIterator.cancel();
-          return;
-        }
-      }
-      if (!isComplete && !isCancelled) {
-        if (unsupportedMime != null) {
-          throw "Unsupported image data: $unsupportedMime";
-        }
-        throw "Failed to download image";
-      }
-    } catch (e, s) {
-      if (isCancelled) {
+        await saveTo.joinFile(filename).writeAsBytes(bytes);
+        if (isCancelled) throw const DownloadCancelled();
         return;
       }
-      Log.error("Download", e.toString(), s);
-      retry--;
-      if (retry > 0) {
-        start();
-        return;
+      if (unsupportedMime != null) {
+        throw UnsupportedDownloadImage(unsupportedMime);
       }
-      error = e.toString();
-      _completeWaiters();
+      throw StateError('Failed to download image');
     } finally {
-      if (identical(_imageIterator, imageIterator)) {
-        _imageIterator = null;
-      }
-      if (isCancelled) {
-        _completeWaiters();
-      }
+      await (_cancelling ?? iterator.cancel());
+      if (identical(_iterator, iterator)) _iterator = null;
     }
   }
 
-  Future<_ImageDownloadWrapper> wait() {
-    if (isComplete || isCancelled || error != null) {
-      return Future.value(this);
-    }
-    var c = Completer<_ImageDownloadWrapper>();
-    completers.add(c);
-    return c.future;
-  }
-
-  void _completeWaiters() {
-    for (var c in completers) {
-      if (!c.isCompleted) {
-        c.complete(this);
-      }
-    }
-    completers.clear();
-  }
+  Future<_ImageDownloadWrapper> wait() => _finished;
 }
 
 abstract mixin class _TransferSpeedMixin {
@@ -799,6 +821,20 @@ class ArchiveDownloadTask extends DownloadTask {
 
   String _message = "Fetching comic info...".tl;
 
+  DownloadRetry? _retry;
+  Future<void>? _resumeFuture;
+  Future<void>? _stopping;
+  int _generation = 0;
+  bool _isCurrentRun(int generation) => _isRunning && _generation == generation;
+  @override
+  Future<void> get pendingCleanup => _resumeFuture ?? Future.value();
+  @override
+  bool get isWaitingToRetry => _isRunning && (_retry?.isWaiting ?? false);
+  @override
+  void retryNow() {
+    if (_isRunning) _retry?.wake();
+  }
+
   bool _isRunning = false;
 
   bool _isError = false;
@@ -813,8 +849,8 @@ class ArchiveDownloadTask extends DownloadTask {
 
   @override
   void cancel() async {
-    _isRunning = false;
-    await _downloader?.stop();
+    pause();
+    await pendingCleanup;
     if (path != null) {
       Directory(path!).deleteIgnoreError(recursive: true);
     }
@@ -838,7 +874,9 @@ class ArchiveDownloadTask extends DownloadTask {
   bool get isPaused => !_isRunning;
 
   @override
-  String get message => _message;
+  String get message => isWaitingToRetry
+      ? 'Connection interrupted. Waiting to retry...'.tl
+      : _message;
 
   int _currentBytes = 0;
 
@@ -850,7 +888,9 @@ class ArchiveDownloadTask extends DownloadTask {
   void pause() {
     _isRunning = false;
     _message = "Paused".tl;
-    _downloader?.stop();
+    _generation++;
+    _retry?.cancel();
+    _stopping = _downloader?.stop();
     notifyListeners();
   }
 
@@ -859,10 +899,35 @@ class ArchiveDownloadTask extends DownloadTask {
       _expectedBytes == 0 ? 0 : _currentBytes / _expectedBytes;
 
   @override
-  void resume() async {
-    if (_isRunning) {
-      return;
-    }
+  void resume() {
+    if (_isRunning) return;
+    final previous = _resumeFuture;
+    final generation = ++_generation;
+    _isRunning = true;
+    notifyListeners();
+    _resumeFuture = () async {
+      await previous;
+      await _stopping;
+      if (!_isCurrentRun(generation)) return;
+      _retry = DownloadRetry(
+        isActive: () => _isCurrentRun(generation),
+        onWaitingChanged: notifyListeners,
+      );
+      try {
+        await _resume(generation);
+      } catch (error, stack) {
+        if (_isCurrentRun(generation)) {
+          Log.error('Download', error, stack);
+          _setError('Error: $error');
+        }
+      } finally {
+        _retry?.cancel();
+        await _stopping;
+      }
+    }();
+  }
+
+  Future<void> _resume(int generation) async {
     _isError = false;
     _isRunning = true;
     notifyListeners();
@@ -891,26 +956,36 @@ class ArchiveDownloadTask extends DownloadTask {
 
     Log.info("Download", "Downloading $archiveUrl");
 
-    _downloader = FileDownloader(archiveUrl, archiveFile.path);
-
     bool isDownloaded = false;
-
     try {
-      await for (var status in _downloader!.start()) {
-        _currentBytes = status.downloadedBytes;
-        _expectedBytes = status.totalBytes;
-        _message =
-            "${bytesToReadableString(_currentBytes)}/${bytesToReadableString(_expectedBytes)}";
-        _speed = status.bytesPerSecond;
-        isDownloaded = status.isFinished;
-        notifyListeners();
-      }
-    } catch (e) {
-      _setError("Error: $e");
+      await _retry!.run<void>(() async {
+        final downloader = _downloader = FileDownloader(
+          archiveUrl,
+          archiveFile.path,
+        );
+        isDownloaded = false;
+        try {
+          await for (final status in downloader.start()) {
+            if (!_isCurrentRun(generation)) throw const DownloadCancelled();
+            _currentBytes = status.downloadedBytes;
+            _expectedBytes = status.totalBytes;
+            _message =
+                '${bytesToReadableString(_currentBytes)}/${bytesToReadableString(_expectedBytes)}';
+            _speed = status.bytesPerSecond;
+            isDownloaded = status.isFinished;
+            notifyListeners();
+          }
+        } catch (_) {
+          await downloader.stop();
+          rethrow;
+        }
+      }, retryUnknown: true);
+    } catch (error) {
+      if (_isCurrentRun(generation)) _setError('Error: $error');
       return;
     }
 
-    if (!_isRunning) {
+    if (!_isCurrentRun(generation)) {
       return;
     }
 
@@ -926,8 +1001,10 @@ class ArchiveDownloadTask extends DownloadTask {
       return;
     }
 
+    if (!_isCurrentRun(generation)) return;
     await archiveFile.deleteIgnoreError();
 
+    _isRunning = false;
     LocalManager().completeTask(this);
   }
 
