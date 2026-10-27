@@ -225,14 +225,14 @@ class _SettingsPageState extends State<SettingsPage> {
         title: "Sources & Data".tl,
         destinations: [
           _SettingsItem(
-            destination: SettingsDestination.sources,
-            title: "Sources and Services".tl,
-            icon: Icons.extension_outlined,
-          ),
-          _SettingsItem(
             destination: SettingsDestination.storage,
             title: "Storage and Sync".tl,
             icon: Icons.storage_outlined,
+          ),
+          _SettingsItem(
+            destination: SettingsDestination.sources,
+            title: "Sources and Services".tl,
+            icon: Icons.extension_outlined,
           ),
           _SettingsItem(
             destination: SettingsDestination.network,

@@ -38,6 +38,10 @@ class _ImageFavoritesItemState extends State<ImageFavoritesItem> {
   late final imageFavorites = widget.imageFavoritesComic.images.toList();
 
   void goComicInfo(ImageFavoritesComic comic) {
+    if (comic.sourceKey == 'local') {
+      App.rootContext.to(() => ImageFavoritesGalleryPage(comic: comic));
+      return;
+    }
     App.mainNavigatorKey?.currentContext?.to(
       () => ComicPage(id: comic.id, sourceKey: comic.sourceKey),
     );
@@ -86,13 +90,14 @@ class _ImageFavoritesItemState extends State<ImageFavoritesItem> {
 
   void showMenu(Offset location, BuildContext context) {
     showMenuX(App.rootContext, location, [
-      MenuEntry(
-        icon: Icons.chrome_reader_mode_outlined,
-        text: 'Details'.tl,
-        onClick: () {
-          goComicInfo(widget.imageFavoritesComic);
-        },
-      ),
+      if (widget.imageFavoritesComic.sourceKey != 'local')
+        MenuEntry(
+          icon: Icons.chrome_reader_mode_outlined,
+          text: 'Details'.tl,
+          onClick: () {
+            goComicInfo(widget.imageFavoritesComic);
+          },
+        ),
       MenuEntry(
         icon: Icons.copy,
         text: 'Copy Title'.tl,

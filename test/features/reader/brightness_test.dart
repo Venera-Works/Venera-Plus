@@ -3,6 +3,47 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/reader/brightness.dart';
 
 void main() {
+  testWidgets('vertical brightness bar toggles dimming and brightens upward', (
+    tester,
+  ) async {
+    var enabled = false;
+    var brightness = 50;
+    int? saved;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: StatefulBuilder(
+            builder: (context, setState) => SizedBox(
+              height: 320,
+              child: ReaderBrightnessBar(
+                enabled: enabled,
+                brightness: brightness,
+                onEnabledChanged: (value) => setState(() => enabled = value),
+                onBrightnessChanged: (value) =>
+                    setState(() => brightness = value),
+                onBrightnessChangeEnd: (value) => saved = value,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(tester.widget<Slider>(find.byType(Slider)).onChanged, isNull);
+    await tester.tap(find.byIcon(Icons.brightness_6));
+    await tester.pumpAndSettle();
+    expect(enabled, isTrue);
+    final slider = find.byType(Slider);
+    await tester.drag(slider, const Offset(0, -70));
+    await tester.pumpAndSettle();
+    expect(brightness, greaterThan(50));
+    expect(saved, brightness);
+    await tester.tap(find.byIcon(Icons.brightness_4));
+    await tester.pumpAndSettle();
+    expect(enabled, isFalse);
+    expect(tester.widget<Slider>(slider).onChanged, isNull);
+    expect(tester.widget<Slider>(slider).value, brightness);
+  });
+
   group('reader brightness', () {
     test('normalizes missing and out-of-range values', () {
       expect(normalizeReaderBrightness(null), defaultReaderBrightness);

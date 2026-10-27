@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/components/navigation_bar.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/features/discovery/discovery.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
@@ -19,6 +21,10 @@ ComicSource _createTestSource({
   String? categoryKey,
   bool emptyBrowsePages = false,
   bool showCategoryTitle = false,
+  Future<Res<List<Comic>>> Function(int page)? loadPage,
+  Future<void> Function()? onRefresh,
+  Listenable? changeListenable,
+  String? Function()? statusMessage,
 }) {
   return ComicSource(
     name,
@@ -41,10 +47,13 @@ ComicSource _createTestSource({
             ExplorePageType.multiPageComicList,
             emptyBrowsePages
                 ? null
-                : (_) async => const Res<List<Comic>>(<Comic>[]),
+                : loadPage ?? (_) async => const Res<List<Comic>>(<Comic>[]),
             null,
             null,
             null,
+            onRefresh: onRefresh,
+            changeListenable: changeListenable,
+            statusMessage: statusMessage,
           ),
         )
         .toList(),
@@ -78,6 +87,146 @@ ComicSource _createTestSource({
 }
 
 void main() {
+  testWidgets(
+    'remote refresh replaces the list with one centered turn for fast and slow syncs',
+    (tester) async {
+      final directory = Directory.systemTemp.createTempSync(
+        'venera-discovery-refresh-',
+      );
+      final previousSettings = Map<String, dynamic>.from(
+        appdata.toJson()['settings'] as Map,
+      );
+      final previousImplicit = Map<String, dynamic>.from(appdata.implicitData);
+      String? previousDataPath;
+      try {
+        previousDataPath = App.dataPath;
+      } on Error {
+        /* Unset late path. */
+      }
+
+      const sourceKey = 'discovery_remote_refresh';
+      const pageTitle = 'Remote Library';
+      final manager = ComicSourceManager();
+      final contentVersion = ValueNotifier(0);
+      var loadCount = 0;
+      var refreshCount = 0;
+      Completer<void>? pendingRefresh;
+      manager.remove(sourceKey);
+      manager.add(
+        _createTestSource(
+          key: sourceKey,
+          name: pageTitle,
+          explorePageTitles: const [pageTitle],
+          loadPage: (_) async {
+            loadCount++;
+            return const Res<List<Comic>>([], subData: 1);
+          },
+          onRefresh: () async {
+            refreshCount++;
+            await pendingRefresh?.future;
+          },
+          changeListenable: contentVersion,
+          statusMessage: () => 'Library revision ${contentVersion.value}',
+        ),
+      );
+      App.dataPath = directory.path;
+      appdata.settings['language'] = 'en-US';
+      appdata.settings['explore_pages'] = const [pageTitle];
+      appdata.settings['categories'] = const <String>[];
+      appdata.implicitData['discovery_source'] = sourceKey;
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await runWidgetIo(tester, () => appdata.writeImplicitData());
+        manager.remove(sourceKey);
+        contentVersion.dispose();
+        (appdata.toJson()['settings'] as Map)
+          ..clear()
+          ..addAll(previousSettings);
+        appdata.implicitData = previousImplicit;
+        App.dataPath = previousDataPath ?? Directory.systemTemp.path;
+        directory.deleteSync(recursive: true);
+      });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: NaviPane(
+            paneItems: [
+              PaneItemEntry(
+                label: 'Explore',
+                icon: Icons.explore_outlined,
+                activeIcon: Icons.explore,
+              ),
+            ],
+            paneActions: const [],
+            pageBuilder: (_) => const ExplorePage(),
+            observer: NaviObserver(),
+            navigatorKey: GlobalKey<NavigatorState>(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Library revision 0'), findsOneWidget);
+      final listCenter = tester.getCenter(find.byType(ComicList));
+      final initialLoads = loadCount;
+      final refreshButton = find.byKey(const Key('FAB'));
+      final rotation = find.byType(RotationTransition);
+
+      await tester.tap(refreshButton);
+      await tester.pump();
+      expect(refreshCount, 1);
+      expect(find.text('Library revision 0'), findsNothing);
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+      expect(
+        tester.getCenter(find.byType(CircularProgressIndicator)),
+        listCenter,
+      );
+      expect(
+        find.ancestor(of: refreshButton, matching: rotation),
+        findsNothing,
+      );
+      await tester.tap(refreshButton);
+      await tester.pump();
+      expect(refreshCount, 1);
+
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(
+        tester.widget<RotationTransition>(rotation).turns.value,
+        closeTo(0.5, 0.01),
+      );
+      expect(find.text('Library revision 0'), findsNothing);
+      await tester.pump(const Duration(milliseconds: 401));
+      await tester.pump();
+      expect(rotation, findsNothing);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      expect(find.text('Library revision 0'), findsOneWidget);
+      expect(loadCount, greaterThan(initialLoads));
+
+      pendingRefresh = Completer<void>();
+      await tester.tap(refreshButton);
+      await tester.pump();
+      expect(refreshCount, 2);
+      contentVersion.value++;
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(rotation, findsOneWidget);
+      expect(find.text('Library revision 1'), findsNothing);
+      await tester.pump(const Duration(milliseconds: 401));
+      await tester.pump();
+      expect(pendingRefresh.isCompleted, isFalse);
+      expect(rotation, findsNothing);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      expect(find.text('Library revision 1'), findsOneWidget);
+      pendingRefresh.complete();
+      await tester.pumpAndSettle();
+      expect(find.text('Library revision 1'), findsOneWidget);
+
+      await tester.tap(refreshButton);
+      await tester.pump();
+      expect(rotation, findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   group('Discovery section swipe navigation', () {
     testWidgets(
       'swipes switch the active view and remembered section without stealing '

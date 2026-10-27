@@ -179,6 +179,57 @@ class ImageFavoritesComic {
     }
   }
 
+  Iterable<ImageFavorite> get bookmarks =>
+      images.where((image) => image.isAutoFavorite != true);
+
+  /// Toggle an explicit favorite while retaining the gallery's automatic cover.
+  bool toggleImageFavorite(
+    ImageFavorite image, {
+    required String firstImageKey,
+    required int chapterPageCount,
+  }) {
+    var chapter = imageFavoritesEp.where((ep) => ep.ep == image.ep).firstOrNull;
+    if (chapter != null && chapter.eid.isNotEmpty && chapter.eid != image.eid) {
+      throw StateError(
+        'The chapter order of the comic may have changed, temporarily not supported for collection',
+      );
+    }
+    if (chapter == null) {
+      chapter = ImageFavoritesEp(
+        image.eid,
+        image.ep,
+        [],
+        image.epName,
+        chapterPageCount,
+      );
+      imageFavoritesEp.add(chapter);
+    } else {
+      chapter.eid = image.eid;
+    }
+    final previous = chapter.imageFavorites
+        .where((entry) => entry.page == image.page)
+        .firstOrNull;
+    final collected = previous == null || previous.isAutoFavorite == true;
+    if (previous != null) chapter.imageFavorites.remove(previous);
+    if (collected) {
+      chapter.imageFavorites.add(image.copyWith(isAutoFavorite: false));
+    }
+    if (chapter.imageFavorites.every((entry) => entry.isAutoFavorite == true)) {
+      imageFavoritesEp.remove(chapter);
+    } else if (!chapter.imageFavorites.any(
+      (entry) => entry.page == firstPage,
+    )) {
+      chapter.imageFavorites.add(
+        image.copyWith(
+          page: firstPage,
+          imageKey: firstImageKey,
+          isAutoFavorite: true,
+        ),
+      );
+    }
+    return collected;
+  }
+
   @override
   bool operator ==(Object other) {
     return other is ImageFavoritesComic &&

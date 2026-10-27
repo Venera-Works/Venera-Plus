@@ -557,6 +557,44 @@ class ReaderState extends State<Reader>
     initReaderWindow();
   }
 
+  int _bookmarkNavigationGeneration = 0;
+
+  bool goToBookmark(ImageFavorite bookmark) {
+    if (isLoading ||
+        bookmark.id != cid ||
+        bookmark.sourceKey != type.sourceKey) {
+      return false;
+    }
+    final ids = widget.chapters?.ids.toList();
+    var index = ids?.indexOf(bookmark.eid) ?? -1;
+    if (ids != null &&
+        bookmark.ep > 0 &&
+        bookmark.ep <= ids.length &&
+        ids[bookmark.ep - 1] == bookmark.eid) {
+      index = bookmark.ep - 1;
+    }
+    if (ids != null && index < 0 && bookmark.eid.isNotEmpty) return false;
+    final targetChapter = ids == null
+        ? 1
+        : index >= 0
+        ? index + 1
+        : bookmark.ep;
+    if (targetChapter < 1 || targetChapter > maxChapter) return false;
+    onReaderContentLoading();
+    chapter = targetChapter;
+    pageValue = normalizeReaderInitialPage(bookmark.page);
+    initImagesPerPage(pageValue);
+    jumpToLastPageOnLoad = false;
+    targetLastVisualPage = false;
+    beginNavigationCommand(
+      ReadingNavigationSource.userSeek,
+      chapter: targetChapter,
+    );
+    _bookmarkNavigationGeneration++;
+    update();
+    return true;
+  }
+
   void setImageCacheSize() async {
     var availableRAM = await MemoryInfo.getFreePhysicalMemorySize();
     if (availableRAM == null) return;
@@ -725,7 +763,9 @@ class ReaderState extends State<Reader>
         child: ReaderScaffold(
           child: ReaderGestureDetector(
             child: ReaderImages(
-              key: Key(mode.isWaterfall ? mode.key : chapter.toString()),
+              key: Key(
+                '${mode.isWaterfall ? mode.key : chapter}:$_bookmarkNavigationGeneration',
+              ),
             ),
           ),
         ),

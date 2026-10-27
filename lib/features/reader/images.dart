@@ -1330,6 +1330,16 @@ class GalleryModeState extends State<_GalleryMode>
     return false;
   }
 
+  bool get canPullToCollect {
+    final index = controller.hasClients && controller.page != null
+        ? controller.page!.round()
+        : _currentControllerIndex;
+    final photo = _pool[_controllerKeyForIndex(index)];
+    final initial = photo?.getInitialScale?.call();
+    return initial != null &&
+        ((photo?.scale ?? initial) - initial).abs() < 0.01;
+  }
+
   @override
   void handleDoubleTap(Offset location) {
     if (appdata.settings['quickCollectImage'] == 'DoubleTap') {
@@ -2601,6 +2611,8 @@ class ContinuousModeState extends State<_ContinuousMode>
       curve: Curves.ease,
     );
   }
+
+  bool get canPullToCollect => (photoViewController.scale ?? 1) <= 1.01;
 
   @override
   void handleDoubleTap(Offset location) {

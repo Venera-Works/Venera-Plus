@@ -20,9 +20,7 @@ import 'package:venera_plus/features/reader/orientation.dart';
 import 'package:venera_plus/features/reader/reader_page.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
-import 'package:venera_plus/foundation/consts.dart';
 import 'package:venera_plus/foundation/context.dart';
-import 'package:venera_plus/foundation/extensions.dart';
 import 'package:venera_plus/foundation/file_interaction.dart';
 import 'package:venera_plus/foundation/file_type.dart';
 import 'package:venera_plus/foundation/log.dart';
@@ -43,12 +41,10 @@ class ReaderScaffoldState extends State<ReaderScaffold>
     with ReaderOrientationState {
   bool _isOpen = false;
 
-  bool _brightnessPanelOpen = false;
-
   bool _isOnChapterCommentsPage = false;
   final _pageChanges = ValueNotifier(0);
 
-  final _imageFavorites = <(String, int), ImageFavorite>{};
+  final _imageFavorites = <(String, int, int), ImageFavorite>{};
 
   final EInkRefreshController _eInkRefreshController = EInkRefreshController();
 
@@ -85,44 +81,6 @@ class ReaderScaffoldState extends State<ReaderScaffold>
     }
   }
 
-  ReaderDragListener? _imageFavoriteDragListener;
-
-  void addDragListener() async {
-    if (!mounted) return;
-    var readerMode = context.reader.mode;
-
-    // 横向阅读的时候, 如果纵向滑就触发收藏, 纵向阅读的时候, 如果横向滑动就触发收藏
-    if (appdata.settings['quickCollectImage'] == 'Swipe') {
-      if (_imageFavoriteDragListener == null) {
-        double distance = 0;
-        _imageFavoriteDragListener = ReaderDragListener(
-          onMove: (offset) {
-            switch (readerMode) {
-              case ReaderMode.continuousTopToBottom:
-              case ReaderMode.waterfallTopToBottom:
-              case ReaderMode.galleryTopToBottom:
-                distance += offset.dx;
-              case ReaderMode.continuousLeftToRight:
-              case ReaderMode.galleryLeftToRight:
-              case ReaderMode.galleryRightToLeft:
-              case ReaderMode.continuousRightToLeft:
-                distance += offset.dy;
-            }
-          },
-          onEnd: () {
-            if (distance.abs() > 150) {
-              addImageFavorite();
-            }
-            distance = 0;
-          },
-        );
-      }
-      gestureDetectorState!.addDragListener(_imageFavoriteDragListener!);
-    } else if (_imageFavoriteDragListener != null) {
-      gestureDetectorState!.removeDragListener(_imageFavoriteDragListener!);
-    }
-  }
-
   @override
   void initState() {
     sliderFocus.canRequestFocus = false;
@@ -134,7 +92,6 @@ class ReaderScaffoldState extends State<ReaderScaffold>
     super.initState();
     _reloadImageFavorites();
     ImageFavoriteManager().addListener(_reloadImageFavorites);
-    Future.delayed(const Duration(milliseconds: 200), addDragListener);
   }
 
   @override
@@ -165,9 +122,6 @@ class ReaderScaffoldState extends State<ReaderScaffold>
   void openOrClose() {
     setState(() {
       _isOpen = !_isOpen;
-      if (!_isOpen) {
-        _brightnessPanelOpen = false;
-      }
     });
     context.reader.autoReading.pause('menu', _isOpen);
     _applySystemUiMode();
@@ -225,7 +179,7 @@ class ReaderScaffoldState extends State<ReaderScaffold>
   @override
   Widget build(BuildContext context) {
     _isOnChapterCommentsPage = context.reader.isOnChapterCommentsPage;
-    final brightnessPanelVisible = _isOpen && _brightnessPanelOpen;
+    final brightnessBarVisible = _isOpen && !_isOnChapterCommentsPage;
     return Stack(
       children: [
         Positioned.fill(
@@ -260,7 +214,11 @@ class ReaderScaffoldState extends State<ReaderScaffold>
           left: 0,
           right: 0,
           height: kTopBarHeight + context.padding.top,
-          child: buildTop(),
+          child: ListenableBuilder(
+            listenable: _pageChanges,
+            builder: (context, child) => child ?? buildTop(),
+            child: _isOpen ? null : buildTop(),
+          ),
         ),
         AnimatedPositioned(
           duration: const Duration(milliseconds: 180),
@@ -275,24 +233,33 @@ class ReaderScaffoldState extends State<ReaderScaffold>
             child: _isOpen ? null : buildBottom(),
           ),
         ),
-        AnimatedPositioned(
-          duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOut,
-          right: 16 + context.padding.right,
-          bottom: brightnessPanelVisible
-              ? kBottomBarHeight + context.padding.bottom + 12
-              : -220,
-          child: ExcludeFocus(
-            excluding: !brightnessPanelVisible,
-            child: ExcludeSemantics(
-              excluding: !brightnessPanelVisible,
-              child: IgnorePointer(
-                ignoring: !brightnessPanelVisible,
-                child: buildBrightnessPanel(),
+        if (App.isMobile)
+          Positioned(
+            top: kTopBarHeight + context.padding.top + 12,
+            bottom: kBottomBarHeight + context.padding.bottom + 12,
+            left: context.padding.left + 12,
+            child: ExcludeFocus(
+              excluding: !brightnessBarVisible,
+              child: ExcludeSemantics(
+                excluding: !brightnessBarVisible,
+                child: IgnorePointer(
+                  ignoring: !brightnessBarVisible,
+                  child: AnimatedSlide(
+                    duration: const Duration(milliseconds: 180),
+                    curve: Curves.easeOut,
+                    offset: brightnessBarVisible
+                        ? Offset.zero
+                        : const Offset(-1.5, 0),
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 180),
+                      opacity: brightnessBarVisible ? 1 : 0,
+                      child: buildBrightnessBar(),
+                    ),
+                  ),
+                ),
               ),
             ),
           ),
-        ),
         Positioned.fill(
           child: EInkRefreshOverlay(controller: _eInkRefreshController),
         ),
@@ -302,71 +269,90 @@ class ReaderScaffoldState extends State<ReaderScaffold>
 
   Widget buildTop() {
     final epName = context.reader.chapterTitle;
-
+    final liked = isLiked();
+    final actions = <Widget>[
+      if (shouldShowChapterComments())
+        Tooltip(
+          message: 'Chapter Comments'.tl,
+          child: IconButton(
+            icon: const Icon(Icons.comment),
+            onPressed: openChapterComments,
+          ),
+        ),
+      Tooltip(
+        message: 'Collect the image'.tl,
+        child: IconButton(
+          icon: Icon(liked ? Icons.favorite : Icons.favorite_border),
+          color: liked ? context.colorScheme.primary : null,
+          onPressed: context.reader.isOnChapterCommentsPage
+              ? null
+              : addImageFavorite,
+        ),
+      ),
+      Tooltip(
+        message: 'Share'.tl,
+        child: IconButton(icon: const Icon(Icons.share), onPressed: share),
+      ),
+    ];
     return BlurEffect(
       child: Container(
         padding: EdgeInsets.only(top: context.padding.top),
         decoration: BoxDecoration(
           color: context.colorScheme.surface.toOpacity(0.92),
-          border: Border(
-            bottom: BorderSide(color: Colors.grey.toOpacity(0.5), width: 0.5),
-          ),
         ),
         child: Padding(
           padding: EdgeInsets.only(
             left: context.padding.left,
             right: context.padding.right,
           ),
-          child: Row(
-            children: [
-              const SizedBox(width: 8),
-              const BackButton(),
-              const SizedBox(width: 8),
-              Expanded(
-                child: epName == null
-                    ? Text(
-                        context.reader.widget.name,
-                        style: ts.s18,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      )
-                    : Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              if (constraints.maxWidth < 240) {
+                return Row(
+                  children: [
+                    const Expanded(child: BackButton()),
+                    for (final action in actions) Expanded(child: action),
+                  ],
+                );
+              }
+              return Row(
+                children: [
+                  const SizedBox(width: 8),
+                  const BackButton(),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: epName == null
+                        ? Text(
                             context.reader.widget.name,
-                            style: ts.s16,
+                            style: ts.s18,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
+                          )
+                        : Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(
+                                context.reader.widget.name,
+                                style: ts.s16,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              Text(
+                                epName,
+                                style: ts.s12,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
                           ),
-                          Text(
-                            epName,
-                            style: ts.s12,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ],
-                      ),
-              ),
-              const SizedBox(width: 8),
-              if (shouldShowChapterComments())
-                Tooltip(
-                  message: "Chapter Comments".tl,
-                  child: IconButton(
-                    icon: const Icon(Icons.comment),
-                    onPressed: openChapterComments,
                   ),
-                ),
-              Tooltip(
-                message: "Settings".tl,
-                child: IconButton(
-                  icon: const Icon(Icons.settings),
-                  onPressed: openSetting,
-                ),
-              ),
-              const SizedBox(width: 8),
-            ],
+                  const SizedBox(width: 8),
+                  ...actions,
+                  const SizedBox(width: 8),
+                ],
+              );
+            },
           ),
         ),
       ),
@@ -374,11 +360,13 @@ class ReaderScaffoldState extends State<ReaderScaffold>
   }
 
   bool isLiked() {
-    return _findImageFavorite(context.reader.page) != null;
+    return canUncollectImageFavorite(
+      _findImageFavorite(context.reader.sourceImagePageForCurrentReaderPage()),
+    );
   }
 
   ImageFavorite? _findImageFavorite(int page) {
-    return _imageFavorites[(context.reader.eid, page)];
+    return _imageFavorites[(context.reader.eid, context.reader.chapter, page)];
   }
 
   void _reloadImageFavorites() {
@@ -390,142 +378,83 @@ class ReaderScaffoldState extends State<ReaderScaffold>
     _imageFavorites.clear();
     for (final ep in comic?.imageFavoritesEp ?? <ImageFavoritesEp>[]) {
       for (final image in ep.imageFavorites) {
-        _imageFavorites.putIfAbsent((ep.eid, image.page), () => image);
+        _imageFavorites.putIfAbsent((ep.eid, ep.ep, image.page), () => image);
       }
     }
     update();
   }
 
   void addImageFavorite() async {
+    final selection = await _selectImageReference();
+    if (!mounted || selection == null) return;
+    toggleImageFavorite(selection);
+  }
+
+  void toggleImageFavorite(ReaderImageReference selection) {
+    final reader = context.reader;
+    final images = reader.images;
+    final page = selection.page;
+    final chapter = selection.chapter ?? reader.chapter;
+    if (images == null ||
+        images.isEmpty ||
+        page == null ||
+        selection.eid != reader.eid ||
+        chapter != reader.chapter) {
+      return;
+    }
     try {
-      if (context.reader.images![0].contains('file://')) {
-        showToast(
-          message: "Local comic collection is not supported at present".tl,
-          context: context,
-        );
-        return;
-      }
-      String id = context.reader.cid;
-      int ep = context.reader.chapter;
-      String eid = context.reader.eid;
-      String title = context.reader.history!.title;
-      String subTitle = context.reader.history!.subtitle;
-      int maxPage = context.reader.images!.length;
-      int? page = await selectImage();
-      if (page == null) return;
-      page += 1;
-      String sourceKey = context.reader.type.sourceKey;
-      String imageKey = context.reader.images![page - 1];
-      List<String> tags = context.reader.widget.tags;
-      String author = context.reader.widget.author;
-
-      var epName =
-          context.reader.widget.chapters?.titles.elementAtOrNull(
-            context.reader.chapter - 1,
-          ) ??
-          "E${context.reader.chapter}";
-      var translatedTags = tags.map((e) => e.translateTagsToCN).toList();
-
-      final likedImage = _findImageFavorite(page);
-      if (likedImage != null) {
-        if (page == firstPage) {
-          if (!canUncollectImageFavorite(likedImage)) {
-            showToast(
-              message: "The cover cannot be uncollected here".tl,
-              context: context,
-            );
-            return;
-          }
-        }
-        ImageFavoriteManager().deleteImageFavorite([likedImage]);
-        showToast(
-          message: "Uncollected the image".tl,
-          context: context,
-          seconds: 1,
-        );
-      } else {
-        var imageFavoritesComic =
-            ImageFavoriteManager().find(id, sourceKey) ??
-            ImageFavoritesComic(
-              id,
-              [],
-              title,
-              sourceKey,
-              tags,
-              translatedTags,
-              DateTime.now(),
-              author,
-              {},
-              subTitle,
-              maxPage,
-            );
-        ImageFavorite imageFavorite = ImageFavorite(
+      final sourceKey = reader.type.sourceKey;
+      final comic =
+          ImageFavoriteManager().find(reader.cid, sourceKey) ??
+          ImageFavoritesComic(
+            reader.cid,
+            [],
+            reader.widget.name,
+            sourceKey,
+            reader.widget.tags,
+            reader.widget.tags.map((tag) => tag.translateTagsToCN).toList(),
+            DateTime.now(),
+            reader.widget.author,
+            {},
+            reader.history?.subtitle ?? '',
+            images.length,
+          );
+      final collected = comic.toggleImageFavorite(
+        ImageFavorite(
           page,
-          imageKey,
-          null,
-          eid,
-          id,
-          ep,
+          selection.imageKey,
+          false,
+          selection.eid,
+          reader.cid,
+          chapter,
           sourceKey,
-          epName,
-        );
-        ImageFavoritesEp? imageFavoritesEp = imageFavoritesComic
-            .imageFavoritesEp
-            .firstWhereOrNull((e) {
-              return e.ep == ep;
-            });
-        if (imageFavoritesEp == null) {
-          if (page != firstPage) {
-            var copy = imageFavorite.copyWith(
-              page: firstPage,
-              isAutoFavorite: true,
-              imageKey: context.reader.images![0],
-            );
-            // 不是第一页的话, 自动塞一个封面进去
-            imageFavoritesEp = ImageFavoritesEp(
-              eid,
-              ep,
-              [copy, imageFavorite],
-              epName,
-              maxPage,
-            );
-          } else {
-            imageFavoritesEp = ImageFavoritesEp(
-              eid,
-              ep,
-              [imageFavorite],
-              epName,
-              maxPage,
-            );
-          }
-          imageFavoritesComic.imageFavoritesEp.add(imageFavoritesEp);
-        } else {
-          if (imageFavoritesEp.eid != eid) {
-            // 空字符串说明是从pica导入的, 那我们就手动刷一遍保证一致
-            if (imageFavoritesEp.eid == "") {
-              imageFavoritesEp.eid == eid;
-            } else {
-              // 避免多章节漫画源的章节顺序发生变化, 如果情况比较多, 做一个以eid为准更新ep的功能
-              showToast(
-                message:
-                    "The chapter order of the comic may have changed, temporarily not supported for collection"
-                        .tl,
-                context: context,
-              );
-              return;
-            }
-          }
-          imageFavoritesEp.imageFavorites.add(imageFavorite);
-        }
-
-        ImageFavoriteManager().addOrUpdateOrDelete(imageFavoritesComic);
-        showToast(
-          message: "Successfully collected".tl,
-          context: context,
-          seconds: 1,
+          reader.chapterTitle ?? "Full comic".tl,
+        ),
+        firstImageKey: images.first,
+        chapterPageCount: images.length,
+      );
+      ImageFavoriteManager().addOrUpdateOrDelete(comic);
+      if (!collected) {
+        ImageFavoritesProvider.deleteFromCache(
+          ImageFavorite(
+            page,
+            selection.imageKey,
+            false,
+            selection.eid,
+            reader.cid,
+            chapter,
+            sourceKey,
+            reader.chapterTitle ?? '',
+          ),
         );
       }
-      update();
+      showToast(
+        message: collected
+            ? "Successfully collected".tl
+            : "Uncollected the image".tl,
+        context: context,
+        seconds: 1,
+      );
     } catch (e, stackTrace) {
       Log.error("Image Favorite", e, stackTrace);
       showToast(message: e.toString(), context: context, seconds: 1);
@@ -541,13 +470,6 @@ class ReaderScaffoldState extends State<ReaderScaffold>
     }
 
     final buttons = [
-      Tooltip(
-        message: "Collect the image".tl,
-        child: IconButton(
-          icon: Icon(isLiked() ? Icons.favorite : Icons.favorite_border),
-          onPressed: addImageFavorite,
-        ),
-      ),
       if (App.isDesktop)
         Tooltip(
           message: "${"Full Screen".tl}(F12)",
@@ -571,24 +493,6 @@ class ReaderScaffoldState extends State<ReaderScaffold>
           ),
         ),
       Tooltip(
-        message: 'Reader brightness'.tl,
-        child: IconButton(
-          icon: Icon(
-            _readerSetting('readerBrightnessEnabled') == true
-                ? Icons.brightness_4
-                : Icons.brightness_6,
-          ),
-          color: _readerSetting('readerBrightnessEnabled') == true
-              ? context.colorScheme.primary
-              : null,
-          onPressed: () {
-            setState(() {
-              _brightnessPanelOpen = !_brightnessPanelOpen;
-            });
-          },
-        ),
-      ),
-      Tooltip(
         message: switch (context.reader.autoReading.status) {
           AutoReadingStatus.waiting =>
             'Automatic reading is waiting for content'.tl,
@@ -609,24 +513,19 @@ class ReaderScaffoldState extends State<ReaderScaffold>
           },
         ),
       ),
-      if (context.reader.widget.chapters != null)
-        Tooltip(
-          message: "Chapters".tl,
-          child: IconButton(
-            icon: const Icon(Icons.library_books),
-            onPressed: openChapterDrawer,
-          ),
-        ),
       Tooltip(
-        message: "Save Image".tl,
+        message: "Chapters".tl,
         child: IconButton(
-          icon: const Icon(Icons.download),
-          onPressed: saveCurrentImage,
+          icon: const Icon(Icons.library_books),
+          onPressed: openChapterDrawer,
         ),
       ),
       Tooltip(
-        message: "Share".tl,
-        child: IconButton(icon: const Icon(Icons.share), onPressed: share),
+        message: "Settings".tl,
+        child: IconButton(
+          icon: const Icon(Icons.settings),
+          onPressed: openSetting,
+        ),
       ),
     ];
 
@@ -682,20 +581,30 @@ class ReaderScaffoldState extends State<ReaderScaffold>
           ),
           LayoutBuilder(
             builder: (context, constrains) {
-              final small = (constrains.maxWidth - buttons.length * 50) < 120;
+              final small = (constrains.maxWidth - buttons.length * 56) < 120;
               return Row(
                 children: [
                   if (!small) ...[
-                    Container(
-                      height: 24,
-                      padding: const EdgeInsets.fromLTRB(6, 2, 6, 0),
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.tertiaryContainer,
-                        borderRadius: BorderRadius.circular(8),
+                    Expanded(
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Container(
+                          height: 24,
+                          padding: const EdgeInsets.fromLTRB(6, 2, 6, 0),
+                          decoration: BoxDecoration(
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.tertiaryContainer,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            text,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ).paddingLeft(16),
                       ),
-                      child: Center(child: Text(text)),
-                    ).paddingLeft(16),
-                    const Spacer(),
+                    ),
                     for (var button in buttons) button.paddingHorizontal(4),
                     const SizedBox(width: 4),
                   ] else
@@ -734,51 +643,30 @@ class ReaderScaffoldState extends State<ReaderScaffold>
     );
   }
 
-  Widget buildBrightnessPanel() {
-    final panelWidth =
-        (MediaQuery.sizeOf(context).width -
-                context.padding.left -
-                context.padding.right -
-                32)
-            .clamp(0.0, 360.0);
-    return Material(
-      elevation: 8,
-      color: context.colorScheme.surface,
-      borderRadius: BorderRadius.circular(8),
-      clipBehavior: Clip.antiAlias,
-      child: SizedBox(
-        width: panelWidth,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          child: ReaderBrightnessControl(
-            compact: true,
-            enabled: _readerSetting('readerBrightnessEnabled') == true,
-            brightness: _readerSetting('readerBrightness'),
-            onEnabledChanged: (enabled) {
-              appdata.settings.setActiveReaderSetting(
-                context.reader.cid,
-                context.reader.type.sourceKey,
-                'readerBrightnessEnabled',
-                enabled,
-              );
-              setState(() {});
-              appdata.saveData();
-            },
-            onBrightnessChanged: (brightness) {
-              appdata.settings.setActiveReaderSetting(
-                context.reader.cid,
-                context.reader.type.sourceKey,
-                'readerBrightness',
-                brightness,
-              );
-              setState(() {});
-            },
-            onBrightnessChangeEnd: (_) {
-              appdata.saveData();
-            },
-          ),
-        ),
-      ),
+  Widget buildBrightnessBar() {
+    return ReaderBrightnessBar(
+      enabled: _readerSetting('readerBrightnessEnabled') == true,
+      brightness: _readerSetting('readerBrightness'),
+      onEnabledChanged: (enabled) {
+        appdata.settings.setActiveReaderSetting(
+          context.reader.cid,
+          context.reader.type.sourceKey,
+          'readerBrightnessEnabled',
+          enabled,
+        );
+        setState(() {});
+        appdata.saveData();
+      },
+      onBrightnessChanged: (brightness) {
+        appdata.settings.setActiveReaderSetting(
+          context.reader.cid,
+          context.reader.type.sourceKey,
+          'readerBrightness',
+          brightness,
+        );
+        setState(() {});
+      },
+      onBrightnessChangeEnd: (_) => appdata.saveData(),
     );
   }
 
@@ -854,12 +742,7 @@ class ReaderScaffoldState extends State<ReaderScaffold>
   }
 
   void openChapterDrawer() {
-    _openSideBar(
-      context.reader.widget.chapters!.isGrouped
-          ? ReaderGroupedChaptersView(context.reader)
-          : ReaderChaptersView(context.reader),
-      width: 400,
-    );
+    _openSideBar(ReaderChaptersView(context.reader), width: 400);
   }
 
   void saveCurrentImage() async {
@@ -911,9 +794,6 @@ class ReaderScaffoldState extends State<ReaderScaffold>
   }
 
   void openSetting() {
-    setState(() {
-      _brightnessPanelOpen = false;
-    });
     _openSideBar(
       ReaderSettings(
         comicId: context.reader.cid,
@@ -938,9 +818,6 @@ class ReaderScaffoldState extends State<ReaderScaffold>
             } else {
               context.reader.stopVolumeEvent();
             }
-          }
-          if (key == "quickCollectImage") {
-            addDragListener();
           }
           if (key.startsWith('eInkRefresh')) {
             resetEInkRefreshCounter();

@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:venera_plus/components/menu.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/reader/clipboard_image.dart';
+import 'package:venera_plus/features/reader/images.dart';
 import 'package:venera_plus/features/reader/reader_page.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
@@ -34,7 +35,8 @@ class ReaderGestureDetectorState
 
   static const _kTapToTurnPagePercent = 0.3;
 
-  final _dragListeners = <ReaderDragListener>[];
+  ReaderImageReference? _pullImage;
+  Offset _pullDistance = Offset.zero;
 
   int fingers = 0;
 
@@ -80,23 +82,17 @@ class ReaderGestureDetectorState
         _lastTapPointer = event.pointer;
         _lastTapMoveDistance = Offset.zero;
         _tapGestureRecognizer.addPointer(event);
-        if (_dragInProgress) {
-          for (var dragListener in _dragListeners) {
-            dragListener.onStart?.call(event.position);
-          }
-          _dragInProgress = false;
-        }
+        _pullImage = fingers == 1 && _canPullToCollect
+            ? reader.imageViewController?.getImageReferenceByOffset(
+                event.position,
+              )
+            : null;
+        _pullDistance = Offset.zero;
         Future.delayed(_kLongPressMinTime, () {
           if (mounted && _lastTapPointer == event.pointer && fingers == 1) {
             if (_lastTapMoveDistance!.distanceSquared < 20.0 * 20.0) {
               onLongPressedDown(event.position);
               _longPressInProgress = true;
-            } else {
-              _dragInProgress = true;
-              for (var dragListener in _dragListeners) {
-                dragListener.onStart?.call(event.position);
-                dragListener.onMove?.call(_lastTapMoveDistance!);
-              }
             }
           }
         });
@@ -105,9 +101,13 @@ class ReaderGestureDetectorState
         if (event.pointer == _lastTapPointer) {
           _lastTapMoveDistance = event.delta + _lastTapMoveDistance!;
         }
-        if (_dragInProgress) {
-          for (var dragListener in _dragListeners) {
-            dragListener.onMove?.call(event.delta);
+        if (fingers == 1 &&
+            event.pointer == _lastTapPointer &&
+            _pullImage != null) {
+          _pullDistance += event.delta;
+          if (_pullDistance.dx.abs() > 24 &&
+              _pullDistance.dx.abs() > _pullDistance.dy.abs()) {
+            _pullImage = null;
           }
         }
       },
@@ -117,12 +117,16 @@ class ReaderGestureDetectorState
         if (_longPressInProgress) {
           onLongPressedUp(event.position);
         }
-        if (_dragInProgress) {
-          for (var dragListener in _dragListeners) {
-            dragListener.onEnd?.call();
-          }
-          _dragInProgress = false;
+        final pullImage = _pullImage;
+        if (pullImage != null &&
+            fingers == 0 &&
+            !_longPressInProgress &&
+            _canPullToCollect &&
+            _pullDistance.dy >= 100 &&
+            _pullDistance.dy > _pullDistance.dx.abs() * 1.5) {
+          context.readerScaffold.toggleImageFavorite(pullImage);
         }
+        _pullImage = null;
         _lastTapPointer = null;
         _lastTapMoveDistance = null;
       },
@@ -132,12 +136,7 @@ class ReaderGestureDetectorState
         if (_longPressInProgress) {
           onLongPressedUp(event.position);
         }
-        if (_dragInProgress) {
-          for (var dragListener in _dragListeners) {
-            dragListener.onEnd?.call();
-          }
-          _dragInProgress = false;
-        }
+        _pullImage = null;
         _lastTapPointer = null;
         _lastTapMoveDistance = null;
       },
@@ -190,7 +189,25 @@ class ReaderGestureDetectorState
 
   bool _longPressInProgress = false;
 
-  bool _dragInProgress = false;
+  bool get _canPullToCollect {
+    if (context.readerScaffold.isOpen ||
+        reader.isLoading ||
+        reader.isPageAnimating ||
+        reader.isOnChapterCommentsPage ||
+        _longPressInProgress) {
+      return false;
+    }
+    if (reader.mode != ReaderMode.galleryLeftToRight &&
+        reader.mode != ReaderMode.galleryRightToLeft &&
+        reader.mode != ReaderMode.continuousLeftToRight &&
+        reader.mode != ReaderMode.continuousRightToLeft) {
+      return false;
+    }
+    final controller = reader.imageViewController;
+    if (controller is GalleryModeState) return controller.canPullToCollect;
+    if (controller is ContinuousModeState) return controller.canPullToCollect;
+    return controller != null;
+  }
 
   bool get _enableDoubleTapToZoom => appdata.settings.getReaderSetting(
     reader.cid,
@@ -414,14 +431,6 @@ class ReaderGestureDetectorState
     }
   }
 
-  void addDragListener(ReaderDragListener listener) {
-    _dragListeners.add(listener);
-  }
-
-  void removeDragListener(ReaderDragListener listener) {
-    _dragListeners.remove(listener);
-  }
-
   @override
   Object? get key => "reader_gesture";
 
@@ -475,12 +484,4 @@ class ReaderGestureDetectorState
       saveFile(filename: filename, data: image);
     }
   }
-}
-
-class ReaderDragListener {
-  void Function(Offset point)? onStart;
-  void Function(Offset offset)? onMove;
-  void Function()? onEnd;
-
-  ReaderDragListener({this.onMove, this.onEnd});
 }

@@ -38,6 +38,9 @@ class ImageFavoritesProvider
     if (localImage != null) {
       return localImage;
     }
+    if (sourceKey == 'local') {
+      throw FileSystemException('Local comic image is unavailable', cid);
+    }
     var cacheImage = await readFromCache();
     checkStop?.call();
     if (cacheImage != null) {
@@ -84,7 +87,9 @@ class ImageFavoritesProvider
 
   /// Delete a image favorite cache
   static Future<void> deleteFromCache(ImageFavorite imageFavorite) async {
-    var fileName = md5.convert(imageFavorite.imageKey.codeUnits).toString();
+    var fileName = md5
+        .convert(ImageFavoritesProvider(imageFavorite).key.codeUnits)
+        .toString();
     var file = File(FilePath.join(App.cachePath, 'image_favorites', fileName));
     if (file.existsSync()) {
       await file.delete();
@@ -92,24 +97,31 @@ class ImageFavoritesProvider
   }
 
   Future<Uint8List?> getImageFromLocal() async {
-    var localComic = LocalManager().find(
-      sourceKey,
-      ComicType.fromKey(sourceKey),
-    );
+    final type = ComicType.fromKey(sourceKey);
+    var localComic = LocalManager().find(cid, type);
     if (localComic == null) {
       return null;
     }
-    var epIndex = localComic.chapters?.ids.toList().indexOf(eid) ?? -1;
-    if (epIndex == -1 && localComic.hasChapters) {
+    if (localComic.hasChapters && !localComic.chapters!.ids.contains(eid)) {
       return null;
     }
-    var images = await LocalManager().getImages(
-      sourceKey,
-      ComicType.fromKey(sourceKey),
-      epIndex,
-    );
-    var data = await File(images[page]).readAsBytes();
-    return data;
+    if (type != ComicType.local &&
+        localComic.hasChapters &&
+        !localComic.downloadedChapters.contains(eid)) {
+      return null;
+    }
+    try {
+      final images = await LocalManager().getImages(
+        cid,
+        type,
+        localComic.hasChapters ? eid : 1,
+      );
+      if (page < 1 || page > images.length) return null;
+      return await File(images[page - 1].substring(7)).readAsBytes();
+    } on FileSystemException {
+      if (type == ComicType.local) rethrow;
+      return null;
+    }
   }
 
   Future<Uint8List> getImageFromNetwork(
@@ -158,6 +170,7 @@ class ImageFavoritesProvider
   }
 
   @override
-  String get key =>
-      "ImageFavorites ${imageFavorite.imageKey}@${imageFavorite.sourceKey}@${imageFavorite.id}@${imageFavorite.eid}";
+  String get key => sourceKey == 'local'
+      ? "ImageFavorites local@$cid@$eid@$page"
+      : "ImageFavorites ${imageFavorite.imageKey}@$sourceKey@$cid@$eid";
 }

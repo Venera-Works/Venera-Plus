@@ -19,6 +19,8 @@ import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/reader/comic_image.dart';
 import 'package:venera_plus/features/reader/brightness.dart';
+import 'package:venera_plus/features/reader/chapters.dart';
+import 'package:venera_plus/features/reader/gesture.dart';
 import 'package:venera_plus/features/reader/reader_page.dart';
 import 'package:venera_plus/features/reader/scaffold.dart';
 import 'package:venera_plus/foundation/app_page_route.dart';
@@ -51,6 +53,286 @@ void main() {
       expect(isAuthorNamespace('language'), isFalse);
     },
   );
+  testWidgets(
+    'pull down toggles a bookmark and excludes menu, cancellation, multitouch and zoom',
+    (tester) async {
+      final fixture = await _createFixture(tester, grouped: false);
+      fixture.histories.addHistory(fixture.makeHistory(ep: 1, page: 1));
+      await tester.pumpWidget(fixture.page);
+      await _waitForText(tester, 'Continue');
+      await tester.tap(find.text('Continue'));
+      final reader = await _waitForReaderRoute(tester);
+      await _waitForReader(tester, reader, 1);
+      await tester.pumpAndSettle();
+      final scaffold = tester.state<ReaderScaffoldState>(
+        find.byType(ReaderScaffold),
+      );
+      final start = tester.getCenter(find.byType(ReaderGestureDetector));
+      int count() =>
+          ImageFavoriteManager()
+              .find(fixture.comicId, fixture.sourceKey)
+              ?.bookmarks
+              .length ??
+          0;
+      Future<void> pull(Offset delta) async {
+        await tester.dragFrom(start, delta);
+        await tester.pumpAndSettle();
+      }
+
+      await pull(const Offset(0, 150));
+      expect(count(), 1);
+      await pull(const Offset(0, 150));
+      expect(count(), 0);
+      await pull(const Offset(0, -150));
+      expect(count(), 0);
+      final canceled = await tester.startGesture(start);
+      await canceled.moveBy(const Offset(0, 150));
+      await canceled.cancel();
+      await tester.pumpAndSettle();
+      expect(count(), 0);
+      final first = await tester.startGesture(start);
+      final second = await tester.startGesture(
+        start + const Offset(30, 0),
+        pointer: 2,
+      );
+      await first.moveBy(const Offset(0, 150));
+      await first.up();
+      await second.up();
+      await tester.pumpAndSettle();
+      expect(count(), 0);
+      scaffold.openOrClose();
+      await tester.pumpAndSettle();
+      await pull(const Offset(0, 150));
+      expect(count(), 0);
+      scaffold.openOrClose();
+      await tester.pumpAndSettle();
+      reader.mode = ReaderMode.galleryTopToBottom;
+      reader.update();
+      await tester.pumpAndSettle();
+      await pull(const Offset(0, 150));
+      expect(count(), 0);
+      reader.mode = ReaderMode.galleryLeftToRight;
+      reader.update();
+      await tester.pumpAndSettle();
+      reader.imageViewController!.handleDoubleTap(start);
+      await tester.pumpAndSettle();
+      await pull(const Offset(0, 150));
+      expect(count(), 0);
+      expect(tester.takeException(), isNull);
+      await _popReader(tester, fixture);
+    },
+    skip: !_sqliteAvailable(),
+  );
+
+  for (final grouped in [false, true]) {
+    testWidgets(
+      'reader chapters expose download selection and bookmark navigation (grouped=$grouped)',
+      (tester) async {
+        final fixture = await _createFixture(tester, grouped: grouped);
+        fixture.histories.addHistory(
+          fixture.makeHistory(ep: 1, page: 1, group: grouped ? 1 : null),
+        );
+        final favorite = ImageFavoritesComic(
+          fixture.comicId,
+          [],
+          'Comic',
+          fixture.sourceKey,
+          [],
+          [],
+          DateTime(2026),
+          '',
+          {},
+          '',
+          4,
+        );
+        favorite.toggleImageFavorite(
+          ImageFavorite(
+            3,
+            fixture.imageUrls[2],
+            false,
+            fixture.details.chapters!.ids.elementAt(1),
+            fixture.comicId,
+            2,
+            fixture.sourceKey,
+            fixture.details.chapters!.titles.elementAt(1),
+          ),
+          firstImageKey: fixture.imageUrls.first,
+          chapterPageCount: 4,
+        );
+        ImageFavoriteManager().addOrUpdateOrDelete(favorite);
+        await tester.runAsync(() async {
+          final chapterId = fixture.details.chapters!.ids.elementAt(1);
+          final directory = Directory(
+            '${LocalManager().path}/bookmark-fixture/$chapterId',
+          )..createSync(recursive: true);
+          for (var index = 0; index < fixture.imageUrls.length; index++) {
+            File(
+              fixture.imageUrls[index].substring(7),
+            ).copySync('${directory.path}/${index + 1}.png');
+          }
+          await LocalManager().add(
+            LocalComic(
+              id: fixture.comicId,
+              title: 'Comic',
+              subtitle: '',
+              tags: [],
+              directory: 'bookmark-fixture',
+              chapters: fixture.details.chapters,
+              cover: '',
+              comicType: fixture.type,
+              downloadedChapters: [chapterId],
+              createdAt: DateTime(2026),
+            ),
+          );
+        });
+        await tester.pumpWidget(fixture.page);
+        await _waitForText(tester, 'Continue');
+        await tester.tap(find.text('Continue'));
+        final reader = await _waitForReaderRoute(tester);
+        await _waitForReader(tester, reader, 1);
+        await tester.pumpAndSettle();
+        tester
+            .state<ReaderScaffoldState>(find.byType(ReaderScaffold))
+            .openOrClose();
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithIcon(IconButton, Icons.library_books));
+        await tester.pumpAndSettle();
+        expect(find.byType(ReaderChaptersView), findsOneWidget);
+        final fab = find.byType(FloatingActionButton);
+        final panel = tester.getRect(find.byType(ReaderChaptersView));
+        expect(tester.getCenter(fab).dx, lessThan(panel.center.dx));
+        await tester.tap(fab);
+        await _waitForText(tester, 'Download Selected');
+        await tester.pumpAndSettle();
+        expect(find.text('Download Selected'), findsOneWidget);
+        expect(
+          find.byType(CheckboxListTile),
+          findsNWidgets(fixture.details.chapters!.length),
+        );
+        Navigator.of(tester.element(find.text('Download Selected'))).pop();
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Bookmarks'));
+        await tester.pumpAndSettle();
+        final bookmarks = find.descendant(
+          of: find.byType(ReaderChaptersView),
+          matching: find.text('P3'),
+        );
+        expect(bookmarks, findsOneWidget);
+        expect(
+          find.descendant(
+            of: find.byType(ReaderChaptersView),
+            matching: find.text('P1'),
+          ),
+          findsNothing,
+        );
+        await tester.drag(find.byType(TabBarView), const Offset(350, 0));
+        await tester.pumpAndSettle();
+        expect(fab, findsOneWidget);
+        await tester.tap(find.text('Bookmarks'));
+        await tester.pumpAndSettle();
+        await tester.tap(bookmarks);
+        await _waitForReader(tester, reader, 3);
+        expect(reader.chapter, 2);
+        expect(find.byType(Reader), findsOneWidget);
+        expect(tester.takeException(), isNull);
+        await _popReader(tester, fixture);
+      },
+      skip: !_sqliteAvailable(),
+    );
+  }
+
+  testWidgets(
+    'chapterless local comic exposes bookmarks on a narrow screen',
+    (tester) async {
+      final fixture = await _createFixture(
+        tester,
+        grouped: false,
+        chapterless: true,
+      );
+      tester.view.physicalSize = const Size(320, 568);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final local = LocalComic(
+        id: 'local-bookmarks',
+        title: 'Imported comic',
+        subtitle: '',
+        tags: [],
+        directory: File(fixture.imageUrls.first.substring(7)).parent.path,
+        chapters: null,
+        cover: '',
+        comicType: ComicType.local,
+        downloadedChapters: [],
+        createdAt: DateTime(2026),
+      );
+      await tester.runAsync(() => LocalManager().add(local));
+      await tester.pumpWidget(fixture.page);
+      await _waitForText(tester, 'Read');
+      unawaited(
+        App.rootNavigatorKey.currentState!.push(
+          MaterialPageRoute<void>(
+            builder: (context) => Reader(
+              type: ComicType.local,
+              cid: local.id,
+              name: local.title,
+              chapters: null,
+              history: History.fromModel(model: local, ep: 1, page: 1),
+              initialPage: 1,
+              initialChapter: 1,
+              author: '',
+              tags: [],
+            ),
+          ),
+        ),
+      );
+      final reader = await _waitForReaderRoute(tester);
+      await _waitForReader(tester, reader, 1);
+      await tester.pumpAndSettle();
+      final scaffold = tester.state<ReaderScaffoldState>(
+        find.byType(ReaderScaffold),
+      );
+      scaffold.openOrClose();
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithIcon(IconButton, Icons.favorite_border));
+      await tester.pumpAndSettle();
+      expect(
+        ImageFavoriteManager().find(local.id, 'local')!.bookmarks.single.page,
+        1,
+      );
+      await tester.tap(find.widgetWithIcon(IconButton, Icons.library_books));
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(
+          of: find.byType(ReaderChaptersView),
+          matching: find.text('Full comic'),
+        ),
+        findsOneWidget,
+      );
+      final tabs = tester.widget<TabBar>(find.byType(TabBar));
+      expect(
+        tabs.indicatorColor,
+        Theme.of(
+          tester.element(find.byType(ReaderChaptersView)),
+        ).colorScheme.primary,
+      );
+      await tester.tap(find.text('Bookmarks'));
+      await tester.pumpAndSettle();
+      final target = find.descendant(
+        of: find.byType(ReaderChaptersView),
+        matching: find.text('P1'),
+      );
+      expect(target, findsOneWidget);
+      await tester.tap(target);
+      await _waitForReader(tester, reader, 1);
+      expect(reader.chapter, 1);
+      await tester.pumpAndSettle();
+      expect(find.byType(ReaderChaptersView), findsNothing);
+      expect(tester.takeException(), isNull);
+      await _popReader(tester, fixture);
+    },
+    skip: !_sqliteAvailable(),
+  );
+
   for (final nested in [false, true]) {
     testWidgets(
       'covered details defer page refreshes until visible (nested=$nested)',
@@ -128,8 +410,8 @@ void main() {
         find.byType(ReaderScaffold),
       );
       final slider = find.byType(CustomSlider);
-      final brightness = find.byType(ReaderBrightnessControl);
-      final top = find.widgetWithIcon(IconButton, Icons.settings);
+      final brightness = find.byType(ReaderBrightnessOverlay);
+      final top = find.widgetWithIcon(IconButton, Icons.share);
       final sliderBefore = tester.widget<CustomSlider>(slider);
       final brightnessBefore = tester.widget(brightness);
       final topBefore = tester.widget(top);

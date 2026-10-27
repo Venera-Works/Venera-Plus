@@ -1,5 +1,11 @@
 {
   "zh_CN": {
+    "Bookmarks": "书签",
+    "No bookmarks": "暂无书签",
+    "Chapter not found": "找不到对应章节",
+    "Full comic": "全本",
+    "Double tap to collect image": "双击收藏图片",
+    "In horizontal reading, pull down an image to add or remove its bookmark while the menu is hidden.": "横向阅读且菜单关闭时，下拉图片可添加或取消书签。",
     "Window": "窗口",
     "Hidden by keyword filters: @a comics": "关键词屏蔽隐藏了 @a 本漫画",
     "Hidden by reading-status filter: @a comics": "阅读状态筛选隐藏了 @a 本漫画",
@@ -139,7 +145,7 @@
     "Full Screen": "全屏",
     "Auto Page Turning": "自动翻页",
     "Chapters": "章节",
-    "Full book": "全本",
+    "Full book": "全1卷",
     "Other chapters": "其他章节",
     "Save Image": "保存图片",
     "Share": "分享",
@@ -1196,6 +1202,12 @@
     "Use the saved backup location.": "使用已保存的备份位置。"
   },
   "zh_TW": {
+    "Bookmarks": "書籤",
+    "No bookmarks": "暫無書籤",
+    "Chapter not found": "找不到對應章節",
+    "Full comic": "全本",
+    "Double tap to collect image": "按兩下收藏圖片",
+    "In horizontal reading, pull down an image to add or remove its bookmark while the menu is hidden.": "橫向閱讀且選單關閉時，下拉圖片可新增或取消書籤。",
     "Window": "視窗",
     "Hidden by keyword filters: @a comics": "關鍵詞封鎖隱藏了 @a 本漫畫",
     "Hidden by reading-status filter: @a comics": "閱讀狀態篩選隱藏了 @a 本漫畫",
@@ -1343,7 +1355,7 @@
     "Full Screen": "全螢幕",
     "Auto Page Turning": "自動翻頁",
     "Chapters": "章節",
-    "Full book": "全本",
+    "Full book": "全1卷",
     "Other chapters": "其他章節",
     "Save Image": "儲存圖片",
     "Share": "分享",

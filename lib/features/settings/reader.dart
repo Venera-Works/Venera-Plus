@@ -646,23 +646,22 @@ class _ReaderSettingsState extends State<ReaderSettings> {
           comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
           useDeviceSettings: useDeviceSpecificSettings,
         ).toSliver(),
-        SelectSetting(
-          title: "Quick collect image".tl,
-          settingKey: "quickCollectImage",
-          optionTranslation: {
-            "No": "Not enable".tl,
-            "DoubleTap": "Double Tap".tl,
-            "Swipe": "Swipe".tl,
+        SwitchListTile(
+          title: Text('Double tap to collect image'.tl),
+          subtitle: Text(
+            'In horizontal reading, pull down an image to add or remove its bookmark while the menu is hidden.'
+                .tl,
+          ),
+          value: appdata.settings['quickCollectImage'] == 'DoubleTap',
+          onChanged: (enabled) {
+            setState(
+              () => appdata.settings['quickCollectImage'] = enabled
+                  ? 'DoubleTap'
+                  : 'No',
+            );
+            appdata.saveData();
+            widget.onChanged?.call('quickCollectImage');
           },
-          onChanged: () {
-            widget.onChanged?.call("quickCollectImage");
-          },
-          help:
-              "On the image browsing page, you can quickly collect images by sliding horizontally or vertically according to your reading mode"
-                  .tl,
-          comicId: isEnabledSpecificSettings ? widget.comicId : null,
-          comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
-          useDeviceSettings: useDeviceSpecificSettings,
         ).toSliver(),
         CallbackSetting(
           title: "Custom Image Processing".tl,

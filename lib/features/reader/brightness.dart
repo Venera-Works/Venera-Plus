@@ -113,3 +113,79 @@ class ReaderBrightnessControl extends StatelessWidget {
     );
   }
 }
+
+class ReaderBrightnessBar extends StatelessWidget {
+  const ReaderBrightnessBar({
+    super.key,
+    required this.enabled,
+    required this.brightness,
+    required this.onEnabledChanged,
+    required this.onBrightnessChanged,
+    required this.onBrightnessChangeEnd,
+  });
+
+  final bool enabled;
+  final Object? brightness;
+  final ValueChanged<bool> onEnabledChanged;
+  final ValueChanged<int> onBrightnessChanged;
+  final ValueChanged<int> onBrightnessChangeEnd;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final value = normalizeReaderBrightness(brightness);
+    return Material(
+      color: colors.surface.withValues(alpha: 0.92),
+      borderRadius: BorderRadius.circular(28),
+      child: SizedBox(
+        width: 48,
+        child: Column(
+          children: [
+            Expanded(
+              child: RotatedBox(
+                quarterTurns: 3,
+                child: SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    disabledActiveTrackColor: colors.onSurface.withValues(
+                      alpha: 0.25,
+                    ),
+                    disabledInactiveTrackColor: colors.onSurface.withValues(
+                      alpha: 0.12,
+                    ),
+                    disabledThumbColor: colors.onSurface.withValues(
+                      alpha: 0.38,
+                    ),
+                  ),
+                  child: Slider(
+                    semanticFormatterCallback: (value) => '${value.round()}%',
+                    min: readerBrightnessMin.toDouble(),
+                    max: readerBrightnessMax.toDouble(),
+                    value: value.toDouble(),
+                    divisions: (readerBrightnessMax - readerBrightnessMin) ~/ 5,
+                    onChanged: enabled
+                        ? (value) => onBrightnessChanged(value.round())
+                        : null,
+                    onChangeEnd: enabled
+                        ? (value) => onBrightnessChangeEnd(value.round())
+                        : null,
+                  ),
+                ),
+              ),
+            ),
+            IconButton(
+              tooltip: 'Night dimming'.tl,
+              isSelected: enabled,
+              color: enabled
+                  ? colors.primary
+                  : colors.onSurface.withValues(alpha: 0.38),
+              icon: const Icon(Icons.brightness_6),
+              selectedIcon: const Icon(Icons.brightness_4),
+              onPressed: () => onEnabledChanged(!enabled),
+            ),
+            const SizedBox(height: 4),
+          ],
+        ),
+      ),
+    );
+  }
+}
