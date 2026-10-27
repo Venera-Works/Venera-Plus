@@ -92,6 +92,8 @@ void main() {
         final scaffold = tester.state<ReaderScaffoldState>(
           find.byType(ReaderScaffold),
         );
+        scaffold.openOrClose();
+        await tester.pumpAndSettle();
         expect(chapters.titleReads, expectedTitles.length);
         final initialReads = chapters.readCounts;
 
@@ -243,8 +245,11 @@ class _MetadataReaderState extends ReaderState {
   void disposeReaderWindow() {}
 
   @override
-  Widget build(BuildContext context) =>
-      Scaffold(body: ReaderScaffold(child: const SizedBox.expand()));
+  Widget build(BuildContext context) => Scaffold(
+    body: SizedBox.expand(
+      child: ReaderScaffold(child: const SizedBox.expand()),
+    ),
+  );
 }
 
 class _History extends HistoryManager {
