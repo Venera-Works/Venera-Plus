@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -6,6 +7,52 @@ import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/log_redaction.dart';
 
 void main() {
+  test('redaction keeps JSON valid and is stable when applied again', () {
+    final source = jsonEncode({
+      'token': 'private-token',
+      'password': 12345,
+      'headers': {'Authorization': 'Bearer private-auth'},
+      'nested': [
+        {'api_key': 'private-key', 'title': 'Public title'},
+      ],
+      'page': 5,
+    });
+    final result = redactLogText(source);
+    final decoded = jsonDecode(result) as Map;
+    expect(decoded['token'], logRedactionMask);
+    expect(decoded['password'], logRedactionMask);
+    expect((decoded['headers'] as Map)['Authorization'], logRedactionMask);
+    expect(
+      ((decoded['nested'] as List).single as Map)['api_key'],
+      logRedactionMask,
+    );
+    expect(result, contains('Public title'));
+    expect(decoded['page'], 5);
+    expect(redactLogText(result), result);
+    expect(result, isNot(contains('private-')));
+  });
+
+  test('existing network masks preserve header, JSON and URL formatting', () {
+    const source =
+        'Authorization: <redacted>\n'
+        '{"token":"<redacted>","page":5}\n'
+        'GET https://example.com/api?token=%3Credacted%3E&page=2\n'
+        'GET /api?token=%3Credacted%3E&page=3';
+    expect(redactLogText(source), source);
+  });
+
+  test('URL cookie redaction retains following public query parameters', () {
+    final result = redactLogText(
+      'https://example.com/api?cookie=private-cookie&page=2&token=private-token',
+    );
+    final uri = Uri.parse(result);
+    expect(uri.queryParameters['cookie'], logRedactionMask);
+    expect(uri.queryParameters['token'], logRedactionMask);
+    expect(uri.queryParameters['page'], '2');
+    expect(redactLogText(result), result);
+    expect(result, isNot(contains('private-')));
+  });
+
   test('header masking is case insensitive and leaves inputs unchanged', () {
     final headers = {
       'cOoKiE': 'account=private-cookie; other=another-cookie',

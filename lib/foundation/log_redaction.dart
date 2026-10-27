@@ -1,4 +1,4 @@
-const logRedactionMask = '********';
+const logRedactionMask = '<redacted>';
 
 final _keySeparators = RegExp(r'[-_\s]');
 String _normalizedKey(String key) =>
@@ -79,13 +79,26 @@ Object? _redactValue(Object? value, int depth) {
 
 final _urls = RegExp(r'''https?://[^\s<>"']+''', caseSensitive: false);
 final _headers = RegExp(
-  r'''(\b(?:proxy[-_]?authorization|authorization|set[-_]?cookie|cookies?)\b["']?[ \t]*[:=][ \t]*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n}\]]*?(?=,\s*["']?[a-z][\w-]*["']?\s*:|[\r\n}\]]|$))''',
+  r'''((?<![?&])\b(?:proxy[-_]?authorization|authorization|set[-_]?cookie|cookies?)\b["']?[ \t]*[:=][ \t]*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n}\]]*?(?=,\s*["']?[a-z][\w-]*["']?\s*:|[\r\n}\]]|$))''',
   caseSensitive: false,
 );
 final _fields = RegExp(
   r'''(\b(?:password|passwd|pwd|secret|auth|jwt|client[-_]?secret|(?:access[-_]?|refresh[-_]?|id[-_]?|auth[-_]?|x[-_]auth[-_]?)?token|(?:x[-_]?)?api[-_]?key|session(?:[-_]?id)?|phpsessid|ipb[-_]pass[-_]hash|igneous|signature|sign|sig|x[-_]amz[-_](?:signature|security[-_]?token|credential)|x[-_]goog[-_](?:signature|credential))\b["']?[ \t]*[:=][ \t]*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;&}\]]+)''',
   caseSensitive: false,
 );
+
+String _maskLogValue(Match match) {
+  final prefix = match.group(1)!;
+  final value = match.group(0)!.substring(prefix.length);
+  // URI redaction has already encoded this marker. Keep that representation.
+  if (value == Uri.encodeComponent(logRedactionMask)) return match.group(0)!;
+  final quote = value.startsWith('"')
+      ? '"'
+      : value.startsWith("'")
+      ? "'"
+      : RegExp(r'''(["'])\s*:\s*$''').firstMatch(prefix)?.group(1) ?? '';
+  return '$prefix$quote$logRedactionMask$quote';
+}
 
 /// A final safeguard for exception messages and source-script logs as well as
 /// structured HTTP diagnostics. Redaction precedes truncation and persistence.
@@ -112,12 +125,6 @@ String redactLogText(String text) {
       return '<invalid URL>';
     }
   });
-  result = result.replaceAllMapped(
-    _headers,
-    (match) => '${match.group(1)}$logRedactionMask',
-  );
-  return result.replaceAllMapped(
-    _fields,
-    (match) => '${match.group(1)}$logRedactionMask',
-  );
+  result = result.replaceAllMapped(_headers, _maskLogValue);
+  return result.replaceAllMapped(_fields, _maskLogValue);
 }

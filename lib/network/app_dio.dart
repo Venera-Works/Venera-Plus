@@ -9,6 +9,8 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge.dart'
 import 'package:rhttp/rhttp.dart' as rhttp;
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/log_redaction.dart'
+    show logRedactionMask;
 import 'package:venera_plus/network/cache.dart';
 import 'package:venera_plus/network/proxy.dart';
 
@@ -66,7 +68,7 @@ bool isMalformedExpectedJsonResponse(Response<dynamic> response) {
 }
 
 class MyLogInterceptor extends Interceptor {
-  static const String _redacted = '<redacted>';
+  static const String _redacted = logRedactionMask;
 
   static const Set<String> _sensitiveHeaderNames = {
     'authorization',
