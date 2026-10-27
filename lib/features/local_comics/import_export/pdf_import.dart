@@ -1,60 +1,12 @@
-import 'dart:math' as math;
-
-import 'package:flutter/foundation.dart' show compute;
-import 'package:image/image.dart' as image;
 import 'package:pdfrx/pdfrx.dart';
+import 'package:venera_plus/features/comic_storage/comic_storage.dart';
 import 'package:venera_plus/features/local_comics/import_export/document_import.dart';
 import 'package:venera_plus/features/local_comics/local.dart';
 import 'package:venera_plus/features/local_comics/local_storage_guard.dart';
 import 'package:venera_plus/foundation/file_system.dart';
 
-const double _pdfRenderScale = 3;
-const int _pdfRenderMaxEdge = 3000;
-
-// Only pixels cross the isolate boundary; native PDF objects stay with pdfrx.
-Uint8List _encodePdfPage(({Uint8List pixels, int width, int height}) page) {
-  final decoded = image.Image.fromBytes(
-    width: page.width,
-    height: page.height,
-    bytes: page.pixels.buffer,
-    bytesOffset: page.pixels.offsetInBytes,
-    order: image.ChannelOrder.bgra,
-  );
-  return image.encodeJpg(decoded, quality: 92);
-}
-
-class PdfRenderSize {
-  const PdfRenderSize(this.width, this.height);
-
-  final int width;
-  final int height;
-}
-
-class PdfPageRenderException implements Exception {
-  const PdfPageRenderException(this.page);
-
-  final int page;
-
-  @override
-  String toString() => 'Failed to render PDF page $page';
-}
-
-PdfRenderSize calculatePdfRenderSize(
-  double width,
-  double height, {
-  double scale = _pdfRenderScale,
-  int maxEdge = _pdfRenderMaxEdge,
-}) {
-  if (!width.isFinite || !height.isFinite || width <= 0 || height <= 0) {
-    throw const FormatException('PDF page has an invalid size');
-  }
-  final longestEdge = math.max(width, height);
-  final actualScale = math.min(scale, maxEdge / longestEdge);
-  return PdfRenderSize(
-    math.max(1, (width * actualScale).round()),
-    math.max(1, (height * actualScale).round()),
-  );
-}
+export 'package:venera_plus/features/comic_storage/comic_storage.dart'
+    show PdfRenderSize, PdfPageRenderException, calculatePdfRenderSize;
 
 abstract final class PdfComicImporter {
   static Future<LocalComic> import(
@@ -132,11 +84,11 @@ abstract final class PdfComicImporter {
         }
         try {
           cancellation?.throwIfCancelled();
-          final encoded = await compute(_encodePdfPage, (
+          final encoded = await encodePdfPageJpeg(
             pixels: rendered.pixels,
             width: rendered.width,
             height: rendered.height,
-          ), debugLabel: 'PDF JPEG encoding');
+          );
           cancellation?.throwIfCancelled();
           final pageFile = File(
             session.pagePath(pageIndex: i + 1, extension: 'jpg'),

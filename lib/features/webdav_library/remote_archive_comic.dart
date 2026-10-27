@@ -1,14 +1,15 @@
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
+import 'package:dio/dio.dart' show CancelToken;
 import 'package:venera_plus/features/comic_storage/comic_storage.dart';
 
 const remoteArchiveImagePrefix = 'remote-zip:';
 
 bool isRemoteComicArchive(String name) =>
-    const {'zip', 'cbz'}.contains(comicFileExtension(name));
+    const {'zip', 'cbz', 'epub', 'pdf'}.contains(comicFileExtension(name));
 
-/// A persisted ZIP directory and its comic page order, without image contents.
+/// A persisted remote comic page index, without image contents or native handles.
 class RemoteArchiveComic {
   RemoteArchiveComic({
     required this.path,
@@ -16,18 +17,41 @@ class RemoteArchiveComic {
     this.eTag,
     this.modifiedAt,
     this.index,
+    this.epubPages,
+    this.pdfPageCount,
+    String? pdfReadId,
     this.metadata,
     this.embeddedMetadata,
     this.chapters = const {},
     this.chapterImages = const {},
     this.coverEntry,
-  });
+  }) : pdfReadId =
+           pdfReadId ??
+           (comicFileExtension(path) == 'pdf' &&
+                   !(eTag?.isNotEmpty ?? false) &&
+                   modifiedAt == null
+               ? '${DateTime.now().microsecondsSinceEpoch}-${_nextPdfReadId++}'
+               : null);
+
+  static int _nextPdfReadId = 0;
 
   final String path;
   final int size;
   final String? eTag;
   final int? modifiedAt;
   final RemoteZipIndex? index;
+
+  /// EPUB spine images in reading order, including repeated references.
+  final List<String>? epubPages;
+
+  final int? pdfPageCount;
+
+  /// An unvalidated PDF has no ZIP directory fingerprint; refreshes must not
+  /// reuse bytes from a previous same-size file. Clones keep this identity.
+  final String? pdfReadId;
+
+  bool get isPdf => comicFileExtension(path) == 'pdf';
+  bool get _isEpub => comicFileExtension(path) == 'epub';
 
   /// Effective metadata after any sidecar fields have been merged by the source.
   final ComicMetaData? metadata;
@@ -38,13 +62,17 @@ class RemoteArchiveComic {
   final Map<String, List<String>> chapterImages;
   final String? coverEntry;
 
-  bool get isInspected => index != null;
+  bool get isInspected => isPdf
+      ? (pdfPageCount ?? 0) > 0
+      : index != null && (!_isEpub || epubPages != null);
 
   /// Display titles retain an explicit volume/chapter root without changing IDs.
   Map<String, String> get chapterTitles {
     final zip = index;
-    if (zip == null || metadata?.chapters?.isNotEmpty == true) return chapters;
-    final root = _archiveLayout(zip).root;
+    if ((zip == null && !isPdf) || metadata?.chapters?.isNotEmpty == true) {
+      return chapters;
+    }
+    final root = _isEpub || isPdf ? '' : _archiveLayout(zip!).root;
     final rootName = root.isEmpty
         ? ''
         : root.substring(0, root.length - 1).trim();
@@ -72,14 +100,18 @@ class RemoteArchiveComic {
   };
 
   /// All visible image pages, independent of metadata chapter ranges.
-  int? get pageCount => index?.entries
-      .where(
-        (entry) =>
-            _isVisibleEntry(entry) &&
-            isComicImageFileName(entry.name) &&
-            !isNamedComicCover(entry.name),
-      )
-      .length;
+  int? get pageCount => isPdf
+      ? pdfPageCount
+      : _isEpub
+      ? epubPages?.length
+      : index?.entries
+            .where(
+              (entry) =>
+                  _isVisibleEntry(entry) &&
+                  isComicImageFileName(entry.name) &&
+                  !isNamedComicCover(entry.name),
+            )
+            .length;
 
   String get title => metadata?.title.trim().isNotEmpty == true
       ? metadata!.title
@@ -87,7 +119,14 @@ class RemoteArchiveComic {
   late final String version = sha256
       .convert(
         utf8.encode(
-          jsonEncode([path, size, eTag, modifiedAt, index?.toJson()]),
+          jsonEncode([
+            path,
+            size,
+            eTag,
+            modifiedAt,
+            index?.toJson(),
+            if (isPdf && pdfReadId != null) pdfReadId,
+          ]),
         ),
       )
       .toString();
@@ -128,14 +167,21 @@ class RemoteArchiveComic {
   /// Passing null restores the embedded metadata and its original layout.
   RemoteArchiveComic withMetadata(ComicMetaData? metadata) {
     final effective = metadata ?? embeddedMetadata;
+    if (isPdf && pdfPageCount != null) {
+      return _withPdfLayout(pdfPageCount!, effective, embeddedMetadata);
+    }
     final zip = index;
-    if (zip == null) {
+    if (zip == null || (_isEpub && epubPages == null)) {
       effective?.validateChapterRanges();
       return RemoteArchiveComic(
         path: path,
         size: size,
         eTag: eTag,
         modifiedAt: modifiedAt,
+        index: zip,
+        epubPages: epubPages,
+        pdfPageCount: pdfPageCount,
+        pdfReadId: pdfReadId,
         metadata: effective,
         embeddedMetadata: embeddedMetadata,
         chapters: chapters,
@@ -143,12 +189,52 @@ class RemoteArchiveComic {
         coverEntry: coverEntry,
       );
     }
+    if (_isEpub) {
+      return _withEpubLayout(
+        zip,
+        epubPages!,
+        effective,
+        embeddedMetadata,
+        cover: coverEntry!,
+      );
+    }
     return _withLayout(zip, _archiveLayout(zip), effective, embeddedMetadata);
   }
 
-  Future<RemoteArchiveComic> inspect(ZipRangeRead read) async {
-    if (index != null) return withMetadata(metadata);
-    final zip = await RemoteZipIndex.read(fileSize: size, read: read);
+  Future<RemoteArchiveComic> inspect(
+    ZipRangeRead read, {
+    CancelToken? cancelToken,
+  }) async {
+    if (isInspected) return withMetadata(metadata);
+    if (isPdf) {
+      final pdf = await RemotePdfReader.inspect(
+        size: size,
+        read: read,
+        sourceName: 'remote-pdf:$version',
+        fallbackTitle: comicFileStem(path),
+        cancelToken: cancelToken,
+      );
+      return _withPdfLayout(
+        pdf.pageCount,
+        metadata ?? pdf.metadata,
+        pdf.metadata,
+      );
+    }
+    final zip = index ?? await RemoteZipIndex.read(fileSize: size, read: read);
+    if (_isEpub) {
+      final epub = await RemoteEpubIndex.read(
+        zip: zip,
+        read: read,
+        fallbackTitle: comicFileStem(path),
+      );
+      return _withEpubLayout(
+        zip,
+        epub.pages,
+        metadata ?? epub.metadata,
+        epub.metadata,
+        cover: epub.coverEntry,
+      );
+    }
     final layout = _archiveLayout(zip);
     ComicMetaData? embedded;
     final metadataEntries = layout.visible.where(
@@ -234,12 +320,89 @@ class RemoteArchiveComic {
     );
   }
 
+  RemoteArchiveComic _withEpubLayout(
+    RemoteZipIndex zip,
+    List<String> pages,
+    ComicMetaData? effective,
+    ComicMetaData? embedded, {
+    required String cover,
+  }) {
+    effective?.validateChapterRanges(pageCount: pages.length);
+    final names = <String, String>{};
+    final groups = <String, List<String>>{};
+    if (effective?.chapters?.isNotEmpty == true) {
+      for (var i = 0; i < effective!.chapters!.length; i++) {
+        final chapter = effective.chapters![i];
+        final id = '__epub_range_$i';
+        names[id] = chapter.title;
+        groups[id] = pages.sublist(chapter.start - 1, chapter.end);
+      }
+    } else {
+      names['__root__'] = 'Images';
+      groups['__root__'] = List<String>.from(pages);
+    }
+    return RemoteArchiveComic(
+      path: path,
+      size: size,
+      eTag: eTag,
+      modifiedAt: modifiedAt,
+      index: zip,
+      epubPages: List<String>.unmodifiable(pages),
+      metadata: effective,
+      embeddedMetadata: embedded,
+      chapters: names,
+      chapterImages: groups,
+      coverEntry: cover,
+    );
+  }
+
+  RemoteArchiveComic _withPdfLayout(
+    int count,
+    ComicMetaData? effective,
+    ComicMetaData? embedded,
+  ) {
+    if (count <= 0) throw const FormatException('PDF contains no pages');
+    effective?.validateChapterRanges(pageCount: count);
+    final names = <String, String>{};
+    final groups = <String, List<String>>{};
+    List<String> pages(int start, int end) => [
+      for (var page = start; page <= end; page++) 'pdf:$page',
+    ];
+    if (effective?.chapters?.isNotEmpty == true) {
+      for (var i = 0; i < effective!.chapters!.length; i++) {
+        final chapter = effective.chapters![i];
+        final id = '__pdf_range_$i';
+        names[id] = chapter.title;
+        groups[id] = pages(chapter.start, chapter.end);
+      }
+    } else {
+      names['__root__'] = 'Images';
+      groups['__root__'] = pages(1, count);
+    }
+    return RemoteArchiveComic(
+      path: path,
+      size: size,
+      eTag: eTag,
+      modifiedAt: modifiedAt,
+      pdfPageCount: count,
+      pdfReadId: pdfReadId,
+      metadata: effective,
+      embeddedMetadata: embedded,
+      chapters: names,
+      chapterImages: groups,
+      coverEntry: 'pdf:1',
+    );
+  }
+
   Map<String, dynamic> toJson() => {
     'path': path,
     'size': size,
     'eTag': eTag,
     'modifiedAt': modifiedAt,
     if (index != null) 'index': index!.toJson(),
+    if (epubPages != null) 'epubPages': epubPages,
+    if (pdfPageCount != null) 'pdfPageCount': pdfPageCount,
+    if (pdfReadId != null) 'pdfReadId': pdfReadId,
     if (metadata != null) 'metadata': metadata!.toJson(),
     'embeddedMetadata': embeddedMetadata?.toJson(),
     'chapters': chapters,
@@ -266,6 +429,11 @@ class RemoteArchiveComic {
               Map<String, dynamic>.from(json['index'] as Map),
             )
           : null,
+      epubPages: json['epubPages'] is List
+          ? List<String>.from(json['epubPages'] as List)
+          : null,
+      pdfPageCount: json['pdfPageCount'] as int?,
+      pdfReadId: json['pdfReadId'] as String?,
       metadata: metadata,
       embeddedMetadata: embedded is Map
           ? ComicMetaData.fromJson(Map<String, dynamic>.from(embedded))

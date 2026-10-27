@@ -88,6 +88,35 @@ void main() {
   );
 
   test(
+    'control entries read only their own local header and compressed payload',
+    () async {
+      final control = utf8.encode(
+        '<container><rootfiles><rootfile full-path="Book/content.opf"/></rootfiles></container>',
+      );
+      final fixture = _zip([
+        _Spec('images/first.jpg', List.filled(300000, 1)),
+        _Spec('META-INF/container.xml', control, method: 8),
+        _Spec('images/second.jpg', List.filled(300000, 2)),
+      ]);
+      final reader = _Reader(fixture.bytes);
+      final index = await RemoteZipIndex.read(
+        fileSize: fixture.bytes.length,
+        read: reader.read,
+      );
+      reader.calls.clear();
+
+      expect(
+        await index.readEntry(index.entries[1], reader.read, prefetch: false),
+        control,
+      );
+      expect(reader.calls, [
+        (fixture.localOffsets[1], 30),
+        (fixture.dataOffsets[1], fixture.compressedSizes[1]),
+      ]);
+    },
+  );
+
+  test(
     'large entries use an exact payload read instead of a larger window',
     () async {
       final content = List<int>.filled(2 * 1024 * 1024 + 1, 42);
@@ -122,12 +151,21 @@ void main() {
         fileSize: fixture.bytes.length,
         read: reader.read,
       );
-      reader.calls.clear();
-      expect(await index.readEntry(index.entries.single, reader.read), content);
-      expect(reader.calls, [
-        (0, 256 * 1024),
-        (fixture.dataOffsets.single, fixture.compressedSizes.single),
-      ]);
+      for (final prefetch in [true, false]) {
+        reader.calls.clear();
+        expect(
+          await index.readEntry(
+            index.entries.single,
+            reader.read,
+            prefetch: prefetch,
+          ),
+          content,
+        );
+        expect(reader.calls, [
+          (0, prefetch ? 256 * 1024 : 30),
+          (fixture.dataOffsets.single, fixture.compressedSizes.single),
+        ]);
+      }
     },
   );
 
@@ -339,10 +377,16 @@ void main() {
           fileSize: fixture.bytes.length,
           read: reader.read,
         );
-        await expectLater(
-          index.readEntry(index.entries.single, reader.read),
-          throwsFormatException,
-        );
+        for (final prefetch in [true, false]) {
+          await expectLater(
+            index.readEntry(
+              index.entries.single,
+              reader.read,
+              prefetch: prefetch,
+            ),
+            throwsFormatException,
+          );
+        }
       }
     },
   );

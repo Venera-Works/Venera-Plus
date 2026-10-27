@@ -7,16 +7,12 @@ import 'package:venera_plus/features/comic_storage/comic_storage.dart';
 import 'package:venera_plus/features/webdav_library/remote_archive_comic.dart';
 
 void main() {
-  test('recognizes only ZIP and CBZ archives for remote reading', () {
+  test('recognizes ZIP CBZ EPUB and PDF for remote reading', () {
     expect(isRemoteComicArchive('/library/漫画.CBZ'), isTrue);
     expect(isRemoteComicArchive('comic.ZIP'), isTrue);
-    for (final name in [
-      'comic.pdf',
-      'comic.epub',
-      'comic.7z',
-      'comic.cb7',
-      'comic.zip.jpg',
-    ]) {
+    expect(isRemoteComicArchive('comic.EPUB'), isTrue);
+    expect(isRemoteComicArchive('comic.PDF'), isTrue);
+    for (final name in ['comic.7z', 'comic.cb7', 'comic.zip.jpg']) {
       expect(isRemoteComicArchive(name), isFalse);
     }
   });
@@ -784,6 +780,274 @@ void main() {
     },
   );
 
+  test(
+    'EPUB spine pages and native navigation survive cache and sidecar changes',
+    () async {
+      final fixture = _epubFixture();
+      final comic = await _inspect(fixture, path: '/library/漫画.epub');
+      expect(comic.isInspected, isTrue);
+      expect(comic.title, 'EPUB title');
+      expect(comic.embeddedMetadata!.author, 'EPUB author');
+      expect(comic.epubPages, [
+        'OPS/images/2.jpg',
+        'OPS/images/1.jpg',
+        'OPS/images/2.jpg',
+      ]);
+      expect(comic.pageCount, 3);
+      expect(comic.coverEntry, 'OPS/images/cover.jpg');
+      expect(comic.chapters, {'__epub_range_0': '第一话', '__epub_range_1': '番外'});
+      expect(comic.chapterPageCounts, {
+        '__epub_range_0': 2,
+        '__epub_range_1': 1,
+      });
+      expect(comic.chapterImages['__epub_range_1'], ['OPS/images/2.jpg']);
+      final key = comic.imageKey('OPS/images/2.jpg');
+      final override = comic.withMetadata(
+        const ComicMetaData(
+          title: '旁车标题',
+          author: '旁车作者',
+          tags: ['旁车'],
+          chapters: [ComicChapter(title: '选读', start: 2, end: 3)],
+        ),
+      );
+      expect(override.pageCount, 3);
+      expect(override.chapterImages, {
+        '__epub_range_0': ['OPS/images/1.jpg', 'OPS/images/2.jpg'],
+      });
+      expect(override.imageKey('OPS/images/2.jpg'), key);
+      final restored = RemoteArchiveComic.fromJson(
+        jsonDecode(jsonEncode(override.toJson())),
+      );
+      final reloaded = await restored.inspect(_unexpectedRead);
+      expect(reloaded.epubPages, comic.epubPages);
+      expect(reloaded.chapterImages, override.chapterImages);
+      expect(reloaded.metadata!.title, '旁车标题');
+      expect(reloaded.withMetadata(null).chapters, comic.chapters);
+      expect(reloaded.withMetadata(null).chapterImages, comic.chapterImages);
+      expect(reloaded.withMetadata(null).title, 'EPUB title');
+      expect(reloaded.imageKey('OPS/images/2.jpg'), key);
+    },
+  );
+
+  test('EPUB without navigation exposes one chapter in spine order', () async {
+    final comic = await _inspect(
+      _epubFixture(navigation: false),
+      path: '/library/第03卷.epub',
+    );
+    expect(comic.chapterImages, {
+      '__root__': ['OPS/images/2.jpg', 'OPS/images/1.jpg', 'OPS/images/2.jpg'],
+    });
+    expect(comic.chapterTitles, {'__root__': '第03卷'});
+    expect(comic.chapterPageCounts, {'__root__': 3});
+    expect(comic.pageCount, 3);
+  });
+
+  test('EPUB sidecar ranges validate against actual spine pages', () async {
+    final comic = await _inspect(_epubFixture(), path: '/library/book.epub');
+    expect(
+      () => comic.withMetadata(
+        const ComicMetaData(
+          title: 'Bad',
+          author: '',
+          tags: [],
+          chapters: [ComicChapter(title: 'Too many', start: 1, end: 4)],
+        ),
+      ),
+      throwsFormatException,
+    );
+    expect(
+      RemoteArchiveComic(
+        path: comic.path,
+        size: comic.size,
+        index: comic.index,
+      ).isInspected,
+      isFalse,
+    );
+    expect(comic.withMetadata(null).epubPages, comic.epubPages);
+  });
+
+  test(
+    'EPUB never falls back to loose ZIP images when control documents are missing',
+    () async {
+      final fixture = _zip({
+        '001.jpg': [1],
+        '002.jpg': [2],
+      });
+      await expectLater(
+        _inspect(fixture, path: '/library/not-a-book.epub'),
+        throwsFormatException,
+      );
+      final zip = await _inspect(fixture, path: '/library/ordinary.cbz');
+      expect(zip.isInspected, isTrue);
+      expect(zip.pageCount, 2);
+      expect(zip.toJson().containsKey('epubPages'), isFalse);
+    },
+  );
+
+  test(
+    'PDF page tokens retain native chapters and restore them after sidecar removal',
+    () async {
+      const native = ComicMetaData(
+        title: 'Native title',
+        author: '',
+        tags: [],
+        chapters: [
+          ComicChapter(title: '第一话', start: 1, end: 2),
+          ComicChapter(title: '后记', start: 3, end: 3),
+        ],
+      );
+      final comic = RemoteArchiveComic(
+        path: '/library/book.PDF',
+        size: 1000,
+        eTag: 'v1',
+        pdfPageCount: 3,
+        embeddedMetadata: native,
+      ).withMetadata(null);
+      expect(comic.isPdf, isTrue);
+      expect(comic.isInspected, isTrue);
+      expect(comic.index, isNull);
+      expect(comic.pageCount, 3);
+      expect(comic.coverEntry, 'pdf:1');
+      expect(comic.chapters, {'__pdf_range_0': '第一话', '__pdf_range_1': '后记'});
+      expect(comic.chapterImages, {
+        '__pdf_range_0': ['pdf:1', 'pdf:2'],
+        '__pdf_range_1': ['pdf:3'],
+      });
+      expect(comic.chapterPageCounts, {'__pdf_range_0': 2, '__pdf_range_1': 1});
+      final selected = comic.withMetadata(
+        const ComicMetaData(
+          title: 'Sidecar',
+          author: 'Author',
+          tags: [],
+          chapters: [ComicChapter(title: '选读', start: 2, end: 3)],
+        ),
+      );
+      expect(selected.chapterImages, {
+        '__pdf_range_0': ['pdf:2', 'pdf:3'],
+      });
+      expect(selected.pageCount, 3);
+      expect(selected.coverEntry, 'pdf:1');
+      expect(selected.imageKey('pdf:2'), comic.imageKey('pdf:2'));
+      final restored = RemoteArchiveComic.fromJson(
+        jsonDecode(jsonEncode(selected.toJson())),
+      );
+      final cached = await restored.inspect(_unexpectedRead);
+      expect(cached.chapters, selected.chapters);
+      expect(cached.chapterImages, selected.chapterImages);
+      expect(cached.withMetadata(null).chapters, comic.chapters);
+      expect(cached.withMetadata(null).chapterImages, comic.chapterImages);
+      expect(cached.version, comic.version);
+    },
+  );
+
+  test('PDF without native chapters exposes all pages including its cover', () {
+    final summary = RemoteArchiveComic(
+      path: '/library/第03卷.pdf',
+      size: 1000,
+      eTag: 'v1',
+    );
+    expect(summary.isPdf, isTrue);
+    expect(summary.isInspected, isFalse);
+    expect(summary.pageCount, isNull);
+    final comic = RemoteArchiveComic(
+      path: summary.path,
+      size: summary.size,
+      eTag: 'v1',
+      pdfPageCount: 3,
+    ).withMetadata(null);
+    expect(comic.chapterTitles, {'__root__': '第03卷'});
+    expect(comic.chapterImages, {
+      '__root__': ['pdf:1', 'pdf:2', 'pdf:3'],
+    });
+    expect(comic.chapterPageCounts, {'__root__': 3});
+    expect(comic.embeddedMetadata, isNull);
+    expect(comic.metadata, isNull);
+    expect(
+      comic
+          .withMetadata(
+            const ComicMetaData(title: 'Title only', author: '', tags: []),
+          )
+          .chapterImages,
+      comic.chapterImages,
+    );
+  });
+
+  test('PDF ranges validate against its actual page count', () {
+    final comic = RemoteArchiveComic(
+      path: '/library/book.pdf',
+      size: 1000,
+      eTag: 'v1',
+      pdfPageCount: 3,
+    ).withMetadata(null);
+    expect(
+      () => comic.withMetadata(
+        const ComicMetaData(
+          title: 'Bad',
+          author: '',
+          tags: [],
+          chapters: [ComicChapter(title: 'Overflow', start: 1, end: 4)],
+        ),
+      ),
+      throwsFormatException,
+    );
+    expect(
+      RemoteArchiveComic(
+        path: comic.path,
+        size: comic.size,
+        pdfPageCount: 0,
+      ).isInspected,
+      isFalse,
+    );
+  });
+
+  test(
+    'unvalidated PDF refreshes have independent cache identities that persist across clones',
+    () {
+      final first = RemoteArchiveComic(
+        path: '/library/book.pdf',
+        size: 1000,
+        pdfPageCount: 3,
+      );
+      final second = RemoteArchiveComic(
+        path: first.path,
+        size: first.size,
+        pdfPageCount: 3,
+      );
+      expect(first.matches(size: first.size), isFalse);
+      expect(second.version, isNot(first.version));
+      final applied = first.withMetadata(null);
+      expect(applied.version, first.version);
+      final restored = RemoteArchiveComic.fromJson(
+        jsonDecode(jsonEncode(applied.toJson())),
+      );
+      expect(restored.version, first.version);
+      expect(restored.imageKey('pdf:1'), first.imageKey('pdf:1'));
+      expect(restored.pdfReadId, first.pdfReadId);
+      final validated = RemoteArchiveComic(
+        path: first.path,
+        size: first.size,
+        eTag: 'v1',
+        pdfPageCount: 3,
+      );
+      final sameVersion = RemoteArchiveComic(
+        path: first.path,
+        size: first.size,
+        eTag: 'v1',
+        pdfPageCount: 3,
+      );
+      expect(validated.pdfReadId, isNull);
+      expect(validated.version, sameVersion.version);
+      for (final extension in ['cbz', 'epub']) {
+        final archive = RemoteArchiveComic(
+          path: '/book.$extension',
+          size: 1000,
+        );
+        expect(archive.pdfReadId, isNull);
+        expect(archive.toJson().containsKey('pdfReadId'), isFalse);
+      }
+    },
+  );
+
   test('rejects archives with no visible comic pages', () async {
     for (final files in [
       {
@@ -802,6 +1066,49 @@ void main() {
     }
   });
 }
+
+_MemoryZip _epubFixture({bool navigation = true}) => _zip({
+  'mimetype': utf8.encode('application/epub+zip'),
+  'META-INF/container.xml': utf8.encode('''
+    <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+      <rootfiles><rootfile full-path="OPS/book.opf" media-type="application/oebps-package+xml"/></rootfiles>
+    </container>
+  '''),
+  'OPS/book.opf': utf8.encode('''
+    <package xmlns="http://www.idpf.org/2007/opf" xmlns:dc="http://purl.org/dc/elements/1.1/" version="3.0">
+      <metadata><dc:title>EPUB title</dc:title><dc:creator>EPUB author</dc:creator></metadata>
+      <manifest>
+        <item id="p1" href="text/1.xhtml" media-type="application/xhtml+xml"/>
+        <item id="p2" href="text/2.xhtml" media-type="application/xhtml+xml"/>
+        <item id="cover" href="images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>
+        <item id="one" href="images/1.jpg" media-type="image/jpeg"/>
+        <item id="two" href="images/2.jpg" media-type="image/jpeg"/>
+        <item id="unused" href="images/unused.jpg" media-type="image/jpeg"/>
+        ${navigation ? '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>' : ''}
+      </manifest>
+      <spine><itemref idref="p2"/><itemref idref="p1"/></spine>
+    </package>
+  '''),
+  'OPS/text/1.xhtml': utf8.encode('''
+    <html xmlns="http://www.w3.org/1999/xhtml"><body><img src="../images/2.jpg"/></body></html>
+  '''),
+  'OPS/text/2.xhtml': utf8.encode('''
+    <html xmlns="http://www.w3.org/1999/xhtml"><body><img src="../images/2.jpg"/><img src="../images/1.jpg"/></body></html>
+  '''),
+  if (navigation)
+    'OPS/nav.xhtml': utf8.encode('''
+    <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body>
+      <nav epub:type="toc"><ol>
+        <li><a href="text/2.xhtml">第一话</a></li>
+        <li><a href="text/1.xhtml">番外</a></li>
+      </ol></nav>
+    </body></html>
+  '''),
+  'OPS/images/1.jpg': [1],
+  'OPS/images/2.jpg': [2],
+  'OPS/images/cover.jpg': [9],
+  'OPS/images/unused.jpg': [8],
+});
 
 Future<Uint8List> _unexpectedRead(int offset, int length) async {
   throw StateError('Cached index must not request ZIP range $offset:$length');

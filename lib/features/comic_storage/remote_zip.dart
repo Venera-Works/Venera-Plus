@@ -208,7 +208,12 @@ class RemoteZipIndex {
 
   /// Combines a small entry's local header and payload in one bounded read.
   /// Extra bytes can satisfy adjacent entries through the account range cache.
-  Future<Uint8List> readEntry(RemoteZipEntry entry, ZipRangeRead read) async {
+  /// Disable [prefetch] for control documents to read only their header and data.
+  Future<Uint8List> readEntry(
+    RemoteZipEntry entry,
+    ZipRangeRead read, {
+    bool prefetch = true,
+  }) async {
     if (!entries.contains(entry)) {
       throw ArgumentError.value(
         entry,
@@ -228,7 +233,7 @@ class RemoteZipIndex {
         4096;
     final alignedLength =
         (combinedSize + adjacentWindow - 1) ~/ adjacentWindow * adjacentWindow;
-    final combined = alignedLength <= maxCombinedRead;
+    final combined = prefetch && alignedLength <= maxCombinedRead;
     final readOffset = combined ? alignedOffset : entry.localHeaderOffset;
     final available = _centralDirectoryOffset - readOffset;
     final wanted = combined ? alignedLength : 30;

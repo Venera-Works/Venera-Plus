@@ -138,7 +138,7 @@ Document import never overwrites an existing comic with the same title.
 
 Online libraries provide a reading channel separate from local import/export and comic archive backup, using WebDAV or a configured cloud account.
 
-Online reading supports remote image directories and single-comic ZIP/CBZ files. Directory comics list folders and load images on demand; ZIP/CBZ files can supply their images directly without extraction on the server. A single-comic CBZ exported by VeneraPlus (or legacy VeneraNext) can retain its title, author, tags, and chapters. See [Multi-cloud storage](multi_cloud.en.md) for account and directory setup.
+Online reading supports remote image directories, single-comic ZIP/CBZ files, image-based EPUB files, and PDF files. Directory comics list folders and load images on demand; ZIP/CBZ and image-based EPUB files supply images directly without extraction on the server, while PDF files render the requested original pages. A single-comic CBZ exported by VeneraPlus (or legacy VeneraNext) can retain its title, author, tags, and chapters, while EPUB uses OPF book metadata and navigation. See [Multi-cloud storage](multi_cloud.en.md) for account and directory setup.
 
 The **Sync comic library config** switch in WebDAV Comic Library settings is off by default. When enabled, DataSync/Appdata `.venera` files include the library URL, username, password, remote path, automatic-update switch, and update interval. The receiving device must also enable this switch locally before those fields are imported. Credentials are stored in the remote `.venera` file, so enable this only for trusted WebDAV storage and accounts.
 
@@ -258,11 +258,11 @@ When metadata is missing and Bangumi is connected, the app first attempts the co
 
 This `metadata.json` is the single-comic CBZ metadata format. It is not the comic-list format inside a `.venera-comics` batch export, and the two formats are not interchangeable.
 
-### On-Demand ZIP/CBZ Reading
+### On-Demand ZIP/CBZ, Image-based EPUB, and PDF Reading
 
-Place `.zip` or `.cbz` files in an online library's configured recognition directories. Each file appears as one comic. Archives may contain images directly, a single top-level folder, or chapter folders. An optional single-comic `metadata.json` uses the fields and chapter-range rules above.
+Place `.zip`, `.cbz`, image-based `.epub`, or `.pdf` files in an online library's configured recognition directories. Each file appears as one comic. ZIP/CBZ archives may contain images directly, a single top-level folder, or chapter folders. An optional single-comic `metadata.json` uses the fields and chapter-range rules above. EPUB page order and chapters follow the book structure and navigation; PDF pages are read and rendered in their original order.
 
-Image directories and ZIP/CBZ files can coexist. An archive inside a comic directory appears as a separate comic without turning the image comic or its chapters into categories. For example, a book folder containing `cover.png`, a ZIP with the same name, and `全1卷/` keeps the folder name as the image comic's title and `全1卷` as its chapter; the ZIP is listed separately. Page totals count actual comic pages, excluding covers and archives. Chapters not yet scanned are inspected when comic details are opened.
+Image directories, ZIP/CBZ files, image-based EPUB files, and PDF files can coexist. An archive inside a comic directory appears as a separate comic without turning the image comic or its chapters into categories. For example, a book folder containing `cover.png`, a ZIP with the same name, and `全1卷/` keeps the folder name as the image comic's title and `全1卷` as its chapter; the ZIP is listed separately. Page totals count actual comic pages, excluding covers and archive files from image-directory totals. Chapters not yet scanned are inspected when comic details are opened.
 
 ```text
 /venera_comics/
@@ -280,9 +280,37 @@ Image directories and ZIP/CBZ files can coexist. An archive inside a comic direc
     └── 0002.jpg
 ```
 
-The app reads the archive tail and central directory as needed, then fetches metadata and the required image entries. Covers load when needed and are cached; reading pages also reuse the image cache. The full archive does not need to be downloaded or extracted first.
+ZIP/CBZ and EPUB reading fetches the archive tail and central directory as needed, then metadata and the required image entries. Covers load when needed and are cached; reading pages also reuse the image cache. The full archive does not need to be downloaded or extracted first.
 
-#### Volume and Chapter Directory
+#### Image-based EPUB
+
+The app locates the OPF through `META-INF/container.xml` and expands comic pages in OPF manifest and spine reading order, **not image file-name order**. Supported spine items include direct raster images and static XHTML `img` or SVG wrapper `image` references to images within the book. Multiple images in one document follow document order, repeated image references retain their reading positions, and `linear="no"` non-body items and blank pages are skipped.
+
+Multiple valid chapter markers from an EPUB 3 nav table of contents or EPUB 2 NCX create chapters at the corresponding spine-document boundaries. Without explicit divisions, the app provides a full-book entry instead of guessing chapters from image counts. An OPF-declared cover takes priority, and an explicit cover page is not counted again as a body page. Without a cover declaration, the first body image is used. Basic title, author, description, and tags come from OPF and can be overridden by sidecar fields.
+
+Initial parsing reads only the required container, OPF, navigation, and XHTML/SVG control documents; reading these entries does not prefetch neighboring images. Covers and body images load when displayed and reuse the same account's request queue, range cache, and image cache. Text-based EPUBs, pages with body text, scripts or complex layouts, directly drawn SVG content, and DRM/encrypted books are unsupported. External images, `data:` images, and paths escaping the book are rejected without silently discarding text or downloading the entire archive.
+
+#### PDF
+
+Ordinary readable PDFs are supported, including image, text, and vector pages. The app renders page content rather than extracting embedded images. Reading order and page totals retain the PDF's original numbering: **page 1 is both the cover and body page 1**. The title defaults to the file name. Embedded PDF title and author fields are not read automatically; use a sidecar or manual Bangumi binding to supply them.
+
+Multiple bookmarks pointing to different valid pages form chapters at their destination pages. Cover or introductory pages before the first bookmark remain included. Without usable divisions, the app provides a full-book entry. A sibling `Book.pdf.metadata.json` can override fields such as title and author or define one-based chapter ranges over the original PDF pages, including the first page. For example, a 16-page PDF can use:
+
+```json
+{
+  "title": "Comic",
+  "chapters": [
+    {"title": "Cover and introduction", "start": 1, "end": 2},
+    {"title": "Chapter 1", "start": 3, "end": 16}
+  ]
+}
+```
+
+Opening reads the required document structures and first-page information. Jumping to a later page may also require the PDF engine to read preceding pages' structures and dimensions. Only requested pages are rendered; the app does not render the entire book in advance. Rendering follows the local PDF import settings: three times the original dimensions, capped at a 3000-pixel longest edge, then JPEG encoding at quality 92. Reads and rendered images reuse the account request queue, range cache, and image cache.
+
+Encrypted or password-protected PDFs are currently unsupported, and PDF JavaScript is not executed. The file service must support HTTP Range. Read or rendering failures produce an error without automatically downloading the entire PDF.
+
+#### ZIP/CBZ Volume and Chapter Directory
 
 Archive details always provide a clickable reading directory. Valid `chapters` page ranges from sidecar or embedded metadata take priority. Without explicit ranges, image directories inside the archive form chapters in natural order. Nested paths such as `Volume 01/Chapter 01/` are grouped by their parent path, and chapter buttons also show the comic page count.
 
@@ -304,7 +332,7 @@ Pages are numbered from 1 over the naturally ordered comic images, excluding `co
 
 #### Archive Sidecar Metadata
 
-A ZIP/CBZ can have a UTF-8 JSON sidecar in the same directory. Its name is the **complete archive file name plus `.metadata.json`**, retaining the `.zip` or `.cbz` extension:
+ZIP/CBZ, image-based EPUB, and PDF files can have UTF-8 JSON sidecars in the same directory. Each name is the **complete file name plus `.metadata.json`**, retaining the `.zip`, `.cbz`, `.epub`, or `.pdf` extension:
 
 ```text
 /venera_comics/
@@ -312,12 +340,16 @@ A ZIP/CBZ can have a UTF-8 JSON sidecar in the same directory. Its name is the *
 ├── Book.zip.metadata.json
 ├── Book.cbz
 ├── Book.cbz.metadata.json
+├── Book.epub
+├── Book.epub.metadata.json
+├── Book.pdf
+├── Book.pdf.metadata.json
 └── Book/
     ├── metadata.json
     └── 001.jpg
 ```
 
-`Book.zip.metadata.json` belongs only to `Book.zip`, and `Book.cbz.metadata.json` belongs only to `Book.cbz`. The image directory's `Book/metadata.json` continues to describe that directory separately.
+`Book.zip.metadata.json`, `Book.cbz.metadata.json`, `Book.epub.metadata.json`, and `Book.pdf.metadata.json` each belong to their matching comic file. The image directory's `Book/metadata.json` continues to describe that directory separately.
 
 The sidecar is a JSON object using the same field types as the single-comic metadata format above. It may contain only selected fields:
 
@@ -328,20 +360,22 @@ The sidecar is a JSON object using the same field types as the single-comic meta
 }
 ```
 
-Sidecar fields with valid types and ranges take precedence. Omitted fields continue to use the archive's embedded `metadata.json`, so changing only the title preserves embedded authors, tags, and chapters. `chapters` uses one-based page ranges over the ordered comic images, excluding `cover.*`; ranges must be ordered, non-overlapping, and within the actual page count. Without a sidecar, embedded metadata remains supported. When neither provides usable metadata, the app infers the title and chapters from the archive file name and image layout.
+Sidecar fields with valid types and ranges take precedence. Omitted fields continue to use the ZIP/CBZ archive's embedded `metadata.json`, the EPUB's basic OPF metadata, or valid PDF bookmark chapters, so changing only the title preserves existing authors, tags, and chapters.
+
+`chapters` uses one-based page ranges: natural order for ZIP/CBZ, excluding separate `cover.*` images; spine order for EPUB, excluding explicit cover pages; and original PDF numbering, including the first page. The first body image still counts as a page when it is also used as the fallback cover. Ranges must be ordered, non-overlapping, and within the actual page count. Without a sidecar, existing metadata remains supported. A missing title falls back to the file name; EPUB and PDF page order still follow the spine and original page numbering, respectively.
 
 After Bangumi is connected and automatic scraping is enabled, a ZIP/CBZ is searched by its file name without the extension when its index is first loaded on demand and neither sidecar nor embedded metadata exists. Directory discovery does not read the full archive for scraping. The conservative matching rules above still apply, and a successful match creates only the sibling sidecar file.
 
-Manual Bangumi binding from comic details also writes the title, author, description, tags, and subject ID to that sidecar. The app does not repack the archive or modify embedded metadata. New sidecars use create-only requests; updates retain ETag or Last-Modified write preconditions and preserve valid chapter ranges and unknown extension fields. Transient failures use the background retry queue and do not undo a successful progress binding. The account needs write access to the directory containing the sidecar.
+Manual Bangumi binding from ZIP/CBZ, image-based EPUB, or PDF comic details writes the title, author, description, tags, and subject ID to the matching sidecar, including `Book.epub.metadata.json` and `Book.pdf.metadata.json`. The app does not repack archives, rewrite PDFs, or modify embedded `metadata.json` or OPF files. New sidecars use create-only requests; updates retain ETag or Last-Modified write preconditions and preserve valid chapter ranges and unknown extension fields. Transient failures use the background retry queue and do not undo a successful progress binding. The account needs write access to the directory containing the sidecar.
 
 #### Range Reads and Caching
 
 Libraries on the same cloud account share an archive read queue with at most two concurrent requests and at least 300 milliseconds between request starts. The visible page takes priority over covers and preloads; an existing preload is promoted when that page becomes visible. HTTP 429 responses pause the shared queue according to `Retry-After`, or use delays of 1, 2, and 4 seconds when the header is missing or invalid. Each range read retries at most twice, and queued reads can be cancelled.
 
-For small images, the local header and compressed payload are combined into aligned range requests, each at most 2 MiB. An account-wide 16 MiB memory range cache reuses nearby entries; larger images still use exact on-demand reads. This reduces request bursts and small transfers. Account and IP limits remain subject to the storage provider's rules.
+For small ZIP/CBZ and EPUB image entries, the local header and compressed payload are combined into aligned range requests, each at most 2 MiB. An account-wide 16 MiB memory range cache reuses nearby entries; larger images still use exact on-demand reads. This reduces request bursts and small transfers. Account and IP limits remain subject to the storage provider's rules.
 
 The remote file server must actually support HTTP Range and return valid partial responses. Being able to list files or merely advertising Range support is insufficient. If the server ignores Range, returns the full file, or supplies an invalid range, the app reports an error without silently falling back to a full download. Cloud download links, proxies, and file servers reached through redirects must also satisfy this requirement.
 
-The initial implementation supports ZIP/ZIP64 using Store (uncompressed) or Deflate. Encrypted archives, split archives, and other compression methods are rejected. 7z/CB7 files cannot be read directly online; extract them to image directories on the server first. PDF/EPUB files do not support on-demand cloud reading either; download them and use local import. Archive backup and restore remain separate features.
+The underlying ZIP/ZIP64 reader supports Store (uncompressed) and Deflate. Encrypted archives, split archives, and other compression methods are rejected. 7z/CB7 files cannot be read directly online; extract them to image directories on the server first. Archive backup and restore remain separate features.
 
-End-to-end checks of on-demand ZIP/CBZ reading on platforms and real cloud providers have not been completed. Range compatibility depends on the actual responses from the storage service.
+End-to-end checks of image-based EPUB and PDF reading across platforms and real cloud providers have not been completed. Existing ZIP/CBZ verification applies only to the scenarios already checked and does not establish compatibility for other formats. Range compatibility depends on the actual responses from the storage service.

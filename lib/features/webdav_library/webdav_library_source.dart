@@ -1664,7 +1664,7 @@ class WebDavLibrarySource {
                 : rootChapterId);
         final images = archive.chapterImages[chapter];
         if (images == null || images.isEmpty) {
-          return const Res.error('No images found in the ZIP/CBZ chapter');
+          return const Res.error('No images found in the archive chapter');
         }
         return Res(images.map(archive.imageKey).toList());
       }
@@ -1935,7 +1935,7 @@ class WebDavLibrarySource {
     archive = archive.withMetadata(null);
     if (!summaryOnly && !archive.isInspected) {
       if (size <= 0) {
-        throw const FormatException('Remote ZIP/CBZ file size is unavailable');
+        throw const FormatException('Remote archive file size is unavailable');
       }
       final token = cancelToken ?? CancelToken();
       final state = _state;
@@ -1946,6 +1946,7 @@ class WebDavLibrarySource {
         final reader = _archiveReader(config, archive);
         archive = await archive.inspect(
           (offset, length) => reader.read(offset, length, cancelToken: token),
+          cancelToken: token,
         );
         if (token.isCancelled) throw token.cancelError!;
       } finally {
@@ -2052,24 +2053,43 @@ class WebDavLibrarySource {
     final snapshot = await _loadSnapshot(config, id, cancelToken: token);
     if (token.isCancelled) throw token.cancelError!;
     final archive = snapshot.archive;
-    if (archive?.index == null ||
-        (key.entry != null && key.version != archive!.version)) {
+    if (archive == null ||
+        !archive.isInspected ||
+        (key.entry != null && key.version != archive.version)) {
       throw const FormatException(
-        'Remote ZIP/CBZ changed. Refresh the comic library',
+        'Remote archive changed. Refresh the comic library',
       );
     }
-    final entryName = key.entry ?? archive!.coverEntry;
-    final entry = archive!.index!.entries.firstWhereOrNull(
-      (entry) => entry.name == entryName,
-    );
-    if (entry == null) {
-      throw const FormatException('ZIP/CBZ image entry is missing');
-    }
+    final entryName = key.entry ?? archive.coverEntry;
     final state = _state;
     if (state.disposed) throw StateError('Remote library is closed');
     state.archiveTokens.add(token);
     try {
       final reader = _archiveReader(config, archive);
+      if (archive.isPdf) {
+        final match = RegExp(
+          r'^pdf:([1-9][0-9]*)$',
+        ).firstMatch(entryName ?? '');
+        final page = int.tryParse(match?.group(1) ?? '');
+        if (page == null || page > archive.pdfPageCount!) {
+          throw const FormatException('PDF page is missing');
+        }
+        return await RemotePdfReader.renderPage(
+          size: archive.size,
+          read: (offset, length) =>
+              reader.read(offset, length, cancelToken: token),
+          sourceName: 'remote-pdf:${archive.version}',
+          pageNumber: page,
+          expectedPageCount: archive.pdfPageCount,
+          cancelToken: token,
+        );
+      }
+      final entry = archive.index!.entries.firstWhereOrNull(
+        (entry) => entry.name == entryName,
+      );
+      if (entry == null) {
+        throw const FormatException('Archive image entry is missing');
+      }
       return await archive.index!.readEntry(
         entry,
         (offset, length) => reader.read(offset, length, cancelToken: token),
