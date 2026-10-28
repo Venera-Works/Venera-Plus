@@ -1591,17 +1591,19 @@ class BangumiService {
             related.sourceKey,
             related.comicId,
             scopeId: related.scopeId,
-          )] = related.copyWith(
-            subjectTitle: binding.subjectTitle,
-            subjectOriginalTitle: binding.subjectOriginalTitle,
-            coverUrl: binding.coverUrl,
-            totalEpisodes: binding.totalEpisodes,
-            totalVolumes: binding.totalVolumes,
-            lastRemoteEpisode: binding.lastRemoteEpisode,
-            lastRemoteVolume: binding.lastRemoteVolume,
-            rating: binding.rating,
-            collectionStatus: binding.collectionStatus,
-          ).toJson();
+          )] = related
+              .copyWith(
+                subjectTitle: binding.subjectTitle,
+                subjectOriginalTitle: binding.subjectOriginalTitle,
+                coverUrl: binding.coverUrl,
+                totalEpisodes: binding.totalEpisodes,
+                totalVolumes: binding.totalVolumes,
+                lastRemoteEpisode: binding.lastRemoteEpisode,
+                lastRemoteVolume: binding.lastRemoteVolume,
+                rating: binding.rating,
+                collectionStatus: binding.collectionStatus,
+              )
+              .toJson();
         }
       }
       bindings[bangumiBindingKey(

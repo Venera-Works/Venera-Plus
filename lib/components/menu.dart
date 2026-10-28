@@ -112,7 +112,17 @@ class _MenuRoute<T> extends PopupRoute<T> {
               if (entry.icon != null)
                 Icon(entry.icon, size: 18, color: entry.color),
               const SizedBox(width: 12),
-              Text(entry.text, style: TextStyle(color: entry.color)),
+              Expanded(
+                child: Tooltip(
+                  message: entry.text,
+                  child: Text(
+                    entry.text,
+                    style: TextStyle(color: entry.color),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
             ],
           ),
         ),

@@ -322,9 +322,14 @@ class ComicTile extends StatelessWidget {
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  child: Text('@count sources'.tlParams({'count': state.sourceCount}),
-                    style: Theme.of(context).textTheme.labelSmall),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
+                  child: Text(
+                    '@count sources'.tlParams({'count': state.sourceCount}),
+                    style: Theme.of(context).textTheme.labelSmall,
+                  ),
                 ),
               ),
             ),

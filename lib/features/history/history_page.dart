@@ -127,9 +127,7 @@ class _HistoryPageState extends State<HistoryPage> {
 
   void selectAll() {
     setState(() {
-      selectedComics = {
-        for (final comic in visibleComics) comic: true,
-      };
+      selectedComics = {for (final comic in visibleComics) comic: true};
     });
   }
 
@@ -396,7 +394,9 @@ class _HistoryPageState extends State<HistoryPage> {
               badgeBuilder: (c) {
                 final group = c as BangumiComicGroup<History>;
                 if (group.members.length > 1) {
-                  return '@count sources'.tlParams({'count': group.members.length});
+                  return '@count sources'.tlParams({
+                    'count': group.members.length,
+                  });
                 }
                 return c.sourceKey == 'local'
                     ? 'Local'.tl

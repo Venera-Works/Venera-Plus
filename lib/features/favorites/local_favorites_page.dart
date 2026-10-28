@@ -60,6 +60,12 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
   late List<FavoriteItem> comics;
   List<BangumiComicGroup<FavoriteItem>> groups = [];
   Object? _bindings;
+  bool _historyDirty = false;
+  ModalRoute<dynamic>? _route;
+  bool _tickerModeEnabled = true;
+
+  bool get _isVisible =>
+      widget.isActive && _tickerModeEnabled && (_route?.isCurrent ?? true);
 
   String? networkSource;
   String? networkFolder;
@@ -90,20 +96,18 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
 
   var searchResults = <BangumiComicGroup<FavoriteItem>>[];
 
-  List<BangumiComicGroup<FavoriteItem>> get displayedGroups =>
-      filterComics(searchMode ? searchResults : groups)
-          .where((group) => isBlocked(group) == null)
-          .toList();
+  List<BangumiComicGroup<FavoriteItem>> get displayedGroups => filterComics(
+    searchMode ? searchResults : groups,
+  ).where((group) => isBlocked(group) == null).toList();
 
-  List<BangumiComicGroup<FavoriteItem>> get selectedGroups => displayedGroups
-      .where(selectedComics.containsKey)
-      .toList();
+  List<BangumiComicGroup<FavoriteItem>> get selectedGroups =>
+      displayedGroups.where(selectedComics.containsKey).toList();
 
-  List<FavoriteItem> get selectedMembers => selectedGroups
-      .expand((group) => group.members)
-      .toList();
+  List<FavoriteItem> get selectedMembers =>
+      selectedGroups.expand((group) => group.members).toList();
 
   void _regroupComics() {
+    _historyDirty = false;
     groups = groupBangumiComics<FavoriteItem>(
       comics,
       lastRead: (item) => HistoryManager().find(item.id, item.type)?.time,
@@ -120,16 +124,20 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                   keyword,
                   group.binding?.subjectOriginalTitle ?? '',
                 ) ||
-                group.members.any((comic) =>
-                    matchKeyword(keyword, comic) ||
-                    matchKeywordT(keyword, comic) ||
-                    matchKeywordS(keyword, comic));
+                group.members.any(
+                  (comic) =>
+                      matchKeyword(keyword, comic) ||
+                      matchKeywordT(keyword, comic) ||
+                      matchKeywordS(keyword, comic),
+                );
           }).toList();
     _retainDisplayedSelection();
   }
 
   bool _matchesGroupTitle(String keyword, String title) {
-    bool matches(String query) => query.split(' ').where((word) => word.isNotEmpty)
+    bool matches(String query) => query
+        .split(' ')
+        .where((word) => word.isNotEmpty)
         .every((word) => checkKeyWordMatch(word, title, false));
     return matches(keyword) ||
         (OpenCC.hasChineseSimplified(keyword) &&
@@ -181,7 +189,17 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
   }
 
   void _onHistoryChanged() {
-    if (mounted) setState(_regroupComics);
+    if (!mounted) return;
+    _historyDirty = true;
+    if (_isVisible) setState(_regroupComics);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _route = ModalRoute.of(context);
+    _tickerModeEnabled = TickerMode.valuesOf(context).enabled;
+    if (_isVisible && _historyDirty) _regroupComics();
   }
 
   void updateComics() {
@@ -399,11 +417,14 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
   @override
   void didUpdateWidget(covariant LocalFavoritesPage oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (_isVisible && _historyDirty) _regroupComics();
     if (oldWidget.folder != widget.folder) {
       selectedComics.clear();
       multiSelectMode = false;
       lastSelectedGroupKey = null;
-      final linked = isAllFolder ? (null, null) : manager.findLinked(widget.folder);
+      final linked = isAllFolder
+          ? (null, null)
+          : manager.findLinked(widget.folder);
       networkSource = linked.$1;
       networkFolder = linked.$2;
       loadComics();
@@ -576,13 +597,15 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
     int? heroID,
     bool chooseSource = false,
   }) {
-    unawaited(openBangumiComic(
-      App.mainNavigatorKey?.currentContext ?? context,
-      group,
-      read: read,
-      heroID: heroID,
-      chooseSource: chooseSource,
-    ));
+    unawaited(
+      openBangumiComic(
+        App.mainNavigatorKey?.currentContext ?? context,
+        group,
+        read: read,
+        heroID: heroID,
+        chooseSource: chooseSource,
+      ),
+    );
   }
 
   var scrollController = ScrollController();
@@ -900,13 +923,15 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                     MenuEntry(
                       icon: Icons.chrome_reader_mode_outlined,
                       text: "Read".tl,
-                      onClick: () => _openGroup(selectedGroups.single, read: true),
+                      onClick: () =>
+                          _openGroup(selectedGroups.single, read: true),
                     ),
                   if (selectedComics.length == 1)
                     MenuEntry(
                       icon: Icons.arrow_forward_ios,
                       text: "Jump to Detail".tl,
-                      onClick: () => _openGroup(selectedGroups.single, read: false),
+                      onClick: () =>
+                          _openGroup(selectedGroups.single, read: false),
                     ),
                 ],
               ),
@@ -998,7 +1023,10 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
           if (blockedCount > 0)
             SliverToBoxAdapter(
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
                 child: Text(
                   '@a comics have been hidden'.tlParams({'a': blockedCount}),
                   style: TextStyle(color: context.colorScheme.secondary),
@@ -1017,10 +1045,8 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                   MenuEntry(
                     icon: Icons.delete,
                     text: "Delete".tl,
-                    onClick: () => manager.batchDeleteComics(
-                      widget.folder,
-                      group.members,
-                    ),
+                    onClick: () =>
+                        manager.batchDeleteComics(widget.folder, group.members),
                   ),
                 MenuEntry(
                   icon: Icons.check,
@@ -1036,8 +1062,11 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                   icon: appdata.settings["onClickFavorite"] == "viewDetail"
                       ? Icons.menu_book_outlined
                       : Icons.info_outline,
-                  text: (appdata.settings["onClickFavorite"] == "viewDetail"
-                      ? "Read" : "View Detail").tl,
+                  text:
+                      (appdata.settings["onClickFavorite"] == "viewDetail"
+                              ? "Read"
+                              : "View Detail")
+                          .tl,
                   onClick: () => _openGroup(
                     group,
                     read: appdata.settings["onClickFavorite"] == "viewDetail",
@@ -1053,11 +1082,16 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                       chooseSource: true,
                     ),
                   ),
-                if (group.members.any((item) =>
-                    manager.hasNewUpdate(item.id, item.type)))
+                if (group.members.any(
+                  (item) => manager.hasNewUpdate(item.id, item.type),
+                ))
                   MenuEntry(
                     icon: Icons.done_all,
-                    text: "Mark as read".tl,
+                    text:
+                        (group.members.length > 1
+                                ? 'Clear all source update reminders'
+                                : 'Mark as read')
+                            .tl,
                     onClick: () {
                       for (final item in group.members) {
                         manager.markAsRead(item.id, item.type);
@@ -1218,9 +1252,17 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                           final folders = selectedLocalFolders.toList();
                           for (final folder in folders) {
                             if (option == 'move' && folder == folders.last) {
-                              manager.batchMoveFavorites(widget.folder, folder, comics);
+                              manager.batchMoveFavorites(
+                                widget.folder,
+                                folder,
+                                comics,
+                              );
                             } else {
-                              manager.batchCopyFavorites(widget.folder, folder, comics);
+                              manager.batchCopyFavorites(
+                                widget.folder,
+                                folder,
+                                comics,
+                              );
                             }
                           }
                           App.rootContext.pop();

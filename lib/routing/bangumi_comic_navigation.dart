@@ -33,7 +33,8 @@ Future<Comic?> selectBangumiComicSource(
   DateTime? latestTime;
   for (final member in members) {
     final type = _typeOf(member);
-    final available = ComicSource.find(member.sourceKey) != null ||
+    final available =
+        ComicSource.find(member.sourceKey) != null ||
         LocalManager().find(member.id, type) != null;
     if (!available) continue;
     final time = HistoryManager().find(member.id, type)?.time;
@@ -45,50 +46,70 @@ Future<Comic?> selectBangumiComicSource(
   if (!alwaysChoose && latestComic != null) return latestComic;
   return Navigator.of(context).push<Comic>(
     SideBarRoute<Comic>(
-      Builder(builder: (context) => PopUpWidgetScaffold(
-        title: 'Choose comic source'.tl,
-        body: ListView(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Text(comic.title, style: Theme.of(context).textTheme.titleMedium),
-            ),
-            for (final member in members)
-              _sourceTile(context, member, latestComic, allowUnavailable),
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Text('Each source keeps its own reading position'.tl),
-            ),
-          ],
+      Builder(
+        builder: (context) => PopUpWidgetScaffold(
+          title: 'Choose comic source'.tl,
+          body: ListView(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
+                child: Text(
+                  comic.title,
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              for (final member in members)
+                _sourceTile(context, member, latestComic, allowUnavailable),
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text('Each source keeps its own reading position'.tl),
+              ),
+            ],
+          ),
         ),
-      )),
+      ),
       width: 500,
     ),
   );
 }
 
-Widget _sourceTile(BuildContext context, Comic comic, Comic? latestComic, bool allowUnavailable) {
+Widget _sourceTile(
+  BuildContext context,
+  Comic comic,
+  Comic? latestComic,
+  bool allowUnavailable,
+) {
   final type = _typeOf(comic);
   final source = ComicSource.find(comic.sourceKey);
   final local = LocalManager().find(comic.id, type);
   final history = HistoryManager().find(comic.id, type);
   final available = source != null || local != null;
-  final name = comic.sourceKey == 'local' ? 'Local'.tl : source?.name ?? comic.sourceKey;
+  final name = comic.sourceKey == 'local'
+      ? 'Local'.tl
+      : source?.name ?? comic.sourceKey;
   return ListTile(
     key: ValueKey('comic-source:${comic.sourceKey}:${comic.id}'),
     enabled: available || allowUnavailable,
     leading: Icon(local == null ? Icons.public : Icons.download_done),
     title: Text(name),
-    subtitle: Text([
-      comic.title,
-      if (history != null) history.progressDescription(showTotals: true),
-      if (identical(comic, latestComic)) 'Last read source'.tl,
-      if (local != null) 'Downloaded'.tl,
-      if (LocalFavoritesManager().hasNewUpdate(comic.id, type)) 'New update'.tl,
-      if (!available) 'Source unavailable'.tl,
-    ].join('\n')),
-    onTap: available || allowUnavailable ? () => Navigator.of(context).pop(comic) : null,
+    subtitle: Text(
+      [
+        comic.title,
+        if (history != null) history.progressDescription(showTotals: true),
+        if (identical(comic, latestComic)) 'Last read source'.tl,
+        if (local != null) 'Downloaded'.tl,
+        if (LocalFavoritesManager().hasNewUpdate(comic.id, type))
+          'New update'.tl,
+        if (!available) 'Source unavailable'.tl,
+      ].join('\n'),
+    ),
+    onTap: available || allowUnavailable
+        ? () => Navigator.of(context).pop(comic)
+        : null,
   );
 }
 
@@ -100,21 +121,36 @@ Future<void> openBangumiComic(
   bool chooseSource = false,
 }) async {
   final selected = await selectBangumiComicSource(
-    context, comic, alwaysChoose: chooseSource,
+    context,
+    comic,
+    alwaysChoose: chooseSource,
   );
   if (selected == null || !context.mounted) return;
-  final hasHistory = HistoryManager().find(selected.id, _typeOf(selected)) != null;
-  final newSource = comic is BangumiComicGroup && comic.members.length > 1 && !hasHistory;
+  final type = _typeOf(selected);
+  if (ComicSource.find(selected.sourceKey) == null) {
+    final local = LocalManager().find(selected.id, type);
+    if (local != null) {
+      local.read();
+      return;
+    }
+  }
+  final hasHistory = HistoryManager().find(selected.id, type) != null;
+  final newSource =
+      comic is BangumiComicGroup && comic.members.length > 1 && !hasHistory;
   if (read && !newSource || selected.sourceKey == 'local') {
-    context.to(() => ReaderWithLoading(id: selected.id, sourceKey: selected.sourceKey));
+    context.to(
+      () => ReaderWithLoading(id: selected.id, sourceKey: selected.sourceKey),
+    );
   } else {
-    context.to(() => ComicPage(
-      id: selected.id,
-      sourceKey: selected.sourceKey,
-      cover: selected.cover,
-      title: selected.title,
-      heroID: heroID,
-    ));
+    context.to(
+      () => ComicPage(
+        id: selected.id,
+        sourceKey: selected.sourceKey,
+        cover: selected.cover,
+        title: selected.title,
+        heroID: heroID,
+      ),
+    );
   }
 }
 
@@ -129,12 +165,25 @@ BangumiComicGroup<Comic>? bangumiGroupForComic(Comic comic) {
   };
   final members = <Comic>[comic];
   for (final other in service.bindingsForSubject(binding.subjectId)) {
-    if (other.sourceKey == comic.sourceKey && other.comicId == comic.id) continue;
+    if (other.sourceKey == comic.sourceKey && other.comicId == comic.id)
+      continue;
     final type = ComicType.fromKey(other.sourceKey);
-    members.add(favorites[(other.sourceKey, other.comicId)] ??
-        HistoryManager().find(other.comicId, type) ??
-        LocalManager().find(other.comicId, type) ??
-        Comic(other.subjectTitle, other.coverUrl, other.comicId, null, null, '', other.sourceKey, null, null));
+    members.add(
+      favorites[(other.sourceKey, other.comicId)] ??
+          HistoryManager().find(other.comicId, type) ??
+          LocalManager().find(other.comicId, type) ??
+          Comic(
+            other.subjectTitle,
+            other.coverUrl,
+            other.comicId,
+            null,
+            null,
+            '',
+            other.sourceKey,
+            null,
+            null,
+          ),
+    );
   }
   return BangumiComicGroup<Comic>(
     groupKey: 'bangumi:${binding.subjectId}',

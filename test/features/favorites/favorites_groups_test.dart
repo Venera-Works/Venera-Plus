@@ -26,15 +26,18 @@ bool _sqliteAvailable() {
   }
 }
 
-FavoriteItem _favorite(String id, String title, {List<String> tags = const []}) =>
-    FavoriteItem(
-      id: id,
-      name: title,
-      coverPath: '',
-      author: '',
-      type: ComicType.local,
-      tags: tags,
-    );
+FavoriteItem _favorite(
+  String id,
+  String title, {
+  List<String> tags = const [],
+}) => FavoriteItem(
+  id: id,
+  name: title,
+  coverPath: '',
+  author: '',
+  type: ComicType.local,
+  tags: tags,
+);
 
 BangumiBinding _binding(String id) => BangumiBinding(
   sourceKey: 'local',
@@ -65,7 +68,9 @@ class _FavoritesFixture {
 
   static Future<_FavoritesFixture> create(WidgetTester tester) async {
     final directory = Directory.systemTemp.createTempSync('venera-groups-');
-    final previousSettings = Map<String, dynamic>.from(appdata.toJson()['settings']);
+    final previousSettings = Map<String, dynamic>.from(
+      appdata.toJson()['settings'],
+    );
     final previousImplicit = Map<String, dynamic>.from(appdata.implicitData);
     final previousFavorites = LocalFavoritesManager.cache;
     final previousHistory = HistoryManager.cache;
@@ -98,7 +103,10 @@ class _FavoritesFixture {
     appdata.settings['showFavoriteStatusOnTile'] = false;
     appdata.settings['showHistoryStatusOnTile'] = false;
     appdata.settings['showUpdateStatusOnTile'] = false;
-    appdata.implicitData['favoriteFolder'] = {'name': 'Main', 'isNetwork': false};
+    appdata.implicitData['favoriteFolder'] = {
+      'name': 'Main',
+      'isNetwork': false,
+    };
     appdata.implicitData['local_favorites_read_filter'] = 'All';
     _setBindings(['primary', 'alternate', 'outside']);
     configureComicWidgets(
@@ -154,22 +162,26 @@ class _FavoritesFixture {
   }
 
   Future<void> openLocal(WidgetTester tester) async {
-    await tester.pumpWidget(MaterialApp(
-      navigatorKey: App.rootNavigatorKey,
-      home: const Scaffold(body: FavoritesPage()),
-    ));
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorKey: App.rootNavigatorKey,
+        home: const Scaffold(body: FavoritesPage()),
+      ),
+    );
     await tester.pumpAndSettle();
   }
 
   Future<void> openHome(WidgetTester tester) async {
     await runWidgetIo(tester, () => manager.setReadingFolder('Main'));
-    await tester.pumpWidget(MaterialApp(
-      navigatorKey: App.rootNavigatorKey,
-      home: Scaffold(
-        appBar: AppBar(actions: const [ReadingFavoritesMenuButton()]),
-        body: const ReadingFavoritesView(),
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorKey: App.rootNavigatorKey,
+        home: Scaffold(
+          appBar: AppBar(actions: const [ReadingFavoritesMenuButton()]),
+          body: const ReadingFavoritesView(),
+        ),
       ),
-    ));
+    );
     await tester.pumpAndSettle();
   }
 
@@ -180,12 +192,14 @@ class _FavoritesFixture {
 SliverGridComics _grid(WidgetTester tester) =>
     tester.widget<SliverGridComics>(find.byType(SliverGridComics));
 
-BangumiComicGroup<FavoriteItem> _work(WidgetTester tester) =>
-    _grid(tester).comics.cast<BangumiComicGroup<FavoriteItem>>()
-        .singleWhere((group) => group.subjectId == 42);
+BangumiComicGroup<FavoriteItem> _work(WidgetTester tester) => _grid(tester)
+    .comics
+    .cast<BangumiComicGroup<FavoriteItem>>()
+    .singleWhere((group) => group.subjectId == 42);
 
 void _toolbarAction(WidgetTester tester, String title) {
-  tester.widgetList<MenuButton>(find.byType(MenuButton))
+  tester
+      .widgetList<MenuButton>(find.byType(MenuButton))
       .expand((menu) => menu.entries)
       .singleWhere((entry) => entry.text == title)
       .onClick();
@@ -201,18 +215,26 @@ void main() {
   setUpAll(OpenCC.init);
   final skip = !_sqliteAvailable();
 
-  testWidgets('home and local favorites group only current folder members', (tester) async {
+  testWidgets('home and local favorites group only current folder members', (
+    tester,
+  ) async {
     final fixture = await _FavoritesFixture.create(tester);
     await fixture.openHome(tester);
     expect(_grid(tester).comics.length, 3);
-    expect(_work(tester).members.map((item) => item.id), ['primary', 'alternate']);
+    expect(_work(tester).members.map((item) => item.id), [
+      'primary',
+      'alternate',
+    ]);
     expect(fixture.ids('Main'), ['primary', 'middle', 'alternate', 'tail']);
     expect(fixture.ids('Outside'), ['outside']);
 
     await fixture.openLocal(tester);
     expect(_grid(tester).comics.length, 3);
-    expect(find.text('4 source entries'), findsOneWidget);
-    expect(_work(tester).members.map((item) => item.id), ['primary', 'alternate']);
+    expect(find.byTooltip('4 source entries'), findsOneWidget);
+    expect(_work(tester).members.map((item) => item.id), [
+      'primary',
+      'alternate',
+    ]);
     await _selectWork(tester);
     expect(_grid(tester).selections!.length, 1);
     _setBindings(['primary', 'outside']);
@@ -223,155 +245,314 @@ void main() {
     expect(tester.takeException(), isNull);
   }, skip: skip);
 
-  testWidgets('searching any member or Bangumi title preserves all current members', (tester) async {
-    final fixture = await _FavoritesFixture.create(tester);
-    await fixture.openLocal(tester);
-    await tester.tap(find.byIcon(Icons.search));
-    await tester.pumpAndSettle();
-    for (final query in ['Hidden alias', 'Primary title', 'Original Work', 'adventure']) {
-      await tester.enterText(find.byType(TextField), query);
-      await tester.pumpAndSettle();
-      expect(_grid(tester).comics.length, 1, reason: query);
-      expect(_work(tester).members.map((item) => item.id), ['primary', 'alternate']);
-    }
-    await _selectWork(tester);
-    _toolbarAction(tester, 'Select All');
-    await tester.pumpAndSettle();
-    expect(_grid(tester).selections!.length, 1);
-    _toolbarAction(tester, 'Deselect');
-    await tester.pumpAndSettle();
-    final group = _work(tester);
-    _grid(tester).menuBuilder!(group).singleWhere((entry) => entry.text == 'Delete').onClick();
-    await tester.pumpAndSettle();
-    expect(fixture.ids('Main'), ['middle', 'tail']);
-    expect(fixture.ids('Outside'), ['outside']);
-    expect(tester.takeException(), isNull);
-  }, skip: skip);
-
-  for (final move in [false, true]) {
-    testWidgets('${move ? 'move' : 'copy'} expands a selected work to every target folder', (tester) async {
+  testWidgets(
+    'searching any member or Bangumi title preserves all current members',
+    (tester) async {
       final fixture = await _FavoritesFixture.create(tester);
       await fixture.openLocal(tester);
-      await _selectWork(tester);
-      _toolbarAction(tester, move ? 'Move to folder' : 'Copy to folder');
+      await tester.tap(find.byIcon(Icons.search));
       await tester.pumpAndSettle();
-      for (final target in ['Target A', 'Target B']) {
-        await tester.tap(find.widgetWithText(CheckboxListTile, target));
+      for (final query in [
+        'Hidden alias',
+        'Primary title',
+        'Original Work',
+        'adventure',
+      ]) {
+        await tester.enterText(find.byType(TextField), query);
         await tester.pumpAndSettle();
+        expect(_grid(tester).comics.length, 1, reason: query);
+        expect(_work(tester).members.map((item) => item.id), [
+          'primary',
+          'alternate',
+        ]);
       }
-      await tester.tap(find.widgetWithText(FilledButton, move ? 'Move' : 'Add'));
+      await _selectWork(tester);
+      _toolbarAction(tester, 'Select All');
       await tester.pumpAndSettle();
-      for (final target in ['Target A', 'Target B']) {
-        expect(fixture.ids(target), ['primary', 'alternate']);
-      }
-      expect(fixture.ids('Main'), move ? ['middle', 'tail'] : ['primary', 'middle', 'alternate', 'tail']);
+      expect(_grid(tester).selections!.length, 1);
+      _toolbarAction(tester, 'Deselect');
+      await tester.pumpAndSettle();
+      final group = _work(tester);
+      _grid(tester).menuBuilder!(group)
+          .singleWhere((entry) => entry.text == 'Delete')
+          .onClick();
+      await tester.pumpAndSettle();
+      expect(fixture.ids('Main'), ['middle', 'tail']);
       expect(fixture.ids('Outside'), ['outside']);
       expect(tester.takeException(), isNull);
-    }, skip: skip);
+    },
+    skip: skip,
+  );
+
+  for (final move in [false, true]) {
+    testWidgets(
+      '${move ? 'move' : 'copy'} expands a selected work to every target folder',
+      (tester) async {
+        final fixture = await _FavoritesFixture.create(tester);
+        await fixture.openLocal(tester);
+        await _selectWork(tester);
+        _toolbarAction(tester, move ? 'Move to folder' : 'Copy to folder');
+        await tester.pumpAndSettle();
+        for (final target in ['Target A', 'Target B']) {
+          await tester.tap(find.widgetWithText(CheckboxListTile, target));
+          await tester.pumpAndSettle();
+        }
+        await tester.tap(
+          find.widgetWithText(FilledButton, move ? 'Move' : 'Add'),
+        );
+        await tester.pumpAndSettle();
+        for (final target in ['Target A', 'Target B']) {
+          expect(fixture.ids(target), ['primary', 'alternate']);
+        }
+        expect(
+          fixture.ids('Main'),
+          move
+              ? ['middle', 'tail']
+              : ['primary', 'middle', 'alternate', 'tail'],
+        );
+        expect(fixture.ids('Outside'), ['outside']);
+        expect(tester.takeException(), isNull);
+      },
+      skip: skip,
+    );
   }
 
-  testWidgets('selection follows reading and keyword filters and latest member history', (tester) async {
-    final fixture = await _FavoritesFixture.create(tester);
-    appdata.implicitData['local_favorites_read_filter'] = 'UnCompleted';
-    appdata.settings['blockedWords'] = ['blocked-tag'];
-    await runWidgetIo(tester, () async {
-      fixture.manager.addComic('Main', _favorite('blocked', 'Blocked', tags: ['blocked-tag']), 4);
-      for (final (id, page, time) in [
-        ('primary', 2, 3000),
-        ('alternate', 10, 1000),
-        ('middle', 10, 2000),
-      ]) {
-        fixture.history.addHistory(History.fromMap({
-          'id': id,
-          'type': 0,
-          'time': time,
-          'title': id,
-          'ep': 1,
-          'page': page,
-          'max_page': 10,
-        }));
-      }
-      await fixture.manager.waitForPendingReads();
-    });
-    await fixture.openLocal(tester);
-    expect(_grid(tester).comics.map((comic) => comic.id), ['primary', 'tail']);
-    expect(_work(tester).representative.id, 'primary');
-    await _selectWork(tester);
-    _toolbarAction(tester, 'Select All');
-    await tester.pumpAndSettle();
-    expect(_grid(tester).selections!.keys.map((comic) => comic.id), ['primary', 'tail']);
-    _toolbarAction(tester, 'Deselect');
-    await tester.pumpAndSettle();
-    await _selectWork(tester);
-    final tail = _grid(tester).comics.singleWhere((comic) => comic.id == 'tail');
-    _grid(tester).onLongPressed!(tail, 1);
-    await tester.pumpAndSettle();
-    expect(_grid(tester).selections!.length, 2);
-    _toolbarAction(tester, 'Invert Selection');
-    await tester.pumpAndSettle();
-    expect(_grid(tester).selections, isEmpty);
-    expect(tester.takeException(), isNull);
-  }, skip: skip);
+  testWidgets(
+    'selection follows reading and keyword filters and latest member history',
+    (tester) async {
+      final fixture = await _FavoritesFixture.create(tester);
+      appdata.implicitData['local_favorites_read_filter'] = 'UnCompleted';
+      appdata.settings['blockedWords'] = ['blocked-tag'];
+      await runWidgetIo(tester, () async {
+        fixture.manager.addComic(
+          'Main',
+          _favorite('blocked', 'Blocked', tags: ['blocked-tag']),
+          4,
+        );
+        for (final (id, page, time) in [
+          ('primary', 2, 3000),
+          ('alternate', 10, 1000),
+          ('middle', 10, 2000),
+        ]) {
+          fixture.history.addHistory(
+            History.fromMap({
+              'id': id,
+              'type': 0,
+              'time': time,
+              'title': id,
+              'ep': 1,
+              'page': page,
+              'max_page': 10,
+            }),
+          );
+        }
+        await fixture.manager.waitForPendingReads();
+      });
+      await fixture.openLocal(tester);
+      expect(_grid(tester).comics.map((comic) => comic.id), [
+        'primary',
+        'tail',
+      ]);
+      expect(_work(tester).representative.id, 'primary');
+      await _selectWork(tester);
+      _toolbarAction(tester, 'Select All');
+      await tester.pumpAndSettle();
+      expect(_grid(tester).selections!.keys.map((comic) => comic.id), [
+        'primary',
+        'tail',
+      ]);
+      _toolbarAction(tester, 'Deselect');
+      await tester.pumpAndSettle();
+      await _selectWork(tester);
+      final tail = _grid(
+        tester,
+      ).comics.singleWhere((comic) => comic.id == 'tail');
+      _grid(tester).onLongPressed!(tail, 1);
+      await tester.pumpAndSettle();
+      expect(_grid(tester).selections!.length, 2);
+      _toolbarAction(tester, 'Invert Selection');
+      await tester.pumpAndSettle();
+      expect(_grid(tester).selections, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+    skip: skip,
+  );
 
-  testWidgets('group downloads ask for a source even with recent reading history', (tester) async {
+  testWidgets('membership changes clear only the affected work selection', (
+    tester,
+  ) async {
     final fixture = await _FavoritesFixture.create(tester);
-    LocalManager.resetForTesting();
-    LocalManager.debugSkipComicSourceInit = true;
-    addTearDown(LocalManager.resetForTesting);
-    final local = LocalManager();
-    await runWidgetIo(tester, () async {
-      await local.init();
-      await local.add(LocalComic(
-        id: 'primary',
-        title: 'Primary title',
-        subtitle: '',
-        tags: const [],
-        directory: 'primary',
-        chapters: null,
-        cover: '',
-        comicType: ComicType.local,
-        downloadedChapters: const [],
-        createdAt: DateTime(2026),
-      ));
-      fixture.history.addHistory(History.fromMap({
-        'id': 'primary',
-        'type': 0,
-        'time': 3000,
-        'title': 'Primary title',
-        'ep': 1,
-        'page': 2,
-        'max_page': 10,
-      }));
-    });
     await fixture.openLocal(tester);
-    _grid(tester).menuBuilder!(_work(tester))
-        .singleWhere((entry) => entry.text == 'Download').onClick();
+    await _selectWork(tester);
+    final middle = _grid(
+      tester,
+    ).comics.singleWhere((comic) => comic.id == 'middle');
+    _grid(tester).onLongPressed!(middle, 1);
     await tester.pumpAndSettle();
-    expect(find.text('Choose comic source'), findsOneWidget);
-    expect(find.byKey(const ValueKey('comic-source:local:primary')), findsOneWidget);
-    expect(find.byKey(const ValueKey('comic-source:local:alternate')), findsOneWidget);
-    expect(find.byKey(const ValueKey('comic-source:local:outside')), findsNothing);
-    expect(local.downloadingTasks, isEmpty);
-    App.rootNavigatorKey.currentState!.pop();
+    expect(_grid(tester).selections, hasLength(2));
+    await runWidgetIo(tester, () async {
+      fixture.manager.batchCopyFavorites(
+        'Outside',
+        'Main',
+        fixture.manager.getFolderComics('Outside'),
+      );
+    });
     await tester.pumpAndSettle();
-    expect(local.downloadingTasks, isEmpty);
-    expect(tester.takeException(), isNull);
-  }, skip: skip);
-
-  testWidgets('reversing work order persists member blocks only in the current folder', (tester) async {
-    final fixture = await _FavoritesFixture.create(tester);
-    await fixture.openHome(tester);
-    _toolbarAction(tester, 'Reorder');
+    expect(_work(tester).members, hasLength(3));
+    expect(_grid(tester).selections!.keys.single.id, 'middle');
+    await _selectWork(tester);
+    expect(_grid(tester).selections, hasLength(2));
+    await runWidgetIo(tester, () async {
+      fixture.manager.batchDeleteComics(
+        'Main',
+        fixture.manager.getFolderComics('Outside'),
+      );
+    });
     await tester.pumpAndSettle();
-    expect(tester.widgetList<ComicTile>(find.byType(ComicTile)).length, 3);
-    await tester.tap(find.byIcon(Icons.swap_vert));
-    await tester.pumpAndSettle();
-    App.rootNavigatorKey.currentState!.pop();
-    await tester.pumpAndSettle();
-    await tester.pump(const Duration(milliseconds: 250));
-    expect(fixture.ids('Main'), ['tail', 'middle', 'primary', 'alternate']);
+    expect(_work(tester).members, hasLength(2));
+    expect(_grid(tester).selections!.keys.single.id, 'middle');
     expect(fixture.ids('Outside'), ['outside']);
-    expect(_grid(tester).comics.map((comic) => comic.id), ['tail', 'middle', 'primary']);
     expect(tester.takeException(), isNull);
   }, skip: skip);
+
+  for (final home in [true, false]) {
+    testWidgets(
+      '${home ? 'home' : 'local favorites'} coalesces hidden history updates',
+      (tester) async {
+        final fixture = await _FavoritesFixture.create(tester);
+        if (home) {
+          await fixture.openHome(tester);
+        } else {
+          await fixture.openLocal(tester);
+        }
+        expect(_work(tester).representative.id, 'primary');
+        App.rootNavigatorKey.currentState!.push(
+          MaterialPageRoute<void>(
+            builder: (_) => const Scaffold(body: Text('Reader cover')),
+          ),
+        );
+        await tester.pumpAndSettle();
+        for (var page = 1; page < 4; page++) {
+          await runWidgetIo(tester, () async {
+            fixture.history.addHistory(
+              History.fromMap({
+                'id': 'alternate',
+                'type': 0,
+                'title': 'Alternate',
+                'time': 3000 + page,
+                'ep': 1,
+                'page': page,
+                'max_page': 10,
+              }),
+            );
+          });
+          await tester.pump();
+          final hiddenGrid = tester.widget<SliverGridComics>(
+            find.byType(SliverGridComics, skipOffstage: false),
+          );
+          expect(
+            hiddenGrid.comics
+                .cast<BangumiComicGroup<FavoriteItem>>()
+                .singleWhere((group) => group.subjectId == 42)
+                .representative
+                .id,
+            'primary',
+          );
+        }
+        App.rootNavigatorKey.currentState!.pop();
+        await tester.pumpAndSettle();
+        expect(_work(tester).representative.id, 'alternate');
+        expect(tester.takeException(), isNull);
+      },
+      skip: skip,
+    );
+  }
+
+  testWidgets(
+    'group downloads ask for a source even with recent reading history',
+    (tester) async {
+      final fixture = await _FavoritesFixture.create(tester);
+      LocalManager.resetForTesting();
+      LocalManager.debugSkipComicSourceInit = true;
+      addTearDown(LocalManager.resetForTesting);
+      final local = LocalManager();
+      await runWidgetIo(tester, () async {
+        await local.init();
+        await local.add(
+          LocalComic(
+            id: 'primary',
+            title: 'Primary title',
+            subtitle: '',
+            tags: const [],
+            directory: 'primary',
+            chapters: null,
+            cover: '',
+            comicType: ComicType.local,
+            downloadedChapters: const [],
+            createdAt: DateTime(2026),
+          ),
+        );
+        fixture.history.addHistory(
+          History.fromMap({
+            'id': 'primary',
+            'type': 0,
+            'time': 3000,
+            'title': 'Primary title',
+            'ep': 1,
+            'page': 2,
+            'max_page': 10,
+          }),
+        );
+      });
+      await fixture.openLocal(tester);
+      _grid(tester).menuBuilder!(_work(tester))
+          .singleWhere((entry) => entry.text == 'Download')
+          .onClick();
+      await tester.pumpAndSettle();
+      expect(find.text('Choose comic source'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('comic-source:local:primary')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('comic-source:local:alternate')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('comic-source:local:outside')),
+        findsNothing,
+      );
+      expect(local.downloadingTasks, isEmpty);
+      App.rootNavigatorKey.currentState!.pop();
+      await tester.pumpAndSettle();
+      expect(local.downloadingTasks, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+    skip: skip,
+  );
+
+  testWidgets(
+    'reversing work order persists member blocks only in the current folder',
+    (tester) async {
+      final fixture = await _FavoritesFixture.create(tester);
+      await fixture.openHome(tester);
+      _toolbarAction(tester, 'Reorder');
+      await tester.pumpAndSettle();
+      expect(tester.widgetList<ComicTile>(find.byType(ComicTile)).length, 3);
+      await tester.tap(find.byIcon(Icons.swap_vert));
+      await tester.pumpAndSettle();
+      App.rootNavigatorKey.currentState!.pop();
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(fixture.ids('Main'), ['tail', 'middle', 'primary', 'alternate']);
+      expect(fixture.ids('Outside'), ['outside']);
+      expect(_grid(tester).comics.map((comic) => comic.id), [
+        'tail',
+        'middle',
+        'primary',
+      ]);
+      expect(tester.takeException(), isNull);
+    },
+    skip: skip,
+  );
 }

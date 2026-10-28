@@ -91,7 +91,10 @@ void main() {
     expect(groups.first.members, [latest, older]);
     expect(groups.first.representative, same(latest));
     expect(groups.first.description, latest.description);
-    expect(groups.skip(1).map((group) => group.members.single), [single, unknown]);
+    expect(groups.skip(1).map((group) => group.members.single), [
+      single,
+      unknown,
+    ]);
     expect(grid.badgeBuilder!(groups.first), '2 sources');
     expect(grid.badgeBuilder!(groups[1]), 'Local');
     expect(grid.badgeBuilder!(groups[2]), unknown.sourceKey);
@@ -103,37 +106,41 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('selection counts works and deleting a work expands its sources', (
-    tester,
-  ) async {
-    await tester.pumpWidget(_host());
-    await tester.tap(find.byTooltip('Multi-Select'));
-    await tester.pump();
-    await tester.tap(find.byTooltip('Select All'));
-    await tester.pump();
-    expect(_grid(tester).selections, hasLength(2));
+  testWidgets(
+    'selection counts works and deleting a work expands its sources',
+    (tester) async {
+      await tester.pumpWidget(_host());
+      await tester.tap(find.byTooltip('Multi-Select'));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Select All'));
+      await tester.pump();
+      expect(_grid(tester).selections, hasLength(2));
 
-    await tester.tap(find.byTooltip('Deselect'));
-    await tester.pump();
-    expect(_grid(tester).selections, isEmpty);
-    final grid = _grid(tester);
-    grid.onTap!(grid.comics.last, 0);
-    await tester.pump();
-    await tester.tap(find.byTooltip('Invert Selection'));
-    await tester.pump();
-    expect(_grid(tester).selections!.keys.single, _grid(tester).comics.first);
+      await tester.tap(find.byTooltip('Deselect'));
+      await tester.pump();
+      expect(_grid(tester).selections, isEmpty);
+      final grid = _grid(tester);
+      grid.onTap!(grid.comics.last, 0);
+      await tester.pump();
+      await tester.tap(find.byTooltip('Invert Selection'));
+      await tester.pump();
+      expect(_grid(tester).selections!.keys.single, _grid(tester).comics.first);
 
-    await tester.tap(find.byTooltip('Delete'));
-    await tester.pump();
-    expect(manager.deleted, unorderedEquals([
-      ComicID(older.type, older.id),
-      ComicID(latest.type, latest.id),
-    ]));
-    expect(manager.records, [single]);
-    expect(_grid(tester).comics, hasLength(1));
-    expect(find.byTooltip('Multi-Select'), findsOneWidget);
-    await tester.pumpWidget(const SizedBox.shrink());
-  });
+      await tester.tap(find.byTooltip('Delete'));
+      await tester.pump();
+      expect(
+        manager.deleted,
+        unorderedEquals([
+          ComicID(older.type, older.id),
+          ComicID(latest.type, latest.id),
+        ]),
+      );
+      expect(manager.records, [single]);
+      expect(_grid(tester).comics, hasLength(1));
+      expect(find.byTooltip('Multi-Select'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
   testWidgets('blocked works stay outside selection without querying history', (
     tester,
@@ -172,7 +179,7 @@ void main() {
     await tester.pump();
     expect(manager.deleted, [ComicID(single.type, single.id)]);
     expect(manager.records, [older, latest]);
-    expect(_grid(tester).comics, isEmpty);
+    expect(find.byType(SliverGridComics), findsNothing);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
@@ -188,29 +195,33 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('source removal can delete unavailable history by its real type', (
-    tester,
-  ) async {
-    final unavailable = _history('removed-source', 'missing', 40);
-    manager.records.add(unavailable);
-    _bind([older, latest, unavailable]);
-    await tester.pumpWidget(_host());
-    _menu(tester, 'Remove source history');
-    await tester.pumpAndSettle();
+  testWidgets(
+    'source removal can delete unavailable history by its real type',
+    (tester) async {
+      final unavailable = _history('removed-source', 'missing', 40);
+      manager.records.add(unavailable);
+      _bind([older, latest, unavailable]);
+      await tester.pumpWidget(_host());
+      _menu(tester, 'Remove source history');
+      await tester.pumpAndSettle();
 
-    final source = find.byKey(
-      ValueKey('comic-source:${unavailable.sourceKey}:${unavailable.id}'),
-    );
-    expect(tester.widget<ListTile>(source).enabled, isTrue);
-    await tester.tap(source);
-    await tester.pumpAndSettle();
+      final source = find.byKey(
+        ValueKey('comic-source:${unavailable.sourceKey}:${unavailable.id}'),
+      );
+      expect(tester.widget<ListTile>(source).enabled, isTrue);
+      await tester.tap(source);
+      await tester.pumpAndSettle();
 
-    expect(manager.deleted, [ComicID(unavailable.type, unavailable.id)]);
-    expect(manager.records, [older, single, latest]);
-    expect((_grid(tester).comics.first as BangumiComicGroup).members, hasLength(2));
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox.shrink());
-  });
+      expect(manager.deleted, [ComicID(unavailable.type, unavailable.id)]);
+      expect(manager.records, [older, single, latest]);
+      expect(
+        (_grid(tester).comics.first as BangumiComicGroup).members,
+        hasLength(2),
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
   testWidgets('refresh chooses one source and keeps each saved position', (
     tester,
@@ -219,7 +230,9 @@ void main() {
     _menu(tester, 'Refresh Info');
     await tester.pumpAndSettle();
     expect(manager.refreshed, isEmpty);
-    await tester.tap(find.byKey(ValueKey('comic-source:$_sourceA:${older.id}')));
+    await tester.tap(
+      find.byKey(ValueKey('comic-source:$_sourceA:${older.id}')),
+    );
     await tester.pumpAndSettle();
 
     expect(manager.refreshed, [older]);
@@ -254,37 +267,38 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('inactive binding and progress updates refresh once when visible', (
-    tester,
-  ) async {
-    var active = true;
-    late StateSetter update;
-    await tester.pumpWidget(
-      MaterialApp(
-        navigatorKey: App.rootNavigatorKey,
-        home: StatefulBuilder(
-          builder: (context, setState) {
-            update = setState;
-            return HistoryPage(isActive: active);
-          },
+  testWidgets(
+    'inactive binding and progress updates refresh once when visible',
+    (tester) async {
+      var active = true;
+      late StateSetter update;
+      await tester.pumpWidget(
+        MaterialApp(
+          navigatorKey: App.rootNavigatorKey,
+          home: StatefulBuilder(
+            builder: (context, setState) {
+              update = setState;
+              return HistoryPage(isActive: active);
+            },
+          ),
         ),
-      ),
-    );
-    expect(manager.queries, 1);
-    update(() => active = false);
-    await tester.pump();
-    appdata.settings['bangumiBindings'] = <String, dynamic>{};
-    manager.changed();
-    manager.changed();
-    await tester.pump();
-    expect(manager.queries, 1);
+      );
+      expect(manager.queries, 1);
+      update(() => active = false);
+      await tester.pump();
+      appdata.settings['bangumiBindings'] = <String, dynamic>{};
+      manager.changed();
+      manager.changed();
+      await tester.pump();
+      expect(manager.queries, 1);
 
-    update(() => active = true);
-    await tester.pump();
-    expect(manager.queries, 2);
-    expect(_grid(tester).comics, hasLength(3));
-    await tester.pumpWidget(const SizedBox.shrink());
-  });
+      update(() => active = true);
+      await tester.pump();
+      expect(manager.queries, 2);
+      expect(_grid(tester).comics, hasLength(3));
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
   testWidgets('new group members clear selection before batch deletion', (
     tester,
@@ -307,37 +321,41 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('normal tap opens latest source details and Continue resumes it', (
-    tester,
-  ) async {
-    final observer = _Routes();
-    await tester.pumpWidget(_host(observer: observer));
-    var grid = _grid(tester);
-    grid.onTap!(grid.comics.first, 17);
-    await tester.idle();
-    var route = observer.latest as AppPageRoute;
-    final details = route.builder(tester.element(find.byType(HistoryPage))) as ComicPage;
-    expect(details.id, latest.id);
-    expect(details.sourceKey, _sourceB);
-    expect(details.heroID, 17);
-    App.rootNavigatorKey.currentState!.removeRoute(route);
-    await tester.pumpAndSettle();
+  testWidgets(
+    'normal tap opens latest source details and Continue resumes it',
+    (tester) async {
+      final observer = _Routes();
+      await tester.pumpWidget(_host(observer: observer));
+      var grid = _grid(tester);
+      grid.onTap!(grid.comics.first, 17);
+      await tester.idle();
+      var route = observer.latest as AppPageRoute;
+      final details =
+          route.builder(tester.element(find.byType(HistoryPage))) as ComicPage;
+      expect(details.id, latest.id);
+      expect(details.sourceKey, _sourceB);
+      expect(details.heroID, 17);
+      App.rootNavigatorKey.currentState!.removeRoute(route);
+      await tester.pumpAndSettle();
 
-    _menu(tester, 'Continue');
-    await tester.idle();
-    route = observer.latest as AppPageRoute;
-    final reader = route.builder(tester.element(find.byType(HistoryPage))) as ReaderWithLoading;
-    expect(reader.id, latest.id);
-    expect(reader.sourceKey, _sourceB);
-    expect(reader.initialEp, isNull);
-    expect(reader.initialPage, isNull);
-    expect(reader.initialNavigationSource, ReadingNavigationSource.restore);
-    App.rootNavigatorKey.currentState!.removeRoute(route);
-    await tester.pumpAndSettle();
-    expect(manager.records, [older, single, latest]);
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox.shrink());
-  });
+      _menu(tester, 'Continue');
+      await tester.idle();
+      route = observer.latest as AppPageRoute;
+      final reader =
+          route.builder(tester.element(find.byType(HistoryPage)))
+              as ReaderWithLoading;
+      expect(reader.id, latest.id);
+      expect(reader.sourceKey, _sourceB);
+      expect(reader.initialEp, isNull);
+      expect(reader.initialPage, isNull);
+      expect(reader.initialNavigationSource, ReadingNavigationSource.restore);
+      App.rootNavigatorKey.currentState!.removeRoute(route);
+      await tester.pumpAndSettle();
+      expect(manager.records, [older, single, latest]);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
   testWidgets('source switching resumes the explicitly chosen source', (
     tester,
@@ -346,10 +364,14 @@ void main() {
     await tester.pumpWidget(_host(observer: observer));
     _menu(tester, 'Choose comic source');
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(ValueKey('comic-source:$_sourceA:${older.id}')));
+    await tester.tap(
+      find.byKey(ValueKey('comic-source:$_sourceA:${older.id}')),
+    );
     await tester.idle();
     final route = observer.latest as AppPageRoute;
-    final reader = route.builder(tester.element(find.byType(HistoryPage))) as ReaderWithLoading;
+    final reader =
+        route.builder(tester.element(find.byType(HistoryPage)))
+            as ReaderWithLoading;
     expect(reader.id, older.id);
     expect(reader.sourceKey, _sourceA);
     expect(reader.initialEp, isNull);
@@ -369,22 +391,30 @@ Widget _host({_Routes? observer}) => MaterialApp(
   home: const HistoryPage(),
 );
 
-SliverGridComics _grid(WidgetTester tester) => tester.widget(find.byType(SliverGridComics));
+SliverGridComics _grid(WidgetTester tester) =>
+    tester.widget(find.byType(SliverGridComics));
 
 void _menu(WidgetTester tester, String text) {
   final grid = _grid(tester);
-  grid.menuBuilder!(grid.comics.first).singleWhere((entry) => entry.text == text).onClick();
+  grid.menuBuilder!(grid.comics.first)
+      .singleWhere((entry) => entry.text == text)
+      .onClick();
 }
 
-History _history(String id, String source, int time, {int ep = 1, int page = 1}) =>
-    History.fromMap({
-      'id': id,
-      'type': ComicType.fromKey(source).value,
-      'title': 'Title $id',
-      'time': time,
-      'ep': ep,
-      'page': page,
-    });
+History _history(
+  String id,
+  String source,
+  int time, {
+  int ep = 1,
+  int page = 1,
+}) => History.fromMap({
+  'id': id,
+  'type': ComicType.fromKey(source).value,
+  'title': 'Title $id',
+  'time': time,
+  'ep': ep,
+  'page': page,
+});
 
 void _bind(List<History> records) {
   appdata.settings['bangumiBindings'] = {
@@ -423,12 +453,15 @@ class _HistoryManager extends HistoryManager {
   @override
   void batchDeleteHistories(List<ComicID> histories) {
     deleted.addAll(histories);
-    records.removeWhere((record) => histories.contains(ComicID(record.type, record.id)));
+    records.removeWhere(
+      (record) => histories.contains(ComicID(record.type, record.id)),
+    );
     notifyListeners();
   }
 
   @override
-  void remove(String id, ComicType type) => batchDeleteHistories([ComicID(type, id)]);
+  void remove(String id, ComicType type) =>
+      batchDeleteHistories([ComicID(type, id)]);
 
   @override
   Future<bool> refreshHistoryInfo(
@@ -446,7 +479,8 @@ class _Routes extends NavigatorObserver {
   Route<dynamic>? latest;
 
   @override
-  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) => latest = route;
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) =>
+      latest = route;
 }
 
 ComicSource _source(String key, String name) => ComicSource(

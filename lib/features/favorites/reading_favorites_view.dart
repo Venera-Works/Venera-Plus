@@ -143,6 +143,11 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
   List<FavoriteItem> comics = [];
   List<BangumiComicGroup<FavoriteItem>> groups = [];
   Object? _bindings;
+  bool _historyDirty = false;
+  ModalRoute<dynamic>? _route;
+  bool _tickerModeEnabled = true;
+
+  bool get _isVisible => _tickerModeEnabled && (_route?.isCurrent ?? true);
   bool isLoading = false;
   String? loadError;
   int _loadGeneration = 0;
@@ -156,6 +161,7 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
   }
 
   void _regroupComics() {
+    _historyDirty = false;
     groups = groupBangumiComics<FavoriteItem>(
       comics,
       lastRead: (item) => HistoryManager().find(item.id, item.type)?.time,
@@ -171,7 +177,17 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
   }
 
   void _onHistoryChanged() {
-    if (mounted) setState(_regroupComics);
+    if (!mounted) return;
+    _historyDirty = true;
+    if (_isVisible) setState(_regroupComics);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _route = ModalRoute.of(context);
+    _tickerModeEnabled = TickerMode.valuesOf(context).enabled;
+    if (_isVisible && _historyDirty) _regroupComics();
   }
 
   void updateComics() {
@@ -317,13 +333,15 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
     int? heroID,
     bool chooseSource = false,
   }) {
-    unawaited(openBangumiComic(
-      App.mainNavigatorKey?.currentContext ?? context,
-      comic,
-      read: read,
-      heroID: heroID,
-      chooseSource: chooseSource,
-    ));
+    unawaited(
+      openBangumiComic(
+        App.mainNavigatorKey?.currentContext ?? context,
+        comic,
+        read: read,
+        heroID: heroID,
+        chooseSource: chooseSource,
+      ),
+    );
   }
 
   void _onComicTap(Comic comic, int heroID) {
@@ -342,8 +360,11 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
         icon: appdata.settings["onClickFavorite"] == "viewDetail"
             ? Icons.menu_book_outlined
             : Icons.info_outline,
-        text: (appdata.settings["onClickFavorite"] == "viewDetail"
-            ? "Read" : "View Detail").tl,
+        text:
+            (appdata.settings["onClickFavorite"] == "viewDetail"
+                    ? "Read"
+                    : "View Detail")
+                .tl,
         onClick: () => _openComic(
           group,
           read: appdata.settings["onClickFavorite"] == "viewDetail",
@@ -362,7 +383,11 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
       if (group.members.any((item) => manager.hasNewUpdate(item.id, item.type)))
         MenuEntry(
           icon: Icons.done_all,
-          text: "Mark as read".tl,
+          text:
+              (group.members.length > 1
+                      ? 'Clear all source update reminders'
+                      : 'Mark as read')
+                  .tl,
           onClick: () {
             for (final item in group.members) {
               manager.markAsRead(item.id, item.type);

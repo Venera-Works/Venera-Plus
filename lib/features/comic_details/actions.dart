@@ -99,7 +99,8 @@ abstract mixin class ComicPageActions {
   bool get hasOtherBangumiSources {
     final service = BangumiService();
     final binding = service.bindingFor(comic.sourceKey, comic.id);
-    return binding != null && service.bindingsForSubject(binding.subjectId).length > 1;
+    return binding != null &&
+        service.bindingsForSubject(binding.subjectId).length > 1;
   }
 
   void chooseBangumiSource() {

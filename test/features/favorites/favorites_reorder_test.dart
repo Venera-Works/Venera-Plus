@@ -18,7 +18,9 @@ import 'package:venera_plus/foundation/comic_type.dart';
 import '../../widget_test_io.dart';
 
 List<String> _comicOrder(WidgetTester tester, {Finder? within}) {
-  final scope = within ?? find.byType(ReorderableBuilder<BangumiComicGroup<FavoriteItem>>);
+  final scope =
+      within ??
+      find.byType(ReorderableBuilder<BangumiComicGroup<FavoriteItem>>);
   final tiles = tester.widgetList<ComicTile>(
     find.descendant(of: scope, matching: find.byType(ComicTile)),
   );
@@ -63,7 +65,10 @@ Future<void> _openReorder(WidgetTester tester) async {
       .singleWhere((entry) => entry.text == 'Reorder')
       .onClick();
   await tester.pumpAndSettle();
-  expect(find.byType(ReorderableBuilder<BangumiComicGroup<FavoriteItem>>), findsOneWidget);
+  expect(
+    find.byType(ReorderableBuilder<BangumiComicGroup<FavoriteItem>>),
+    findsOneWidget,
+  );
 }
 
 bool _sqliteAvailable() {
@@ -283,9 +288,10 @@ void main() {
       Finder tile(String id) => find.byWidgetPredicate(
         (widget) => widget is ComicTile && widget.comic.id == id,
       );
-      final builder = tester.widget<ReorderableBuilder<BangumiComicGroup<FavoriteItem>>>(
-        find.byType(ReorderableBuilder<BangumiComicGroup<FavoriteItem>>),
-      );
+      final builder = tester
+          .widget<ReorderableBuilder<BangumiComicGroup<FavoriteItem>>>(
+            find.byType(ReorderableBuilder<BangumiComicGroup<FavoriteItem>>),
+          );
       final gesture = await tester.startGesture(
         tester.getCenter(tile('home-0')),
       );
@@ -526,9 +532,12 @@ void main() {
           await tester.pump();
 
           final target = tester.getCenter(tile('comic-2'));
-          final builder = tester.widget<ReorderableBuilder<BangumiComicGroup<FavoriteItem>>>(
-            find.byType(ReorderableBuilder<BangumiComicGroup<FavoriteItem>>),
-          );
+          final builder = tester
+              .widget<ReorderableBuilder<BangumiComicGroup<FavoriteItem>>>(
+                find.byType(
+                  ReorderableBuilder<BangumiComicGroup<FavoriteItem>>,
+                ),
+              );
           final gesture = await tester.startGesture(
             tester.getCenter(tile('comic-0')),
             kind: kind,

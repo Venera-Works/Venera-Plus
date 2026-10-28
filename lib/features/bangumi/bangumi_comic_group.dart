@@ -37,9 +37,8 @@ class BangumiComicGroup<T extends Comic> implements Comic {
   @override
   String? get subtitle => representative.subtitle;
   @override
-  List<String>? get tags => {
-    for (final member in members) ...?member.tags,
-  }.toList();
+  List<String>? get tags =>
+      {for (final member in members) ...?member.tags}.toList();
   @override
   String get description => representative.description;
   @override

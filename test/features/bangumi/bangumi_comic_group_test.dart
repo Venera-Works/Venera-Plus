@@ -14,19 +14,33 @@ void main() {
   void saveBindings(List<BangumiBinding> bindings) {
     appdata.settings['bangumiBindings'] = {
       for (final binding in bindings)
-        bangumiBindingKey(binding.sourceKey, binding.comicId, scopeId: binding.scopeId): binding.toJson(),
+        bangumiBindingKey(
+          binding.sourceKey,
+          binding.comicId,
+          scopeId: binding.scopeId,
+        ): binding
+            .toJson(),
     };
   }
 
   setUp(() {
-    previous = {for (final key in ['bangumiBindings', 'bangumiAccessToken', 'bangumiUsername', 'bangumiAutoSyncEnabled']) key: appdata.settings[key]};
+    previous = {
+      for (final key in [
+        'bangumiBindings',
+        'bangumiAccessToken',
+        'bangumiUsername',
+        'bangumiAutoSyncEnabled',
+      ])
+        key: appdata.settings[key],
+    };
     appdata.settings['bangumiBindings'] = <String, dynamic>{};
     appdata.settings['bangumiAccessToken'] = '';
     appdata.settings['bangumiUsername'] = '';
     appdata.settings['bangumiAutoSyncEnabled'] = false;
     scope = '';
     service = BangumiService.forTesting(
-      gatewayFactory: (_) => throw StateError('Grouping must not request the network'),
+      gatewayFactory: (_) =>
+          throw StateError('Grouping must not request the network'),
       scopeResolver: (_) => scope,
     );
   });
@@ -50,29 +64,51 @@ void main() {
     expect(groups.first.tags, ['a', 'b']);
   });
 
-  test('newest reading changes representative without changing work identity or member order', () {
-    saveBindings([_binding(a, 42), _binding(b, 42)]);
-    final first = groupBangumiComics([a, b], service: service).single;
-    final recent = groupBangumiComics([a, b], service: service, lastRead: (comic) => comic == b ? DateTime(2026) : null).single;
-    expect(recent, first);
-    expect(recent.hashCode, first.hashCode);
-    expect(recent.representative, same(b));
-    expect(recent.members, [a, b]);
-    expect(recent.sourceKey, b.sourceKey);
-    expect(() => recent.members.clear(), throwsUnsupportedError);
-  });
+  test(
+    'newest reading changes representative without changing work identity or member order',
+    () {
+      saveBindings([_binding(a, 42), _binding(b, 42)]);
+      final first = groupBangumiComics([a, b], service: service).single;
+      final recent = groupBangumiComics(
+        [a, b],
+        service: service,
+        lastRead: (comic) => comic == b ? DateTime(2026) : null,
+      ).single;
+      expect(recent, first);
+      expect(recent.hashCode, first.hashCode);
+      expect(recent.representative, same(b));
+      expect(recent.members, [a, b]);
+      expect(recent.sourceKey, b.sourceKey);
+      expect(() => recent.members.clear(), throwsUnsupportedError);
+    },
+  );
 
-  test('unbinding and rebinding split or regroup without inventing members', () {
-    saveBindings([_binding(a, 42), _binding(b, 42), _binding(c, 42)]);
-    expect(groupBangumiComics([a, b], service: service).single.members, [a, b]);
-    saveBindings([_binding(a, 42), _binding(c, 42)]);
-    expect(groupBangumiComics([a, b], service: service), hasLength(2));
-    saveBindings([_binding(a, 42), _binding(b, 99)]);
-    expect(groupBangumiComics([a, b], service: service).map((group) => group.subjectId), [42, 99]);
-  });
+  test(
+    'unbinding and rebinding split or regroup without inventing members',
+    () {
+      saveBindings([_binding(a, 42), _binding(b, 42), _binding(c, 42)]);
+      expect(groupBangumiComics([a, b], service: service).single.members, [
+        a,
+        b,
+      ]);
+      saveBindings([_binding(a, 42), _binding(c, 42)]);
+      expect(groupBangumiComics([a, b], service: service), hasLength(2));
+      saveBindings([_binding(a, 42), _binding(b, 99)]);
+      expect(
+        groupBangumiComics([
+          a,
+          b,
+        ], service: service).map((group) => group.subjectId),
+        [42, 99],
+      );
+    },
+  );
 
   test('wrong scope and invalid binding IDs do not merge', () {
-    saveBindings([_binding(a, 42).copyWith(scopeId: 'old-library'), _binding(b, 42)]);
+    saveBindings([
+      _binding(a, 42).copyWith(scopeId: 'old-library'),
+      _binding(b, 42),
+    ]);
     expect(groupBangumiComics([a, b], service: service), hasLength(2));
     scope = 'old-library';
     expect(groupBangumiComics([a, b], service: service), hasLength(2));

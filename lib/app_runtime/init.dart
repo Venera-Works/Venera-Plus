@@ -313,7 +313,8 @@ Future<void> init({bool deferBackgroundTasks = false}) async {
     addFavorite: (comics) {
       final members = <(String, String), Comic>{};
       for (final comic in comics) {
-        for (final member in comic is BangumiComicGroup ? comic.members : [comic]) {
+        for (final member
+            in comic is BangumiComicGroup ? comic.members : [comic]) {
           members[(member.sourceKey, member.id)] = member;
         }
       }
@@ -439,7 +440,8 @@ ComicTileState _resolveComicTileState(Comic comic) {
   if (comic is BangumiComicGroup) {
     final state = _resolveComicTileState(comic.representative);
     final states = comic.members.map(_resolveComicTileState).toList();
-    final source = ComicSource.find(comic.representative.sourceKey)?.name ??
+    final source =
+        ComicSource.find(comic.representative.sourceKey)?.name ??
         comic.representative.sourceKey;
     return ComicTileState(
       isFavorite: states.any((item) => item.isFavorite),
