@@ -354,11 +354,11 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
     // Some sources may not set isFavorite reliably when multi-folder is enabled
     if (comicSource.favoriteData?.loadFolders != null && comicSource.isLogged) {
       var res = await comicSource.favoriteData!.loadFolders!(comic.id);
+      if (!mounted) return;
       if (!res.error) {
         if (res.subData is List) {
           var list = List<String>.from(res.subData);
           isFavorite = list.isNotEmpty;
-          update();
         }
       }
     }

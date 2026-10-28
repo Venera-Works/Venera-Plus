@@ -53,6 +53,57 @@ void main() {
       expect(isAuthorNamespace('language'), isFalse);
     },
   );
+
+  for (final disposed in [false, true]) {
+    testWidgets(
+      'favorite folders finish after details load (disposed=$disposed)',
+      (tester) async {
+        final folders = Completer<Res<Map<String, String>>>();
+        final foldersRequested = Completer<void>();
+        final fixture = await _createFixture(
+          tester,
+          grouped: false,
+          chapterless: true,
+          favoriteData: FavoriteData(
+            key: 'test-favorites',
+            title: 'Favorites',
+            multiFolder: true,
+            loadComic: null,
+            loadNext: null,
+            loadFolders: ([comicId]) {
+              foldersRequested.complete();
+              return folders.future;
+            },
+          ),
+        );
+        ComicSource.find(fixture.sourceKey)!.data['account'] = ['test'];
+
+        await tester.pumpWidget(fixture.page);
+        await _pumpAsyncWork(tester, foldersRequested.future);
+        if (disposed) {
+          await tester.pumpWidget(const SizedBox.shrink());
+        }
+        folders.complete(
+          const Res({'folder': 'Favorites'}, subData: ['folder']),
+        );
+        await tester.pump();
+
+        if (!disposed) {
+          await _waitForText(tester, 'Read');
+          expect(
+            find.descendant(
+              of: find.byKey(const Key('comic-detail-favorite')),
+              matching: find.byIcon(Icons.bookmark),
+            ),
+            findsOneWidget,
+          );
+        }
+        expect(tester.takeException(), isNull);
+      },
+      skip: !_sqliteAvailable(),
+    );
+  }
+
   testWidgets(
     'pull down toggles a bookmark and excludes menu, cancellation, multitouch and zoom',
     (tester) async {
@@ -1028,6 +1079,7 @@ Future<_ComicDetailsFixture> _createFixture(
   bool chapterless = false,
   bool includeThirdChapter = false,
   bool withChapterComments = false,
+  FavoriteData? favoriteData,
 }) async {
   final previousSettings =
       jsonDecode(jsonEncode(appdata.toJson()['settings']))
@@ -1110,6 +1162,7 @@ Future<_ComicDetailsFixture> _createFixture(
     details: details,
     imageUrls: imageUrls,
     requestedChapterIds: requestedChapterIds,
+    favoriteData: favoriteData,
     chapterCommentsLoader: withChapterComments
         ? (comicId, epId, page, replyTo) async =>
               const Res(<Comment>[], subData: 1)
@@ -1237,13 +1290,14 @@ ComicSource _comicSource({
   required List<String> imageUrls,
   required List<String> requestedChapterIds,
   ChapterCommentsLoader? chapterCommentsLoader,
+  FavoriteData? favoriteData,
 }) => ComicSource(
   'Comic details test source',
   sourceKey,
   null,
   null,
   null,
-  null,
+  favoriteData,
   const [],
   null,
   null,
