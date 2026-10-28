@@ -1028,7 +1028,9 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                   vertical: 8,
                 ),
                 child: Text(
-                  '@a comics have been hidden'.tlParams({'a': blockedCount}),
+                  'Hidden by keyword filters: @a comics'.tlParams({
+                    'a': blockedCount,
+                  }),
                   style: TextStyle(color: context.colorScheme.secondary),
                 ),
               ),
