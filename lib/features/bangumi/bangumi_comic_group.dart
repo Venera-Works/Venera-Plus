@@ -1,6 +1,7 @@
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 
 import 'bangumi_models.dart';
+import 'bangumi_server.dart';
 import 'bangumi_service.dart';
 
 /// A presentation of a work. Storage and reading still use [members].
@@ -26,7 +27,7 @@ class BangumiComicGroup<T extends Comic> implements Comic {
 
   @override
   String get cover => binding?.coverUrl.isNotEmpty == true
-      ? binding!.coverUrl
+      ? currentBangumiServer.resolveImageUrl(binding!.coverUrl)
       : representative.cover;
 
   // Keep real source identities even when a caller only needs display data.

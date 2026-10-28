@@ -9,6 +9,39 @@ import 'package:venera_plus/features/bangumi/bangumi.dart';
 void main() {
   group('BangumiApi', () {
     test(
+      'uses independent mirror API addresses and proxy path prefixes',
+      () async {
+        final adapter = QueueAdapter.json([
+          (200, {'id': 42, 'name': 'Manga'}),
+          (204, null),
+        ]);
+        final api = BangumiApi(
+          token: 'secret-token',
+          server: const BangumiServer(
+            name: 'Custom',
+            apiUrl: 'https://bgmapi.example.com/proxy',
+          ),
+          dio: dioWith(adapter),
+        );
+        await api.getSubject(42);
+        await api.patchCollection(42, {'ep_status': 2});
+        expect(
+          adapter.requests[0].uri.toString(),
+          'https://bgmapi.example.com/proxy/v0/subjects/42',
+        );
+        expect(
+          adapter.requests[1].uri.toString(),
+          'https://bgmapi.example.com/proxy/v0/users/-/collections/42',
+        );
+        expect(adapter.requests[1].method, 'PATCH');
+        expect(
+          adapter.requests[1].headers['Authorization'],
+          'Bearer secret-token',
+        );
+      },
+    );
+
+    test(
       'searches manga subjects with the required authenticated request',
       () async {
         final adapter = QueueAdapter.json([

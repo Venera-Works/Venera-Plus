@@ -1,4 +1,5 @@
 import 'package:venera_plus/features/bangumi/bangumi_models.dart';
+import 'package:venera_plus/features/bangumi/bangumi_server.dart';
 import 'package:venera_plus/network/app_dio.dart';
 
 abstract interface class BangumiGateway {
@@ -28,9 +29,14 @@ class BangumiApiException implements Exception {
 }
 
 class BangumiApi implements BangumiGateway {
-  BangumiApi({required String token, Dio? dio})
-    : _dio = dio ?? AppDio(BaseOptions(baseUrl: 'https://api.bgm.tv')),
-      _token = token;
+  BangumiApi({
+    required String token,
+    BangumiServer server = bangumiOfficialServer,
+    Dio? dio,
+  }) : _dio = dio ?? AppDio(),
+       _token = token {
+    _dio.options.baseUrl = server.apiUrl;
+  }
 
   final Dio _dio;
   final String _token;

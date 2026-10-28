@@ -4,6 +4,8 @@ import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/features/bangumi/bangumi_api.dart';
 import 'package:venera_plus/features/bangumi/bangumi_service.dart';
+import 'package:venera_plus/features/bangumi/bangumi_server.dart';
+import 'package:venera_plus/features/bangumi/bangumi_server_settings.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
@@ -17,12 +19,14 @@ class BangumiSettingsPage extends StatefulWidget {
     this.saveSettings = _saveBangumiSettings,
     this.launchTokenPage = _launchTokenPage,
     this.onConnectionChanged,
+    this.probeServer = probeBangumiServer,
   });
 
   final BangumiService? service;
   final Future<void> Function() saveSettings;
   final Future<bool> Function(Uri uri) launchTokenPage;
   final VoidCallback? onConnectionChanged;
+  final BangumiServerProbe probeServer;
 
   static Future<bool> _launchTokenPage(Uri uri) =>
       launchUrl(uri, mode: LaunchMode.externalApplication);
@@ -71,6 +75,19 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
       body: SingleChildScrollView(
         child: Column(
           children: [
+            const SizedBox(height: 12),
+            BangumiServerSetting(
+              saveSettings: widget.saveSettings,
+              enabled: !_isConnecting,
+              probe: widget.probeServer,
+              onChanged: () {
+                if (!mounted) return;
+                setState(() {
+                  _connectionInvalid = _service.isAuthenticationPaused;
+                  _errorMessage = null;
+                });
+              },
+            ),
             const SizedBox(height: 12),
             TextField(
               key: const Key('bangumi-token-field'),
@@ -240,7 +257,7 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
   Future<void> _applyForToken() async {
     try {
       final launched = await widget.launchTokenPage(
-        Uri.parse('https://next.bgm.tv/demo/access-token'),
+        Uri.parse(currentBangumiServer.tokenUrl),
       );
       if (!launched && mounted) {
         setState(() => _errorMessage = 'Failed to open Access Token page'.tl);

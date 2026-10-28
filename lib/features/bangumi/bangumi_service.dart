@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:venera_plus/features/bangumi/bangumi_api.dart';
 import 'package:venera_plus/features/bangumi/bangumi_models.dart';
+import 'package:venera_plus/features/bangumi/bangumi_server.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/log.dart';
 
@@ -57,7 +58,7 @@ class _BangumiStaleOperationException implements Exception {
   const _BangumiStaleOperationException();
 }
 
-typedef _BangumiCredentials = ({String token, String username});
+typedef _BangumiCredentials = ({String token, String username, String apiUrl});
 
 enum _BangumiRequestPriority { metadata, chapter, interactive }
 
@@ -112,7 +113,8 @@ class BangumiService {
   static BangumiService? _instance;
 
   factory BangumiService() => _instance ??= BangumiService._(
-    gatewayFactory: (token) => BangumiApi(token: token),
+    gatewayFactory: (token) =>
+        BangumiApi(token: token, server: currentBangumiServer),
     saveSettings: appdata.saveData,
     implicitData: appdata.implicitData,
     writeImplicitData: appdata.writeImplicitData,
@@ -182,7 +184,11 @@ class BangumiService {
       throw ArgumentError.value(token, 'token', 'Token must not be empty');
     }
 
+    final apiUrl = currentBangumiServer.apiUrl;
     final user = await _gatewayFactory(trimmedToken).currentUser();
+    if (apiUrl != currentBangumiServer.apiUrl) {
+      throw const _BangumiStaleOperationException();
+    }
     final username = user.username.trim();
     if (username.isEmpty) {
       throw StateError('Bangumi user has no username');
@@ -1305,8 +1311,11 @@ class BangumiService {
 
   String _username() => _settingString('bangumiUsername');
 
-  _BangumiCredentials get _credentials =>
-      (token: _settingString('bangumiAccessToken'), username: _username());
+  _BangumiCredentials get _credentials => (
+    token: _settingString('bangumiAccessToken'),
+    username: _username(),
+    apiUrl: currentBangumiServer.apiUrl,
+  );
 
   bool get _autoSyncEnabled =>
       appdata.settings['bangumiAutoSyncEnabled'] == true;

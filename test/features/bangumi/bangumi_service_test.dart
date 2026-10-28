@@ -11,6 +11,7 @@ void main() {
 
   setUp(() {
     appdata.settings['bangumiAccessToken'] = '';
+    appdata.settings['bangumiServer'] = bangumiOfficialServer.apiUrl;
     appdata.settings['bangumiUsername'] = '';
     appdata.settings['bangumiAutoSyncEnabled'] = true;
     appdata.settings['bangumiBindings'] = <String, dynamic>{};
@@ -47,6 +48,46 @@ void main() {
     expect(appdata.settings['bangumiUsername'], 'old-user');
     expect(saveCount, 0);
   });
+
+  test(
+    'switching API servers during connection verification does not save an old response',
+    () async {
+      gateway.currentUserBlocker = Completer<void>();
+      final connecting = service.connect('token');
+      final expectation = expectLater(connecting, throwsA(anything));
+      await pumpEventQueue();
+      appdata.settings['bangumiServer'] = bangumiPresetServers[1].apiUrl;
+      gateway.currentUserBlocker!.complete();
+      await expectation;
+      expect(appdata.settings['bangumiAccessToken'], isEmpty);
+      expect(saveCount, 0);
+    },
+  );
+
+  test(
+    'switching API servers prevents a pending progress edit from writing through the old server',
+    () async {
+      connectSettings();
+      setBinding(binding());
+      gateway.collection = collection(epStatus: 1);
+      gateway.getCollectionBlocker = Completer<void>();
+      final editing = service.updateManual(
+        sourceKey: 'source',
+        comicId: 'comic',
+        field: BangumiProgressField.episode,
+        progress: 12,
+        rating: null,
+        allowDecrease: false,
+      );
+      final expectation = expectLater(editing, throwsA(anything));
+      await pumpEventQueue();
+      appdata.settings['bangumiServer'] = bangumiPresetServers[1].apiUrl;
+      gateway.getCollectionBlocker!.complete();
+      await expectation;
+      expect(gateway.patchFields, isEmpty);
+      expect(saveCount, 0);
+    },
+  );
 
   test('connect restores an existing connection when saving fails', () async {
     appdata.settings['bangumiAccessToken'] = 'old-token';
@@ -4478,6 +4519,7 @@ class FakeBangumiGateway implements BangumiGateway {
   final Map<String, Completer<void>> searchBlockers = {};
   BangumiCollection? collection;
   Object? currentUserError;
+  Completer<void>? currentUserBlocker;
   Object? createError;
   Object? patchError;
   Object? getCollectionError;
@@ -4494,6 +4536,7 @@ class FakeBangumiGateway implements BangumiGateway {
   @override
   Future<BangumiUser> currentUser() async {
     currentUserCalls++;
+    if (currentUserBlocker != null) await currentUserBlocker!.future;
     if (currentUserError != null) throw currentUserError!;
     return user;
   }

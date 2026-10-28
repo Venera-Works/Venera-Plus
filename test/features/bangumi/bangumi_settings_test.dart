@@ -188,6 +188,7 @@ void main() {
       ),
     );
 
+    await tester.ensureVisible(find.byKey(const Key('bangumi-disconnect')));
     await tester.tap(find.byKey(const Key('bangumi-disconnect')));
     await tester.pumpAndSettle();
 
@@ -439,6 +440,7 @@ void main() {
         ),
       );
 
+      await tester.ensureVisible(find.byKey(const Key('bangumi-disconnect')));
       await tester.tap(find.byKey(const Key('bangumi-disconnect')));
       await tester.pump();
       await tester.pumpWidget(const SizedBox());

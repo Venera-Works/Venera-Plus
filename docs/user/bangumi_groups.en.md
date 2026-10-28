@@ -33,6 +33,12 @@ History keeps the original record for every source. Remove a work's complete his
 
 ## Bangumi synchronization
 
+Choose a server from **Settings → Online Services → Bangumi → Website list**. The default is the official `bgm.tv` service; `bangumi.lat` and `anibt.net` mirrors are also included. The list shows a name or domain, with separate stored API, image proxy, and Access Token page addresses rather than inferred subdomains.
+
+Custom entries require the actual API address; `https://` may be omitted. The name, image proxy, and Access Token page are optional. Empty image proxy settings preserve image URLs returned by the API, and an empty Token page uses the official application page. New entries append to the list; select an entry to switch servers. Custom entries can be edited or deleted, and deleting the active entry restores the official server. The selected API server receives your Access Token, so choose a service you trust.
+
+Opening the list automatically tests every API, with a manual retest option. Latency measures one anonymous public API request from this device using the app's network settings; probes do not send your Token to the listed servers. Verification pages, timeouts, and incompatible responses have separate statuses. A working public endpoint does not verify account synchronization; use **Verify connection** for the selected account. Closing the list cancels remaining probes.
+
 Bindings for the same subject share confirmed remote episode and volume progress, rating, and collection status. Updating one source also updates the other bindings' cached state. Progress parsing remains source-specific; local chapter and page positions are independent.
 
 Manually lowering progress clears conflicting queued uploads for the same account, subject, and progress field, preventing older tasks from immediately restoring the previous value. Later reading may still generate new progress uploads. See [App Data Synchronization](data_sync.en.md) for cross-device snapshot behavior.

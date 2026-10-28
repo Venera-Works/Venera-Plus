@@ -65,6 +65,24 @@ void main() {
   });
 
   test(
+    'saved Bangumi covers follow the selected image proxy without changing bindings',
+    () {
+      final previousServer = appdata.settings['bangumiServer'];
+      addTearDown(() => appdata.settings['bangumiServer'] = previousServer);
+      const original = 'https://lain.bgm.tv/r/400/pic/cover.jpg';
+      saveBindings([
+        _binding(a, 42).copyWith(coverUrl: original),
+        _binding(b, 42),
+      ]);
+      final group = groupBangumiComics([a, b], service: service).single;
+      appdata.settings['bangumiServer'] = bangumiPresetServers[2].apiUrl;
+      expect(group.cover, 'https://bgmimg.anibt.net/r/400/pic/cover.jpg');
+      expect(service.bindingFor(a.sourceKey, a.id)!.coverUrl, original);
+      expect(groupBangumiComics([c], service: service).single.cover, c.cover);
+    },
+  );
+
+  test(
     'newest reading changes representative without changing work identity or member order',
     () {
       saveBindings([_binding(a, 42), _binding(b, 42)]);

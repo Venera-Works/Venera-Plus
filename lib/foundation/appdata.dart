@@ -786,6 +786,8 @@ class Settings with ChangeNotifier {
     'splitDualPage': false,
     'splitDualPageInvert': false,
     'bangumiAccessToken': '',
+    'bangumiServer': 'https://api.bgm.tv',
+    'bangumiCustomServers': <Map<String, String>>[],
     'bangumiUsername': '',
     'bangumiAutoSyncEnabled': true,
     'bangumiAutoMetadataScrapeEnabled': false,

@@ -488,7 +488,7 @@ ComicType _comicTypeOf(Comic comic) {
 ImageProvider? _resolveComicTileImageProvider(Comic comic) {
   if (comic is BangumiComicGroup) {
     if (comic.binding?.coverUrl.isNotEmpty == true) {
-      return CachedImageProvider(comic.binding!.coverUrl);
+      return CachedImageProvider(comic.cover);
     }
     return _resolveComicTileImageProvider(comic.representative);
   }
