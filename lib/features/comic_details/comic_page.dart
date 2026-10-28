@@ -18,6 +18,7 @@ import 'package:venera_plus/features/comic_details/comments_preview.dart';
 import 'package:venera_plus/features/comic_details/cover_viewer.dart';
 import 'package:venera_plus/features/comic_details/thumbnails.dart';
 import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/consts.dart';
@@ -171,8 +172,19 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
     return NetworkError(message: error!, retry: retry, action: action);
   }
 
+  Object? _bangumiBindings;
+
+  void _onBangumiBindingsChanged() {
+    final current = appdata.settings['bangumiBindings'];
+    if (identical(current, _bangumiBindings)) return;
+    _bangumiBindings = current;
+    if (mounted && _isVisible) update();
+  }
+
   @override
   void initState() {
+    _bangumiBindings = appdata.settings['bangumiBindings'];
+    appdata.settings.addListener(_onBangumiBindingsChanged);
     _historyManager = HistoryManager();
     _historyManager.addListener(_onHistoryChanged);
     scrollController.addListener(onScroll);
@@ -190,6 +202,7 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
 
   @override
   void dispose() {
+    appdata.settings.removeListener(_onBangumiBindingsChanged);
     _historyManager.removeListener(_onHistoryChanged);
     scrollController.removeListener(onScroll);
     super.dispose();
@@ -489,6 +502,13 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
                 onPressed: openBangumiProgress,
                 iconColor: context.useTextColor(Colors.orange),
               ),
+              if (hasOtherBangumiSources)
+                ComicDetailActionButton(
+                  key: const Key('comic-detail-sources'),
+                  icon: const Icon(Icons.swap_horiz),
+                  text: 'Choose comic source'.tl,
+                  onPressed: chooseBangumiSource,
+                ),
               if (comicSource.commentsLoader != null)
                 ComicDetailActionButton(
                   icon: const Icon(Icons.comment),

@@ -4,14 +4,15 @@ import 'package:flutter/material.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/menu.dart';
 import 'package:venera_plus/components/scroll.dart';
-import 'package:venera_plus/features/comic_details/comic_details.dart';
+import 'package:venera_plus/features/bangumi/bangumi.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/features/favorites/favorite_actions.dart';
 import 'package:venera_plus/features/favorites/favorites_manager.dart';
 import 'package:venera_plus/features/favorites/reorder_comics_page.dart';
 import 'package:venera_plus/features/follow_updates/follow_updates.dart';
-import 'package:venera_plus/features/reader/reader.dart';
+import 'package:venera_plus/features/history/history.dart';
+import 'package:venera_plus/routing/bangumi_comic_navigation.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/context.dart';
@@ -140,12 +141,38 @@ class ReadingFavoritesView extends StatefulWidget {
 
 class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
   List<FavoriteItem> comics = [];
+  List<BangumiComicGroup<FavoriteItem>> groups = [];
+  Object? _bindings;
   bool isLoading = false;
   String? loadError;
   int _loadGeneration = 0;
   final ScrollController _scrollController = ScrollController();
 
   LocalFavoritesManager get manager => LocalFavoritesManager();
+
+  void _setComics(List<FavoriteItem> value) {
+    comics = value;
+    _regroupComics();
+  }
+
+  void _regroupComics() {
+    groups = groupBangumiComics<FavoriteItem>(
+      comics,
+      lastRead: (item) => HistoryManager().find(item.id, item.type)?.time,
+    );
+  }
+
+  void _onSettingsChanged() {
+    final bindings = appdata.settings['bangumiBindings'];
+    if (mounted && !identical(_bindings, bindings)) {
+      _bindings = bindings;
+      setState(_regroupComics);
+    }
+  }
+
+  void _onHistoryChanged() {
+    if (mounted) setState(_regroupComics);
+  }
 
   void updateComics() {
     unawaited(loadComics());
@@ -158,7 +185,7 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
     final folder = manager.readingFolder;
     if (folder == null || !manager.existsFolder(folder)) {
       setState(() {
-        comics = [];
+        _setComics([]);
         isLoading = false;
         loadError = null;
       });
@@ -168,7 +195,7 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
     final folderCount = manager.folderComics(folder);
     if (folderCount < _asyncDataFetchLimit) {
       setState(() {
-        comics = manager.getFolderComics(folder);
+        _setComics(manager.getFolderComics(folder));
         isLoading = false;
         loadError = null;
       });
@@ -189,7 +216,7 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
           manager.readingFolder == folder) {
         setState(() {
           isLoading = false;
-          comics = value;
+          _setComics(value);
           loadError = null;
         });
       }
@@ -201,7 +228,7 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
           manager.readingFolder == folder) {
         setState(() {
           isLoading = false;
-          comics = [];
+          _setComics([]);
           loadError = "Failed to load comics".tl;
         });
         context.showMessage(message: "Failed to load comics".tl);
@@ -212,13 +239,18 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
   @override
   void initState() {
     super.initState();
+    _bindings = appdata.settings['bangumiBindings'];
     loadComics();
     manager.addListener(updateComics);
+    appdata.settings.addListener(_onSettingsChanged);
+    HistoryManager().addListener(_onHistoryChanged);
   }
 
   @override
   void dispose() {
     manager.removeListener(updateComics);
+    appdata.settings.removeListener(_onSettingsChanged);
+    HistoryManager().removeListener(_onHistoryChanged);
     _scrollController.dispose();
     super.dispose();
   }
@@ -279,69 +311,69 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
     }
   }
 
-  void _onComicTap(Comic c, int heroID) {
-    if (appdata.settings["onClickFavorite"] == "viewDetail") {
-      App.mainNavigatorKey?.currentContext?.to(
-        () => ComicPage(
-          id: c.id,
-          sourceKey: c.sourceKey,
-          cover: c.cover,
-          title: c.title,
-          heroID: heroID,
-        ),
-      );
-    } else {
-      App.mainNavigatorKey?.currentContext?.to(
-        () => ReaderWithLoading(id: c.id, sourceKey: c.sourceKey),
-      );
-    }
+  void _openComic(
+    Comic comic, {
+    required bool read,
+    int? heroID,
+    bool chooseSource = false,
+  }) {
+    unawaited(openBangumiComic(
+      App.mainNavigatorKey?.currentContext ?? context,
+      comic,
+      read: read,
+      heroID: heroID,
+      chooseSource: chooseSource,
+    ));
   }
 
-  List<MenuEntry> _buildMenu(Comic c) {
-    final item = c as FavoriteItem;
+  void _onComicTap(Comic comic, int heroID) {
+    _openComic(
+      comic,
+      read: appdata.settings["onClickFavorite"] != "viewDetail",
+      heroID: heroID,
+    );
+  }
+
+  List<MenuEntry> _buildMenu(Comic comic) {
+    final group = comic as BangumiComicGroup<FavoriteItem>;
     final folder = manager.readingFolder;
     return [
-      if (appdata.settings["onClickFavorite"] == "viewDetail")
-        MenuEntry(
-          icon: Icons.menu_book_outlined,
-          text: "Read".tl,
-          onClick: () {
-            App.mainNavigatorKey?.currentContext?.to(
-              () => ReaderWithLoading(id: item.id, sourceKey: item.sourceKey),
-            );
-          },
-        )
-      else
-        MenuEntry(
-          icon: Icons.info_outline,
-          text: "View Detail".tl,
-          onClick: () {
-            App.mainNavigatorKey?.currentContext?.to(
-              () => ComicPage(
-                id: item.id,
-                sourceKey: item.sourceKey,
-                cover: item.cover,
-                title: item.title,
-                heroID: item.id.hashCode,
-              ),
-            );
-          },
+      MenuEntry(
+        icon: appdata.settings["onClickFavorite"] == "viewDetail"
+            ? Icons.menu_book_outlined
+            : Icons.info_outline,
+        text: (appdata.settings["onClickFavorite"] == "viewDetail"
+            ? "Read" : "View Detail").tl,
+        onClick: () => _openComic(
+          group,
+          read: appdata.settings["onClickFavorite"] == "viewDetail",
         ),
-      if (manager.hasNewUpdate(item.id, item.type))
+      ),
+      if (group.members.length > 1)
+        MenuEntry(
+          icon: Icons.swap_horiz,
+          text: "Choose comic source".tl,
+          onClick: () => _openComic(
+            group,
+            read: appdata.settings["onClickFavorite"] != "viewDetail",
+            chooseSource: true,
+          ),
+        ),
+      if (group.members.any((item) => manager.hasNewUpdate(item.id, item.type)))
         MenuEntry(
           icon: Icons.done_all,
           text: "Mark as read".tl,
           onClick: () {
-            manager.markAsRead(item.id, item.type);
+            for (final item in group.members) {
+              manager.markAsRead(item.id, item.type);
+            }
           },
         ),
       if (folder != null)
         MenuEntry(
           icon: Icons.delete_outline,
           text: "Delete".tl,
-          onClick: () {
-            manager.deleteComicWithId(folder, item.id, item.type);
-          },
+          onClick: () => manager.batchDeleteComics(folder, group.members),
         ),
     ];
   }
@@ -417,7 +449,7 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
       );
     } else {
       sliverContent = SliverGridComics(
-        comics: comics,
+        comics: groups,
         useFavoriteDisplaySettings: true,
         hideFavoriteBadge: true,
         menuBuilder: _buildMenu,

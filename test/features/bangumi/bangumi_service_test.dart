@@ -1603,6 +1603,432 @@ void main() {
     }
   });
 
+  group('shared subject state', () {
+    late BangumiBinding first;
+    late BangumiBinding second;
+    late Map<String, dynamic> implicitData;
+    var failSave = false;
+
+    String keyFor(BangumiBinding value) => bangumiBindingKey(
+      value.sourceKey,
+      value.comicId,
+      scopeId: value.scopeId,
+    );
+
+    Map<String, dynamic> pending(
+      String field,
+      int value, {
+      String username = 'alice',
+      int subjectId = 42,
+    }) => {
+      'field': field,
+      'value': value,
+      'attempts': 0,
+      'nextAttemptAt': DateTime(2100).millisecondsSinceEpoch,
+      'subjectId': subjectId,
+      'username': username,
+    };
+
+    setUp(() {
+      connectSettings();
+      first = binding().copyWith(progressMode: BangumiProgressMode.auto);
+      second = binding().copyWith(
+        sourceKey: 'source-two',
+        comicId: 'comic-two',
+        scopeId: 'library-two',
+        progressMode: BangumiProgressMode.volume,
+      );
+      setBindings([first, second]);
+      implicitData = <String, dynamic>{};
+      failSave = false;
+      service = BangumiService.forTesting(
+        gatewayFactory: (_) => gateway,
+        implicitData: implicitData,
+        scopeResolver: (source) => source == 'source-two' ? 'library-two' : '',
+        saveSettings: () async {
+          saveCount++;
+          if (failSave) throw StateError('save failed');
+        },
+        timerFactory: RecordingTimer.new,
+      );
+      gateway.collection = collection(epStatus: 12, volStatus: 3, rate: 6);
+    });
+
+    tearDown(() => service.dispose());
+
+    test('subject lookup validates keys and only returns active scopes', () {
+      final oldLibrary = second.copyWith(scopeId: 'old-library');
+      final unrelated = first.copyWith(comicId: 'other', subjectId: 43);
+      final invalid = first.copyWith(comicId: 'invalid', rating: 11);
+      setBindings([first, second, oldLibrary, unrelated, invalid]);
+      appdata.settings['bangumiBindings'] = {
+        ...appdata.settings['bangumiBindings'] as Map,
+        'wrong-key': first.toJson(),
+        'malformed': 'not a binding',
+      };
+
+      expect(service.bindingsForSubject(42), [first, second]);
+      expect(service.bindingsForSubject(43), [unrelated]);
+      expect(service.bindingsForSubject(0), isEmpty);
+    });
+
+    test('refresh shares remote state without changing source modes', () async {
+      final oldLibrary = second.copyWith(scopeId: 'old-library');
+      final unrelated = first.copyWith(comicId: 'other', subjectId: 43);
+      setBindings([first, second, oldLibrary, unrelated]);
+      gateway.collection = collection(
+        epStatus: 18,
+        volStatus: 5,
+        rate: 9,
+        type: 4,
+      );
+
+      await service.refresh(first.sourceKey, first.comicId);
+
+      final values = service.bindingsForSubject(42);
+      expect(values, hasLength(2));
+      expect(values.map((value) => value.lastRemoteEpisode), everyElement(18));
+      expect(values.map((value) => value.lastRemoteVolume), everyElement(5));
+      expect(values.map((value) => value.rating), everyElement(9));
+      expect(
+        values.map((value) => value.collectionStatus),
+        everyElement(BangumiCollectionStatus.onHold),
+      );
+      expect(values[0].progressMode, BangumiProgressMode.auto);
+      expect(values[1].progressMode, BangumiProgressMode.volume);
+      expect(values[1].scopeId, second.scopeId);
+      final oldRaw =
+          (appdata.settings['bangumiBindings'] as Map)[keyFor(oldLibrary)];
+      expect(oldRaw['lastRemoteEpisode'], 18);
+      expect(service.bindingsForSubject(43), [unrelated]);
+      expect(saveCount, 1);
+    });
+
+    test('binding shares fresh subject metadata and collection state', () async {
+      final oldSecond = second.copyWith(
+        subjectTitle: 'Old title',
+        totalEpisodes: 1,
+        totalVolumes: 1,
+      );
+      setBindings([oldSecond]);
+      gateway.collection = collection(epStatus: 8, volStatus: 2, rate: 7);
+
+      await service.bind(
+        sourceKey: first.sourceKey,
+        comicId: first.comicId,
+        subject: subject(),
+        mode: BangumiProgressMode.episode,
+        reliableLocalProgress: const BangumiProgress(
+          BangumiProgressField.episode,
+          15,
+        ),
+      );
+
+      final updated = service.bindingFor(second.sourceKey, second.comicId)!;
+      expect(updated.subjectTitle, 'Title');
+      expect(updated.totalEpisodes, 24);
+      expect(updated.totalVolumes, 4);
+      expect(updated.lastRemoteEpisode, 15);
+      expect(updated.lastRemoteVolume, 2);
+      expect(updated.rating, 7);
+      expect(updated.progressMode, BangumiProgressMode.volume);
+      expect(updated.scopeId, second.scopeId);
+      expect(saveCount, 1);
+    });
+
+    test('failed shared refresh restores all previous bindings', () async {
+      gateway.collection = collection(epStatus: 18, rate: 9);
+      failSave = true;
+
+      await expectLater(
+        service.refresh(first.sourceKey, first.comicId),
+        throwsStateError,
+      );
+
+      expect(service.bindingsForSubject(42), [first, second]);
+    });
+
+    test('mode changes never propagate their old public fields', () async {
+      second = second.copyWith(lastRemoteEpisode: 1, rating: 2);
+      setBindings([first, second]);
+      await service.updateMode(
+        second.sourceKey,
+        second.comicId,
+        BangumiProgressMode.episode,
+      );
+      expect(service.bindingFor(first.sourceKey, first.comicId), first);
+
+      gateway.collection = collection(epStatus: 19, rate: 8);
+      gateway.getCollectionBlocker = Completer<void>();
+      final refresh = service.refresh(first.sourceKey, first.comicId);
+      await pumpEventQueue();
+      await service.updateMode(
+        second.sourceKey,
+        second.comicId,
+        BangumiProgressMode.auto,
+      );
+      gateway.getCollectionBlocker!.complete();
+      await refresh;
+
+      final updated = service.bindingFor(second.sourceKey, second.comicId)!;
+      expect(updated.progressMode, BangumiProgressMode.auto);
+      expect(updated.lastRemoteEpisode, 19);
+      expect(updated.rating, 8);
+    });
+
+    test('manual decrease clears only matching account subject and field', () async {
+      second = second.copyWith(progressMode: BangumiProgressMode.auto);
+      final otherAccount = first.copyWith(comicId: 'other-account');
+      final otherSubject = first.copyWith(comicId: 'other-subject', subjectId: 43);
+      setBindings([first, second, otherAccount, otherSubject]);
+      final foreignPending = pending('ep_status', 99, username: 'bob');
+      final unrelatedPending = pending('ep_status', 80, subjectId: 43);
+      implicitData['bangumiPendingProgress'] = {
+        keyFor(first): {
+          'ep_status': pending('ep_status', 20),
+          'vol_status': pending('vol_status', 6),
+        },
+        keyFor(second): {
+          'ep_status': pending('ep_status', 30),
+          'vol_status': pending('vol_status', 7),
+        },
+        keyFor(otherAccount): {'ep_status': foreignPending},
+        keyFor(otherSubject): {'ep_status': unrelatedPending},
+      };
+
+      await service.updateManual(
+        sourceKey: first.sourceKey,
+        comicId: first.comicId,
+        field: BangumiProgressField.episode,
+        progress: 5,
+        rating: 8,
+        collectionStatus: BangumiCollectionStatus.dropped,
+        allowDecrease: true,
+      );
+
+      final pendingMap = implicitData['bangumiPendingProgress'] as Map;
+      expect((pendingMap[keyFor(first)] as Map).keys, ['vol_status']);
+      expect((pendingMap[keyFor(second)] as Map).keys, ['vol_status']);
+      expect(pendingMap[keyFor(otherAccount)], {'ep_status': foreignPending});
+      expect(pendingMap[keyFor(otherSubject)], {'ep_status': unrelatedPending});
+      for (final value in service.bindingsForSubject(42)) {
+        expect(value.lastRemoteEpisode, 5);
+        expect(value.rating, 8);
+        expect(value.collectionStatus, BangumiCollectionStatus.dropped);
+      }
+      await service.retryPending(bindingKey: keyFor(second));
+      expect(gateway.patchFields.where((fields) => fields.containsKey('ep_status')), [
+        {'ep_status': 5, 'rate': 8, 'type': 5},
+      ]);
+    });
+
+    test('manual no-op progress also supersedes sibling pending', () async {
+      second = second.copyWith(progressMode: BangumiProgressMode.episode);
+      setBindings([first, second]);
+      implicitData['bangumiPendingProgress'] = {
+        keyFor(second): {'ep_status': pending('ep_status', 30)},
+      };
+
+      await service.updateManual(
+        sourceKey: first.sourceKey,
+        comicId: first.comicId,
+        field: BangumiProgressField.episode,
+        progress: 12,
+        rating: null,
+        allowDecrease: false,
+      );
+
+      expect(implicitData['bangumiPendingProgress'], isEmpty);
+      expect(gateway.patchFields, isEmpty);
+    });
+
+    test('rating-only update retains sibling progress pending', () async {
+      final queued = {'vol_status': pending('vol_status', 8)};
+      implicitData['bangumiPendingProgress'] = {keyFor(second): queued};
+
+      await service.updateManual(
+        sourceKey: first.sourceKey,
+        comicId: first.comicId,
+        field: null,
+        progress: null,
+        rating: 9,
+        allowDecrease: false,
+      );
+
+      expect((implicitData['bangumiPendingProgress'] as Map)[keyFor(second)], queued);
+      expect(service.bindingFor(second.sourceKey, second.comicId)!.rating, 9);
+    });
+
+    test('completion includes both dimensions from compatible sibling pending', () async {
+      final otherAccount = first.copyWith(comicId: 'other-account');
+      setBindings([first, second, otherAccount]);
+      final foreignPending = pending('ep_status', 99, username: 'bob');
+      implicitData['bangumiPendingProgress'] = {
+        keyFor(first): {'ep_status': pending('ep_status', 35)},
+        keyFor(second): {'vol_status': pending('vol_status', 8)},
+        keyFor(otherAccount): {'ep_status': foreignPending},
+      };
+      gateway.subjects[42] = subject();
+
+      await service.updateManual(
+        sourceKey: first.sourceKey,
+        comicId: first.comicId,
+        field: null,
+        progress: null,
+        rating: null,
+        collectionStatus: BangumiCollectionStatus.completed,
+        allowDecrease: false,
+      );
+
+      expect(gateway.patchFields.single, {'type': 2, 'ep_status': 35, 'vol_status': 8});
+      expect(implicitData['bangumiPendingProgress'], {
+        keyFor(otherAccount): {'ep_status': foreignPending},
+      });
+      for (final value in service.bindingsForSubject(42)) {
+        expect(value.lastRemoteEpisode, 35);
+        expect(value.lastRemoteVolume, 8);
+        expect(value.totalEpisodes, 24);
+        expect(value.totalVolumes, 4);
+        expect(value.collectionStatus, BangumiCollectionStatus.completed);
+      }
+    });
+
+    test('remote manual success clears sibling pending when local save fails', () async {
+      second = second.copyWith(progressMode: BangumiProgressMode.episode);
+      setBindings([first, second]);
+      implicitData['bangumiPendingProgress'] = {
+        keyFor(second): {'ep_status': pending('ep_status', 30)},
+      };
+      failSave = true;
+
+      await expectLater(
+        service.updateManual(
+          sourceKey: first.sourceKey,
+          comicId: first.comicId,
+          field: BangumiProgressField.episode,
+          progress: 5,
+          rating: null,
+          allowDecrease: true,
+        ),
+        throwsA(isA<BangumiLocalPersistenceException>()),
+      );
+
+      expect(implicitData['bangumiPendingProgress'], isEmpty);
+      expect(service.bindingFor(second.sourceKey, second.comicId)!.lastRemoteEpisode, 5);
+    });
+
+    test('confirmed no-op clears sibling pending even if cache saving fails', () async {
+      second = second.copyWith(progressMode: BangumiProgressMode.episode);
+      setBindings([first, second]);
+      implicitData['bangumiPendingProgress'] = {
+        keyFor(second): {'ep_status': pending('ep_status', 30)},
+      };
+      failSave = true;
+
+      await expectLater(
+        service.updateManual(
+          sourceKey: first.sourceKey,
+          comicId: first.comicId,
+          field: BangumiProgressField.episode,
+          progress: 12,
+          rating: null,
+          allowDecrease: false,
+        ),
+        throwsStateError,
+      );
+
+      expect(implicitData['bangumiPendingProgress'], isEmpty);
+      expect(gateway.patchFields, isEmpty);
+    });
+
+    test('failed manual upload keeps pending on every source', () async {
+      second = second.copyWith(progressMode: BangumiProgressMode.episode);
+      setBindings([first, second]);
+      final queued = {
+        keyFor(first): {'ep_status': pending('ep_status', 20)},
+        keyFor(second): {'ep_status': pending('ep_status', 30)},
+      };
+      implicitData['bangumiPendingProgress'] = queued;
+      gateway.patchError = const BangumiApiException(503, 'offline');
+
+      await expectLater(
+        service.updateManual(
+          sourceKey: first.sourceKey,
+          comicId: first.comicId,
+          field: BangumiProgressField.episode,
+          progress: 5,
+          rating: null,
+          allowDecrease: true,
+        ),
+        throwsA(isA<BangumiApiException>()),
+      );
+
+      expect(implicitData['bangumiPendingProgress'], queued);
+      expect(service.bindingsForSubject(42), [first, second]);
+    });
+
+    test('automatic confirmation clears only satisfied compatible pending', () async {
+      second = second.copyWith(progressMode: BangumiProgressMode.episode);
+      final higher = first.copyWith(comicId: 'higher');
+      final otherAccount = first.copyWith(comicId: 'other-account');
+      setBindings([first, second, higher, otherAccount]);
+      final foreignPending = pending('ep_status', 9, username: 'bob');
+      implicitData['bangumiPendingProgress'] = {
+        keyFor(second): {'ep_status': pending('ep_status', 10)},
+        keyFor(higher): {'ep_status': pending('ep_status', 20)},
+        keyFor(otherAccount): {'ep_status': foreignPending},
+      };
+
+      await service.onChapterCompleted(
+        sourceKey: first.sourceKey,
+        comicId: first.comicId,
+        chapterTitle: '第 7 话',
+      );
+
+      expect(gateway.patchFields, isEmpty);
+      expect((implicitData['bangumiPendingProgress'] as Map).keys, [
+        keyFor(higher), keyFor(otherAccount),
+      ]);
+      await service.retryPending(bindingKey: keyFor(higher));
+      expect(gateway.patchFields.single, {'ep_status': 20});
+      expect(
+        service.bindingsForSubject(42).map((value) => value.lastRemoteEpisode),
+        everyElement(20),
+      );
+      expect(implicitData['bangumiPendingProgress'], {
+        keyFor(otherAccount): {'ep_status': foreignPending},
+      });
+    });
+
+    test('concurrent source uploads remain serial and never lower progress', () async {
+      second = second.copyWith(progressMode: BangumiProgressMode.episode);
+      setBindings([first, second]);
+      gateway.collection = collection(epStatus: 1, rate: 8);
+      gateway.getCollectionBlocker = Completer<void>();
+      final firstUpload = service.onChapterCompleted(
+        sourceKey: first.sourceKey,
+        comicId: first.comicId,
+        chapterTitle: '第 18 话',
+      );
+      await pumpEventQueue();
+      final secondUpload = service.onChapterCompleted(
+        sourceKey: second.sourceKey,
+        comicId: second.comicId,
+        chapterTitle: '第 12 话',
+      );
+      expect(gateway.collectionCalls, hasLength(1));
+      gateway.getCollectionBlocker!.complete();
+      await Future.wait([firstUpload, secondUpload]);
+
+      expect(gateway.patchFields, [{'ep_status': 18}]);
+      expect(
+        service.bindingsForSubject(42).map((value) => value.lastRemoteEpisode),
+        everyElement(18),
+      );
+      expect(service.bindingFor(second.sourceKey, second.comicId)!.rating, 8);
+    });
+  });
+
   group('automatic chapter progress upload', () {
     late Map<String, dynamic> implicitData;
     late List<RecordingTimer> timers;
@@ -3926,14 +4352,22 @@ void connectSettings() {
 
 void setBinding(BangumiBinding binding) {
   appdata.settings['bangumiBindings'] = {
-    bangumiBindingKey(binding.sourceKey, binding.comicId): binding.toJson(),
+    bangumiBindingKey(
+      binding.sourceKey,
+      binding.comicId,
+      scopeId: binding.scopeId,
+    ): binding.toJson(),
   };
 }
 
 void setBindings(Iterable<BangumiBinding> bindings) {
   appdata.settings['bangumiBindings'] = {
     for (final binding in bindings)
-      bangumiBindingKey(binding.sourceKey, binding.comicId): binding.toJson(),
+      bangumiBindingKey(
+        binding.sourceKey,
+        binding.comicId,
+        scopeId: binding.scopeId,
+      ): binding.toJson(),
   };
 }
 

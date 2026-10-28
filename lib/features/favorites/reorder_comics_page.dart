@@ -3,13 +3,13 @@ import 'package:flutter_reorderable_grid_view/widgets/reorderable_builder.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/layout.dart';
 import 'package:venera_plus/components/message.dart';
-import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/bangumi/bangumi.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/features/favorites/favorites_display.dart';
 import 'package:venera_plus/features/favorites/favorites_manager.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
-import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/foundation/translations.dart';
 
 class ReorderComicsPage extends StatefulWidget {
@@ -25,17 +25,33 @@ class _ReorderComicsPageState extends State<ReorderComicsPage> {
   final _key = GlobalKey();
   var reorderWidgetKey = UniqueKey();
   final _scrollController = ScrollController();
-  late var comics = LocalFavoritesManager().getFolderComics(widget.name);
+  late var comics = groupBangumiComics<FavoriteItem>(
+    LocalFavoritesManager().getFolderComics(widget.name),
+    lastRead: (item) => HistoryManager().find(item.id, item.type)?.time,
+  );
   bool changed = false;
+  Object? _bindings;
 
   @override
   void initState() {
     super.initState();
+    _bindings = appdata.settings['bangumiBindings'];
     appdata.settings.addListener(_onDisplaySettingsChanged);
   }
 
   void _onDisplaySettingsChanged() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    setState(() {
+      final bindings = appdata.settings['bangumiBindings'];
+      if (!identical(bindings, _bindings)) {
+        _bindings = bindings;
+        comics = groupBangumiComics<FavoriteItem>(
+          comics.expand((group) => group.members),
+          lastRead: (item) => HistoryManager().find(item.id, item.type)?.time,
+        );
+        reorderWidgetKey = UniqueKey();
+      }
+    });
   }
 
   static int _floatToInt8(double x) {
@@ -60,7 +76,10 @@ class _ReorderComicsPageState extends State<ReorderComicsPage> {
     if (changed) {
       // Delay to ensure navigation is completed
       Future.delayed(const Duration(milliseconds: 200), () {
-        LocalFavoritesManager().reorder(comics, widget.name);
+        LocalFavoritesManager().reorder(
+          comics.expand((group) => group.members).toList(),
+          widget.name,
+        );
       });
     }
     super.dispose();
@@ -72,26 +91,15 @@ class _ReorderComicsPageState extends State<ReorderComicsPage> {
     final displayMode = gallery
         ? ComicTileDisplayMode.gallery
         : ComicTileDisplayMode.detailed;
-    var tiles = comics.map((e) {
-      var comicSource = e.type.comicSource;
+    var tiles = comics.map((group) {
       return Padding(
-        key: Key(e.hashCode.toString()),
+        key: ValueKey(group.groupKey),
         padding: const EdgeInsets.all(4),
         child: ComicTile(
           enableLongPressed: false,
           displayMode: displayMode,
-          comic: Comic(
-            e.name,
-            e.coverPath,
-            e.id,
-            e.author,
-            e.tags,
-            "${e.time} | ${comicSource?.name ?? "Unknown"}",
-            comicSource?.key ??
-                (e.type == ComicType.local ? "local" : "Unknown"),
-            null,
-            null,
-          ),
+          comic: group,
+          hideFavoriteBadge: true,
         ),
       );
     }).toList();
@@ -126,7 +134,7 @@ class _ReorderComicsPageState extends State<ReorderComicsPage> {
           ),
         ],
       ),
-      body: ReorderableBuilder<FavoriteItem>(
+      body: ReorderableBuilder<BangumiComicGroup<FavoriteItem>>(
         key: reorderWidgetKey,
         scrollController: _scrollController,
         longPressDelay: App.isDesktop

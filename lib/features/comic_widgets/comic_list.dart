@@ -61,7 +61,7 @@ class SliverGridComics extends StatefulWidget {
 class _SliverGridComicsState extends State<SliverGridComics> {
   List<Comic> comics = [];
   List<int> heroIDs = [];
-  List<(String, String)> _identities = [];
+  List<Object> _identities = [];
   List<Comic> _sourceComics = [];
   List<String> _blockedWords = [];
   ModalRoute<dynamic>? _route;
@@ -139,7 +139,7 @@ class _SliverGridComicsState extends State<SliverGridComics> {
             .toList();
         // Hero IDs follow identity and order, independently of metadata.
         final identities = filtered
-            .map((comic) => (comic.sourceKey, comic.id))
+            .map(comicWidgetIdentity)
             .toList(growable: false);
         comics = filtered;
         if (!listEquals(_identities, identities)) {
@@ -273,7 +273,7 @@ class _SliverGridComics extends StatelessWidget {
           return comic;
         }
         return AnimatedContainer(
-          key: ValueKey(comics[index].id),
+          key: ValueKey(comicWidgetIdentity(comics[index])),
           duration: const Duration(milliseconds: 150),
           decoration: BoxDecoration(
             color: isSelected

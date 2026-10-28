@@ -7,6 +7,7 @@ import 'package:flutter_reorderable_grid_view/widgets/reorderable_builder.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/components/button.dart';
+import 'package:venera_plus/features/bangumi/bangumi.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/history/history.dart';
@@ -17,7 +18,7 @@ import 'package:venera_plus/foundation/comic_type.dart';
 import '../../widget_test_io.dart';
 
 List<String> _comicOrder(WidgetTester tester, {Finder? within}) {
-  final scope = within ?? find.byType(ReorderableBuilder<FavoriteItem>);
+  final scope = within ?? find.byType(ReorderableBuilder<BangumiComicGroup<FavoriteItem>>);
   final tiles = tester.widgetList<ComicTile>(
     find.descendant(of: scope, matching: find.byType(ComicTile)),
   );
@@ -62,7 +63,7 @@ Future<void> _openReorder(WidgetTester tester) async {
       .singleWhere((entry) => entry.text == 'Reorder')
       .onClick();
   await tester.pumpAndSettle();
-  expect(find.byType(ReorderableBuilder<FavoriteItem>), findsOneWidget);
+  expect(find.byType(ReorderableBuilder<BangumiComicGroup<FavoriteItem>>), findsOneWidget);
 }
 
 bool _sqliteAvailable() {
@@ -282,8 +283,8 @@ void main() {
       Finder tile(String id) => find.byWidgetPredicate(
         (widget) => widget is ComicTile && widget.comic.id == id,
       );
-      final builder = tester.widget<ReorderableBuilder<FavoriteItem>>(
-        find.byType(ReorderableBuilder<FavoriteItem>),
+      final builder = tester.widget<ReorderableBuilder<BangumiComicGroup<FavoriteItem>>>(
+        find.byType(ReorderableBuilder<BangumiComicGroup<FavoriteItem>>),
       );
       final gesture = await tester.startGesture(
         tester.getCenter(tile('home-0')),
@@ -525,8 +526,8 @@ void main() {
           await tester.pump();
 
           final target = tester.getCenter(tile('comic-2'));
-          final builder = tester.widget<ReorderableBuilder<FavoriteItem>>(
-            find.byType(ReorderableBuilder<FavoriteItem>),
+          final builder = tester.widget<ReorderableBuilder<BangumiComicGroup<FavoriteItem>>>(
+            find.byType(ReorderableBuilder<BangumiComicGroup<FavoriteItem>>),
           );
           final gesture = await tester.startGesture(
             tester.getCenter(tile('comic-0')),

@@ -7,6 +7,7 @@ import 'package:venera_plus/components/menu.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/side_bar.dart';
 import 'package:venera_plus/features/bangumi/bangumi.dart';
+import 'package:venera_plus/routing/bangumi_comic_navigation.dart';
 import 'package:venera_plus/features/comic_details/archive_download.dart';
 import 'package:venera_plus/features/comic_details/comments_page.dart';
 import 'package:venera_plus/features/comic_details/favorite.dart';
@@ -93,6 +94,18 @@ abstract mixin class ComicPageActions {
         updateTime: comic.findUpdateTime(),
       ),
     );
+  }
+
+  bool get hasOtherBangumiSources {
+    final service = BangumiService();
+    final binding = service.bindingFor(comic.sourceKey, comic.id);
+    return binding != null && service.bindingsForSubject(binding.subjectId).length > 1;
+  }
+
+  void chooseBangumiSource() {
+    final group = bangumiGroupForComic(_toFavoriteItem());
+    if (group == null) return;
+    openBangumiComic(App.rootContext, group, read: false, chooseSource: true);
   }
 
   void openBangumiProgress() {

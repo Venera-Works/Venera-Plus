@@ -29,6 +29,9 @@ typedef ComicPageBuilder =
 
 typedef AddComicFavoriteHandler = void Function(List<Comic> comics);
 typedef ComicTileStateResolver = ComicTileState Function(Comic comic);
+typedef ComicTileIdentityResolver = Object Function(Comic comic);
+typedef ComicDetailsHandler =
+    void Function(BuildContext context, Comic comic, int? heroID);
 typedef ComicTileImageProviderResolver = ImageProvider? Function(Comic comic);
 typedef ComicWidgetListenerRegistrar = void Function(VoidCallback listener);
 typedef ComicFavoriteDisplayStateResolver =
@@ -42,6 +45,7 @@ class ComicTileState {
     this.historyDescription,
     this.historyTooltip,
     this.hasNewUpdate = false,
+    this.sourceCount = 1,
   });
 
   final bool isFavorite;
@@ -50,6 +54,7 @@ class ComicTileState {
   final String? historyDescription;
   final String? historyTooltip;
   final bool hasNewUpdate;
+  final int sourceCount;
 }
 
 class ComicFavoriteDisplayState {
@@ -63,6 +68,11 @@ class ComicFavoriteDisplayState {
 }
 
 ComicPageBuilder? _comicPageBuilder;
+ComicDetailsHandler? _comicDetailsHandler;
+ComicTileIdentityResolver? _comicTileIdentityResolver;
+
+Object comicWidgetIdentity(Comic comic) =>
+    _comicTileIdentityResolver?.call(comic) ?? (comic.sourceKey, comic.id);
 
 AddComicFavoriteHandler? _addComicFavoriteHandler;
 ComicTileStateResolver? _comicTileStateResolver;
@@ -73,6 +83,8 @@ ComicFavoriteDisplayStateResolver? _comicFavoriteDisplayStateResolver;
 
 void configureComicWidgets({
   ComicPageBuilder? comicPageBuilder,
+  ComicDetailsHandler? openDetails,
+  ComicTileIdentityResolver? identityResolver,
   AddComicFavoriteHandler? addFavorite,
   ComicTileStateResolver? tileStateResolver,
   ComicTileImageProviderResolver? tileImageProviderResolver,
@@ -81,6 +93,8 @@ void configureComicWidgets({
   ComicFavoriteDisplayStateResolver? favoriteDisplayStateResolver,
 }) {
   _comicPageBuilder = comicPageBuilder;
+  _comicDetailsHandler = openDetails;
+  _comicTileIdentityResolver = identityResolver;
   _addComicFavoriteHandler = addFavorite;
   _comicTileStateResolver = tileStateResolver;
   _comicTileImageProviderResolver = tileImageProviderResolver;
@@ -202,12 +216,23 @@ class ComicTile extends StatelessWidget {
 
   final bool hideFavoriteBadge;
 
-  void _onTap() {
+  void _onTap(BuildContext context) {
     if (onTap != null) {
       onTap!();
       return;
     }
+    _openDetails(context);
+  }
+
+  void _openDetails([BuildContext? context]) {
+    final target = context ?? App.mainNavigatorKey?.currentContext;
+    final handler = _comicDetailsHandler;
+    if (handler != null && target != null) {
+      handler(target, comic, heroID);
+      return;
+    }
     _openComicPage(
+      context: target,
       id: comic.id,
       sourceKey: comic.sourceKey,
       cover: comic.cover,
@@ -242,14 +267,7 @@ class ComicTile extends StatelessWidget {
       MenuEntry(
         icon: Icons.chrome_reader_mode_outlined,
         text: 'Details'.tl,
-        onClick: () {
-          _openComicPage(
-            id: comic.id,
-            sourceKey: comic.sourceKey,
-            cover: comic.cover,
-            title: comic.title,
-          );
-        },
+        onClick: () => _openDetails(context),
       ),
       MenuEntry(
         icon: Icons.copy,
@@ -290,6 +308,30 @@ class ComicTile extends StatelessWidget {
     };
 
     final state = _tileState(comic);
+    if (state.sourceCount > 1) {
+      child = Stack(
+        children: [
+          Positioned.fill(child: child),
+          Positioned(
+            right: 8,
+            top: 6,
+            child: IgnorePointer(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: context.colorScheme.secondaryContainer,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  child: Text('@count sources'.tlParams({'count': state.sourceCount}),
+                    style: Theme.of(context).textTheme.labelSmall),
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
     final isFavorite = state.isFavorite && !hideFavoriteBadge;
     final historyPage = state.historyPage == 0 ? 1 : state.historyPage;
     final hasUpdate = state.hasNewUpdate;
@@ -433,7 +475,7 @@ class ComicTile extends StatelessWidget {
 
         return ClickInkWell(
           borderRadius: BorderRadius.circular(12),
-          onTap: _onTap,
+          onTap: () => _onTap(context),
           onLongPress: enableLongPressed ? () => _onLongPressed(context) : null,
           onSecondaryTapDown: (detail) => onSecondaryTap(detail, context),
           child: Padding(
@@ -493,7 +535,7 @@ class ComicTile extends StatelessWidget {
 
         return ClickInkWell(
           borderRadius: BorderRadius.circular(8),
-          onTap: _onTap,
+          onTap: () => _onTap(context),
           onLongPress: enableLongPressed ? () => _onLongPressed(context) : null,
           onSecondaryTapDown: (detail) => onSecondaryTap(detail, context),
           child: Column(
@@ -609,7 +651,7 @@ class ComicTile extends StatelessWidget {
 
         return ClickInkWell(
           borderRadius: BorderRadius.circular(8),
-          onTap: _onTap,
+          onTap: () => _onTap(context),
           onLongPress: enableLongPressed ? () => _onLongPressed(context) : null,
           onSecondaryTapDown: (detail) => onSecondaryTap(detail, context),
           child: Padding(

@@ -11,7 +11,7 @@ import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/components/select.dart';
-import 'package:venera_plus/features/comic_details/comic_details.dart';
+import 'package:venera_plus/features/bangumi/bangumi.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/features/favorites/favorite_actions.dart';
@@ -21,12 +21,11 @@ import 'package:venera_plus/features/favorites/favorites_manager.dart';
 import 'package:venera_plus/features/favorites/reorder_comics_page.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
-import 'package:venera_plus/features/reader/reader.dart';
+import 'package:venera_plus/routing/bangumi_comic_navigation.dart';
 import 'package:venera_plus/features/follow_updates/follow_updates.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
-import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/consts.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/file_interaction.dart';
@@ -59,11 +58,13 @@ class LocalFavoritesPage extends StatefulWidget {
 
 class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
   late List<FavoriteItem> comics;
+  List<BangumiComicGroup<FavoriteItem>> groups = [];
+  Object? _bindings;
 
   String? networkSource;
   String? networkFolder;
 
-  Map<Comic, bool> selectedComics = {};
+  Map<BangumiComicGroup<FavoriteItem>, bool> selectedComics = {};
 
   var selectedLocalFolders = <String>{};
 
@@ -76,7 +77,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
 
   bool multiSelectMode = false;
 
-  int? lastSelectedIndex;
+  String? lastSelectedGroupKey;
 
   bool get isAllFolder => widget.folder == localAllFolderLabel;
 
@@ -87,23 +88,100 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
   int _loadGeneration = 0;
   late String readFilterSelect;
 
-  var searchResults = <FavoriteItem>[];
+  var searchResults = <BangumiComicGroup<FavoriteItem>>[];
+
+  List<BangumiComicGroup<FavoriteItem>> get displayedGroups =>
+      filterComics(searchMode ? searchResults : groups)
+          .where((group) => isBlocked(group) == null)
+          .toList();
+
+  List<BangumiComicGroup<FavoriteItem>> get selectedGroups => displayedGroups
+      .where(selectedComics.containsKey)
+      .toList();
+
+  List<FavoriteItem> get selectedMembers => selectedGroups
+      .expand((group) => group.members)
+      .toList();
+
+  void _regroupComics() {
+    groups = groupBangumiComics<FavoriteItem>(
+      comics,
+      lastRead: (item) => HistoryManager().find(item.id, item.type)?.time,
+    );
+    _updateSearchResults();
+  }
+
+  void _updateSearchResults() {
+    searchResults = keyword.trim().isEmpty
+        ? groups
+        : groups.where((group) {
+            return _matchesGroupTitle(keyword, group.title) ||
+                _matchesGroupTitle(
+                  keyword,
+                  group.binding?.subjectOriginalTitle ?? '',
+                ) ||
+                group.members.any((comic) =>
+                    matchKeyword(keyword, comic) ||
+                    matchKeywordT(keyword, comic) ||
+                    matchKeywordS(keyword, comic));
+          }).toList();
+    _retainDisplayedSelection();
+  }
+
+  bool _matchesGroupTitle(String keyword, String title) {
+    bool matches(String query) => query.split(' ').where((word) => word.isNotEmpty)
+        .every((word) => checkKeyWordMatch(word, title, false));
+    return matches(keyword) ||
+        (OpenCC.hasChineseSimplified(keyword) &&
+            matches(OpenCC.simplifiedToTraditional(keyword))) ||
+        (OpenCC.hasChineseTraditional(keyword) &&
+            matches(OpenCC.traditionalToSimplified(keyword)));
+  }
+
+  void _retainDisplayedSelection() {
+    final visible = displayedGroups;
+    final previousSelections = {
+      for (final group in selectedComics.keys) group.groupKey: group,
+    };
+    selectedComics = {
+      for (final group in visible)
+        if (previousSelections[group.groupKey] case final previous?)
+          if (previous.members.length == group.members.length &&
+              previous.members.toSet().containsAll(group.members))
+            group: true,
+    };
+    if (selectedComics.isEmpty) multiSelectMode = false;
+    if (!visible.any((group) => group.groupKey == lastSelectedGroupKey) ||
+        (previousSelections.containsKey(lastSelectedGroupKey) &&
+            !selectedComics.keys.any(
+              (group) => group.groupKey == lastSelectedGroupKey,
+            ))) {
+      lastSelectedGroupKey = null;
+    }
+  }
 
   void updateSearchResult() {
+    setState(_updateSearchResults);
+  }
+
+  void _onSettingsChanged() {
+    if (!mounted) return;
     setState(() {
-      if (keyword.trim().isEmpty) {
-        searchResults = comics;
+      final bindings = appdata.settings['bangumiBindings'];
+      if (!identical(_bindings, bindings)) {
+        _bindings = bindings;
+        selectedComics.clear();
+        multiSelectMode = false;
+        lastSelectedGroupKey = null;
+        _regroupComics();
       } else {
-        searchResults = [];
-        for (var comic in comics) {
-          if (matchKeyword(keyword, comic) ||
-              matchKeywordT(keyword, comic) ||
-              matchKeywordS(keyword, comic)) {
-            searchResults.add(comic);
-          }
-        }
+        _retainDisplayedSelection();
       }
     });
+  }
+
+  void _onHistoryChanged() {
+    if (mounted) setState(_regroupComics);
   }
 
   void updateComics() {
@@ -121,7 +199,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
         comics = manager.getAllComics();
         isLoading = false;
         loadError = null;
-        if (searchMode) updateSearchResult();
+        _regroupComics();
         if (mounted) setState(() {});
         return;
       }
@@ -142,7 +220,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
             isLoading = false;
             comics = value;
             loadError = null;
-            if (searchMode) updateSearchResult();
+            _regroupComics();
           });
         }
       } catch (error, stackTrace) {
@@ -155,7 +233,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
             isLoading = false;
             comics = [];
             loadError = "Failed to load comics".tl;
-            if (searchMode) updateSearchResult();
+            _regroupComics();
           });
           context.showMessage(message: "Failed to load comics".tl);
         }
@@ -165,7 +243,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
         comics = [];
         isLoading = false;
         loadError = null;
-        if (searchMode) updateSearchResult();
+        _regroupComics();
         if (mounted) setState(() {});
         return;
       }
@@ -175,7 +253,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
         comics = manager.getFolderComics(widget.folder);
         isLoading = false;
         loadError = null;
-        if (searchMode) updateSearchResult();
+        _regroupComics();
         if (mounted) setState(() {});
         return;
       }
@@ -199,7 +277,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
             isLoading = false;
             comics = value;
             loadError = null;
-            if (searchMode) updateSearchResult();
+            _regroupComics();
           });
         }
       } catch (error, stackTrace) {
@@ -213,7 +291,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
             isLoading = false;
             comics = [];
             loadError = "Failed to load comics".tl;
-            if (searchMode) updateSearchResult();
+            _regroupComics();
           });
           context.showMessage(message: "Failed to load comics".tl);
         }
@@ -221,12 +299,12 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
     }
   }
 
-  List<FavoriteItem> filterComics(List<FavoriteItem> curComics) {
-    return curComics.where((comic) {
-      var history = HistoryManager().find(
-        comic.id,
-        ComicType(comic.sourceKey.hashCode),
-      );
+  List<BangumiComicGroup<FavoriteItem>> filterComics(
+    List<BangumiComicGroup<FavoriteItem>> curGroups,
+  ) {
+    return curGroups.where((group) {
+      final comic = group.representative;
+      var history = HistoryManager().find(comic.id, comic.type);
       if (readFilterSelect == "UnCompleted") {
         return history == null || history.page != history.maxPage;
       } else if (readFilterSelect == "Completed") {
@@ -310,8 +388,11 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
       networkFolder = null;
     }
     comics = [];
+    _bindings = appdata.settings['bangumiBindings'];
     loadComics();
     LocalFavoritesManager().addListener(updateComics);
+    appdata.settings.addListener(_onSettingsChanged);
+    HistoryManager().addListener(_onHistoryChanged);
     super.initState();
   }
 
@@ -319,6 +400,12 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
   void didUpdateWidget(covariant LocalFavoritesPage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.folder != widget.folder) {
+      selectedComics.clear();
+      multiSelectMode = false;
+      lastSelectedGroupKey = null;
+      final linked = isAllFolder ? (null, null) : manager.findLinked(widget.folder);
+      networkSource = linked.$1;
+      networkFolder = linked.$2;
       loadComics();
     }
   }
@@ -326,6 +413,9 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
   @override
   void dispose() {
     LocalFavoritesManager().removeListener(updateComics);
+    appdata.settings.removeListener(_onSettingsChanged);
+    HistoryManager().removeListener(_onHistoryChanged);
+    scrollController.dispose();
     super.dispose();
   }
 
@@ -386,33 +476,57 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
 
   void selectAll() {
     setState(() {
-      if (searchMode) {
-        selectedComics = searchResults.asMap().map((k, v) => MapEntry(v, true));
-      } else {
-        selectedComics = comics.asMap().map((k, v) => MapEntry(v, true));
-      }
+      selectedComics = {for (final group in displayedGroups) group: true};
+      multiSelectMode = selectedComics.isNotEmpty;
     });
   }
 
   void invertSelection() {
     setState(() {
-      if (searchMode) {
-        for (var c in searchResults) {
-          if (selectedComics.containsKey(c)) {
-            selectedComics.remove(c);
-          } else {
-            selectedComics[c] = true;
-          }
-        }
+      selectedComics = {
+        for (final group in displayedGroups)
+          if (!selectedComics.containsKey(group)) group: true,
+      };
+      multiSelectMode = selectedComics.isNotEmpty;
+    });
+  }
+
+  void _toggleSelection(BangumiComicGroup<FavoriteItem> group) {
+    setState(() {
+      if (selectedComics.containsKey(group)) {
+        selectedComics.remove(group);
       } else {
-        for (var c in comics) {
-          if (selectedComics.containsKey(c)) {
-            selectedComics.remove(c);
+        selectedComics[group] = true;
+      }
+      multiSelectMode = selectedComics.isNotEmpty;
+      lastSelectedGroupKey = group.groupKey;
+    });
+  }
+
+  void _selectRange(BangumiComicGroup<FavoriteItem> group) {
+    setState(() {
+      final visible = displayedGroups;
+      final start = visible.indexWhere(
+        (entry) => entry.groupKey == lastSelectedGroupKey,
+      );
+      final end = visible.indexOf(group);
+      if (!multiSelectMode || start < 0) {
+        selectedComics[group] = true;
+      } else {
+        final from = start < end ? start : end;
+        final to = start < end ? end : start;
+        for (var index = from; index <= to; index++) {
+          if (index == start) continue;
+          final entry = visible[index];
+          if (selectedComics.containsKey(entry)) {
+            selectedComics.remove(entry);
           } else {
-            selectedComics[c] = true;
+            selectedComics[entry] = true;
           }
         }
       }
+      lastSelectedGroupKey = group.groupKey;
+      multiSelectMode = selectedComics.isNotEmpty;
     });
   }
 
@@ -431,25 +545,55 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
     return false;
   }
 
-  void downloadSelected() {
+  Future<void> _downloadGroups(
+    List<BangumiComicGroup<FavoriteItem>> groups,
+  ) async {
     int count = 0;
-    for (var c in selectedComics.keys) {
-      if (downloadComic(c as FavoriteItem)) {
-        count++;
-      }
+    for (final group in groups) {
+      final source = await selectBangumiComicSource(
+        context,
+        group,
+        alwaysChoose: true,
+      );
+      if (!mounted) return;
+      if (source == null) break;
+      if (downloadComic(source as FavoriteItem)) count++;
     }
-    if (count > 0) {
+    if (mounted && count > 0) {
       context.showMessage(
         message: "Added @c comics to download queue.".tlParams({"c": count}),
       );
     }
   }
 
+  void downloadSelected() {
+    unawaited(_downloadGroups(selectedGroups));
+  }
+
+  void _openGroup(
+    BangumiComicGroup<FavoriteItem> group, {
+    required bool read,
+    int? heroID,
+    bool chooseSource = false,
+  }) {
+    unawaited(openBangumiComic(
+      App.mainNavigatorKey?.currentContext ?? context,
+      group,
+      read: read,
+      heroID: heroID,
+      chooseSource: chooseSource,
+    ));
+  }
+
   var scrollController = ScrollController();
 
   @override
   Widget build(BuildContext context) {
-    final displayedComics = searchMode ? searchResults : filterComics(comics);
+    final displayedComics = displayedGroups;
+    final matchingGroups = searchMode ? searchResults : groups;
+    final readFilteredGroups = filterComics(matchingGroups);
+    final readFilteredCount = matchingGroups.length - readFilteredGroups.length;
+    final blockedCount = readFilteredGroups.length - displayedComics.length;
     var title = widget.folder;
     if (title == localAllFolderLabel) {
       title = "All".tl;
@@ -638,12 +782,8 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                       icon: Icons.update,
                       text: "Update Comics Info".tl,
                       onClick: () {
-                        updateComicsInfo(widget.folder).then((newComics) {
-                          if (mounted) {
-                            setState(() {
-                              comics = newComics;
-                            });
-                          }
+                        updateComicsInfo(widget.folder).then((_) {
+                          if (mounted) updateComics();
                         });
                       },
                     ),
@@ -760,26 +900,13 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                     MenuEntry(
                       icon: Icons.chrome_reader_mode_outlined,
                       text: "Read".tl,
-                      onClick: () {
-                        final c = selectedComics.keys.first as FavoriteItem;
-                        App.rootContext.to(
-                          () => ReaderWithLoading(
-                            id: c.id,
-                            sourceKey: c.sourceKey,
-                          ),
-                        );
-                      },
+                      onClick: () => _openGroup(selectedGroups.single, read: true),
                     ),
                   if (selectedComics.length == 1)
                     MenuEntry(
                       icon: Icons.arrow_forward_ios,
                       text: "Jump to Detail".tl,
-                      onClick: () {
-                        final c = selectedComics.keys.first as FavoriteItem;
-                        App.mainNavigatorKey?.currentContext?.to(
-                          () => ComicPage(id: c.id, sourceKey: c.sourceKey),
-                        );
-                      },
+                      onClick: () => _openGroup(selectedGroups.single, read: false),
                     ),
                 ],
               ),
@@ -854,7 +981,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
             ),
           )
         else ...[
-          if (!searchMode && comics.length > displayedComics.length)
+          if (readFilteredCount > 0)
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.symmetric(
@@ -863,142 +990,96 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                 ),
                 child: Text(
                   'Hidden by reading-status filter: @a comics'.tlParams({
-                    'a': comics.length - displayedComics.length,
+                    'a': readFilteredCount,
                   }),
                 ),
               ),
             ),
+          if (blockedCount > 0)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Text(
+                  '@a comics have been hidden'.tlParams({'a': blockedCount}),
+                  style: TextStyle(color: context.colorScheme.secondary),
+                ),
+              ),
+            ),
           SliverGridComics(
-            showHiddenCount: true,
             comics: displayedComics,
             selections: selectedComics,
             useFavoriteDisplaySettings: true,
             hideFavoriteBadge: true,
             menuBuilder: (c) {
-              final item = c as FavoriteItem;
+              final group = c as BangumiComicGroup<FavoriteItem>;
               return [
                 if (!isAllFolder)
                   MenuEntry(
                     icon: Icons.delete,
                     text: "Delete".tl,
-                    onClick: () {
-                      LocalFavoritesManager().deleteComicWithId(
-                        widget.folder,
-                        item.id,
-                        item.type,
-                      );
-                    },
+                    onClick: () => manager.batchDeleteComics(
+                      widget.folder,
+                      group.members,
+                    ),
                   ),
                 MenuEntry(
                   icon: Icons.check,
                   text: "Select".tl,
-                  onClick: () {
-                    setState(() {
-                      if (!multiSelectMode) {
-                        multiSelectMode = true;
-                      }
-                      if (selectedComics.containsKey(item)) {
-                        selectedComics.remove(item);
-                        _checkExitSelectMode();
-                      } else {
-                        selectedComics[item] = true;
-                      }
-                      lastSelectedIndex = comics.indexOf(item);
-                    });
-                  },
+                  onClick: () => _toggleSelection(group),
                 ),
                 MenuEntry(
                   icon: Icons.download,
                   text: "Download".tl,
-                  onClick: () {
-                    downloadComic(item);
-                    context.showMessage(message: "Download started".tl);
-                  },
+                  onClick: () => unawaited(_downloadGroups([group])),
                 ),
-                if (appdata.settings["onClickFavorite"] == "viewDetail")
-                  MenuEntry(
-                    icon: Icons.menu_book_outlined,
-                    text: "Read".tl,
-                    onClick: () {
-                      App.mainNavigatorKey?.currentContext?.to(
-                        () => ReaderWithLoading(
-                          id: item.id,
-                          sourceKey: item.sourceKey,
-                        ),
-                      );
-                    },
+                MenuEntry(
+                  icon: appdata.settings["onClickFavorite"] == "viewDetail"
+                      ? Icons.menu_book_outlined
+                      : Icons.info_outline,
+                  text: (appdata.settings["onClickFavorite"] == "viewDetail"
+                      ? "Read" : "View Detail").tl,
+                  onClick: () => _openGroup(
+                    group,
+                    read: appdata.settings["onClickFavorite"] == "viewDetail",
                   ),
-                if (LocalFavoritesManager().hasNewUpdate(item.id, item.type))
+                ),
+                if (group.members.length > 1)
+                  MenuEntry(
+                    icon: Icons.swap_horiz,
+                    text: "Choose comic source".tl,
+                    onClick: () => _openGroup(
+                      group,
+                      read: appdata.settings["onClickFavorite"] != "viewDetail",
+                      chooseSource: true,
+                    ),
+                  ),
+                if (group.members.any((item) =>
+                    manager.hasNewUpdate(item.id, item.type)))
                   MenuEntry(
                     icon: Icons.done_all,
                     text: "Mark as read".tl,
                     onClick: () {
-                      LocalFavoritesManager().markAsRead(item.id, item.type);
+                      for (final item in group.members) {
+                        manager.markAsRead(item.id, item.type);
+                      }
                     },
                   ),
               ];
             },
             onTap: (c, heroID) {
+              final group = c as BangumiComicGroup<FavoriteItem>;
               if (multiSelectMode) {
-                setState(() {
-                  if (selectedComics.containsKey(c)) {
-                    selectedComics.remove(c);
-                    _checkExitSelectMode();
-                  } else {
-                    selectedComics[c] = true;
-                  }
-                  lastSelectedIndex = comics.indexOf(c as FavoriteItem);
-                });
-              } else if (appdata.settings["onClickFavorite"] == "viewDetail") {
-                App.mainNavigatorKey?.currentContext?.to(
-                  () => ComicPage(
-                    id: c.id,
-                    sourceKey: c.sourceKey,
-                    cover: c.cover,
-                    title: c.title,
-                    heroID: heroID,
-                  ),
-                );
+                _toggleSelection(group);
               } else {
-                App.mainNavigatorKey?.currentContext?.to(
-                  () => ReaderWithLoading(id: c.id, sourceKey: c.sourceKey),
+                _openGroup(
+                  group,
+                  read: appdata.settings["onClickFavorite"] != "viewDetail",
+                  heroID: heroID,
                 );
               }
             },
-            onLongPressed: (c, heroID) {
-              setState(() {
-                if (!multiSelectMode) {
-                  multiSelectMode = true;
-                  if (!selectedComics.containsKey(c as FavoriteItem)) {
-                    selectedComics[c] = true;
-                  }
-                  lastSelectedIndex = comics.indexOf(c);
-                } else {
-                  if (lastSelectedIndex != null) {
-                    int start = lastSelectedIndex!;
-                    int end = comics.indexOf(c as FavoriteItem);
-                    if (start > end) {
-                      int temp = start;
-                      start = end;
-                      end = temp;
-                    }
-
-                    for (int i = start; i <= end; i++) {
-                      if (i == lastSelectedIndex) continue;
-
-                      var comic = comics[i];
-                      if (selectedComics.containsKey(comic)) {
-                        selectedComics.remove(comic);
-                      } else {
-                        selectedComics[comic] = true;
-                      }
-                    }
-                  }
-                  lastSelectedIndex = comics.indexOf(c as FavoriteItem);
-                }
-                _checkExitSelectMode();
-              });
-            },
+            onLongPressed: (c, heroID) =>
+                _selectRange(c as BangumiComicGroup<FavoriteItem>),
           ),
         ],
       ],
@@ -1039,6 +1120,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
   }
 
   void favoriteOption(String option) {
+    selectedLocalFolders.clear();
     var targetFolders = LocalFavoritesManager().folderNames
         .where((folder) => folder != widget.folder)
         .toList();
@@ -1132,27 +1214,13 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                           if (selectedLocalFolders.isEmpty) {
                             return;
                           }
-                          if (option == 'move') {
-                            var comics = selectedComics.keys
-                                .map((e) => e as FavoriteItem)
-                                .toList();
-                            for (var f in selectedLocalFolders) {
-                              LocalFavoritesManager().batchMoveFavorites(
-                                widget.folder,
-                                f,
-                                comics,
-                              );
-                            }
-                          } else {
-                            var comics = selectedComics.keys
-                                .map((e) => e as FavoriteItem)
-                                .toList();
-                            for (var f in selectedLocalFolders) {
-                              LocalFavoritesManager().batchCopyFavorites(
-                                widget.folder,
-                                f,
-                                comics,
-                              );
+                          final comics = selectedMembers;
+                          final folders = selectedLocalFolders.toList();
+                          for (final folder in folders) {
+                            if (option == 'move' && folder == folders.last) {
+                              manager.batchMoveFavorites(widget.folder, folder, comics);
+                            } else {
+                              manager.batchCopyFavorites(widget.folder, folder, comics);
                             }
                           }
                           App.rootContext.pop();
@@ -1172,26 +1240,16 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
     );
   }
 
-  void _checkExitSelectMode() {
-    if (selectedComics.isEmpty) {
-      setState(() {
-        multiSelectMode = false;
-      });
-    }
-  }
-
   void _cancel() {
     setState(() {
       selectedComics.clear();
       multiSelectMode = false;
+      lastSelectedGroupKey = null;
     });
   }
 
   void _deleteComicWithId() {
-    var toBeDeleted = selectedComics.keys
-        .map((e) => e as FavoriteItem)
-        .toList();
-    LocalFavoritesManager().batchDeleteComics(widget.folder, toBeDeleted);
+    LocalFavoritesManager().batchDeleteComics(widget.folder, selectedMembers);
     _cancel();
   }
 }
