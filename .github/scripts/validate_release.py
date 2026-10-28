@@ -42,12 +42,12 @@ def validate_flutter_rust_bridge_lock() -> None:
     text = read_text("pubspec.lock")
     pattern = (
         r"flutter_rust_bridge:\s*\n"
-        r"\s+dependency:\s+\"?direct overridden\"?\s*\n"
+        r"\s+dependency:\s+\"?direct main\"?\s*\n"
         r"(?:.*\n){0,8}?"
         r"\s+version:\s+\"2\.11\.1\""
     )
     if not re.search(pattern, text):
-        fail("pubspec.lock must lock flutter_rust_bridge as direct overridden version 2.11.1")
+        fail("pubspec.lock must lock flutter_rust_bridge as direct main version 2.11.1")
 
 
 def validate_windows_installer_metadata() -> None:
@@ -95,6 +95,8 @@ def main() -> None:
     validate_flutter_rust_bridge_lock()
     validate_windows_installer_metadata()
     notes = extract_release_notes(tag)
+    if re.search(r"-beta\d+$", tag):
+        notes = "## **注意**\n**beta版可能存在大量bug，无必要请勿下载**\n\n" + notes
 
     if args.write_notes:
         Path(args.write_notes).write_text(notes + "\n", encoding="utf-8")
