@@ -29,7 +29,8 @@ void main() {
       ),
     );
     expect(tester.widget<Slider>(find.byType(Slider)).onChanged, isNull);
-    await tester.tap(find.byIcon(Icons.brightness_6));
+    final toggle = find.widgetWithIcon(IconButton, Icons.brightness_6);
+    await tester.tapAt(tester.getRect(toggle).centerRight - const Offset(2, 0));
     await tester.pumpAndSettle();
     expect(enabled, isTrue);
     final slider = find.byType(Slider);

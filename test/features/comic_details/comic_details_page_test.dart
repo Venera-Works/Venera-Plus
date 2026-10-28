@@ -200,7 +200,7 @@ void main() {
         expect(find.byType(ReaderChaptersView), findsOneWidget);
         final fab = find.byType(FloatingActionButton);
         final panel = tester.getRect(find.byType(ReaderChaptersView));
-        expect(tester.getCenter(fab).dx, lessThan(panel.center.dx));
+        expect(tester.getCenter(fab).dx, greaterThan(panel.center.dx));
         await tester.tap(fab);
         await _waitForText(tester, 'Download Selected');
         await tester.pumpAndSettle();

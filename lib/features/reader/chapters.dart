@@ -168,7 +168,7 @@ class ReaderChaptersViewState extends State<ReaderChaptersView>
         controller: _tabs,
         children: [_buildChapters(), _buildBookmarks()],
       ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.startFloat,
+      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
       floatingActionButton: canDownload && _activeTab == 0
           ? FloatingActionButton(
               tooltip: 'Download'.tl,

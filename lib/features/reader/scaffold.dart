@@ -237,7 +237,8 @@ class ReaderScaffoldState extends State<ReaderScaffold>
           Positioned(
             top: kTopBarHeight + context.padding.top + 12,
             bottom: kBottomBarHeight + context.padding.bottom + 12,
-            left: context.padding.left + 12,
+            // The 32px surface starts 4px from the safe edge inside its 48px touch area.
+            left: context.padding.left - 4,
             child: ExcludeFocus(
               excluding: !brightnessBarVisible,
               child: ExcludeSemantics(
@@ -462,13 +463,6 @@ class ReaderScaffoldState extends State<ReaderScaffold>
   }
 
   Widget buildBottom() {
-    // Use maxPage for display (excluding chapter comments page)
-    final displayPage = context.reader.page.clamp(1, context.reader.maxPage);
-    var text = "E${context.reader.chapter} : P$displayPage";
-    if (context.reader.widget.chapters == null) {
-      text = "P$displayPage";
-    }
-
     final buttons = [
       if (App.isDesktop)
         Tooltip(
@@ -579,40 +573,11 @@ class ReaderScaffoldState extends State<ReaderScaffold>
               const SizedBox(width: 8),
             ],
           ),
-          LayoutBuilder(
-            builder: (context, constrains) {
-              final small = (constrains.maxWidth - buttons.length * 56) < 120;
-              return Row(
-                children: [
-                  if (!small) ...[
-                    Expanded(
-                      child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: Container(
-                          height: 24,
-                          padding: const EdgeInsets.fromLTRB(6, 2, 6, 0),
-                          decoration: BoxDecoration(
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.tertiaryContainer,
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(
-                            text,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ).paddingLeft(16),
-                      ),
-                    ),
-                    for (var button in buttons) button.paddingHorizontal(4),
-                    const SizedBox(width: 4),
-                  ] else
-                    for (var button in buttons)
-                      Expanded(child: Center(child: button)),
-                ],
-              );
-            },
+          Row(
+            children: [
+              for (final button in buttons)
+                Expanded(child: Center(child: button)),
+            ],
           ),
         ],
       ),
