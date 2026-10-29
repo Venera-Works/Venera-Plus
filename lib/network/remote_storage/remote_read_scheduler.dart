@@ -29,8 +29,8 @@ class RemoteReadContext {
 /// Spaces and limits requests sharing one remote account.
 class RemoteReadScheduler {
   RemoteReadScheduler({
-    this.maxConcurrent = 2,
-    this.minInterval = const Duration(milliseconds: 300),
+    this.maxConcurrent = 4,
+    this.minInterval = const Duration(milliseconds: 150),
     DateTime Function()? now,
   }) : _now = now ?? DateTime.now {
     if (maxConcurrent < 1) {

@@ -54,7 +54,21 @@ void main() {
         settings['showPageNumberInReader'] = false;
         settings['eInkMode'] = false;
         settings['limitImageWidth'] = false;
-        settings['preloadImageCount'] = 1;
+        settings['preloadImageCount'] = 16;
+        settings['deviceId'] = 'preload-regression-device';
+        settings.setEnabledDeviceSpecificSettings(true);
+        settings.setDeviceReaderSetting('preloadImageCount', 4);
+        settings.setEnabledComicSpecificSettings(
+          'book',
+          ComicType.local.sourceKey,
+          true,
+        );
+        settings.setReaderSetting(
+          'book',
+          ComicType.local.sourceKey,
+          'preloadImageCount',
+          1,
+        );
         settings['language'] = 'en-US';
         settings['quickCollectImage'] = 'No';
         LocalManager.resetForTesting();
@@ -112,6 +126,15 @@ void main() {
           }
         }
 
+        Future<void> settleImageLoads() async {
+          await runWidgetIo(tester, () async {
+            while (PaintingBinding.instance.imageCache.pendingImageCount > 0) {
+              await Future<void>.delayed(const Duration(milliseconds: 10));
+            }
+          });
+          await tester.pump();
+        }
+
         final reader = key.currentState!;
         for (var i = 0; i < 30 && reader.imageViewController == null; i++) {
           await frames(5);
@@ -119,6 +142,22 @@ void main() {
         expect(reader.maxPage, 300);
         expect(reader.imageViewController, isA<ContinuousModeState>());
         expect(reader.page, 250);
+        final continuous = reader.imageViewController as ContinuousModeState;
+        expect(continuous.preCacheCount, 1);
+        settings.setEnabledComicSpecificSettings(
+          reader.cid,
+          reader.type.sourceKey,
+          false,
+        );
+        expect(continuous.preCacheCount, 4);
+        settings.setEnabledDeviceSpecificSettings(false);
+        expect(continuous.preCacheCount, 16);
+        settings.setEnabledDeviceSpecificSettings(true);
+        settings.setEnabledComicSpecificSettings(
+          reader.cid,
+          reader.type.sourceKey,
+          true,
+        );
         final nextImage = ReaderImageProvider(
           reader.images![250],
           null,
@@ -317,24 +356,22 @@ void main() {
 
         reader.toPage(50, animated: false);
         await frames(10);
-        await runWidgetIo(tester, () async {
-          while (PaintingBinding.instance.imageCache.pendingImageCount > 0) {
-            await Future<void>.delayed(const Duration(milliseconds: 10));
-          }
-        });
-        final afterNext = ReaderImageProvider(
-          reader.images![51],
-          null,
-          reader.cid,
-          reader.eid,
-          52,
-          chapter: reader.chapter,
-          enableResize: true,
-          target: calculateReaderImageTargetFromContext(
-            tester.element(find.byType(ComicImage).first),
-            52,
-          ),
-        );
+        await settleImageLoads();
+        ReaderImageProvider imageProviderForPage(int page) =>
+            ReaderImageProvider(
+              reader.images![page - 1],
+              null,
+              reader.cid,
+              reader.eid,
+              page,
+              chapter: reader.chapter,
+              enableResize: true,
+              target: calculateReaderImageTargetFromContext(
+                tester.element(find.byType(ComicImage).first),
+                page,
+              ),
+            );
+        final afterNext = imageProviderForPage(52);
         final imageCache = PaintingBinding.instance.imageCache;
         imageCache.evict(afterNext);
         final favoriteReads = (manager as _TestHistory).imageFavoriteReads;
@@ -365,6 +402,56 @@ void main() {
         expect(reader.page, 51);
         expect(imageCache.containsKey(afterNext), isTrue);
         expect(manager.imageFavoriteReads, favoriteReads);
+
+        if (!rapid) {
+          final twoAhead = imageProviderForPage(53);
+          final threeAhead = imageProviderForPage(54);
+          expect(imageCache.containsKey(twoAhead), isFalse);
+          settings.setReaderSetting(
+            reader.cid,
+            reader.type.sourceKey,
+            'preloadImageCount',
+            6,
+          );
+          reader.update();
+          await frames(15);
+          await settleImageLoads();
+          expect(gallery.preCacheCount, 6);
+          expect(imageCache.statusForKey(twoAhead).keepAlive, isTrue);
+          expect(imageCache.containsKey(threeAhead), isFalse);
+
+          imageCache.evict(twoAhead);
+          reader.update();
+          await frames(15);
+          await settleImageLoads();
+          expect(imageCache.statusForKey(twoAhead).keepAlive, isTrue);
+
+          // A transient preload failure recovers without another page change.
+          final file = File('${LocalManager().path}/book/one/53.png');
+          final unavailable = File('${file.path}.unavailable');
+          await runWidgetIo(tester, () async {
+            await file.rename(unavailable.path);
+          });
+          imageCache.evict(twoAhead);
+          reader.update();
+          await frames(5);
+          await settleImageLoads();
+          expect(imageCache.containsKey(twoAhead), isFalse);
+          await runWidgetIo(tester, () async {
+            await unavailable.rename(file.path);
+          });
+          await frames(60);
+          await settleImageLoads();
+          expect(imageCache.statusForKey(twoAhead).keepAlive, isTrue);
+          settings.setReaderSetting(
+            reader.cid,
+            reader.type.sourceKey,
+            'preloadImageCount',
+            1,
+          );
+          reader.update();
+          await frames(5);
+        }
 
         // Favorites still refresh when changed, without a query on each page.
         await runWidgetIo(

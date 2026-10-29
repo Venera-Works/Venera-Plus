@@ -370,7 +370,9 @@ Manual Bangumi binding from ZIP/CBZ, image-based EPUB, or PDF comic details writ
 
 #### Range Reads and Caching
 
-Libraries on the same cloud account share an archive read queue with at most two concurrent requests and at least 300 milliseconds between request starts. The visible page takes priority over covers and preloads; an existing preload is promoted when that page becomes visible. HTTP 429 responses pause the shared queue according to `Retry-After`, or use delays of 1, 2, and 4 seconds when the header is missing or invalid. Each range read retries at most twice, and queued reads can be cancelled.
+Libraries on the same cloud account share an archive read queue with at most four concurrent requests and at least 150 milliseconds between request starts. The visible page takes priority over covers and preloads; an existing preload is promoted when that page becomes visible. HTTP 429 responses pause the shared queue according to `Retry-After`, or use delays of 1, 2, and 4 seconds when the header is missing or invalid. Each range read retries at most twice, and queued reads can be cancelled.
+
+Paged reading prioritizes decoding the next two pages and the previous page in advance, with the forward page count capped by the configured preload count. The rest of the preload window only caches image files. The preload count follows comic-specific, device-specific, then global settings.
 
 For small ZIP/CBZ and EPUB image entries, the local header and compressed payload are combined into aligned range requests, each at most 2 MiB. An account-wide 16 MiB memory range cache reuses nearby entries; larger images still use exact on-demand reads. This reduces request bursts and small transfers. Account and IP limits remain subject to the storage provider's rules.
 
