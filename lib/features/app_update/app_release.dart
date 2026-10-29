@@ -115,9 +115,14 @@ AppRelease? selectAppRelease(
 bool allowsPrereleaseAppUpdates(String currentVersion) =>
     _prerelease(currentVersion) != null;
 
-/// Compares versions within the current stable or prerelease update channel.
-bool isNewerAppVersion(String remoteVersion, String currentVersion) {
-  if (allowsPrereleaseAppUpdates(remoteVersion) &&
+/// Stable installations only consider prereleases when explicitly included.
+bool isNewerAppVersion(
+  String remoteVersion,
+  String currentVersion, {
+  bool includePrerelease = false,
+}) {
+  if (!includePrerelease &&
+      allowsPrereleaseAppUpdates(remoteVersion) &&
       !allowsPrereleaseAppUpdates(currentVersion)) {
     return false;
   }

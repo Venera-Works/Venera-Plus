@@ -132,6 +132,29 @@ class AppUpdateService {
   Future<void> installApk(File file) =>
       channel.invokeMethod<void>('install', file.path);
 
+  /// Run at startup, after an update can replace the running application.
+  Future<void> cleanupInstalledApks(String currentVersion) async {
+    final directory = Directory(
+      p.join((await _temporaryDirectory()).path, 'app_updates'),
+    );
+    if (!await directory.exists()) return;
+    final filename = RegExp(
+      r'^VeneraPlus-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)-android(?:-[0-9A-Za-z_-]+)?\.apk$',
+    );
+    await for (final entity in directory.list(followLinks: false)) {
+      if (entity is! File) continue;
+      final version = filename.firstMatch(p.basename(entity.path))?.group(1);
+      if (version != null &&
+          !isNewerAppVersion(
+            version,
+            currentVersion,
+            includePrerelease: true,
+          )) {
+        await entity.delete();
+      }
+    }
+  }
+
   Future<File> downloadApk(
     AppReleaseAsset asset, {
     required CancelToken cancelToken,

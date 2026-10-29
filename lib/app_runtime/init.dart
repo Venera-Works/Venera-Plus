@@ -402,6 +402,7 @@ void startBackgroundTasks() {
     },
   );
   if (App.isAndroid) {
+    unawaited(appUpdatePrompt.service.cleanupInstalledApks(App.version).wait());
     unawaited(FlutterDisplayMode.setHighRefreshRate().wait());
   }
   if (App.isWindows) {

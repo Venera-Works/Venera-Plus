@@ -98,6 +98,99 @@ void main() {
   );
 
   test(
+    'startup removes installed APKs while keeping newer downloads and other files',
+    () async {
+      final updater = service(_Adapter((_) async => body(bytes)));
+      final directory = Directory('${root.path}/app_updates')..createSync();
+      final removed = [
+        'VeneraPlus-3.2.0-android-arm64-v8a.apk',
+        'VeneraPlus-3.3.0-rc.2-android-arm64-v8a.apk',
+        'VeneraPlus-3.3.0-android-arm64-v8a.apk',
+        'VeneraPlus-3.3.0-android.apk',
+      ];
+      final retained = [
+        'VeneraPlus-3.4.0-android-arm64-v8a.apk',
+        'VeneraPlus-3.4.0-beta1-android-arm64-v8a.apk',
+        'VeneraPlus-3.3.0-android-arm64-v8a.apk.part',
+        'other.apk',
+      ];
+      for (final name in [...removed, ...retained]) {
+        File('${directory.path}/$name').writeAsBytesSync(bytes);
+      }
+      final outside = File('${root.path}/VeneraPlus-3.3.0-android.apk')
+        ..writeAsBytesSync(bytes);
+      final nested = Directory('${directory.path}/nested')..createSync();
+      final nestedApk = File('${nested.path}/VeneraPlus-3.3.0-android.apk')
+        ..writeAsBytesSync(bytes);
+
+      await updater.cleanupInstalledApks('3.3.0');
+
+      for (final name in removed) {
+        expect(File('${directory.path}/$name').existsSync(), isFalse);
+      }
+      for (final name in retained) {
+        expect(File('${directory.path}/$name').readAsBytesSync(), bytes);
+      }
+      expect(outside.readAsBytesSync(), bytes);
+      expect(nestedApk.readAsBytesSync(), bytes);
+    },
+  );
+
+  test(
+    'prerelease startup preserves later prereleases and stable APKs',
+    () async {
+      final updater = service(_Adapter((_) async => body(bytes)));
+      final directory = Directory('${root.path}/app_updates')..createSync();
+      final removed = ['3.2.0', '3.3.0-rc.1', '3.3.0-rc.2'];
+      final retained = ['3.3.0-rc.3', '3.3.0'];
+      File file(String version) =>
+          File('${directory.path}/VeneraPlus-$version-android-x86_64.apk');
+      for (final version in [...removed, ...retained]) {
+        file(version).writeAsBytesSync(bytes);
+      }
+
+      await updater.cleanupInstalledApks('3.3.0-rc.2+33');
+
+      for (final version in removed) {
+        expect(file(version).existsSync(), isFalse);
+      }
+      for (final version in retained) {
+        expect(file(version).readAsBytesSync(), bytes);
+      }
+    },
+  );
+
+  test(
+    'startup does not create an update cache when there are no APKs',
+    () async {
+      final updater = service(_Adapter((_) async => body(bytes)));
+      await updater.cleanupInstalledApks('3.3.0');
+      expect(root.listSync(), isEmpty);
+    },
+  );
+
+  test('APK remains reusable until the installed version starts', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async => null);
+    final adapter = _Adapter((_) async => body(bytes));
+    final updater = service(adapter);
+    Future<File> download() => updater.downloadApk(
+      asset(),
+      cancelToken: CancelToken(),
+      onProgress: (_, _) {},
+    );
+    final file = await download();
+
+    await updater.installApk(file);
+    expect(file.readAsBytesSync(), bytes);
+    await updater.cleanupInstalledApks('3.2.0');
+    expect((await download()).path, file.path);
+    expect(adapter.requests, hasLength(1));
+
+    await updater.cleanupInstalledApks('3.3.0');
+    expect(file.existsSync(), isFalse);
+  });
+
+  test(
     'validates streamed APKs, reuses completed downloads and replaces corrupt cache',
     () async {
       final adapter = _Adapter((_) async => body(bytes));
