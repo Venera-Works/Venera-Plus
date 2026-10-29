@@ -56,6 +56,7 @@ void main() {
         settings['limitImageWidth'] = false;
         settings['preloadImageCount'] = 1;
         settings['language'] = 'en-US';
+        settings['quickCollectImage'] = 'No';
         LocalManager.resetForTesting();
         LocalManager.debugSkipComicSourceInit = true;
         await tester.runAsync(() async {
@@ -404,6 +405,37 @@ void main() {
         ImageFavoriteManager().deleteImageFavorite([favorite]);
         await tester.pump();
         expect(scaffold.isLiked(), isFalse);
+        if (!rapid) {
+          final content = find.byType(ReaderImages);
+          final origin = tester.getTopLeft(content);
+          final start = tester.getCenter(content);
+          final reference = gallery.getImageReferenceByOffset(start)!;
+          final pull = await tester.startGesture(start);
+          await pull.moveBy(const Offset(0, 40));
+          await tester.pump();
+          expect(tester.getTopLeft(content).dy - origin.dy, closeTo(40, 0.1));
+          await pull.moveBy(const Offset(0, 80));
+          await tester.pump();
+          await pull.up();
+          await tester.pumpAndSettle();
+          expect(scaffold.isLiked(reference), isTrue);
+          expect(tester.getTopLeft(content), origin);
+          await tester.dragFrom(start, const Offset(0, 120));
+          await tester.pumpAndSettle();
+          expect(scaffold.isLiked(reference), isFalse);
+
+          gallery.handleDoubleTap(start);
+          await tester.pumpAndSettle();
+          expect(gallery.canPullToCollect, isFalse);
+          final pan = await tester.startGesture(start);
+          await pan.moveBy(const Offset(0, 120));
+          await tester.pump();
+          expect(tester.getTopLeft(content), origin);
+          await pan.up();
+          await tester.pumpAndSettle();
+          await tester.pump(const Duration(milliseconds: 250));
+          expect(scaffold.isLiked(reference), isFalse);
+        }
         expect(tester.takeException(), isNull);
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());

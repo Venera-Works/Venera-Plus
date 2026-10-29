@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_plus/features/bangumi/bangumi.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/foundation/app.dart';
@@ -47,11 +46,7 @@ void main() {
     appdata.settings['comicTileScale'] = 1.0;
     appdata.settings['language'] = 'en-US';
     opened = [];
-    configureComicWidgets(
-      identityResolver: (comic) => (comic as BangumiComicGroup).groupKey,
-      openDetails: (_, comic, _) => opened.add(comic),
-      tileStateResolver: (_) => const ComicTileState(sourceCount: 2),
-    );
+    configureComicWidgets(openDetails: (_, comic, _) => opened.add(comic));
   });
 
   tearDown(() {
@@ -59,16 +54,10 @@ void main() {
     previous.forEach((key, value) => appdata.settings[key] = value);
   });
 
-  BangumiComicGroup<Comic> group(Comic representative) => BangumiComicGroup(
-    groupKey: 'bangumi:42',
-    members: [a, b],
-    representative: representative,
-  );
-
   testWidgets(
-    'representative changes keep hero identity and default details receive the complete group',
+    'source changes replace tile identity and open the selected source',
     (tester) async {
-      var comic = group(a);
+      var comic = a;
       late StateSetter rebuild;
       await tester.pumpWidget(
         MaterialApp(
@@ -89,15 +78,14 @@ void main() {
       );
       await tester.pumpAndSettle();
       final firstHero = tester.widget<ComicTile>(find.byType(ComicTile)).heroID;
-      expect(find.text('2 sources'), findsOneWidget);
       await tester.tap(find.text('First source'));
       expect(opened.single, same(comic));
 
-      rebuild(() => comic = group(b));
+      rebuild(() => comic = b);
       await tester.pumpAndSettle();
       expect(
         tester.widget<ComicTile>(find.byType(ComicTile)).heroID,
-        firstHero,
+        isNot(firstHero),
       );
       final tileContext = tester.element(find.byType(ComicTile));
       tester
@@ -108,7 +96,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(opened, hasLength(2));
       expect(opened.last, same(comic));
-      expect((opened.last as BangumiComicGroup).members, [a, b]);
+      expect(opened.last.sourceKey, 'source-b');
     },
   );
 }

@@ -3,14 +3,14 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/bangumi/bangumi.dart';
-import 'package:venera_plus/features/comic_details/comic_details.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/comic_details/comic_details.dart';
+import 'package:venera_plus/features/reader/reader.dart';
+import 'package:venera_plus/foundation/app_page_route.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
-import 'package:venera_plus/features/reader/reader.dart';
 import 'package:venera_plus/foundation/app.dart';
-import 'package:venera_plus/foundation/app_page_route.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 
@@ -61,11 +61,7 @@ void main() {
     manager = _HistoryManager([older, single, latest]);
     HistoryManager.cache = manager;
     _bind([older, latest]);
-    configureComicWidgets(
-      identityResolver: (comic) => comic is BangumiComicGroup
-          ? comic.groupKey
-          : (comic.sourceKey, comic.id),
-    );
+    configureComicWidgets();
   });
 
   tearDown(() {
@@ -77,247 +73,84 @@ void main() {
     ComicSourceManager().remove(_sourceB);
   });
 
-  testWidgets('groups all history by work and keeps source records intact', (
-    tester,
-  ) async {
-    final unknown = _history('unknown', 'missing', 5);
-    manager.records.add(unknown);
-    await tester.pumpWidget(_host());
-
-    final grid = _grid(tester);
-    final groups = grid.comics.cast<BangumiComicGroup<History>>();
-    expect(groups, hasLength(3));
-    expect(groups.first.subjectId, 42);
-    expect(groups.first.members, [latest, older]);
-    expect(groups.first.representative, same(latest));
-    expect(groups.first.description, latest.description);
-    expect(groups.skip(1).map((group) => group.members.single), [
-      single,
-      unknown,
-    ]);
-    expect(grid.badgeBuilder!(groups.first), '2 sources');
-    expect(grid.badgeBuilder!(groups[1]), 'Local');
-    expect(grid.badgeBuilder!(groups[2]), unknown.sourceKey);
-    expect(manager.records, [older, single, latest, unknown]);
-    expect(older.resumePosition, const ReadingPosition(ep: 12, page: 30));
-    expect(latest.resumePosition, const ReadingPosition(ep: 2, page: 4));
-    expect(manager.deleted, isEmpty);
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox.shrink());
-  });
-
   testWidgets(
-    'selection counts works and deleting a work expands its sources',
+    'histories retain each source title and position despite shared bindings',
     (tester) async {
       await tester.pumpWidget(_host());
-      await tester.tap(find.byTooltip('Multi-Select'));
-      await tester.pump();
-      await tester.tap(find.byTooltip('Select All'));
-      await tester.pump();
-      expect(_grid(tester).selections, hasLength(2));
-
-      await tester.tap(find.byTooltip('Deselect'));
-      await tester.pump();
-      expect(_grid(tester).selections, isEmpty);
-      final grid = _grid(tester);
-      grid.onTap!(grid.comics.last, 0);
-      await tester.pump();
-      await tester.tap(find.byTooltip('Invert Selection'));
-      await tester.pump();
-      expect(_grid(tester).selections!.keys.single, _grid(tester).comics.first);
-
-      await tester.tap(find.byTooltip('Delete'));
-      await tester.pump();
-      expect(
-        manager.deleted,
-        unorderedEquals([
-          ComicID(older.type, older.id),
-          ComicID(latest.type, latest.id),
-        ]),
-      );
-      expect(manager.records, [single]);
-      expect(_grid(tester).comics, hasLength(1));
-      expect(find.byTooltip('Multi-Select'), findsOneWidget);
-      await tester.pumpWidget(const SizedBox.shrink());
+      expect(_grid(tester).comics, [latest, single, older]);
+      expect(_grid(tester).comics.map((comic) => comic.title), [
+        'Title latest',
+        'Title single',
+        'Title older',
+      ]);
+      expect(older.resumePosition, const ReadingPosition(ep: 12, page: 30));
+      expect(latest.resumePosition, const ReadingPosition(ep: 2, page: 4));
+      expect(manager.records, hasLength(3));
     },
   );
 
-  testWidgets('blocked works stay outside selection without querying history', (
-    tester,
-  ) async {
-    appdata.settings['blockedWords'] = ['Work 42'];
-    await tester.pumpWidget(_host());
-    final queries = manager.queries;
-    expect(_grid(tester).comics, hasLength(1));
-    await tester.tap(find.byTooltip('Multi-Select'));
-    await tester.pump();
-    await tester.tap(find.byTooltip('Select All'));
-    await tester.pump();
-    expect(_grid(tester).selections!.keys.single, _grid(tester).comics.single);
-
-    await tester.tap(find.byTooltip('Invert Selection'));
-    await tester.pump();
-    expect(_grid(tester).selections, isEmpty);
-    await tester.tap(find.byTooltip('Invert Selection'));
-    await tester.pump();
-    expect(_grid(tester).selections, hasLength(1));
-
-    appdata.settings['blockedWords'] = <String>[];
-    await tester.pump();
-    expect(_grid(tester).comics, hasLength(2));
-    expect(_grid(tester).selections, hasLength(1));
-    await tester.tap(find.byTooltip('Select All'));
-    await tester.pump();
-    expect(_grid(tester).selections, hasLength(2));
-    appdata.settings['blockedWords'] = ['Work 42'];
-    await tester.pump();
-    expect(_grid(tester).comics, hasLength(1));
-    expect(_grid(tester).selections!.keys.single, _grid(tester).comics.single);
-    expect(manager.queries, queries);
-
-    await tester.tap(find.byTooltip('Delete'));
-    await tester.pump();
-    expect(manager.deleted, [ComicID(single.type, single.id)]);
-    expect(manager.records, [older, latest]);
-    expect(find.byType(SliverGridComics), findsNothing);
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox.shrink());
-  });
-
-  testWidgets('work menu removes every source without affecting other works', (
-    tester,
-  ) async {
-    await tester.pumpWidget(_host());
-    _menu(tester, 'Remove work history');
-    await tester.pump();
-    expect(manager.deleted, hasLength(2));
-    expect(manager.records, [single]);
-    await tester.pumpWidget(const SizedBox.shrink());
-  });
-
   testWidgets(
-    'source removal can delete unavailable history by its real type',
+    'removing one history leaves other sources for the same work intact',
     (tester) async {
-      final unavailable = _history('removed-source', 'missing', 40);
-      manager.records.add(unavailable);
-      _bind([older, latest, unavailable]);
       await tester.pumpWidget(_host());
-      _menu(tester, 'Remove source history');
-      await tester.pumpAndSettle();
-
-      final source = find.byKey(
-        ValueKey('comic-source:${unavailable.sourceKey}:${unavailable.id}'),
-      );
-      expect(tester.widget<ListTile>(source).enabled, isTrue);
-      await tester.tap(source);
-      await tester.pumpAndSettle();
-
-      expect(manager.deleted, [ComicID(unavailable.type, unavailable.id)]);
-      expect(manager.records, [older, single, latest]);
-      expect(
-        (_grid(tester).comics.first as BangumiComicGroup).members,
-        hasLength(2),
-      );
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox.shrink());
+      _menu(tester, 'Remove');
+      await tester.pump();
+      expect(manager.deleted, [ComicID(latest.type, latest.id)]);
+      expect(_grid(tester).comics, [single, older]);
     },
   );
 
-  testWidgets('refresh chooses one source and keeps each saved position', (
+  testWidgets('refresh updates the selected source without a source selector', (
     tester,
   ) async {
     await tester.pumpWidget(_host());
     _menu(tester, 'Refresh Info');
-    await tester.pumpAndSettle();
-    expect(manager.refreshed, isEmpty);
-    await tester.tap(
-      find.byKey(ValueKey('comic-source:$_sourceA:${older.id}')),
-    );
-    await tester.pumpAndSettle();
-
-    expect(manager.refreshed, [older]);
+    await tester.pump();
+    expect(manager.refreshed, [latest]);
     expect(older.resumePosition, const ReadingPosition(ep: 12, page: 30));
-    expect(latest.resumePosition, const ReadingPosition(ep: 2, page: 4));
-    expect(manager.deleted, isEmpty);
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('binding changes regroup and clear selections immediately', (
-    tester,
-  ) async {
+  testWidgets('blocked sources stay outside batch selection', (tester) async {
+    appdata.settings['blockedWords'] = ['Title latest'];
     await tester.pumpWidget(_host());
     await tester.tap(find.byTooltip('Multi-Select'));
     await tester.pump();
     await tester.tap(find.byTooltip('Select All'));
     await tester.pump();
-    final queries = manager.queries;
-
-    appdata.settings['showDetailedReadingProgress'] = true;
+    expect(_grid(tester).selections!.keys, unorderedEquals([single, older]));
+    await tester.tap(find.byTooltip('Delete'));
     await tester.pump();
-    expect(manager.queries, queries);
-    appdata.settings['showDetailedReadingProgress'] = false;
-    appdata.settings['bangumiBindings'] = <String, dynamic>{};
-    await tester.pump();
-
-    expect(_grid(tester).comics, hasLength(3));
-    expect(_grid(tester).selections, isEmpty);
-    expect(find.byTooltip('Multi-Select'), findsOneWidget);
-    expect(manager.deleted, isEmpty);
-    await tester.pumpWidget(const SizedBox.shrink());
+    expect(manager.records, [latest]);
   });
-
-  testWidgets(
-    'inactive binding and progress updates refresh once when visible',
-    (tester) async {
-      var active = true;
-      late StateSetter update;
-      await tester.pumpWidget(
-        MaterialApp(
-          navigatorKey: App.rootNavigatorKey,
-          home: StatefulBuilder(
-            builder: (context, setState) {
-              update = setState;
-              return HistoryPage(isActive: active);
-            },
-          ),
-        ),
-      );
-      expect(manager.queries, 1);
-      update(() => active = false);
-      await tester.pump();
-      appdata.settings['bangumiBindings'] = <String, dynamic>{};
-      manager.changed();
-      manager.changed();
-      await tester.pump();
-      expect(manager.queries, 1);
-
-      update(() => active = true);
-      await tester.pump();
-      expect(manager.queries, 2);
-      expect(_grid(tester).comics, hasLength(3));
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-  );
-
-  testWidgets('new group members clear selection before batch deletion', (
+  testWidgets('inactive progress updates refresh once when visible', (
     tester,
   ) async {
-    final incoming = _history('incoming', _sourceA, 40);
-    _bind([older, latest, incoming]);
-    await tester.pumpWidget(_host());
-    await tester.tap(find.byTooltip('Multi-Select'));
+    var active = true;
+    late StateSetter update;
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorKey: App.rootNavigatorKey,
+        home: StatefulBuilder(
+          builder: (context, setState) {
+            update = setState;
+            return HistoryPage(isActive: active);
+          },
+        ),
+      ),
+    );
+    expect(manager.queries, 1);
+    update(() => active = false);
     await tester.pump();
-    final grid = _grid(tester);
-    grid.onTap!(grid.comics.first, 0);
-    await tester.pump();
-    manager.records.add(incoming);
+    appdata.settings['bangumiBindings'] = <String, dynamic>{};
+    manager.changed();
     manager.changed();
     await tester.pump();
+    expect(manager.queries, 1);
 
-    expect(_grid(tester).selections, isEmpty);
-    expect(find.byTooltip('Multi-Select'), findsOneWidget);
-    expect(manager.deleted, isEmpty);
+    update(() => active = true);
+    await tester.pump();
+    expect(manager.queries, 2);
+    expect(_grid(tester).comics, hasLength(3));
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
@@ -356,33 +189,6 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
-
-  testWidgets('source switching resumes the explicitly chosen source', (
-    tester,
-  ) async {
-    final observer = _Routes();
-    await tester.pumpWidget(_host(observer: observer));
-    _menu(tester, 'Choose comic source');
-    await tester.pumpAndSettle();
-    await tester.tap(
-      find.byKey(ValueKey('comic-source:$_sourceA:${older.id}')),
-    );
-    await tester.idle();
-    final route = observer.latest as AppPageRoute;
-    final reader =
-        route.builder(tester.element(find.byType(HistoryPage)))
-            as ReaderWithLoading;
-    expect(reader.id, older.id);
-    expect(reader.sourceKey, _sourceA);
-    expect(reader.initialEp, isNull);
-    expect(reader.initialPage, isNull);
-    App.rootNavigatorKey.currentState!.removeRoute(route);
-    await tester.pumpAndSettle();
-    expect(older.resumePosition, const ReadingPosition(ep: 12, page: 30));
-    expect(latest.resumePosition, const ReadingPosition(ep: 2, page: 4));
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox.shrink());
-  });
 }
 
 Widget _host({_Routes? observer}) => MaterialApp(

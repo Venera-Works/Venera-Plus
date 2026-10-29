@@ -1,35 +1,27 @@
-# Bangumi Work Groups
+# Switching comic sources and Bangumi sync
 
 中文版本：[bangumi_groups.zh.md](bangumi_groups.zh.md)
 
-Comics from different sources appear as one work on Home, in local favorites, and in reading history once they have saved bindings to the same Bangumi subject ID. Cards use the saved Bangumi title and cover when available and show the source count. Missing metadata falls back to the source's title or cover.
+Home, local favorites, and reading history display each actual source with its own title and cover. Binding several sources to the same Bangumi subject does not combine their cards.
 
-## Creating and removing groups
+## Switching sources
 
-1. Open a comic's details, choose a subject in the Bangumi panel, and save the binding.
-2. Bind the same work from another source to the same Bangumi ID.
-3. Return to Home, favorites, or history to see the combined card.
+1. Open a comic's details or reader and select **⋯ → Switch source**.
+2. Search enabled sources that support searching, using the current title. Edit the query for alternate translations or names; a Bangumi binding is not required.
+3. Open a result to preview its cover, description, chapter list, and information. A source's full search results are also available.
+4. Select **Use this source** to apply the change. Previewing, returning, or cancelling does not replace the source.
 
-Only valid saved bindings create groups. Similar titles, search results, and metadata suggestions do not. Removing or changing a binding updates the groups. Disabling automatic sync or disconnecting the Bangumi account preserves existing groups. Online libraries continue to respect the current library's binding scope.
+Confirmation replaces the original comic in its local favorite folders while preserving folder membership, favorite time, and order. An existing target in the same folder is deduplicated. Home and update checks use the new source, including after restarting the app. Only the selected source identity is replaced; other comics with the same title or Bangumi subject are unaffected.
 
-Home groups only the sources in its assigned favorite folder. A regular local favorite folder also includes only its own members. All Favorites can combine records from multiple folders. Sidebar counts still represent source records; hover or long-press a count for its label. They can therefore exceed the number of work cards.
+Switching from details opens the new details page. Switching from the reader resumes the target source's saved progress if available; otherwise it opens details to choose a chapter. The original history and downloads are retained. Chapter numbers and page numbers are not copied between sources.
 
-## Reading and choosing a source
+## Sharing
 
-- Continue reading uses the most recently read available source. If several sources have no history, choose a source first.
-- Use Choose comic source in a card menu or comic details to switch explicitly. The chooser shows each source's reading progress, last-read marker, download status, and updates.
-- Each source keeps its own chapters, pages, and reading position. A source without history opens its details and catalog; a downloaded copy can use the local reader when its source is unavailable.
-- Unavailable sources without a downloaded copy are disabled in the chooser.
+Use **⋯ → Share** in details to share the current comic's title and link, or in the reader to share the current page image.
 
-Switching sources does not transfer chapter numbers or page positions, or merge downloaded files. An update from any member marks the work card. Reading clears the corresponding source's reminder. Clear all source update reminders clears reminders for every source in the current group.
+## Existing records and bindings
 
-## Search, favorites, and history
-
-Search matches the Bangumi title, original title, and any member's name or tags, keeping the full group when matched. Select All and Invert Selection use works visible after search, reading-status, and blocked-word filters. Reading status reflects the most recently read source's record, not completion of the entire work.
-
-Copy, move, and delete operate on the group's members in the current folder. Sources that exist only in other folders are unaffected. Reordering moves work cards and saves their members as consecutive entries. Downloads still require a source choice. Binding or membership changes clear affected selections so a batch action cannot silently include new targets.
-
-History keeps the original record for every source. Remove a work's complete history, or select and remove one source's record, including unavailable sources.
+Previously grouped favorites and histories appear as separate source entries without deleting saved records. A replacement without a Bangumi binding inherits the original subject relationship and uses automatic chapter parsing. Existing target bindings are preserved.
 
 ## Bangumi synchronization
 

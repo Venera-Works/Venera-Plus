@@ -1506,6 +1506,90 @@ class LocalFavoritesManager with ChangeNotifier {
     }
   }
 
+  /// Replace only this source identity, preserving each folder's position.
+  void replaceComic(
+    String id,
+    ComicType type,
+    FavoriteItem replacement, {
+    String? updateTime,
+  }) {
+    if (id == replacement.id && type == replacement.type) return;
+    final folders = find(id, type);
+    if (folders.isEmpty) return;
+    final targetFolders = find(replacement.id, replacement.type);
+    final known = targetFolders.isEmpty
+        ? null
+        : getComicWithUpdatesInfo(
+            targetFolders.first,
+            replacement.id,
+            replacement.type,
+          );
+    _db.execute('BEGIN TRANSACTION');
+    try {
+      for (final folder in folders) {
+        final table = quoteSqlIdentifier(folder);
+        final old = _db.select(
+          'SELECT time, display_order FROM $table WHERE id = ? AND type = ?;',
+          [id, type.value],
+        ).single;
+        if (comicExists(folder, replacement.id, replacement.type)) {
+          _db.execute('DELETE FROM $table WHERE id = ? AND type = ?;', [
+            id,
+            type.value,
+          ]);
+          updateInfo(folder, replacement, false);
+          _db.execute(
+            'UPDATE $table SET time = ?, display_order = ? WHERE id = ? AND type = ?;',
+            [
+              old['time'],
+              old['display_order'],
+              replacement.id,
+              replacement.type.value,
+            ],
+          );
+        } else {
+          _db.execute(
+            '''
+            UPDATE $table SET id = ?, type = ?, name = ?, author = ?,
+              cover_path = ?, tags = ?, translated_tags = ?,
+              last_update_time = ?, has_new_update = ?, last_check_time = ?
+            WHERE id = ? AND type = ?;
+          ''',
+            [
+              replacement.id,
+              replacement.type.value,
+              replacement.name,
+              replacement.author,
+              replacement.coverPath,
+              replacement.tags.join(','),
+              _translateTags(replacement.tags),
+              known?.updateTime ?? updateTime,
+              known?.hasNewUpdate == true ? 1 : 0,
+              known?.lastCheckTime?.millisecondsSinceEpoch,
+              id,
+              type.value,
+            ],
+          );
+        }
+      }
+      _db.execute('COMMIT');
+    } catch (_) {
+      _db.execute('ROLLBACK');
+      rethrow;
+    }
+    _generation++;
+    for (final folder in folders) {
+      counts[folder] = count(folder);
+    }
+    _hashedIds.remove((id, type.value));
+    _hashedIds[(replacement.id, replacement.type.value)] = {
+      ...targetFolders,
+      ...folders,
+    }.length;
+    refreshUpdateIds();
+    notifyListeners();
+  }
+
   String folderToJson(String folder) {
     var res = _db.select("select * from ${quoteSqlIdentifier(folder)};");
     return jsonEncode({

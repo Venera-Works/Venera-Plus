@@ -31,7 +31,7 @@ import 'package:venera_plus/network/proxy.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 import 'package:venera_plus/features/follow_updates/follow_updates.dart';
 import 'package:venera_plus/routing/app_links.dart';
-import 'package:venera_plus/routing/bangumi_comic_navigation.dart';
+import 'package:venera_plus/routing/comic_navigation.dart';
 import 'package:venera_plus/routing/handle_text_share.dart';
 import 'package:venera_plus/foundation/opencc.dart';
 import 'package:venera_plus/foundation/translations.dart';
@@ -305,21 +305,9 @@ Future<void> init({bool deferBackgroundTasks = false}) async {
           heroID: heroID,
         ),
     openDetails: (context, comic, heroID) {
-      unawaited(openBangumiComic(context, comic, read: false, heroID: heroID));
+      unawaited(openComic(context, comic, read: false, heroID: heroID));
     },
-    identityResolver: (comic) => comic is BangumiComicGroup
-        ? comic.groupKey
-        : (comic.sourceKey, comic.id),
-    addFavorite: (comics) {
-      final members = <(String, String), Comic>{};
-      for (final comic in comics) {
-        for (final member
-            in comic is BangumiComicGroup ? comic.members : [comic]) {
-          members[(member.sourceKey, member.id)] = member;
-        }
-      }
-      addFavorite(members.values.toList());
-    },
+    addFavorite: addFavorite,
     tileStateResolver: _resolveComicTileState,
     tileImageProviderResolver: _resolveComicTileImageProvider,
     addStateListener: (listener) {
@@ -437,26 +425,6 @@ void startAppLinkHandlers() {
 }
 
 ComicTileState _resolveComicTileState(Comic comic) {
-  if (comic is BangumiComicGroup) {
-    final state = _resolveComicTileState(comic.representative);
-    final states = comic.members.map(_resolveComicTileState).toList();
-    final source =
-        ComicSource.find(comic.representative.sourceKey)?.name ??
-        comic.representative.sourceKey;
-    return ComicTileState(
-      isFavorite: states.any((item) => item.isFavorite),
-      historyPage: state.historyPage,
-      historyMaxPage: state.historyMaxPage,
-      historyDescription: state.historyDescription == null
-          ? null
-          : '${state.historyDescription} · $source',
-      historyTooltip: state.historyTooltip == null
-          ? null
-          : '${state.historyTooltip} · $source',
-      hasNewUpdate: states.any((item) => item.hasNewUpdate),
-      sourceCount: comic.members.length,
-    );
-  }
   final type = _comicTypeOf(comic);
   final history = appdata.settings['showHistoryStatusOnTile']
       ? HistoryManager().find(comic.id, type)
@@ -486,12 +454,6 @@ ComicType _comicTypeOf(Comic comic) {
 }
 
 ImageProvider? _resolveComicTileImageProvider(Comic comic) {
-  if (comic is BangumiComicGroup) {
-    if (comic.binding?.coverUrl.isNotEmpty == true) {
-      return CachedImageProvider(comic.cover);
-    }
-    return _resolveComicTileImageProvider(comic.representative);
-  }
   if (comic.cover.trim().isEmpty) return null;
   if (comic is LocalComic) return LocalComicImageProvider(comic);
   if (comic is History) return HistoryImageProvider(comic);

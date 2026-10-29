@@ -1,5 +1,9 @@
 {
   "zh_CN": {
+    "Switch source": "换源",
+    "Use this source": "使用此来源",
+    "No searchable sources": "暂无可搜索的漫画源",
+    "Failed to switch source: @e": "换源失败：@e",
     "Choose comic source": "选择漫画来源",
     "Each source keeps its own reading position": "各来源分别保留自己的阅读位置",
     "Last read source": "最近阅读的来源",
@@ -1236,6 +1240,10 @@
     "Use the saved backup location.": "使用已保存的备份位置。"
   },
   "zh_TW": {
+    "Switch source": "換源",
+    "Use this source": "使用此來源",
+    "No searchable sources": "暫無可搜尋的漫畫來源",
+    "Failed to switch source: @e": "換源失敗：@e",
     "Choose comic source": "選擇漫畫來源",
     "Each source keeps its own reading position": "各來源分別保留自己的閱讀位置",
     "Last read source": "最近閱讀的來源",

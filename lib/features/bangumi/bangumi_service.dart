@@ -444,6 +444,30 @@ class BangumiService {
   bool hasPendingProgress(String sourceKey, String comicId) =>
       _pendingEntries(_bindingKey(sourceKey, comicId)).isNotEmpty;
 
+  /// Keep an explicitly selected replacement linked without a remote write.
+  Future<void> copyBindingToSource({
+    required String sourceKey,
+    required String comicId,
+    required String targetSourceKey,
+    required String targetComicId,
+  }) => _runBinding(targetSourceKey, targetComicId, () async {
+    final binding = bindingFor(sourceKey, comicId);
+    if (binding == null || bindingFor(targetSourceKey, targetComicId) != null) {
+      return;
+    }
+    final expected = _operationSnapshotFor(targetSourceKey, targetComicId);
+    await _saveBinding(
+      binding.copyWith(
+        scopeId: _scopeIdFor(targetSourceKey),
+        sourceKey: targetSourceKey,
+        comicId: targetComicId,
+        progressMode: BangumiProgressMode.auto,
+      ),
+      shareSubjectState: false,
+      expected: expected,
+    );
+  });
+
   Future<BangumiBinding> bind({
     required String sourceKey,
     required String comicId,

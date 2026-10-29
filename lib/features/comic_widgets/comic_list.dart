@@ -338,6 +338,7 @@ class ComicList extends StatefulWidget {
     this.useFavoriteDisplaySettings = false,
     this.hideFavoriteBadge = false,
     this.badgeBuilder,
+    this.onTap,
   });
 
   final Future<Res<List<Comic>>> Function(int page)? loadPage;
@@ -364,6 +365,7 @@ class ComicList extends StatefulWidget {
 
   final bool hideFavoriteBadge;
   final String? Function(Comic)? badgeBuilder;
+  final void Function(Comic, int heroID)? onTap;
 
   @override
   State<ComicList> createState() => ComicListState();
@@ -1046,6 +1048,7 @@ class ComicListState extends State<ComicList> {
         SliverGridComics(
           comics: _data[_page] ?? const [],
           menuBuilder: widget.menuBuilder,
+          onTap: widget.onTap,
           badgeBuilder: widget.badgeBuilder,
           useFavoriteDisplaySettings: widget.useFavoriteDisplaySettings,
           hideFavoriteBadge: widget.hideFavoriteBadge,
@@ -1106,6 +1109,7 @@ class ComicListState extends State<ComicList> {
         SliverGridComics(
           comics: _data.values.expand((element) => element).toList(),
           menuBuilder: widget.menuBuilder,
+          onTap: widget.onTap,
           badgeBuilder: widget.badgeBuilder,
           useFavoriteDisplaySettings: widget.useFavoriteDisplaySettings,
           hideFavoriteBadge: widget.hideFavoriteBadge,

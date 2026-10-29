@@ -45,7 +45,6 @@ class ComicTileState {
     this.historyDescription,
     this.historyTooltip,
     this.hasNewUpdate = false,
-    this.sourceCount = 1,
   });
 
   final bool isFavorite;
@@ -54,7 +53,6 @@ class ComicTileState {
   final String? historyDescription;
   final String? historyTooltip;
   final bool hasNewUpdate;
-  final int sourceCount;
 }
 
 class ComicFavoriteDisplayState {
@@ -308,35 +306,7 @@ class ComicTile extends StatelessWidget {
     };
 
     final state = _tileState(comic);
-    if (state.sourceCount > 1) {
-      child = Stack(
-        children: [
-          Positioned.fill(child: child),
-          Positioned(
-            right: 8,
-            top: 6,
-            child: IgnorePointer(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: context.colorScheme.secondaryContainer,
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 6,
-                    vertical: 2,
-                  ),
-                  child: Text(
-                    '@count sources'.tlParams({'count': state.sourceCount}),
-                    style: Theme.of(context).textTheme.labelSmall,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
-      );
-    }
+
     final isFavorite = state.isFavorite && !hideFavoriteBadge;
     final historyPage = state.historyPage == 0 ? 1 : state.historyPage;
     final hasUpdate = state.hasNewUpdate;

@@ -24,6 +24,66 @@ void main() {
     saveCount = 0;
   });
 
+  test(
+    'source replacement copies the binding locally with automatic chapter parsing',
+    () async {
+      setBinding(binding());
+      await service.copyBindingToSource(
+        sourceKey: 'source',
+        comicId: 'comic',
+        targetSourceKey: 'target',
+        targetComicId: 'replacement',
+      );
+      final copied = service.bindingFor('target', 'replacement')!;
+      expect(copied.subjectId, 42);
+      expect(copied.rating, 6);
+      expect(copied.lastRemoteEpisode, 12);
+      expect(copied.progressMode, BangumiProgressMode.auto);
+      expect(service.bindingFor('source', 'comic'), binding());
+      expect(gateway.operationCalls, isEmpty);
+      expect(saveCount, 1);
+    },
+  );
+
+  test('source replacement keeps an existing target binding', () async {
+    final target = binding().copyWith(
+      sourceKey: 'target',
+      comicId: 'replacement',
+      subjectId: 99,
+    );
+    setBindings([binding(), target]);
+    await service.copyBindingToSource(
+      sourceKey: 'source',
+      comicId: 'comic',
+      targetSourceKey: 'target',
+      targetComicId: 'replacement',
+    );
+    expect(service.bindingFor('target', 'replacement'), target);
+    expect(saveCount, 0);
+  });
+
+  test(
+    'failed binding persistence leaves both source relationships intact',
+    () async {
+      setBinding(binding());
+      final failing = BangumiService.forTesting(
+        gatewayFactory: (_) => gateway,
+        saveSettings: () async => throw StateError('save failed'),
+      );
+      await expectLater(
+        failing.copyBindingToSource(
+          sourceKey: 'source',
+          comicId: 'comic',
+          targetSourceKey: 'target',
+          targetComicId: 'replacement',
+        ),
+        throwsStateError,
+      );
+      expect(failing.bindingFor('target', 'replacement'), isNull);
+      expect(failing.bindingFor('source', 'comic'), binding());
+    },
+  );
+
   test('connect verifies then saves token and username', () async {
     gateway.user = const BangumiUser('alice', 'Alice');
 

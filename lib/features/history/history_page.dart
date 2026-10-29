@@ -7,14 +7,13 @@ import 'package:venera_plus/components/flyout.dart';
 import 'package:venera_plus/components/menu.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/scroll.dart';
-import 'package:venera_plus/features/bangumi/bangumi.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/foundation/translations.dart';
-import 'package:venera_plus/routing/bangumi_comic_navigation.dart';
+import 'package:venera_plus/routing/comic_navigation.dart';
 
 class HistoryPage extends StatefulWidget {
   const HistoryPage({super.key, this.isRoot = false, this.isActive = true});
@@ -29,7 +28,6 @@ class _HistoryPageState extends State<HistoryPage> {
   ModalRoute<dynamic>? _route;
   bool _tickerModeEnabled = true;
   bool _needsRefresh = true;
-  Object? _bindings;
   List<String> _blockedWords = [];
 
   bool get _isVisible =>
@@ -38,7 +36,6 @@ class _HistoryPageState extends State<HistoryPage> {
   @override
   void initState() {
     HistoryManager().addListener(onUpdate);
-    _bindings = appdata.settings['bangumiBindings'];
     appdata.settings.addListener(_onSettingsChanged);
     super.initState();
   }
@@ -66,16 +63,7 @@ class _HistoryPageState extends State<HistoryPage> {
   }
 
   void _onSettingsChanged() {
-    final bindings = appdata.settings['bangumiBindings'];
-    if (!identical(bindings, _bindings)) {
-      _bindings = bindings;
-      selectedComics.clear();
-      multiSelectMode = false;
-      _needsRefresh = true;
-    } else if (listEquals(
-      _blockedWords,
-      appdata.settings['blockedWords'] as List,
-    )) {
+    if (listEquals(_blockedWords, appdata.settings['blockedWords'] as List)) {
       return;
     }
     if (_isVisible) setState(_refreshIfVisible);
@@ -93,24 +81,15 @@ class _HistoryPageState extends State<HistoryPage> {
     final words = appdata.settings['blockedWords'] as List;
     if (!_needsRefresh && listEquals(_blockedWords, words)) return;
     if (_needsRefresh) {
-      comics = groupBangumiComics(
-        HistoryManager().getAll(),
-        lastRead: (history) => history.time,
-      );
+      comics = HistoryManager().getAll();
       _needsRefresh = false;
     }
     _blockedWords = List<String>.from(words);
     visibleComics = comics.where((comic) => isBlocked(comic) == null).toList();
     if (multiSelectMode) {
-      final previousSelections = {
-        for (final group in selectedComics.keys) group.groupKey: group,
-      };
       selectedComics = {
-        for (final group in visibleComics)
-          if (previousSelections[group.groupKey] case final previous?)
-            if (previous.members.length == group.members.length &&
-                previous.members.toSet().containsAll(group.members))
-              group: true,
+        for (final comic in visibleComics)
+          if (selectedComics.containsKey(comic)) comic: true,
       };
       if (selectedComics.isEmpty) {
         multiSelectMode = false;
@@ -118,12 +97,12 @@ class _HistoryPageState extends State<HistoryPage> {
     }
   }
 
-  List<BangumiComicGroup<History>> comics = [];
-  List<BangumiComicGroup<History>> visibleComics = [];
+  List<History> comics = [];
+  List<History> visibleComics = [];
   var controller = FlyoutController();
 
   bool multiSelectMode = false;
-  Map<BangumiComicGroup<History>, bool> selectedComics = {};
+  Map<History, bool> selectedComics = {};
 
   void selectAll() {
     setState(() {
@@ -152,25 +131,7 @@ class _HistoryPageState extends State<HistoryPage> {
     ]);
   }
 
-  void _removeSourceHistory(BangumiComicGroup<History> group) async {
-    final source = await selectBangumiComicSource(
-      context,
-      group,
-      alwaysChoose: true,
-      allowUnavailable: true,
-    );
-    if (source is History && mounted) {
-      HistoryManager().remove(source.id, source.type);
-    }
-  }
-
-  void _refreshHistory(BangumiComicGroup<History> group) async {
-    final source = await selectBangumiComicSource(
-      context,
-      group,
-      alwaysChoose: true,
-    );
-    if (source is! History || !mounted) return;
+  void _refreshHistory(History source) async {
     var result = await HistoryManager().refreshHistoryInfo(source);
     if (result) {
       if (mounted) {
@@ -252,9 +213,7 @@ class _HistoryPageState extends State<HistoryPage> {
         onPressed: selectedComics.isEmpty
             ? null
             : () {
-                final comicsToDelete = selectedComics.keys
-                    .expand((group) => group.members)
-                    .toList();
+                final comicsToDelete = selectedComics.keys.toList();
                 setState(() {
                   multiSelectMode = false;
                   selectedComics.clear();
@@ -375,9 +334,9 @@ class _HistoryPageState extends State<HistoryPage> {
               selections: selectedComics,
               onLongPressed: null,
               onTap: (c, heroID) {
-                final group = c as BangumiComicGroup<History>;
+                final group = c as History;
                 if (!multiSelectMode) {
-                  openBangumiComic(context, group, read: false, heroID: heroID);
+                  openComic(context, group, read: false, heroID: heroID);
                   return;
                 }
                 setState(() {
@@ -392,35 +351,18 @@ class _HistoryPageState extends State<HistoryPage> {
                 });
               },
               badgeBuilder: (c) {
-                final group = c as BangumiComicGroup<History>;
-                if (group.members.length > 1) {
-                  return '@count sources'.tlParams({
-                    'count': group.members.length,
-                  });
-                }
                 return c.sourceKey == 'local'
                     ? 'Local'.tl
                     : ComicSource.find(c.sourceKey)?.name ?? c.sourceKey;
               },
               menuBuilder: (c) {
-                final group = c as BangumiComicGroup<History>;
+                final group = c as History;
                 return [
                   MenuEntry(
                     icon: Icons.play_arrow,
                     text: 'Continue'.tl,
-                    onClick: () => openBangumiComic(context, group, read: true),
+                    onClick: () => openComic(context, group, read: true),
                   ),
-                  if (group.members.length > 1)
-                    MenuEntry(
-                      icon: Icons.swap_horiz,
-                      text: 'Choose comic source'.tl,
-                      onClick: () => openBangumiComic(
-                        context,
-                        group,
-                        read: true,
-                        chooseSource: true,
-                      ),
-                    ),
                   MenuEntry(
                     icon: Icons.refresh,
                     text: 'Refresh Info'.tl,
@@ -428,17 +370,10 @@ class _HistoryPageState extends State<HistoryPage> {
                   ),
                   MenuEntry(
                     icon: Icons.remove,
-                    text: 'Remove work history'.tl,
+                    text: 'Remove'.tl,
                     color: context.colorScheme.error,
-                    onClick: () => _removeHistories(group.members),
+                    onClick: () => _removeHistories([group]),
                   ),
-                  if (group.members.length > 1)
-                    MenuEntry(
-                      icon: Icons.remove_circle_outline,
-                      text: 'Remove source history'.tl,
-                      color: context.colorScheme.error,
-                      onClick: () => _removeSourceHistory(group),
-                    ),
                 ];
               },
             ),

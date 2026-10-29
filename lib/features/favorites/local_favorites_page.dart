@@ -11,7 +11,6 @@ import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/components/select.dart';
-import 'package:venera_plus/features/bangumi/bangumi.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/features/favorites/favorite_actions.dart';
@@ -21,7 +20,7 @@ import 'package:venera_plus/features/favorites/favorites_manager.dart';
 import 'package:venera_plus/features/favorites/reorder_comics_page.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
-import 'package:venera_plus/routing/bangumi_comic_navigation.dart';
+import 'package:venera_plus/routing/comic_navigation.dart';
 import 'package:venera_plus/features/follow_updates/follow_updates.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/app.dart';
@@ -58,8 +57,6 @@ class LocalFavoritesPage extends StatefulWidget {
 
 class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
   late List<FavoriteItem> comics;
-  List<BangumiComicGroup<FavoriteItem>> groups = [];
-  Object? _bindings;
   bool _historyDirty = false;
   ModalRoute<dynamic>? _route;
   bool _tickerModeEnabled = true;
@@ -70,7 +67,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
   String? networkSource;
   String? networkFolder;
 
-  Map<BangumiComicGroup<FavoriteItem>, bool> selectedComics = {};
+  Map<FavoriteItem, bool> selectedComics = {};
 
   var selectedLocalFolders = <String>{};
 
@@ -83,7 +80,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
 
   bool multiSelectMode = false;
 
-  String? lastSelectedGroupKey;
+  FavoriteItem? lastSelectedComic;
 
   bool get isAllFolder => widget.folder == localAllFolderLabel;
 
@@ -94,78 +91,42 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
   int _loadGeneration = 0;
   late String readFilterSelect;
 
-  var searchResults = <BangumiComicGroup<FavoriteItem>>[];
+  var searchResults = <FavoriteItem>[];
 
-  List<BangumiComicGroup<FavoriteItem>> get displayedGroups => filterComics(
-    searchMode ? searchResults : groups,
-  ).where((group) => isBlocked(group) == null).toList();
-
-  List<BangumiComicGroup<FavoriteItem>> get selectedGroups =>
-      displayedGroups.where(selectedComics.containsKey).toList();
+  List<FavoriteItem> get displayedComics => filterComics(
+    searchMode ? searchResults : comics,
+  ).where((comic) => isBlocked(comic) == null).toList();
 
   List<FavoriteItem> get selectedMembers =>
-      selectedGroups.expand((group) => group.members).toList();
+      displayedComics.where(selectedComics.containsKey).toList();
 
-  void _regroupComics() {
+  void _refreshComics() {
     _historyDirty = false;
-    groups = groupBangumiComics<FavoriteItem>(
-      comics,
-      lastRead: (item) => HistoryManager().find(item.id, item.type)?.time,
-    );
     _updateSearchResults();
   }
 
   void _updateSearchResults() {
     searchResults = keyword.trim().isEmpty
-        ? groups
-        : groups.where((group) {
-            return _matchesGroupTitle(keyword, group.title) ||
-                _matchesGroupTitle(
-                  keyword,
-                  group.binding?.subjectOriginalTitle ?? '',
-                ) ||
-                group.members.any(
-                  (comic) =>
-                      matchKeyword(keyword, comic) ||
-                      matchKeywordT(keyword, comic) ||
-                      matchKeywordS(keyword, comic),
-                );
-          }).toList();
+        ? comics
+        : comics
+              .where(
+                (comic) =>
+                    matchKeyword(keyword, comic) ||
+                    matchKeywordT(keyword, comic) ||
+                    matchKeywordS(keyword, comic),
+              )
+              .toList();
     _retainDisplayedSelection();
   }
 
-  bool _matchesGroupTitle(String keyword, String title) {
-    bool matches(String query) => query
-        .split(' ')
-        .where((word) => word.isNotEmpty)
-        .every((word) => checkKeyWordMatch(word, title, false));
-    return matches(keyword) ||
-        (OpenCC.hasChineseSimplified(keyword) &&
-            matches(OpenCC.simplifiedToTraditional(keyword))) ||
-        (OpenCC.hasChineseTraditional(keyword) &&
-            matches(OpenCC.traditionalToSimplified(keyword)));
-  }
-
   void _retainDisplayedSelection() {
-    final visible = displayedGroups;
-    final previousSelections = {
-      for (final group in selectedComics.keys) group.groupKey: group,
-    };
+    final visible = displayedComics;
     selectedComics = {
-      for (final group in visible)
-        if (previousSelections[group.groupKey] case final previous?)
-          if (previous.members.length == group.members.length &&
-              previous.members.toSet().containsAll(group.members))
-            group: true,
+      for (final comic in visible)
+        if (selectedComics.containsKey(comic)) comic: true,
     };
     if (selectedComics.isEmpty) multiSelectMode = false;
-    if (!visible.any((group) => group.groupKey == lastSelectedGroupKey) ||
-        (previousSelections.containsKey(lastSelectedGroupKey) &&
-            !selectedComics.keys.any(
-              (group) => group.groupKey == lastSelectedGroupKey,
-            ))) {
-      lastSelectedGroupKey = null;
-    }
+    if (!visible.contains(lastSelectedComic)) lastSelectedComic = null;
   }
 
   void updateSearchResult() {
@@ -174,24 +135,13 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
 
   void _onSettingsChanged() {
     if (!mounted) return;
-    setState(() {
-      final bindings = appdata.settings['bangumiBindings'];
-      if (!identical(_bindings, bindings)) {
-        _bindings = bindings;
-        selectedComics.clear();
-        multiSelectMode = false;
-        lastSelectedGroupKey = null;
-        _regroupComics();
-      } else {
-        _retainDisplayedSelection();
-      }
-    });
+    setState(_retainDisplayedSelection);
   }
 
   void _onHistoryChanged() {
     if (!mounted) return;
     _historyDirty = true;
-    if (_isVisible) setState(_regroupComics);
+    if (_isVisible) setState(_refreshComics);
   }
 
   @override
@@ -199,7 +149,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
     super.didChangeDependencies();
     _route = ModalRoute.of(context);
     _tickerModeEnabled = TickerMode.valuesOf(context).enabled;
-    if (_isVisible && _historyDirty) _regroupComics();
+    if (_isVisible && _historyDirty) _refreshComics();
   }
 
   void updateComics() {
@@ -217,7 +167,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
         comics = manager.getAllComics();
         isLoading = false;
         loadError = null;
-        _regroupComics();
+        _refreshComics();
         if (mounted) setState(() {});
         return;
       }
@@ -238,7 +188,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
             isLoading = false;
             comics = value;
             loadError = null;
-            _regroupComics();
+            _refreshComics();
           });
         }
       } catch (error, stackTrace) {
@@ -251,7 +201,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
             isLoading = false;
             comics = [];
             loadError = "Failed to load comics".tl;
-            _regroupComics();
+            _refreshComics();
           });
           context.showMessage(message: "Failed to load comics".tl);
         }
@@ -261,7 +211,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
         comics = [];
         isLoading = false;
         loadError = null;
-        _regroupComics();
+        _refreshComics();
         if (mounted) setState(() {});
         return;
       }
@@ -271,7 +221,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
         comics = manager.getFolderComics(widget.folder);
         isLoading = false;
         loadError = null;
-        _regroupComics();
+        _refreshComics();
         if (mounted) setState(() {});
         return;
       }
@@ -295,7 +245,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
             isLoading = false;
             comics = value;
             loadError = null;
-            _regroupComics();
+            _refreshComics();
           });
         }
       } catch (error, stackTrace) {
@@ -309,7 +259,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
             isLoading = false;
             comics = [];
             loadError = "Failed to load comics".tl;
-            _regroupComics();
+            _refreshComics();
           });
           context.showMessage(message: "Failed to load comics".tl);
         }
@@ -317,11 +267,9 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
     }
   }
 
-  List<BangumiComicGroup<FavoriteItem>> filterComics(
-    List<BangumiComicGroup<FavoriteItem>> curGroups,
-  ) {
-    return curGroups.where((group) {
-      final comic = group.representative;
+  List<FavoriteItem> filterComics(List<FavoriteItem> currentComics) {
+    return currentComics.where((group) {
+      final comic = group;
       var history = HistoryManager().find(comic.id, comic.type);
       if (readFilterSelect == "UnCompleted") {
         return history == null || history.page != history.maxPage;
@@ -406,7 +354,6 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
       networkFolder = null;
     }
     comics = [];
-    _bindings = appdata.settings['bangumiBindings'];
     loadComics();
     LocalFavoritesManager().addListener(updateComics);
     appdata.settings.addListener(_onSettingsChanged);
@@ -417,11 +364,11 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
   @override
   void didUpdateWidget(covariant LocalFavoritesPage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (_isVisible && _historyDirty) _regroupComics();
+    if (_isVisible && _historyDirty) _refreshComics();
     if (oldWidget.folder != widget.folder) {
       selectedComics.clear();
       multiSelectMode = false;
-      lastSelectedGroupKey = null;
+      lastSelectedComic = null;
       final linked = isAllFolder
           ? (null, null)
           : manager.findLinked(widget.folder);
@@ -497,7 +444,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
 
   void selectAll() {
     setState(() {
-      selectedComics = {for (final group in displayedGroups) group: true};
+      selectedComics = {for (final group in displayedComics) group: true};
       multiSelectMode = selectedComics.isNotEmpty;
     });
   }
@@ -505,14 +452,14 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
   void invertSelection() {
     setState(() {
       selectedComics = {
-        for (final group in displayedGroups)
+        for (final group in displayedComics)
           if (!selectedComics.containsKey(group)) group: true,
       };
       multiSelectMode = selectedComics.isNotEmpty;
     });
   }
 
-  void _toggleSelection(BangumiComicGroup<FavoriteItem> group) {
+  void _toggleSelection(FavoriteItem group) {
     setState(() {
       if (selectedComics.containsKey(group)) {
         selectedComics.remove(group);
@@ -520,16 +467,14 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
         selectedComics[group] = true;
       }
       multiSelectMode = selectedComics.isNotEmpty;
-      lastSelectedGroupKey = group.groupKey;
+      lastSelectedComic = group;
     });
   }
 
-  void _selectRange(BangumiComicGroup<FavoriteItem> group) {
+  void _selectRange(FavoriteItem group) {
     setState(() {
-      final visible = displayedGroups;
-      final start = visible.indexWhere(
-        (entry) => entry.groupKey == lastSelectedGroupKey,
-      );
+      final visible = displayedComics;
+      final start = visible.indexWhere((entry) => entry == lastSelectedComic);
       final end = visible.indexOf(group);
       if (!multiSelectMode || start < 0) {
         selectedComics[group] = true;
@@ -546,7 +491,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
           }
         }
       }
-      lastSelectedGroupKey = group.groupKey;
+      lastSelectedComic = group;
       multiSelectMode = selectedComics.isNotEmpty;
     });
   }
@@ -566,19 +511,10 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
     return false;
   }
 
-  Future<void> _downloadGroups(
-    List<BangumiComicGroup<FavoriteItem>> groups,
-  ) async {
+  Future<void> _downloadComics(List<FavoriteItem> groups) async {
     int count = 0;
     for (final group in groups) {
-      final source = await selectBangumiComicSource(
-        context,
-        group,
-        alwaysChoose: true,
-      );
-      if (!mounted) return;
-      if (source == null) break;
-      if (downloadComic(source as FavoriteItem)) count++;
+      if (downloadComic(group)) count++;
     }
     if (mounted && count > 0) {
       context.showMessage(
@@ -588,22 +524,16 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
   }
 
   void downloadSelected() {
-    unawaited(_downloadGroups(selectedGroups));
+    unawaited(_downloadComics(selectedMembers));
   }
 
-  void _openGroup(
-    BangumiComicGroup<FavoriteItem> group, {
-    required bool read,
-    int? heroID,
-    bool chooseSource = false,
-  }) {
+  void _openComic(FavoriteItem group, {required bool read, int? heroID}) {
     unawaited(
-      openBangumiComic(
+      openComic(
         App.mainNavigatorKey?.currentContext ?? context,
         group,
         read: read,
         heroID: heroID,
-        chooseSource: chooseSource,
       ),
     );
   }
@@ -612,11 +542,10 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
 
   @override
   Widget build(BuildContext context) {
-    final displayedComics = displayedGroups;
-    final matchingGroups = searchMode ? searchResults : groups;
-    final readFilteredGroups = filterComics(matchingGroups);
-    final readFilteredCount = matchingGroups.length - readFilteredGroups.length;
-    final blockedCount = readFilteredGroups.length - displayedComics.length;
+    final matchingComics = searchMode ? searchResults : comics;
+    final readFilteredComics = filterComics(matchingComics);
+    final readFilteredCount = matchingComics.length - readFilteredComics.length;
+    final blockedCount = readFilteredComics.length - displayedComics.length;
     var title = widget.folder;
     if (title == localAllFolderLabel) {
       title = "All".tl;
@@ -924,14 +853,14 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                       icon: Icons.chrome_reader_mode_outlined,
                       text: "Read".tl,
                       onClick: () =>
-                          _openGroup(selectedGroups.single, read: true),
+                          _openComic(selectedMembers.single, read: true),
                     ),
                   if (selectedComics.length == 1)
                     MenuEntry(
                       icon: Icons.arrow_forward_ios,
                       text: "Jump to Detail".tl,
                       onClick: () =>
-                          _openGroup(selectedGroups.single, read: false),
+                          _openComic(selectedMembers.single, read: false),
                     ),
                 ],
               ),
@@ -1041,14 +970,14 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
             useFavoriteDisplaySettings: true,
             hideFavoriteBadge: true,
             menuBuilder: (c) {
-              final group = c as BangumiComicGroup<FavoriteItem>;
+              final group = c as FavoriteItem;
               return [
                 if (!isAllFolder)
                   MenuEntry(
                     icon: Icons.delete,
                     text: "Delete".tl,
                     onClick: () =>
-                        manager.batchDeleteComics(widget.folder, group.members),
+                        manager.batchDeleteComics(widget.folder, [group]),
                   ),
                 MenuEntry(
                   icon: Icons.check,
@@ -1058,7 +987,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                 MenuEntry(
                   icon: Icons.download,
                   text: "Download".tl,
-                  onClick: () => unawaited(_downloadGroups([group])),
+                  onClick: () => unawaited(_downloadComics([group])),
                 ),
                 MenuEntry(
                   icon: appdata.settings["onClickFavorite"] == "viewDetail"
@@ -1069,53 +998,32 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                               ? "Read"
                               : "View Detail")
                           .tl,
-                  onClick: () => _openGroup(
+                  onClick: () => _openComic(
                     group,
                     read: appdata.settings["onClickFavorite"] == "viewDetail",
                   ),
                 ),
-                if (group.members.length > 1)
-                  MenuEntry(
-                    icon: Icons.swap_horiz,
-                    text: "Choose comic source".tl,
-                    onClick: () => _openGroup(
-                      group,
-                      read: appdata.settings["onClickFavorite"] != "viewDetail",
-                      chooseSource: true,
-                    ),
-                  ),
-                if (group.members.any(
-                  (item) => manager.hasNewUpdate(item.id, item.type),
-                ))
+                if (manager.hasNewUpdate(group.id, group.type))
                   MenuEntry(
                     icon: Icons.done_all,
-                    text:
-                        (group.members.length > 1
-                                ? 'Clear all source update reminders'
-                                : 'Mark as read')
-                            .tl,
-                    onClick: () {
-                      for (final item in group.members) {
-                        manager.markAsRead(item.id, item.type);
-                      }
-                    },
+                    text: 'Mark as read'.tl,
+                    onClick: () => manager.markAsRead(group.id, group.type),
                   ),
               ];
             },
             onTap: (c, heroID) {
-              final group = c as BangumiComicGroup<FavoriteItem>;
+              final group = c as FavoriteItem;
               if (multiSelectMode) {
                 _toggleSelection(group);
               } else {
-                _openGroup(
+                _openComic(
                   group,
                   read: appdata.settings["onClickFavorite"] != "viewDetail",
                   heroID: heroID,
                 );
               }
             },
-            onLongPressed: (c, heroID) =>
-                _selectRange(c as BangumiComicGroup<FavoriteItem>),
+            onLongPressed: (c, heroID) => _selectRange(c as FavoriteItem),
           ),
         ],
       ],
@@ -1288,7 +1196,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
     setState(() {
       selectedComics.clear();
       multiSelectMode = false;
-      lastSelectedGroupKey = null;
+      lastSelectedComic = null;
     });
   }
 

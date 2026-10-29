@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:image/image.dart' as img;
 import 'package:venera_plus/components/gesture.dart';
+import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/custom_slider.dart';
 import 'package:venera_plus/components/window_frame.dart';
 import 'package:venera_plus/features/comic_details/comic_details.dart';
@@ -15,6 +16,7 @@ import 'package:venera_plus/features/comic_details/chapters.dart';
 import 'package:venera_plus/features/comic_details/thumbnails.dart';
 import 'package:venera_plus/features/favorites/favorites_manager.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/reader/comic_image.dart';
@@ -22,6 +24,7 @@ import 'package:venera_plus/features/reader/brightness.dart';
 import 'package:venera_plus/features/reader/chapters.dart';
 import 'package:venera_plus/features/reader/gesture.dart';
 import 'package:venera_plus/features/reader/reader_page.dart';
+import 'package:venera_plus/features/reader/reader.dart' show ReaderWithLoading;
 import 'package:venera_plus/features/reader/scaffold.dart';
 import 'package:venera_plus/foundation/app_page_route.dart';
 import 'package:venera_plus/foundation/image_provider/reader_image.dart';
@@ -53,6 +56,153 @@ void main() {
       expect(isAuthorNamespace('language'), isFalse);
     },
   );
+
+  for (final entry in ['details', 'reader', 'direct-reader']) {
+    final fromReader = entry != 'details';
+    final directReader = entry == 'direct-reader';
+    testWidgets(
+      'source preview and confirmation replace the active page (entry=$entry)',
+      (tester) async {
+        final fixture = await _createFixture(tester, grouped: false);
+        final targetKey = '${fixture.sourceKey}_replacement';
+        final target = ComicDetails.fromJson({
+          'title': 'Alternate source',
+          'cover': fixture.imageUrls.last,
+          'description': 'Alternate description',
+          'tags': <String, dynamic>{},
+          'chapters': {'different-chapter': 'Different chapter'},
+          'sourceKey': targetKey,
+          'comicId': 'replacement',
+        });
+        final candidate = Comic(
+          'Alternate source',
+          target.cover,
+          target.id,
+          null,
+          null,
+          '',
+          targetKey,
+          null,
+          null,
+        );
+        final searches = <String>[];
+        ComicSourceManager().add(
+          _comicSource(
+            sourceKey: targetKey,
+            details: target,
+            imageUrls: fixture.imageUrls,
+            requestedChapterIds: [],
+            searchPageData: SearchPageData(const [], (
+              keyword,
+              page,
+              options,
+            ) async {
+              searches.add(keyword);
+              return Res([candidate], subData: 1);
+            }, null),
+          ),
+        );
+        addTearDown(() => ComicSourceManager().remove(targetKey));
+        appdata.settings['bangumiBindings'] = <String, dynamic>{};
+        appdata.settings['searchSources'] = [targetKey];
+        final favorites = LocalFavoritesManager() as _TestFavorites;
+        if (fromReader) {
+          fixture.histories.addHistory(fixture.makeHistory(ep: 2, page: 3));
+        }
+        if (directReader) {
+          fixture.histories.addHistory(
+            History.fromModel(model: target, ep: 1, page: 2),
+          );
+        }
+        await tester.pumpWidget(
+          directReader
+              ? MaterialApp(
+                  navigatorKey: App.rootNavigatorKey,
+                  builder: (context, child) => WindowFrame(child!),
+                  home: ReaderWithLoading(
+                    id: fixture.comicId,
+                    sourceKey: fixture.sourceKey,
+                  ),
+                )
+              : fixture.page,
+        );
+        if (!directReader)
+          await _waitForText(tester, fromReader ? 'Continue' : 'Read');
+        if (fromReader) {
+          if (!directReader) await tester.tap(find.text('Continue'));
+          final reader = await _waitForReaderRoute(tester);
+          await _waitForReader(tester, reader, 3);
+          tester
+              .state<ReaderScaffoldState>(find.byType(ReaderScaffold))
+              .openOrClose();
+          await tester.pumpAndSettle();
+        }
+        expect(find.byIcon(Icons.share), findsNothing);
+        await tester.tap(find.byIcon(Icons.more_horiz));
+        await tester.pumpAndSettle();
+        expect(find.text('Share'), findsOneWidget);
+        await tester.tap(find.text('Switch source'));
+        await tester.pumpAndSettle();
+        expect(searches, ['Fixture Comic']);
+        await tester.tap(find.byType(SimpleComicTile));
+        await tester.pumpAndSettle();
+        expect(find.text('Alternate description'), findsOneWidget);
+        expect(find.text('Different chapter'), findsOneWidget);
+        expect(
+          tester
+              .widget<ComicChaptersView>(find.byType(ComicChaptersView))
+              .readChapter,
+          isNull,
+        );
+        expect(find.byKey(const Key('use-comic-source')), findsOneWidget);
+        expect(favorites.replacements, isEmpty);
+        expect(
+          fixture.histories.find(target.id, target.comicType)?.page,
+          directReader ? 2 : null,
+        );
+        await tester.pageBack();
+        await tester.pumpAndSettle();
+        expect(favorites.replacements, isEmpty);
+
+        // Confirm from a source's full result list, not just its preview row.
+        await tester.tap(find.text('Comic details test source'));
+        await tester.pumpAndSettle();
+        final grid = tester.widget<SliverGridComics>(
+          find.byType(SliverGridComics),
+        );
+        grid.onTap!(grid.comics.single, 0);
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('use-comic-source')));
+        if (directReader) {
+          final reader = await _waitForReaderRoute(tester, comicId: target.id);
+          await _waitForReader(tester, reader, 2);
+          expect(reader.cid, target.id);
+          expect(reader.page, 2);
+          await _popReader(tester, fixture);
+        } else {
+          await _waitForText(tester, 'Read');
+          await tester.pumpAndSettle();
+        }
+        expect(favorites.replacements, [
+          (fixture.comicId, fixture.type, target.id),
+        ]);
+        final pages = tester.widgetList<ComicPage>(
+          find.byType(ComicPage, skipOffstage: false),
+        );
+        expect(pages, hasLength(1));
+        expect(pages.single.sourceKey, targetKey);
+        expect(find.byType(Reader), findsNothing);
+        if (fromReader) {
+          expect(
+            fixture.histories.find(fixture.comicId, fixture.type),
+            isNotNull,
+          );
+        }
+        expect(tester.takeException(), isNull);
+      },
+      skip: !_sqliteAvailable(),
+    );
+  }
 
   for (final disposed in [false, true]) {
     testWidgets(
@@ -462,7 +612,10 @@ void main() {
       );
       final slider = find.byType(CustomSlider);
       final brightness = find.byType(ReaderBrightnessOverlay);
-      final top = find.widgetWithIcon(IconButton, Icons.share);
+      final top = find.descendant(
+        of: find.byType(ReaderScaffold),
+        matching: find.byType(MenuButton),
+      );
       final sliderBefore = tester.widget<CustomSlider>(slider);
       final brightnessBefore = tester.widget(brightness);
       final topBefore = tester.widget(top);
@@ -1291,6 +1444,7 @@ ComicSource _comicSource({
   required List<String> requestedChapterIds,
   ChapterCommentsLoader? chapterCommentsLoader,
   FavoriteData? favoriteData,
+  SearchPageData? searchPageData,
 }) => ComicSource(
   'Comic details test source',
   sourceKey,
@@ -1299,7 +1453,7 @@ ComicSource _comicSource({
   null,
   favoriteData,
   const [],
-  null,
+  searchPageData,
   null,
   (id) async => Res(details),
   (id, next) async => const Res(<String>[]),
@@ -1419,6 +1573,9 @@ Future<void> _waitForText(WidgetTester tester, String text) async {
   final target = find.textContaining(text);
   for (var i = 0; i < 100; i++) {
     await tester.pump(const Duration(milliseconds: 20));
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 5)),
+    );
     if (target.evaluate().isNotEmpty) return;
   }
   expect(target, findsOneWidget);
@@ -1457,10 +1614,18 @@ Future<T> _pumpAsyncWork<T>(WidgetTester tester, Future<T> work) async {
   return result;
 }
 
-Future<ReaderState> _waitForReaderRoute(WidgetTester tester) async {
-  final reader = find.byType(Reader);
+Future<ReaderState> _waitForReaderRoute(
+  WidgetTester tester, {
+  String? comicId,
+}) async {
+  final reader = find.byWidgetPredicate(
+    (widget) => widget is Reader && (comicId == null || widget.cid == comicId),
+  );
   for (var i = 0; i < 100; i++) {
     await tester.pump(const Duration(milliseconds: 20));
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 5)),
+    );
     if (reader.evaluate().isNotEmpty &&
         ModalRoute.of(tester.element(reader))?.animation?.isCompleted == true) {
       return tester.state<ReaderState>(reader);
@@ -1524,6 +1689,18 @@ Future<void> _popReader(
 }
 
 class _TestFavorites extends ChangeNotifier implements LocalFavoritesManager {
+  final replacements = <(String, ComicType, String)>[];
+
+  @override
+  void replaceComic(
+    String id,
+    ComicType type,
+    FavoriteItem replacement, {
+    String? updateTime,
+  }) {
+    replacements.add((id, type, replacement.id));
+  }
+
   @override
   bool hasNewUpdate(String id, ComicType type, [String? folder]) => false;
 

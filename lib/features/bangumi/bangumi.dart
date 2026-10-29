@@ -1,5 +1,4 @@
 export 'bangumi_models.dart';
-export 'bangumi_comic_group.dart';
 export 'bangumi_api.dart';
 export 'bangumi_server.dart';
 export 'bangumi_service.dart';

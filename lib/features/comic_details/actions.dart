@@ -7,7 +7,8 @@ import 'package:venera_plus/components/menu.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/side_bar.dart';
 import 'package:venera_plus/features/bangumi/bangumi.dart';
-import 'package:venera_plus/routing/bangumi_comic_navigation.dart';
+import 'package:venera_plus/routing/comic_source_switch.dart';
+import 'package:venera_plus/features/comic_details/comic_details.dart';
 import 'package:venera_plus/features/comic_details/archive_download.dart';
 import 'package:venera_plus/features/comic_details/comments_page.dart';
 import 'package:venera_plus/features/comic_details/favorite.dart';
@@ -27,6 +28,7 @@ import 'package:venera_plus/foundation/widget_utils.dart';
 import 'package:venera_plus/routing/page_jump_target.dart';
 
 abstract mixin class ComicPageActions {
+  BuildContext get context;
   void update();
 
   ComicDetails get comic;
@@ -96,17 +98,36 @@ abstract mixin class ComicPageActions {
     );
   }
 
-  bool get hasOtherBangumiSources {
-    final service = BangumiService();
-    final binding = service.bindingFor(comic.sourceKey, comic.id);
-    return binding != null &&
-        service.bindingsForSubject(binding.subjectId).length > 1;
+  bool _switchingSource = false;
+
+  Future<void> changeSource() async {
+    if (_switchingSource) return;
+    _switchingSource = true;
+    try {
+      final selected = await switchComicSource(
+        context,
+        id: comic.id,
+        sourceKey: comic.sourceKey,
+        title: comic.title,
+      );
+      if (selected != null && context.mounted) {
+        replaceSourcePage(selected);
+      }
+    } finally {
+      _switchingSource = false;
+    }
   }
 
-  void chooseBangumiSource() {
-    final group = bangumiGroupForComic(_toFavoriteItem());
-    if (group == null) return;
-    openBangumiComic(App.rootContext, group, read: false, chooseSource: true);
+  void replaceSourcePage(ComicDetails selected, {bool read = false}) {
+    context.toReplacement(
+      () => ComicPage(
+        id: selected.id,
+        sourceKey: selected.sourceKey,
+        title: selected.title,
+        cover: selected.cover,
+        continueReading: read,
+      ),
+    );
   }
 
   void openBangumiProgress() {
@@ -162,8 +183,9 @@ abstract mixin class ComicPageActions {
         History.fromModel(model: comic, ep: 0, page: 0);
     final hasExplicitTarget = ep != null || page != null || group != null;
     App.rootContext
-        .to(
+        .to<ComicDetails>(
           () => Reader(
+            returnSourceChanges: true,
             type: comic.comicType,
             cid: comic.id,
             name: comic.title,
@@ -179,8 +201,13 @@ abstract mixin class ComicPageActions {
             tags: comic.plainTags,
           ),
         )
-        .then((_) {
-          onReadEnd();
+        .then((selected) {
+          if (!context.mounted) return;
+          if (selected != null) {
+            replaceSourcePage(selected, read: true);
+          } else {
+            onReadEnd();
+          }
         });
   }
 
@@ -391,6 +418,12 @@ abstract mixin class ComicPageActions {
   void showMoreActions() {
     var context = App.rootContext;
     showMenuX(context, Offset(context.width - 16, context.padding.top), [
+      MenuEntry(
+        icon: Icons.swap_horiz,
+        text: 'Switch source'.tl,
+        onClick: changeSource,
+      ),
+      MenuEntry(icon: Icons.share, text: 'Share'.tl, onClick: share),
       MenuEntry(
         icon: Icons.copy,
         text: "Copy Title".tl,

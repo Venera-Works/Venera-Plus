@@ -13,9 +13,14 @@ import "package:venera_plus/foundation/widget_utils.dart";
 import "search_result_page.dart";
 
 class AggregatedSearchPage extends StatefulWidget {
-  const AggregatedSearchPage({super.key, required this.keyword});
+  const AggregatedSearchPage({
+    super.key,
+    required this.keyword,
+    this.onComicTap,
+  });
 
   final String keyword;
+  final ValueChanged<Comic>? onComicTap;
 
   @override
   State<AggregatedSearchPage> createState() => _AggregatedSearchPageState();
@@ -59,6 +64,10 @@ class _AggregatedSearchPageState extends State<AggregatedSearchPage> {
     return SmoothCustomScrollView(
       slivers: [
         SliverSearchBar(controller: controller),
+        if (sources.isEmpty)
+          SliverFillRemaining(
+            child: Center(child: Text('No searchable sources'.tl)),
+          ),
         SliverList(
           key: ValueKey(_keyword),
           delegate: SliverChildBuilderDelegate((context, index) {
@@ -67,6 +76,7 @@ class _AggregatedSearchPageState extends State<AggregatedSearchPage> {
               key: ValueKey(source.key),
               source: source,
               keyword: _keyword,
+              onComicTap: widget.onComicTap,
             );
           }, childCount: sources.length),
         ),
@@ -79,12 +89,14 @@ class _SliverSearchResult extends StatefulWidget {
   const _SliverSearchResult({
     required this.source,
     required this.keyword,
+    this.onComicTap,
     super.key,
   });
 
   final ComicSource source;
 
   final String keyword;
+  final ValueChanged<Comic>? onComicTap;
 
   @override
   State<_SliverSearchResult> createState() => _SliverSearchResultState();
@@ -104,37 +116,30 @@ class _SliverSearchResultState extends State<_SliverSearchResult>
 
   String? error;
 
-  void load() async {
+  Future<void> load() async {
     final data = widget.source.searchPageData!;
-    var options = (data.searchOptions ?? [])
-        .map((e) => e.defaultValue)
+    final options = (data.searchOptions ?? [])
+        .map((option) => option.defaultValue)
         .toList();
-    if (data.loadPage != null) {
-      var res = await data.loadPage!(widget.keyword, 1, options);
-      if (!res.error) {
-        setState(() {
-          comics = res.data;
-          isLoading = false;
-        });
-      } else {
-        setState(() {
-          error = res.errorMessage ?? "Unknown error".tl;
-          isLoading = false;
-        });
-      }
-    } else if (data.loadNext != null) {
-      var res = await data.loadNext!(widget.keyword, null, options);
-      if (!res.error) {
-        setState(() {
-          comics = res.data;
-          isLoading = false;
-        });
-      } else {
-        setState(() {
-          error = res.errorMessage ?? "Unknown error".tl;
-          isLoading = false;
-        });
-      }
+    try {
+      final result = data.loadPage != null
+          ? await data.loadPage!(widget.keyword, 1, options)
+          : await data.loadNext!(widget.keyword, null, options);
+      if (!mounted) return;
+      setState(() {
+        isLoading = false;
+        if (result.error) {
+          error = result.errorMessage ?? 'Unknown error'.tl;
+        } else {
+          comics = result.data;
+        }
+      });
+    } catch (exception) {
+      if (!mounted) return;
+      setState(() {
+        isLoading = false;
+        error = '$exception';
+      });
     }
   }
 
@@ -159,6 +164,7 @@ class _SliverSearchResultState extends State<_SliverSearchResult>
   Widget buildComic(Comic c) {
     return SimpleComicTile(
       comic: c,
+      onTap: widget.onComicTap == null ? null : () => widget.onComicTap!(c),
       withTitle: true,
     ).paddingLeft(_kLeftPadding).paddingBottom(2);
   }
@@ -175,6 +181,7 @@ class _SliverSearchResultState extends State<_SliverSearchResult>
           () => SearchResultPage(
             text: widget.keyword,
             sourceKey: widget.source.key,
+            onComicTap: widget.onComicTap,
           ),
         );
       },

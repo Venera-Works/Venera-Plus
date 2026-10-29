@@ -259,10 +259,7 @@ class _FavoritesFolderSidebarState extends State<FavoritesFolderSidebar>
                 color: context.colorScheme.surfaceContainer,
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: Tooltip(
-                message: '@count source entries'.tlParams({'count': count}),
-                child: Text('$count'),
-              ),
+              child: Text(count.toString()),
             ),
           ],
         ),
