@@ -19,7 +19,7 @@ import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
-import 'package:venera_plus/features/settings/settings.dart';
+import 'package:venera_plus/features/app_update/app_update.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library.dart';
 import 'package:venera_plus/foundation/image_provider/cached_image.dart';
@@ -541,7 +541,7 @@ Future<void> _checkAppUpdates() async {
   appdata.writeImplicitData();
   ComicSourcePage.checkComicSourceUpdate();
   if (appdata.settings['checkUpdateOnStart']) {
-    await checkUpdateUi(false, true);
+    await appUpdatePrompt.check(manual: false, delay: true);
   }
 }
 
