@@ -8,7 +8,9 @@ class AppReleaseAsset {
 
   final String name;
   final String url;
-  final int size;
+
+  /// Release web pages publish a digest but not an exact byte count.
+  final int? size;
   final String? sha256;
 
   factory AppReleaseAsset.fromJson(Map<dynamic, dynamic> json) {
@@ -16,7 +18,7 @@ class AppReleaseAsset {
     return AppReleaseAsset(
       name: json['name'] as String,
       url: json['browser_download_url'] as String,
-      size: json['size'] as int,
+      size: json['size'] as int?,
       sha256: digest is String && digest.startsWith('sha256:')
           ? digest.substring(7).toLowerCase()
           : null,
@@ -63,7 +65,9 @@ class AppRelease {
 
   AppReleaseAsset? _assetNamed(String name) {
     for (final asset in assets) {
-      if (asset.name == name && asset.size > 0) return asset;
+      if (asset.name == name && (asset.size == null || asset.size! > 0)) {
+        return asset;
+      }
     }
     return null;
   }

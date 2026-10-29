@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:venera_plus/network/app_dio.dart';
 
 import 'app_release.dart';
+import 'github_release_page.dart';
 
 class AppUpdateService {
   AppUpdateService({
@@ -28,9 +29,50 @@ class AppUpdateService {
   final MethodChannel channel;
   final Future<Directory> Function() _temporaryDirectory;
   Future<void> _downloadTail = Future<void>.value();
+  DateTime? _apiRetryAt;
 
   Future<AppRelease?> check(String currentVersion) async {
     final includePrerelease = allowsPrereleaseAppUpdates(currentVersion);
+    if (_apiRetryAt?.isAfter(DateTime.now()) ?? false) {
+      return _checkReleasePage(currentVersion, includePrerelease);
+    }
+    try {
+      return await _checkApi(currentVersion, includePrerelease);
+    } on DioException catch (error) {
+      final response = error.response;
+      final status = response?.statusCode;
+      final limited =
+          status == 429 ||
+          (status == 403 &&
+              (response?.headers.value('x-ratelimit-remaining') == '0' ||
+                  response?.data.toString().toLowerCase().contains(
+                        'rate limit',
+                      ) ==
+                      true));
+      if (!limited) rethrow;
+      final retryAfter = int.tryParse(
+        response?.headers.value('retry-after') ?? '',
+      );
+      final reset = int.tryParse(
+        response?.headers.value('x-ratelimit-reset') ?? '',
+      );
+      final now = DateTime.now();
+      final resetAt = reset == null
+          ? now
+          : DateTime.fromMillisecondsSinceEpoch(reset * 1000);
+      _apiRetryAt = retryAfter != null
+          ? now.add(Duration(seconds: retryAfter))
+          : resetAt.isAfter(now)
+          ? resetAt
+          : now.add(const Duration(minutes: 1));
+      return _checkReleasePage(currentVersion, includePrerelease);
+    }
+  }
+
+  Future<AppRelease?> _checkApi(
+    String currentVersion,
+    bool includePrerelease,
+  ) async {
     final response = await _client.get<dynamic>(
       includePrerelease
           ? 'https://api.github.com/repos/Venera-Works/Venera-Plus/releases?per_page=20'
@@ -47,6 +89,38 @@ class AppUpdateService {
     return release != null && isNewerAppVersion(release.version, currentVersion)
         ? release
         : null;
+  }
+
+  Future<AppRelease?> _checkReleasePage(
+    String currentVersion,
+    bool includePrerelease,
+  ) async {
+    final options = Options(
+      responseType: ResponseType.plain,
+      headers: {'Accept': 'text/html'},
+    );
+    final response = await _client.get<String>(
+      includePrerelease ? githubReleaseBase : '$githubReleaseBase/latest',
+      options: options,
+    );
+    final release = parseGitHubReleasePage(
+      response.data!,
+      includePrerelease: includePrerelease,
+    );
+    if (release == null ||
+        !isNewerAppVersion(release.version, currentVersion)) {
+      return null;
+    }
+    final assets = await _client.get<String>(
+      '$githubReleaseBase/expanded_assets/${Uri.encodeComponent(release.tag)}',
+      options: options,
+    );
+    return AppRelease(
+      tag: release.tag,
+      notes: release.notes,
+      pageUrl: release.pageUrl,
+      assets: parseGitHubReleaseAssets(assets.data!, release),
+    );
   }
 
   Future<List<String>> supportedAbis() async =>
@@ -88,22 +162,27 @@ class AppUpdateService {
     if (await file.exists()) {
       if (await _isValid(file, asset)) {
         _checkCanceled(cancelToken);
-        onProgress(asset.size, asset.size);
+        final size = asset.size ?? await file.length();
+        onProgress(size, size);
         return file;
       }
       await file.delete();
     }
 
     final partial = File('${file.path}.part');
+    int? expectedSize = asset.size;
     try {
       await _client.download(
         asset.url,
         partial.path,
         cancelToken: cancelToken,
-        onReceiveProgress: (received, _) => onProgress(received, asset.size),
+        onReceiveProgress: (received, total) {
+          if (total > 0) expectedSize ??= total;
+          onProgress(received, expectedSize ?? 0);
+        },
       );
       _checkCanceled(cancelToken);
-      if (!await _isValid(partial, asset)) {
+      if (!await _isValid(partial, asset, expectedSize: expectedSize)) {
         throw const FormatException(
           'The downloaded APK is incomplete or its checksum does not match',
         );
@@ -116,9 +195,16 @@ class AppUpdateService {
     }
   }
 
-  Future<bool> _isValid(File file, AppReleaseAsset asset) async {
-    if (asset.size <= 0 || await file.length() != asset.size) return false;
+  Future<bool> _isValid(
+    File file,
+    AppReleaseAsset asset, {
+    int? expectedSize,
+  }) async {
+    final size = expectedSize ?? asset.size;
+    final actualSize = await file.length();
+    if (actualSize <= 0 || (size != null && actualSize != size)) return false;
     final expectedDigest = asset.sha256;
+    if (size == null && expectedDigest == null) return false;
     return expectedDigest == null ||
         (await sha256.bind(file.openRead()).first).toString() == expectedDigest;
   }

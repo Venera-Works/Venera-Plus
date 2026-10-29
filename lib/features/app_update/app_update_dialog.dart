@@ -139,7 +139,7 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
     setState(() {
       _stage = _UpdateStage.downloading;
       _received = 0;
-      _total = apk.size;
+      _total = apk.size ?? 0;
       _error = null;
     });
     try {

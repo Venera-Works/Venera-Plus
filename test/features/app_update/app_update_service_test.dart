@@ -124,11 +124,158 @@ void main() {
     },
   );
 
+  for (final status in [403, 429]) {
+    test(
+      'API $status rate limits use public releases and retain verified APK downloads',
+      () async {
+        final adapter = _Adapter((request) async {
+          if (request.uri.host == 'api.github.com') {
+            return ResponseBody.fromString(
+              '{"message":"API rate limit exceeded"}',
+              status,
+              headers: {
+                Headers.contentTypeHeader: ['application/json'],
+                'x-ratelimit-remaining': ['0'],
+                'x-ratelimit-reset': [
+                  '${DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch ~/ 1000}',
+                ],
+              },
+            );
+          }
+          if (request.uri.path.endsWith('/releases')) {
+            expect(request.headers['Accept'], 'text/html');
+            return ResponseBody.fromString(
+              releasePageHtml('v3.3.0') +
+                  releasePageHtml('v3.4.0-beta1', prerelease: true),
+              200,
+            );
+          }
+          if (request.uri.path.contains('/expanded_assets/')) {
+            expect(request.uri.path, endsWith('/v3.4.0-beta1'));
+            return ResponseBody.fromString(
+              releaseAssetsHtml(
+                'v3.4.0-beta1',
+                sha256.convert(bytes).toString(),
+              ),
+              200,
+            );
+          }
+          expect(
+            request.uri.path,
+            contains('/releases/download/v3.4.0-beta1/'),
+          );
+          return body(bytes);
+        });
+        final updater = service(adapter);
+        final release = (await updater.check('3.2.0-beta1'))!;
+        expect(release.tag, 'v3.4.0-beta1');
+        expect(release.notes, contains('## Important changes'));
+        expect(release.notes, contains('**Read before updating**'));
+        expect(
+          release.notes,
+          contains(
+            '[Details](https://github.com/Venera-Works/Venera-Plus/issues/1)',
+          ),
+        );
+        expect(
+          release.notes,
+          contains('```\nfirst line\n  second line <code>\n```'),
+        );
+        final apk = release.androidAssetFor(['arm64-v8a'])!;
+        expect(apk.size, isNull);
+        expect(release.assets, hasLength(1));
+        expect(apk.sha256, sha256.convert(bytes).toString());
+        final progress = <int>[];
+        final file = await updater.downloadApk(
+          apk,
+          cancelToken: CancelToken(),
+          onProgress: (_, total) => progress.add(total),
+        );
+        expect(await file.readAsBytes(), bytes);
+        expect(progress.last, bytes.length);
+        expect(await updater.check('3.4.0-beta1'), isNull);
+        expect(
+          adapter.requests.where(
+            (request) => request.uri.host == 'api.github.com',
+          ),
+          hasLength(1),
+        );
+        expect(
+          adapter.requests.where(
+            (request) => request.uri.path.contains('/expanded_assets/'),
+          ),
+          hasLength(1),
+        );
+      },
+    );
+  }
+
+  test(
+    'stable users use the public latest release when the API is limited',
+    () async {
+      final adapter = _Adapter((request) async {
+        if (request.uri.host == 'api.github.com') {
+          return ResponseBody.fromString('API rate limit exceeded', 403);
+        }
+        if (request.uri.path.endsWith('/latest')) {
+          return ResponseBody.fromString(
+            releasePageHtml('v3.3.0', section: false),
+            200,
+          );
+        }
+        expect(request.uri.path, endsWith('/expanded_assets/v3.3.0'));
+        return ResponseBody.fromString(
+          releaseAssetsHtml('v3.3.0', sha256.convert(bytes).toString()),
+          200,
+        );
+      });
+      final release = (await service(adapter).check('3.2.0'))!;
+      expect(release.version, '3.3.0');
+      expect(release.pageUrl, endsWith('/releases/tag/v3.3.0'));
+      expect(adapter.requests[1].uri.path, endsWith('/releases/latest'));
+    },
+  );
+
+  test(
+    'unrelated forbidden responses propagate without claiming a rate limit',
+    () async {
+      final adapter = _Adapter(
+        (_) async => ResponseBody.fromString('Access denied', 403),
+      );
+      await expectLater(
+        service(adapter).check('3.2.0'),
+        throwsA(isA<DioException>()),
+      );
+      expect(adapter.requests, hasLength(1));
+    },
+  );
+
+  test(
+    'an invalid fallback page fails rather than reporting no update',
+    () async {
+      final adapter = _Adapter(
+        (request) async => request.uri.host == 'api.github.com'
+            ? ResponseBody.fromString('API rate limit exceeded', 403)
+            : ResponseBody.fromString(
+                '<html><body>Access denied</body></html>',
+                200,
+              ),
+      );
+      await expectLater(service(adapter).check('3.2.0'), throwsFormatException);
+    },
+  );
+
   test('size and digest failures discard partial APKs', () async {
     final updater = service(_Adapter((_) async => body(bytes)));
     for (final invalid in [
       asset(size: bytes.length + 1),
       asset(digest: '0' * 64),
+      AppReleaseAsset(
+        name: asset().name,
+        url: asset().url,
+        size: null,
+        sha256: '0' * 64,
+      ),
     ]) {
       await expectLater(
         updater.downloadApk(
