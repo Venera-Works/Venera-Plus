@@ -33,10 +33,13 @@ void main() {
     });
   });
 
-  test('keeps two slots occupied until their complete operations finish', () {
+  test('keeps four slots occupied until their complete operations finish', () {
     fakeAsync((async) {
-      final scheduler = _scheduler(async, minInterval: Duration.zero);
-      final gates = List.generate(4, (_) => Completer<void>());
+      final scheduler = RemoteReadScheduler(
+        minInterval: Duration.zero,
+        now: () => _initialTime.add(async.elapsed),
+      );
+      final gates = List.generate(6, (_) => Completer<void>());
       final started = <int>[];
       var active = 0;
       var peak = 0;
@@ -50,37 +53,40 @@ void main() {
         });
       }
       async.flushMicrotasks();
-      expect(started, [0, 1]);
+      expect(started, [0, 1, 2, 3]);
       gates[0].complete();
       async.flushMicrotasks();
-      expect(started, [0, 1, 2]);
+      expect(started, [0, 1, 2, 3, 4]);
       gates[1].complete();
       async.flushMicrotasks();
-      expect(started, [0, 1, 2, 3]);
-      gates[2].complete();
-      gates[3].complete();
+      expect(started, [0, 1, 2, 3, 4, 5]);
+      for (final gate in gates.skip(2)) {
+        gate.complete();
+      }
       async.flushMicrotasks();
-      expect(peak, 2);
+      expect(peak, 4);
       expect(active, 0);
       expect(async.pendingTimers, isEmpty);
     });
   });
 
-  test('spaces starts by 300ms even when the previous operation is done', () {
+  test('spaces starts by 150ms even when the previous operation is done', () {
     fakeAsync((async) {
-      final scheduler = _scheduler(async);
+      final scheduler = RemoteReadScheduler(
+        now: () => _initialTime.add(async.elapsed),
+      );
       final starts = <Duration>[];
       for (var i = 0; i < 3; i++) {
         scheduler.run(() async => starts.add(async.elapsed));
       }
       async.flushMicrotasks();
       expect(starts, [Duration.zero]);
-      async.elapse(const Duration(milliseconds: 299));
+      async.elapse(const Duration(milliseconds: 149));
       expect(starts, hasLength(1));
       async.elapse(const Duration(milliseconds: 1));
-      expect(starts, [Duration.zero, const Duration(milliseconds: 300)]);
-      async.elapse(const Duration(milliseconds: 300));
-      expect(starts.last, const Duration(milliseconds: 600));
+      expect(starts, [Duration.zero, const Duration(milliseconds: 150)]);
+      async.elapse(const Duration(milliseconds: 150));
+      expect(starts.last, const Duration(milliseconds: 300));
       expect(async.pendingTimers, isEmpty);
     });
   });
@@ -142,9 +148,9 @@ void main() {
       async.flushMicrotasks();
       async.elapse(const Duration(milliseconds: 100));
       shared.promote(RemoteReadPriority.foreground);
-      async.elapse(const Duration(milliseconds: 200));
+      async.elapse(const Duration(milliseconds: 50));
       expect(started, ['shared']);
-      async.elapse(const Duration(milliseconds: 300));
+      async.elapse(const Duration(milliseconds: 150));
       expect(started, ['shared', 'cover']);
       expect(async.pendingTimers, isEmpty);
     });
@@ -273,10 +279,10 @@ void main() {
       async.flushMicrotasks();
       scheduler.defer(retryAfter: '0');
       scheduler.run(() async => starts.add(async.elapsed));
-      async.elapse(const Duration(milliseconds: 299));
+      async.elapse(const Duration(milliseconds: 149));
       expect(starts, [Duration.zero]);
       async.elapse(const Duration(milliseconds: 1));
-      expect(starts, [Duration.zero, const Duration(milliseconds: 300)]);
+      expect(starts, [Duration.zero, const Duration(milliseconds: 150)]);
       expect(async.pendingTimers, isEmpty);
     });
   });
@@ -436,8 +442,8 @@ final _cancelled = isA<DioException>().having(
 
 RemoteReadScheduler _scheduler(
   FakeAsync async, {
-  int maxConcurrent = 2,
-  Duration minInterval = const Duration(milliseconds: 300),
+  int maxConcurrent = 4,
+  Duration minInterval = const Duration(milliseconds: 150),
 }) => RemoteReadScheduler(
   maxConcurrent: maxConcurrent,
   minInterval: minInterval,

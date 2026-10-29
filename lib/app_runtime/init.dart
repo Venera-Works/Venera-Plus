@@ -19,7 +19,7 @@ import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
-import 'package:venera_plus/features/settings/settings.dart';
+import 'package:venera_plus/features/app_update/app_update.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library.dart';
 import 'package:venera_plus/foundation/image_provider/cached_image.dart';
@@ -31,6 +31,7 @@ import 'package:venera_plus/network/proxy.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 import 'package:venera_plus/features/follow_updates/follow_updates.dart';
 import 'package:venera_plus/routing/app_links.dart';
+import 'package:venera_plus/routing/comic_navigation.dart';
 import 'package:venera_plus/routing/handle_text_share.dart';
 import 'package:venera_plus/foundation/opencc.dart';
 import 'package:venera_plus/foundation/translations.dart';
@@ -303,6 +304,9 @@ Future<void> init({bool deferBackgroundTasks = false}) async {
           title: title,
           heroID: heroID,
         ),
+    openDetails: (context, comic, heroID) {
+      unawaited(openComic(context, comic, read: false, heroID: heroID));
+    },
     addFavorite: addFavorite,
     tileStateResolver: _resolveComicTileState,
     tileImageProviderResolver: _resolveComicTileImageProvider,
@@ -537,7 +541,7 @@ Future<void> _checkAppUpdates() async {
   appdata.writeImplicitData();
   ComicSourcePage.checkComicSourceUpdate();
   if (appdata.settings['checkUpdateOnStart']) {
-    await checkUpdateUi(false, true);
+    await appUpdatePrompt.check(manual: false, delay: true);
   }
 }
 

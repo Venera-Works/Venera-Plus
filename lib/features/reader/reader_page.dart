@@ -48,6 +48,7 @@ class Reader extends StatefulWidget {
     this.initialChapter,
     this.initialChapterGroup,
     this.initialNavigationSource = ReadingNavigationSource.restore,
+    this.returnSourceChanges = false,
     required this.author,
     required this.tags,
   });
@@ -75,6 +76,7 @@ class Reader extends StatefulWidget {
 
   /// Origin of the position selected when this Reader is opened.
   final ReadingNavigationSource initialNavigationSource;
+  final bool returnSourceChanges;
 
   final History history;
 

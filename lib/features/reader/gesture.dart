@@ -24,7 +24,8 @@ class ReaderGestureDetector extends StatefulWidget {
 }
 
 class ReaderGestureDetectorState
-    extends AutomaticGlobalState<ReaderGestureDetector> {
+    extends AutomaticGlobalState<ReaderGestureDetector>
+    with SingleTickerProviderStateMixin {
   late TapGestureRecognizer _tapGestureRecognizer;
 
   static const _kDoubleTapMaxTime = Duration(milliseconds: 200);
@@ -35,8 +36,14 @@ class ReaderGestureDetectorState
 
   static const _kTapToTurnPagePercent = 0.3;
 
+  static const _kPullToCollectDistance = 100.0;
+
+  late final AnimationController _pullReturnController;
   ReaderImageReference? _pullImage;
   Offset _pullDistance = Offset.zero;
+  double _pullOffset = 0;
+  bool _pullWasCollected = false;
+  bool? _pullResult;
 
   int fingers = 0;
 
@@ -60,8 +67,28 @@ class ReaderGestureDetectorState
         onSecondaryTapUp(details.globalPosition);
       };
     super.initState();
+    _pullReturnController = AnimationController(vsync: this, value: 1);
     context.readerScaffold.gestureDetectorState = this;
     reader = context.reader;
+  }
+
+  @override
+  void didUpdateWidget(covariant ReaderGestureDetector oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.child.key != widget.child.key ||
+        (_pullImage != null && !_canPullToCollect)) {
+      _pullImage = null;
+      _pullOffset = 0;
+      _pullResult = null;
+      _pullReturnController.value = 1;
+    }
+  }
+
+  @override
+  void dispose() {
+    _pullReturnController.dispose();
+    _tapGestureRecognizer.dispose();
+    super.dispose();
   }
 
   @override
@@ -75,6 +102,9 @@ class ReaderGestureDetectorState
         }
         fingers++;
         reader.autoReading.pause('pointer', true);
+        if (fingers > 1) {
+          _returnPull();
+        }
         if (ignoreNextTag) {
           ignoreNextTag = false;
           return;
@@ -82,17 +112,25 @@ class ReaderGestureDetectorState
         _lastTapPointer = event.pointer;
         _lastTapMoveDistance = Offset.zero;
         _tapGestureRecognizer.addPointer(event);
-        _pullImage = fingers == 1 && _canPullToCollect
-            ? reader.imageViewController?.getImageReferenceByOffset(
-                event.position,
-              )
-            : null;
-        _pullDistance = Offset.zero;
+        if (fingers == 1) {
+          _pullImage = _canPullToCollect
+              ? reader.imageViewController?.getImageReferenceByOffset(
+                  event.position,
+                )
+              : null;
+          _pullDistance = Offset.zero;
+          _pullOffset = 0;
+          _pullResult = null;
+          _pullWasCollected =
+              _pullImage != null && context.readerScaffold.isLiked(_pullImage);
+          _pullReturnController.value = 0;
+        }
         Future.delayed(_kLongPressMinTime, () {
           if (mounted && _lastTapPointer == event.pointer && fingers == 1) {
             if (_lastTapMoveDistance!.distanceSquared < 20.0 * 20.0) {
               onLongPressedDown(event.position);
               _longPressInProgress = true;
+              _returnPull();
             }
           }
         });
@@ -105,9 +143,20 @@ class ReaderGestureDetectorState
             event.pointer == _lastTapPointer &&
             _pullImage != null) {
           _pullDistance += event.delta;
-          if (_pullDistance.dx.abs() > 24 &&
-              _pullDistance.dx.abs() > _pullDistance.dy.abs()) {
-            _pullImage = null;
+          if (!_canPullToCollect ||
+              (_pullDistance.dx.abs() > 24 &&
+                  _pullDistance.dx.abs() > _pullDistance.dy.abs()) ||
+              (_pullOffset == 0 && _pullDistance.dy < -24)) {
+            _returnPull();
+          } else if (_pullOffset > 0 ||
+              (_pullDistance.dy > kTouchSlop &&
+                  _pullDistance.dy > _pullDistance.dx.abs() * 1.5)) {
+            final distance = _pullDistance.dy.clamp(0.0, double.infinity);
+            setState(() {
+              _pullOffset = distance <= 80
+                  ? distance
+                  : (80 + (distance - 80) * 0.35).clamp(0.0, 160.0);
+            });
           }
         }
       },
@@ -118,15 +167,15 @@ class ReaderGestureDetectorState
           onLongPressedUp(event.position);
         }
         final pullImage = _pullImage;
+        bool? result;
         if (pullImage != null &&
             fingers == 0 &&
             !_longPressInProgress &&
             _canPullToCollect &&
-            _pullDistance.dy >= 100 &&
-            _pullDistance.dy > _pullDistance.dx.abs() * 1.5) {
-          context.readerScaffold.toggleImageFavorite(pullImage);
+            _isPullReady) {
+          result = context.readerScaffold.toggleImageFavorite(pullImage);
         }
-        _pullImage = null;
+        _returnPull(result: result);
         _lastTapPointer = null;
         _lastTapMoveDistance = null;
       },
@@ -136,7 +185,7 @@ class ReaderGestureDetectorState
         if (_longPressInProgress) {
           onLongPressedUp(event.position);
         }
-        _pullImage = null;
+        _returnPull();
         _lastTapPointer = null;
         _lastTapMoveDistance = null;
       },
@@ -146,8 +195,90 @@ class ReaderGestureDetectorState
           onMouseWheel(event.scrollDelta.dy > 0);
         }
       },
-      child: widget.child,
+      child: AnimatedBuilder(
+        animation: _pullReturnController,
+        child: widget.child,
+        builder: (context, child) {
+          final returning = _pullReturnController.value;
+          final completed = _pullResult != null;
+          final movement = completed
+              ? (returning * 350 / 200).clamp(0.0, 1.0)
+              : returning;
+          final offset =
+              _pullOffset * (1 - Curves.easeOutCubic.transform(movement));
+          final fade = completed
+              ? const Interval(0.55, 1).transform(returning)
+              : returning;
+          final opacity = (_pullOffset / 80).clamp(0.0, 1.0) * (1 - fade);
+          final ready = _pullImage != null && _isPullReady;
+          final liked =
+              _pullResult ?? (ready ? !_pullWasCollected : _pullWasCollected);
+          final colors = Theme.of(context).colorScheme;
+          return ColoredBox(
+            color: colors.surface,
+            child: ClipRect(
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Transform.translate(offset: Offset(0, offset), child: child),
+                  if (opacity > 0)
+                    Positioned(
+                      top: MediaQuery.paddingOf(context).top + 16,
+                      right: MediaQuery.paddingOf(context).right + 16,
+                      child: IgnorePointer(
+                        child: Opacity(
+                          opacity: opacity,
+                          child: AnimatedScale(
+                            scale: ready || completed ? 1.12 : 1,
+                            duration: const Duration(milliseconds: 100),
+                            child: Material(
+                              color: ready || completed
+                                  ? colors.primaryContainer
+                                  : colors.surfaceContainerHigh,
+                              elevation: 2,
+                              shape: const CircleBorder(),
+                              child: SizedBox.square(
+                                dimension: 48,
+                                child: Icon(
+                                  liked
+                                      ? Icons.favorite
+                                      : Icons.favorite_border,
+                                  color: ready || completed
+                                      ? colors.onPrimaryContainer
+                                      : colors.onSurfaceVariant,
+                                  semanticLabel: completed
+                                      ? (liked
+                                            ? 'Successfully collected'.tl
+                                            : 'Uncollected the image'.tl)
+                                      : 'Collect the image'.tl,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
     );
+  }
+
+  bool get _isPullReady =>
+      _pullDistance.dy >= _kPullToCollectDistance &&
+      _pullDistance.dy > _pullDistance.dx.abs() * 1.5;
+
+  void _returnPull({bool? result}) {
+    if (_pullImage == null) return;
+    _pullImage = null;
+    _pullResult = result;
+    if (_pullOffset == 0) return;
+    _pullReturnController
+      ..duration = Duration(milliseconds: result == null ? 200 : 350)
+      ..forward(from: 0);
   }
 
   void onMouseWheel(bool forward) {

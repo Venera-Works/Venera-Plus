@@ -18,6 +18,7 @@ import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -39,6 +40,8 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class MainActivity : FlutterFragmentActivity() {
     private var downloadBridge: DownloadBridge? = null
+    private var appUpdateChannel: MethodChannel? = null
+    private var installPermissionRequest: MethodChannel.Result? = null
 
     var volumeListen = VolumeListen()
     var listening = false
@@ -184,15 +187,64 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        closeAppUpdateChannel()
         downloadBridge?.close()
         downloadBridge = null
         super.cleanUpFlutterEngine(flutterEngine)
     }
 
     override fun onDestroy() {
+        closeAppUpdateChannel()
         downloadBridge?.close()
         downloadBridge = null
         super.onDestroy()
+    }
+
+    private fun closeAppUpdateChannel() {
+        appUpdateChannel?.setMethodCallHandler(null)
+        appUpdateChannel = null
+        installPermissionRequest?.success(false)
+        installPermissionRequest = null
+    }
+
+    private fun canInstallPackages(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()
+
+    private fun requestInstallPermission(result: MethodChannel.Result) {
+        if (canInstallPackages()) {
+            result.success(true)
+            return
+        }
+        if (installPermissionRequest != null) {
+            result.error("install_permission_pending", "Installation permission is already being requested", null)
+            return
+        }
+        installPermissionRequest = result
+        try {
+            val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))
+            startContractForResult(ActivityResultContracts.StartActivityForResult(), intent) {
+                if (installPermissionRequest === result) {
+                    installPermissionRequest = null
+                    result.success(canInstallPackages())
+                }
+            }
+        } catch (error: Exception) {
+            installPermissionRequest = null
+            throw error
+        }
+    }
+
+    private fun installAppUpdate(requestedFile: File) {
+        val file = requestedFile.canonicalFile
+        val directory = File(cacheDir, "app_updates").canonicalFile
+        require(file.parentFile == directory && file.extension == "apk" && file.isFile) {
+            "APK must be in the app update cache"
+        }
+        val uri = FileProvider.getUriForFile(this, "$packageName.app_update", file)
+        val intent = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, "application/vnd.android.package-archive")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        startActivity(intent)
     }
 
     private fun requestDownloadNotifications() {
@@ -206,6 +258,28 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         GeneratedPluginRegistrant.registerWith(flutterEngine)
+        closeAppUpdateChannel()
+        appUpdateChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger, "venera/app_update",
+        ).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                try {
+                    when (call.method) {
+                        "supportedAbis" -> result.success(Build.SUPPORTED_ABIS.toList())
+                        "requestInstallPermission" -> requestInstallPermission(result)
+                        "install" -> {
+                            val path = call.arguments as? String
+                                ?: throw IllegalArgumentException("APK path is required")
+                            installAppUpdate(File(path))
+                            result.success(null)
+                        }
+                        else -> result.notImplemented()
+                    }
+                } catch (error: Exception) {
+                    result.error("app_update", error.message, null)
+                }
+            }
+        }
         downloadBridge?.close()
         downloadBridge = DownloadBridge(
             this, flutterEngine.dartExecutor.binaryMessenger,

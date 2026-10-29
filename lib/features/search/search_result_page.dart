@@ -21,6 +21,7 @@ class SearchResultPage extends StatefulWidget {
     required this.text,
     required this.sourceKey,
     this.options,
+    this.onComicTap,
   });
 
   final String text;
@@ -28,6 +29,7 @@ class SearchResultPage extends StatefulWidget {
   final String sourceKey;
 
   final List<String>? options;
+  final ValueChanged<Comic>? onComicTap;
 
   @override
   State<SearchResultPage> createState() => _SearchResultPageState();
@@ -135,6 +137,9 @@ class _SearchResultPageState extends State<SearchResultPage> {
   Widget build(BuildContext context) {
     var source = ComicSource.find(sourceKey);
     return ComicList(
+      onTap: widget.onComicTap == null
+          ? null
+          : (comic, _) => widget.onComicTap!(comic),
       key: Key(text + options.toString() + sourceKey),
       errorLeading: AppSearchBar(controller: controller, action: buildAction()),
       leadingSliver: SliverSearchBar(

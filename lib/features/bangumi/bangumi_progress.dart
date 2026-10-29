@@ -6,6 +6,7 @@ import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/features/bangumi/bangumi_models.dart';
+import 'package:venera_plus/features/bangumi/bangumi_server.dart';
 import 'package:venera_plus/features/bangumi/bangumi_service.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/history/history.dart';
@@ -267,7 +268,7 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
     children: [
       if (subject.coverUrl.isNotEmpty)
         Image.network(
-          subject.coverUrl,
+          currentBangumiServer.resolveImageUrl(subject.coverUrl),
           width: 40,
           height: 56,
           fit: BoxFit.cover,

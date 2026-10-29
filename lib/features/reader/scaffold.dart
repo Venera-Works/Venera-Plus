@@ -1,13 +1,16 @@
 import 'dart:async';
 import 'package:battery_plus/battery_plus.dart';
+import 'package:venera_plus/components/button.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:venera_plus/components/custom_slider.dart';
 import 'package:venera_plus/components/effects.dart';
 import 'package:venera_plus/components/gesture.dart';
+import 'package:venera_plus/components/menu.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/side_bar.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/comic_details/comic_details.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/reader/brightness.dart';
 import 'package:venera_plus/features/reader/auto_reading.dart';
@@ -27,6 +30,7 @@ import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 import 'package:venera_plus/routing/settings.dart';
+import 'package:venera_plus/routing/comic_source_switch.dart';
 
 class ReaderScaffold extends StatefulWidget {
   const ReaderScaffold({super.key, required this.child});
@@ -290,9 +294,15 @@ class ReaderScaffoldState extends State<ReaderScaffold>
               : addImageFavorite,
         ),
       ),
-      Tooltip(
-        message: 'Share'.tl,
-        child: IconButton(icon: const Icon(Icons.share), onPressed: share),
+      MenuButton(
+        entries: [
+          MenuEntry(
+            icon: Icons.swap_horiz,
+            text: 'Switch source'.tl,
+            onClick: changeSource,
+          ),
+          MenuEntry(icon: Icons.share, text: 'Share'.tl, onClick: share),
+        ],
       ),
     ];
     return BlurEffect(
@@ -360,14 +370,15 @@ class ReaderScaffoldState extends State<ReaderScaffold>
     );
   }
 
-  bool isLiked() {
+  bool isLiked([ReaderImageReference? image]) {
+    final reader = context.reader;
     return canUncollectImageFavorite(
-      _findImageFavorite(context.reader.sourceImagePageForCurrentReaderPage()),
+      _imageFavorites[(
+        image?.eid ?? reader.eid,
+        image?.chapter ?? reader.chapter,
+        image?.page ?? reader.sourceImagePageForCurrentReaderPage(),
+      )],
     );
-  }
-
-  ImageFavorite? _findImageFavorite(int page) {
-    return _imageFavorites[(context.reader.eid, context.reader.chapter, page)];
   }
 
   void _reloadImageFavorites() {
@@ -391,7 +402,7 @@ class ReaderScaffoldState extends State<ReaderScaffold>
     toggleImageFavorite(selection);
   }
 
-  void toggleImageFavorite(ReaderImageReference selection) {
+  bool? toggleImageFavorite(ReaderImageReference selection) {
     final reader = context.reader;
     final images = reader.images;
     final page = selection.page;
@@ -401,7 +412,7 @@ class ReaderScaffoldState extends State<ReaderScaffold>
         page == null ||
         selection.eid != reader.eid ||
         chapter != reader.chapter) {
-      return;
+      return null;
     }
     try {
       final sourceKey = reader.type.sourceKey;
@@ -456,9 +467,11 @@ class ReaderScaffoldState extends State<ReaderScaffold>
         context: context,
         seconds: 1,
       );
+      return collected;
     } catch (e, stackTrace) {
       Log.error("Image Favorite", e, stackTrace);
       showToast(message: e.toString(), context: context, seconds: 1);
+      return null;
     }
   }
 
@@ -732,6 +745,43 @@ class ReaderScaffoldState extends State<ReaderScaffold>
       fileType.ext,
     );
     saveFile(data: data, filename: filename);
+  }
+
+  bool _switchingSource = false;
+
+  Future<void> changeSource() async {
+    if (_switchingSource) return;
+    _switchingSource = true;
+    var switched = false;
+    final reader = context.reader;
+    reader.autoReading.pause('source-switch', true);
+    try {
+      final selected = await switchComicSource(
+        context,
+        id: reader.cid,
+        sourceKey: reader.type.sourceKey,
+        title: reader.widget.name,
+      );
+      if (selected == null || !mounted) return;
+      switched = true;
+      if (reader.widget.returnSourceChanges) {
+        Navigator.of(context).pop(selected);
+      } else {
+        context.toReplacement(
+          () => ComicPage(
+            id: selected.id,
+            sourceKey: selected.sourceKey,
+            title: selected.title,
+            cover: selected.cover,
+            continueReading: true,
+          ),
+        );
+      }
+    } finally {
+      _switchingSource = false;
+      if (mounted && !switched)
+        reader.autoReading.pause('source-switch', false);
+    }
   }
 
   void share() async {

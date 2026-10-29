@@ -1,4 +1,5 @@
 import 'package:venera_plus/foundation/appdata.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/button.dart';
@@ -9,10 +10,10 @@ import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
-import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/routing/comic_navigation.dart';
 
 class HistoryPage extends StatefulWidget {
   const HistoryPage({super.key, this.isRoot = false, this.isActive = true});
@@ -27,6 +28,7 @@ class _HistoryPageState extends State<HistoryPage> {
   ModalRoute<dynamic>? _route;
   bool _tickerModeEnabled = true;
   bool _needsRefresh = true;
+  List<String> _blockedWords = [];
 
   bool get _isVisible =>
       widget.isActive && _tickerModeEnabled && (_route?.isCurrent ?? true);
@@ -34,6 +36,7 @@ class _HistoryPageState extends State<HistoryPage> {
   @override
   void initState() {
     HistoryManager().addListener(onUpdate);
+    appdata.settings.addListener(_onSettingsChanged);
     super.initState();
   }
 
@@ -55,7 +58,15 @@ class _HistoryPageState extends State<HistoryPage> {
   @override
   void dispose() {
     HistoryManager().removeListener(onUpdate);
+    appdata.settings.removeListener(_onSettingsChanged);
     super.dispose();
+  }
+
+  void _onSettingsChanged() {
+    if (listEquals(_blockedWords, appdata.settings['blockedWords'] as List)) {
+      return;
+    }
+    if (_isVisible) setState(_refreshIfVisible);
   }
 
   void onUpdate() {
@@ -66,11 +77,20 @@ class _HistoryPageState extends State<HistoryPage> {
   }
 
   void _refreshIfVisible() {
-    if (!_needsRefresh || !_isVisible) return;
-    comics = HistoryManager().getAll();
-    _needsRefresh = false;
+    if (!_isVisible) return;
+    final words = appdata.settings['blockedWords'] as List;
+    if (!_needsRefresh && listEquals(_blockedWords, words)) return;
+    if (_needsRefresh) {
+      comics = HistoryManager().getAll();
+      _needsRefresh = false;
+    }
+    _blockedWords = List<String>.from(words);
+    visibleComics = comics.where((comic) => isBlocked(comic) == null).toList();
     if (multiSelectMode) {
-      selectedComics.removeWhere((comic, _) => !comics.contains(comic));
+      selectedComics = {
+        for (final comic in visibleComics)
+          if (selectedComics.containsKey(comic)) comic: true,
+      };
       if (selectedComics.isEmpty) {
         multiSelectMode = false;
       }
@@ -78,6 +98,7 @@ class _HistoryPageState extends State<HistoryPage> {
   }
 
   List<History> comics = [];
+  List<History> visibleComics = [];
   var controller = FlyoutController();
 
   bool multiSelectMode = false;
@@ -85,7 +106,7 @@ class _HistoryPageState extends State<HistoryPage> {
 
   void selectAll() {
     setState(() {
-      selectedComics = comics.asMap().map((k, v) => MapEntry(v, true));
+      selectedComics = {for (final comic in visibleComics) comic: true};
     });
   }
 
@@ -97,28 +118,21 @@ class _HistoryPageState extends State<HistoryPage> {
 
   void invertSelection() {
     setState(() {
-      comics.asMap().forEach((k, v) {
-        selectedComics[v] = !selectedComics.putIfAbsent(v, () => false);
-      });
-      selectedComics.removeWhere((k, v) => !v);
+      selectedComics = {
+        for (final comic in visibleComics)
+          if (!selectedComics.containsKey(comic)) comic: true,
+      };
     });
   }
 
-  void _removeHistory(History comic) {
-    if (comic.sourceKey.startsWith("Unknown")) {
-      HistoryManager().remove(
-        comic.id,
-        ComicType(int.parse(comic.sourceKey.split(':')[1])),
-      );
-    } else if (comic.sourceKey == 'local') {
-      HistoryManager().remove(comic.id, ComicType.local);
-    } else {
-      HistoryManager().remove(comic.id, ComicType(comic.sourceKey.hashCode));
-    }
+  void _removeHistories(Iterable<History> histories) {
+    HistoryManager().batchDeleteHistories([
+      for (final history in histories) ComicID(history.type, history.id),
+    ]);
   }
 
-  void _refreshHistory(History comic) async {
-    var result = await HistoryManager().refreshHistoryInfo(comic);
+  void _refreshHistory(History source) async {
+    var result = await HistoryManager().refreshHistoryInfo(source);
     if (result) {
       if (mounted) {
         App.rootContext.showMessage(message: "Refresh Success".tl);
@@ -199,15 +213,13 @@ class _HistoryPageState extends State<HistoryPage> {
         onPressed: selectedComics.isEmpty
             ? null
             : () {
-                final comicsToDelete = List<History>.from(selectedComics.keys);
+                final comicsToDelete = selectedComics.keys.toList();
                 setState(() {
                   multiSelectMode = false;
                   selectedComics.clear();
                 });
 
-                for (final comic in comicsToDelete) {
-                  _removeHistory(comic);
-                }
+                _removeHistories(comicsToDelete);
               },
       ),
     ];
@@ -318,42 +330,49 @@ class _HistoryPageState extends State<HistoryPage> {
               actions: multiSelectMode ? selectActions : normalActions,
             ),
             SliverGridComics(
-              comics: comics,
+              comics: visibleComics,
               selections: selectedComics,
               onLongPressed: null,
-              onTap: multiSelectMode
-                  ? (c, heroID) {
-                      setState(() {
-                        if (selectedComics.containsKey(c as History)) {
-                          selectedComics.remove(c);
-                        } else {
-                          selectedComics[c] = true;
-                        }
-                        if (selectedComics.isEmpty) {
-                          multiSelectMode = false;
-                        }
-                      });
-                    }
-                  : null,
+              onTap: (c, heroID) {
+                final group = c as History;
+                if (!multiSelectMode) {
+                  openComic(context, group, read: false, heroID: heroID);
+                  return;
+                }
+                setState(() {
+                  if (selectedComics.containsKey(group)) {
+                    selectedComics.remove(group);
+                  } else {
+                    selectedComics[group] = true;
+                  }
+                  if (selectedComics.isEmpty) {
+                    multiSelectMode = false;
+                  }
+                });
+              },
               badgeBuilder: (c) {
-                return ComicSource.find(c.sourceKey)?.name;
+                return c.sourceKey == 'local'
+                    ? 'Local'.tl
+                    : ComicSource.find(c.sourceKey)?.name ?? c.sourceKey;
               },
               menuBuilder: (c) {
+                final group = c as History;
                 return [
+                  MenuEntry(
+                    icon: Icons.play_arrow,
+                    text: 'Continue'.tl,
+                    onClick: () => openComic(context, group, read: true),
+                  ),
                   MenuEntry(
                     icon: Icons.refresh,
                     text: 'Refresh Info'.tl,
-                    onClick: () {
-                      _refreshHistory(c as History);
-                    },
+                    onClick: () => _refreshHistory(group),
                   ),
                   MenuEntry(
                     icon: Icons.remove,
                     text: 'Remove'.tl,
                     color: context.colorScheme.error,
-                    onClick: () {
-                      _removeHistory(c as History);
-                    },
+                    onClick: () => _removeHistories([group]),
                   ),
                 ];
               },

@@ -22,6 +22,7 @@ This document is the English companion for the repository structure rules. The C
 - `comic_source/`: comic source models, parsing, categories, source management, favorites mapping, tag translation, and source translation.
 - `comic_storage/`: archive metadata, image file rules, and local filesystem layout detection shared by local directories, CBZ, and WebDAV.
 - `comic_widgets/`: cross-domain comic display widgets such as cards, lists, and rating controls.
+- `app_update/`: application release checks, release notes and platform asset selection, Android APK downloads and the system installer. Startup checks and About share the same update prompt.
 - `comic_details/`: comic detail page and its chapters, comments, favorites, cover, and thumbnail modules.
 - `discovery/`: unified source browsing and categories, category comic lists, and rankings. Dual-capability sources support horizontal swipes between Browse and Categories while preserving browse-tab selection and view state; standalone `CategoriesPage` is retired.
 - `favorites/`: the Home favorites view (`ReadingFavoritesView`), local/network favorites, folders, and favorite actions. It manages the optional folder binding (`readingFolder`) shared with automatic update checks; the default is unbound, without creating or renaming folders.

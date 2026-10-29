@@ -69,6 +69,8 @@ class ComicPage extends StatefulWidget {
     this.cover,
     this.title,
     this.heroID,
+    this.selectSource = false,
+    this.continueReading = false,
   });
 
   final String id;
@@ -80,6 +82,8 @@ class ComicPage extends StatefulWidget {
   final String? title;
 
   final int? heroID;
+  final bool selectSource;
+  final bool continueReading;
 
   @override
   State<ComicPage> createState() => _ComicPageState();
@@ -233,6 +237,17 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
   @override
   Widget buildContent(BuildContext context, ComicDetails data) {
     return Scaffold(
+      bottomNavigationBar: widget.selectSource
+          ? SafeArea(
+              minimum: const EdgeInsets.all(16),
+              child: FilledButton.icon(
+                key: const Key('use-comic-source'),
+                icon: const Icon(Icons.swap_horiz),
+                label: Text('Use this source'.tl),
+                onPressed: () => context.pop(data),
+              ),
+            )
+          : null,
       floatingActionButton: showFAB
           ? FloatingActionButton(
               onPressed: () {
@@ -249,13 +264,15 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
         controller: scrollController,
         slivers: [
           ...buildTitle(),
-          buildActions(),
+          if (!widget.selectSource) buildActions(),
           buildDescription(),
           buildInfo(),
           buildChapters(),
-          buildComments(),
-          buildThumbnails(),
-          buildRecommend(),
+          if (!widget.selectSource) ...[
+            buildComments(),
+            buildThumbnails(),
+            buildRecommend(),
+          ],
           SliverPadding(
             padding: EdgeInsets.only(
               bottom: context.padding.bottom + 80,
@@ -318,6 +335,7 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
       refresh: true,
     );
     if (result.error) return result;
+    if (widget.selectSource) return result;
     final catalog = readingCatalogFromComicChapters(result.data.chapters);
     if (catalog != null) {
       final current =
@@ -335,19 +353,25 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
 
   @override
   Future<void> onDataLoaded() async {
+    if (widget.selectSource) return;
     isLiked = comic.isLiked ?? false;
     isFavorite = comic.isFavorite ?? false;
     // For sources with multi-folder favorites, prefer querying folders to get accurate favorite status
     // Some sources may not set isFavorite reliably when multi-folder is enabled
     if (comicSource.favoriteData?.loadFolders != null && comicSource.isLogged) {
       var res = await comicSource.favoriteData!.loadFolders!(comic.id);
+      if (!mounted) return;
       if (!res.error) {
         if (res.subData is List) {
           var list = List<String>.from(res.subData);
           isFavorite = list.isNotEmpty;
-          update();
         }
       }
+    }
+    if (widget.continueReading && history?.hasReadingProgress == true) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) read();
+      });
     }
   }
 
@@ -359,10 +383,12 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
         child: Text(comic.title),
       ),
       actions: [
-        IconButton(
-          onPressed: showMoreActions,
-          icon: const Icon(Icons.more_horiz),
-        ),
+        if (!widget.selectSource)
+          IconButton(
+            onPressed: showMoreActions,
+            tooltip: 'more'.tl,
+            icon: const Icon(Icons.more_horiz),
+          ),
       ],
     );
 
@@ -496,12 +522,6 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
                   onPressed: showComments,
                   iconColor: context.useTextColor(Colors.green),
                 ),
-              ComicDetailActionButton(
-                icon: const Icon(Icons.share),
-                text: 'Share'.tl,
-                onPressed: share,
-                iconColor: context.useTextColor(Colors.blue),
-              ),
             ],
           ).fixHeight(48),
           Align(
@@ -777,7 +797,11 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
           if (comic.stars != null)
             Row(
               children: [
-                StarRating(value: comic.stars!, size: 24, onTap: starRating),
+                StarRating(
+                  value: comic.stars!,
+                  size: 24,
+                  onTap: widget.selectSource ? null : starRating,
+                ),
                 const SizedBox(width: 8),
                 Text(comic.stars!.toStringAsFixed(2)),
               ],
@@ -849,7 +873,9 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
       pageCounts: comic.chapterPageCounts,
       chapterGroups: comic.chapterGroups,
       history: history,
-      readChapter: (chapter, group) => read(chapter, null, group),
+      readChapter: widget.selectSource
+          ? null
+          : (chapter, group) => read(chapter, null, group),
     );
   }
 
@@ -945,10 +971,8 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
   }
 
   String? get _cover {
-    final cover = widget.cover?.trim().isNotEmpty == true
-        ? widget.cover
-        : comic.cover;
-    if (cover == null || cover.trim().isEmpty) {
+    final cover = comic.cover;
+    if (cover.trim().isEmpty) {
       return null;
     }
     return cover;

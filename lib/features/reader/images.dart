@@ -298,7 +298,7 @@ class GalleryModeState extends State<_GalleryMode>
         AutoReadingImageViewport {
   late PageController controller;
 
-  int get preCacheCount => appdata.settings["preloadImageCount"];
+  int get preCacheCount => reader.readerSetting('preloadImageCount');
 
   final _pool = GalleryPhotoViewControllerPool();
   final _preloader = ReaderImagePreloader();
@@ -796,8 +796,9 @@ class GalleryModeState extends State<_GalleryMode>
       _promoteVisiblePage(startPage);
       _preloader.update([
         ..._cachePage(startPage + 1, true),
+        if (preCacheCount >= 2) ..._cachePage(startPage + 2, true),
         ..._cachePage(startPage - 1, true),
-        for (var offset = 2; offset <= preCacheCount; offset++)
+        for (var offset = 3; offset <= preCacheCount; offset++)
           ..._cachePage(startPage + offset, false),
       ]);
       _preloader.setPaused(false);
@@ -827,15 +828,31 @@ class GalleryModeState extends State<_GalleryMode>
       yield ReaderImagePreload(
         key: provider,
         decode: shouldPreCache,
+        isCached: shouldPreCache
+            ? () => PaintingBinding.instance.imageCache
+                  .statusForKey(provider)
+                  .tracked
+            : null,
         load: shouldPreCache
             ? () => RemoteReadContext(priority: RemoteReadPriority.preload).run(
-                () => precacheImage(
-                  provider,
-                  context,
-                  onError: (error, stack) {
-                    Log.warning('Reader preload', '$error\n$stack');
-                  },
-                ),
+                () async {
+                  Object? loadError;
+                  StackTrace? loadStack;
+                  await precacheImage(
+                    provider,
+                    context,
+                    onError: (error, stack) {
+                      loadError = error;
+                      loadStack = stack;
+                    },
+                  );
+                  if (loadError != null) {
+                    Error.throwWithStackTrace(
+                      loadError!,
+                      loadStack ?? StackTrace.current,
+                    );
+                  }
+                },
               )
             : () => ImageDownloader.preloadComicImage(
                 provider.imageKey,
@@ -1635,7 +1652,7 @@ class ContinuousModeState extends State<_ContinuousMode>
 
   String? _nextSegmentError;
 
-  int get preCacheCount => appdata.settings["preloadImageCount"];
+  int get preCacheCount => reader.readerSetting('preloadImageCount');
 
   /// Whether the user was scrolling the page.
   /// The gesture detector has a delay to detect tap event.
