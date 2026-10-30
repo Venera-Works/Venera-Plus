@@ -200,6 +200,7 @@ void _throwIfCancelled(CancelToken? token) {
 
 const _pdfWindow = 256 * 1024;
 const _pdfMaxRead = 2 * 1024 * 1024;
+const _pdfMaxConcurrentReads = 4;
 typedef _PdfRange = (int offset, int length);
 typedef _PdfStep<T> = ({T? value, List<_PdfRange> missing});
 
@@ -250,16 +251,34 @@ class _NativePdfDocument implements RemotePdfDocument {
       if (step.missing.isEmpty) {
         throw const FormatException('PDF data is incomplete or corrupted');
       }
-      for (final (offset, length) in step.missing) {
-        final bytes = await read(offset, length);
-        _throwIfCancelled(cancelToken);
-        await PdfrxEntryFunctions.instance.compute(_storeNativePdfRange, (
-          id,
-          offset,
-          bytes,
-        ));
+      for (
+        var start = 0;
+        start < step.missing.length;
+        start += _pdfMaxConcurrentReads
+      ) {
+        // Wait for every read and native call before a failure can dispose us.
+        await Future.wait([
+          for (
+            var i = start;
+            i < math.min(start + _pdfMaxConcurrentReads, step.missing.length);
+            i++
+          )
+            _readMissingRange(step.missing[i]),
+        ]);
       }
     }
+  }
+
+  Future<void> _readMissingRange(_PdfRange range) async {
+    _throwIfCancelled(cancelToken);
+    final (offset, length) = range;
+    final bytes = await read(offset, length);
+    _throwIfCancelled(cancelToken);
+    await PdfrxEntryFunctions.instance.compute(_storeNativePdfRange, (
+      id,
+      offset,
+      bytes,
+    ));
   }
 
   @override

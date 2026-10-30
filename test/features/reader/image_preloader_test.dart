@@ -10,23 +10,18 @@ void main() {
   late List<String> started;
   late Map<String, Completer<void>> gates;
 
-  ReaderImagePreload task(
-    String key, {
-    bool decode = false,
-    bool Function()? isCached,
-  }) => ReaderImagePreload(
-    key: key,
-    decode: decode,
-    isCached: isCached,
-    load: () {
-      final name = '$key:$decode';
-      started.add(name);
-      return (gates[name] = Completer<void>()).future;
-    },
-  );
+  ReaderImagePreload task(String key, {bool Function()? isCached}) =>
+      ReaderImagePreload(
+        key: key,
+        isCached: isCached,
+        load: () {
+          started.add(key);
+          return (gates[key] = Completer<void>()).future;
+        },
+      );
 
-  Future<void> finish(String name) async {
-    gates[name]!.complete();
+  Future<void> finish(String key) async {
+    gates[key]!.complete();
     await pumpEventQueue();
   }
 
@@ -45,86 +40,76 @@ void main() {
   });
 
   test(
-    'nearby pages run first and distant downloads run one at a time',
+    'prepares the full window in proximity order with two active pages',
     () async {
       final window = [
-        task('next', decode: true),
-        task('next-2', decode: true),
-        task('previous', decode: true),
-        task('far-1'),
-        task('far-2'),
+        task('next'),
+        task('previous'),
+        task('next-2'),
+        task('next-3'),
+        task('next-4'),
       ];
       preloader.update(window);
-      expect(started, ['next:true', 'next-2:true']);
-      await finish('next:true');
-      expect(started.last, 'previous:true');
-      await finish('next-2:true');
-      expect(started.last, 'far-1:false');
-      await finish('previous:true');
-      expect(started, hasLength(4));
+      expect(started, ['next', 'previous']);
+      await finish('previous');
+      expect(started, ['next', 'previous', 'next-2']);
+      await finish('next');
+      expect(started.last, 'next-3');
+      await finish('next-2');
+      expect(started.last, 'next-4');
+      await finish('next-3');
+      await finish('next-4');
       preloader.update(window);
-      expect(started, hasLength(4));
-      await finish('far-1:false');
-      expect(started.last, 'far-2:false');
-      await finish('far-2:false');
-      preloader.update(window);
-      expect(started, hasLength(5));
+      expect(started, ['next', 'previous', 'next-2', 'next-3', 'next-4']);
     },
   );
 
   test(
-    'fast navigation replaces queued pages and leaves capacity for next page',
+    'navigation replaces queued pages before another slot is released',
     () async {
-      preloader.update([task('old-active'), task('old-queued')]);
-      preloader.update([task('new-next', decode: true), task('new-far')]);
-      expect(started, ['old-active:false', 'new-next:true']);
-      await finish('old-active:false');
-      expect(started.last, 'new-far:false');
-      expect(started, isNot(contains('old-queued:false')));
+      preloader.update([
+        task('old-active'),
+        task('other-active'),
+        task('old-queued'),
+      ]);
+      preloader.update([
+        task('new-next'),
+        task('new-previous'),
+        task('new-far'),
+      ]);
+      await finish('old-active');
+      expect(started, ['old-active', 'other-active', 'new-next']);
+      await finish('other-active');
+      expect(started.last, 'new-previous');
+      await finish('new-next');
+      expect(started.last, 'new-far');
+      expect(started, isNot(contains('old-queued')));
     },
   );
 
-  test('an active download is decoded once when it becomes adjacent', () async {
-    preloader.update([task('page')]);
-    preloader.update([task('page', decode: true)]);
-    expect(started, ['page:false']);
-    await finish('page:false');
-    expect(started, ['page:false', 'page:true']);
-    await finish('page:true');
-    preloader.update([task('page', decode: true), task('page')]);
-    expect(started, hasLength(2));
+  test('split pages sharing one source are prepared only once', () async {
+    final window = [task('split-source'), task('split-source'), task('next')];
+    preloader.update(window);
+    expect(started, ['split-source', 'next']);
+    preloader.update(window);
+    await finish('split-source');
+    await finish('next');
+    preloader.update(window);
+    expect(started, ['split-source', 'next']);
   });
 
   test(
     'scrolling pauses queued work until the final page is selected',
     () async {
-      preloader.update([task('active'), task('old-queued')]);
+      preloader.update([task('first'), task('second'), task('old-queued')]);
       preloader.setPaused(true);
-      await finish('active:false');
-      expect(started, ['active:false']);
-
-      preloader.update([task('midpoint', decode: true)]);
-      expect(started, ['active:false']);
-      preloader.update([task('final-next', decode: true), task('final-far')]);
+      await finish('first');
+      await finish('second');
+      expect(started, ['first', 'second']);
+      preloader.update([task('midpoint')]);
+      preloader.update([task('final-next'), task('final-previous')]);
       preloader.setPaused(false);
-      expect(started, ['active:false', 'final-next:true', 'final-far:false']);
-    },
-  );
-
-  test(
-    'a download completed during scrolling is decoded after resume',
-    () async {
-      preloader.update([task('page')]);
-      preloader.setPaused(true);
-      preloader.update([task('page', decode: true)]);
-      await finish('page:false');
-      expect(started, ['page:false']);
-      preloader.setPaused(false);
-      expect(started, ['page:false', 'page:true']);
-      await finish('page:true');
-      preloader.setPaused(true);
-      preloader.setPaused(false);
-      expect(started, hasLength(2));
+      expect(started, ['first', 'second', 'final-next', 'final-previous']);
     },
   );
 
@@ -132,58 +117,51 @@ void main() {
     final muted = Log.isMuted;
     Log.isMuted = true;
     addTearDown(() => Log.isMuted = muted);
-    preloader.update([task('bad'), task('next')]);
-    gates['bad:false']!.completeError(StateError('download failed'));
+    preloader.update([task('bad'), task('next'), task('later')]);
+    gates['bad']!.completeError(StateError('download failed'));
     await pumpEventQueue();
-    expect(started, ['bad:false', 'next:false']);
-    preloader.update([task('bad'), task('next')]);
-    expect(started, hasLength(2));
-    await finish('next:false');
-    expect(started, hasLength(2));
+    expect(started, ['bad', 'next', 'later']);
+    preloader.update([task('bad'), task('next'), task('later')]);
+    await finish('next');
+    expect(started, ['bad', 'next', 'later']);
   });
 
-  test(
-    'evicted decoded images are prepared again on a window update',
-    () async {
-      var cached = true;
-      final window = [task('page', decode: true, isCached: () => cached)];
-      preloader.update(window);
-      await finish('page:true');
-      preloader.update(window);
-      expect(started, ['page:true']);
-
-      cached = false;
-      preloader.update(window);
-      expect(started, ['page:true', 'page:true']);
-      await finish('page:true');
-      // Cache pressure must not cause an unbounded decode loop.
-      expect(started, hasLength(2));
-    },
-  );
+  test('evicted images are prepared again only on a window update', () async {
+    var cached = true;
+    final window = [task('page', isCached: () => cached)];
+    preloader.update(window);
+    await finish('page');
+    preloader.update(window);
+    expect(started, ['page']);
+    cached = false;
+    preloader.update(window);
+    expect(started, ['page', 'page']);
+    await finish('page');
+    expect(started, ['page', 'page']);
+  });
 
   test('failed preloads retry once after a delay without blocking pages', () {
     final muted = Log.isMuted;
     Log.isMuted = true;
     addTearDown(() => Log.isMuted = muted);
     fakeAsync((async) {
-      final window = [task('bad', decode: true), task('next')];
+      final window = [task('bad'), task('next')];
       preloader.update(window);
-      gates['bad:true']!.completeError(StateError('download failed'));
+      gates['bad']!.completeError(StateError('download failed'));
       async.flushMicrotasks();
-      expect(started, ['bad:true', 'next:false']);
+      expect(started, ['bad', 'next']);
       preloader.update(window);
       async.elapse(const Duration(milliseconds: 999));
-      expect(started, hasLength(2));
+      expect(started, ['bad', 'next']);
       async.elapse(const Duration(milliseconds: 1));
-      expect(started, ['bad:true', 'next:false', 'bad:true']);
-
-      gates['bad:true']!.completeError(StateError('still unavailable'));
+      expect(started, ['bad', 'next', 'bad']);
+      gates['bad']!.completeError(StateError('still unavailable'));
       async.flushMicrotasks();
-      gates['next:false']!.complete();
+      gates['next']!.complete();
       async.flushMicrotasks();
       preloader.update(window);
       async.elapse(const Duration(seconds: 10));
-      expect(started, hasLength(3));
+      expect(started, ['bad', 'next', 'bad']);
       expect(async.pendingTimers, isEmpty);
     });
   });
@@ -193,23 +171,24 @@ void main() {
     Log.isMuted = true;
     addTearDown(() => Log.isMuted = muted);
     fakeAsync((async) {
-      preloader.update([task('old', decode: true)]);
-      gates['old:true']!.completeError(StateError('download failed'));
+      preloader.update([task('old')]);
+      gates['old']!.completeError(StateError('download failed'));
       async.flushMicrotasks();
       expect(async.nonPeriodicTimerCount, 1);
-      preloader.update([task('new', decode: true)]);
+      preloader.update([task('new')]);
       async.elapse(const Duration(seconds: 2));
-      expect(started, ['old:true', 'new:true']);
+      expect(started, ['old', 'new']);
       expect(async.pendingTimers, isEmpty);
-      gates['new:true']!.complete();
+      gates['new']!.complete();
       async.flushMicrotasks();
     });
   });
 
   test('disposing stops queued work', () async {
-    preloader.update([task('active'), task('queued')]);
+    preloader.update([task('first'), task('second'), task('queued')]);
     preloader.dispose();
-    await finish('active:false');
-    expect(started, ['active:false']);
+    await finish('first');
+    await finish('second');
+    expect(started, ['first', 'second']);
   });
 }

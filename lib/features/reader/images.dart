@@ -25,7 +25,6 @@ import 'package:venera_plus/features/reader/reader_page.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/reader/waterfall_flow.dart';
 import 'package:venera_plus/foundation/appdata.dart';
-import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/image_provider/reader_image.dart';
@@ -795,11 +794,10 @@ class GalleryModeState extends State<_GalleryMode>
       final startPage = _currentControllerIndex;
       _promoteVisiblePage(startPage);
       _preloader.update([
-        ..._cachePage(startPage + 1, true),
-        if (preCacheCount >= 2) ..._cachePage(startPage + 2, true),
-        ..._cachePage(startPage - 1, true),
-        for (var offset = 3; offset <= preCacheCount; offset++)
-          ..._cachePage(startPage + offset, false),
+        ..._cachePage(startPage + 1),
+        ..._cachePage(startPage - 1),
+        for (var offset = 2; offset <= preCacheCount; offset++)
+          ..._cachePage(startPage + offset),
       ]);
       _preloader.setPaused(false);
       _pool.pruneExcept(
@@ -812,7 +810,7 @@ class GalleryModeState extends State<_GalleryMode>
     });
   }
 
-  Iterable<ReaderImagePreload> _cachePage(int page, bool shouldPreCache) sync* {
+  Iterable<ReaderImagePreload> _cachePage(int page) sync* {
     if (page <= 0 || page > totalPages || isChapterCommentsPage(page)) return;
     Iterable<int> sourcePages;
     if (isSplitEnabled && _pagePlan != null) {
@@ -822,45 +820,9 @@ class GalleryModeState extends State<_GalleryMode>
       sourcePages = [for (var i = start; i < end; i++) i + 1];
     }
     for (final sourcePage in sourcePages) {
-      final provider =
-          _createImageProvider(sourcePage, context) as ReaderImageProvider;
-      if (!shouldPreCache && provider.imageKey.startsWith('file://')) continue;
-      yield ReaderImagePreload(
-        key: provider,
-        decode: shouldPreCache,
-        isCached: shouldPreCache
-            ? () => PaintingBinding.instance.imageCache
-                  .statusForKey(provider)
-                  .tracked
-            : null,
-        load: shouldPreCache
-            ? () => RemoteReadContext(priority: RemoteReadPriority.preload).run(
-                () async {
-                  Object? loadError;
-                  StackTrace? loadStack;
-                  await precacheImage(
-                    provider,
-                    context,
-                    onError: (error, stack) {
-                      loadError = error;
-                      loadStack = stack;
-                    },
-                  );
-                  if (loadError != null) {
-                    Error.throwWithStackTrace(
-                      loadError!,
-                      loadStack ?? StackTrace.current,
-                    );
-                  }
-                },
-              )
-            : () => ImageDownloader.preloadComicImage(
-                provider.imageKey,
-                provider.sourceKey,
-                provider.cid,
-                provider.eid,
-                target: provider.target,
-              ),
+      yield _createReaderImagePreload(
+        _createImageProvider(sourcePage, context),
+        context,
       );
     }
   }
@@ -1638,7 +1600,7 @@ class ContinuousModeState extends State<_ContinuousMode>
   var fingers = 0;
   bool disableScroll = false;
 
-  late List<bool> cached;
+  final _preloader = ReaderImagePreloader();
 
   final _waterfallFlow = WaterfallChapterFlow();
 
@@ -2003,10 +1965,6 @@ class ContinuousModeState extends State<_ContinuousMode>
     reader.imageViewController = this;
     _initSegments();
     itemPositionsListener.itemPositions.addListener(onPositionChanged);
-    cached = List.filled(reader.maxPage + 2, false);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) cacheImages(reader.page);
-    });
     super.initState();
   }
 
@@ -2017,6 +1975,7 @@ class ContinuousModeState extends State<_ContinuousMode>
     }
     itemPositionsListener.itemPositions.removeListener(onPositionChanged);
     _endUserScroll();
+    _preloader.dispose();
     super.dispose();
   }
 
@@ -2187,32 +2146,21 @@ class ContinuousModeState extends State<_ContinuousMode>
         _promoteReaderImage(_createImageProviderFromRef(imageRef, context));
       }
     }
-    for (final i in [current - 1, current + 1]) {
-      final imageRef = _imageRefAt(i);
-      if (imageRef != null) {
-        RemoteReadContext(priority: RemoteReadPriority.preload).run(
-          () => precacheImage(
-            _createImageProviderFromRef(imageRef, context),
-            context,
-          ),
-        );
-      }
-    }
-    for (int i = current + 1; i <= current + preCacheCount; i++) {
-      if (i == current + 1) continue;
-      if (crossChapter) {
-        var imageRef = _imageRefAt(i);
-        if (imageRef == null) continue;
-        var segment = _segmentOfChapter(imageRef.chapter);
-        if (segment != null && !segment.cached.contains(imageRef.page)) {
-          _preDownloadImageRef(imageRef, context);
-          segment.cached.add(imageRef.page);
-        }
-      } else if (i <= reader.maxPage && !cached[i]) {
-        _preDownloadImage(i, context);
-        cached[i] = true;
-      }
-    }
+    _preloader.update([
+      ..._cachePage(current + 1),
+      ..._cachePage(current - 1),
+      for (var offset = 2; offset <= preCacheCount; offset++)
+        ..._cachePage(current + offset),
+    ]);
+  }
+
+  Iterable<ReaderImagePreload> _cachePage(int page) sync* {
+    final imageRef = _imageRefAt(page);
+    if (imageRef == null) return;
+    yield _createReaderImagePreload(
+      _createImageProviderFromRef(imageRef, context),
+      context,
+    );
   }
 
   Widget _buildFlowEnd(BuildContext context) {
@@ -2340,6 +2288,11 @@ class ContinuousModeState extends State<_ContinuousMode>
 
   @override
   Widget build(BuildContext context) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final current = _waterfallIndexOfChapterPage(reader.chapter, reader.page);
+      if (current != null) cacheImages(current);
+    });
     Widget widget = ScrollablePositionedList.builder(
       initialScrollIndex: reader.page,
       itemScrollController: itemScrollController,
@@ -3255,7 +3208,7 @@ ComicImageLoadTarget calculateReaderImageTargetFromContext(
   );
 }
 
-ImageProvider _createImageProviderFromKey(
+ReaderImageProvider _createImageProviderFromKey(
   String imageKey,
   BuildContext context,
   int page,
@@ -3274,7 +3227,7 @@ ImageProvider _createImageProviderFromKey(
   );
 }
 
-ImageProvider _createImageProviderFromRef(
+ReaderImageProvider _createImageProviderFromRef(
   WaterfallImageRef imageRef,
   BuildContext context,
 ) {
@@ -3292,11 +3245,37 @@ ImageProvider _createImageProviderFromRef(
   );
 }
 
-ImageProvider _createImageProvider(int page, BuildContext context) {
+ReaderImageProvider _createImageProvider(int page, BuildContext context) {
   var reader = context.reader;
   var imageKey = reader.images![page - 1];
   return _createImageProviderFromKey(imageKey, context, page);
 }
+
+ReaderImagePreload _createReaderImagePreload(
+  ReaderImageProvider provider,
+  BuildContext context,
+) => ReaderImagePreload(
+  key: provider,
+  isCached: () =>
+      PaintingBinding.instance.imageCache.statusForKey(provider).tracked,
+  load: () => RemoteReadContext(priority: RemoteReadPriority.preload).run(
+    () async {
+      Object? loadError;
+      StackTrace? loadStack;
+      await precacheImage(
+        provider,
+        context,
+        onError: (error, stack) {
+          loadError = error;
+          loadStack = stack;
+        },
+      );
+      if (loadError != null) {
+        Error.throwWithStackTrace(loadError!, loadStack ?? StackTrace.current);
+      }
+    },
+  ),
+);
 
 // A visible widget may reuse precacheImage's pending completer without calling
 // ImageDownloader again, so promote the existing transport explicitly.
@@ -3308,54 +3287,6 @@ void _promoteReaderImage(ImageProvider image) {
     image.cid,
     image.eid,
     target: image.target,
-  );
-}
-
-/// [_preDownloadImage] is used to download the image for the given page.
-/// The image is downloaded using the [CacheManager] and saved to the local storage.
-void _preDownloadImage(int page, BuildContext context) {
-  if (page <= 0 || page > context.reader.images!.length) {
-    return;
-  }
-  var reader = context.reader;
-  var imageKey = reader.images![page - 1];
-  if (imageKey.startsWith("file://")) {
-    return;
-  }
-  var cid = reader.cid;
-  var eid = reader.eid;
-  var sourceKey = reader.type.comicSource?.key;
-  final target = calculateReaderImageTargetFromContext(context, page);
-  unawaited(
-    ImageDownloader.preloadComicImage(
-      imageKey,
-      sourceKey,
-      cid,
-      eid,
-      target: target,
-    ).catchError((Object error, StackTrace stackTrace) {
-      Log.error('Reader', 'Failed to predownload image: $error\n$stackTrace');
-    }),
-  );
-}
-
-void _preDownloadImageRef(WaterfallImageRef imageRef, BuildContext context) {
-  if (imageRef.imageKey.startsWith("file://")) {
-    return;
-  }
-  var reader = context.reader;
-  var sourceKey = reader.type.comicSource?.key;
-  final target = calculateReaderImageTargetFromContext(context, imageRef.page);
-  unawaited(
-    ImageDownloader.preloadComicImage(
-      imageRef.imageKey,
-      sourceKey,
-      reader.cid,
-      imageRef.eid,
-      target: target,
-    ).catchError((Object error, StackTrace stackTrace) {
-      Log.error('Reader', 'Failed to predownload image: $error\n$stackTrace');
-    }),
   );
 }
 

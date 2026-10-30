@@ -18,7 +18,6 @@ class WaterfallChapterSegment {
   final int chapter;
   final String eid;
   final List<String> images;
-  final Set<int> cached = {};
 
   WaterfallChapterSegment({
     required this.chapter,

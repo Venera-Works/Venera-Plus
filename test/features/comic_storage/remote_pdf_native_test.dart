@@ -105,6 +105,45 @@ void main() {
       );
 
       test(
+        'loads missing page ranges concurrently and renders their complete contents',
+        () async {
+          var active = 0;
+          var peak = 0;
+          Future<Uint8List> read(int offset, int length) async {
+            active++;
+            if (active > peak) peak = active;
+            try {
+              await Future<void>.delayed(Duration.zero);
+              return Uint8List.sublistView(
+                fixture.bytes,
+                offset,
+                offset + length,
+              );
+            } finally {
+              active--;
+            }
+          }
+
+          final jpeg = await RemotePdfReader.renderPage(
+            size: fixture.bytes.length,
+            read: read,
+            sourceName: 'Native comic.pdf',
+            pageNumber: 3,
+          );
+          expect(peak, inInclusiveRange(2, 4));
+          final rendered = image.decodeJpg(jpeg)!;
+          final gray = rendered.getPixel(
+            rendered.width ~/ 2,
+            rendered.height ~/ 2,
+          );
+          expect(gray.r, closeTo(128, 2));
+          expect(gray.g, closeTo(128, 2));
+          expect(gray.b, closeTo(128, 2));
+        },
+        timeout: const Timeout(Duration(seconds: 45)),
+      );
+
+      test(
         'survives stream read errors, cancellation and short responses',
         () async {
           for (final fault in ['network', 'cancel', 'short response']) {

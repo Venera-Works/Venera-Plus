@@ -5,24 +5,22 @@ import 'package:venera_plus/foundation/log.dart';
 class ReaderImagePreload {
   const ReaderImagePreload({
     required this.key,
-    required this.decode,
     required this.load,
     this.isCached,
   });
 
   final Object key;
-  final bool decode;
   final Future<void> Function() load;
   final bool Function()? isCached;
 }
 
-/// Prepares nearby pages first, with at most two tasks and one distant download.
+/// Prepares pages in window order, with at most two tasks at a time.
 class ReaderImagePreloader {
   Map<Object, ReaderImagePreload> _wanted = {};
-  final _active = <Object, ReaderImagePreload>{};
-  final _finished = <Object, bool>{};
-  final _failures = <(Object, bool), int>{};
-  final _retryTimers = <(Object, bool), Timer>{};
+  final _active = <Object>{};
+  final _finished = <Object>{};
+  final _failures = <Object, int>{};
+  final _retryTimers = <Object, Timer>{};
   bool _paused = false;
   bool _disposed = false;
 
@@ -40,14 +38,13 @@ class ReaderImagePreloader {
       _wanted.putIfAbsent(task.key, () => task);
     }
     // Recheck on window updates so cache pressure cannot cause a decode loop.
-    _finished.removeWhere((key, decoded) {
+    _finished.removeWhere((key) {
       final task = _wanted[key];
-      return task == null ||
-          (decoded && task.decode && task.isCached?.call() == false);
+      return task == null || task.isCached?.call() == false;
     });
-    _failures.removeWhere((key, _) => _wanted[key.$1]?.decode != key.$2);
+    _failures.removeWhere((key, _) => !_wanted.containsKey(key));
     _retryTimers.removeWhere((key, timer) {
-      if (_wanted[key.$1]?.decode == key.$2) return false;
+      if (_wanted.containsKey(key)) return false;
       timer.cancel();
       return true;
     });
@@ -58,18 +55,12 @@ class ReaderImagePreloader {
     if (_disposed || _paused) return;
     for (final task in _wanted.values) {
       if (_active.length >= 2) break;
-      if (_active.containsKey(task.key)) continue;
-      final finished = _finished[task.key];
-      if (finished == true || finished == task.decode) continue;
-      final attemptKey = (task.key, task.decode);
-      if ((_failures[attemptKey] ?? 0) >= 2 ||
-          _retryTimers.containsKey(attemptKey)) {
+      if (_active.contains(task.key) || _finished.contains(task.key)) continue;
+      if ((_failures[task.key] ?? 0) >= 2 ||
+          _retryTimers.containsKey(task.key)) {
         continue;
       }
-      if (!task.decode && _active.values.any((active) => !active.decode)) {
-        continue;
-      }
-      _active[task.key] = task;
+      _active.add(task.key);
       unawaited(_run(task));
     }
   }
@@ -84,17 +75,16 @@ class ReaderImagePreloader {
     } finally {
       _active.remove(task.key);
       if (!_disposed && _wanted.containsKey(task.key)) {
-        final attemptKey = (task.key, task.decode);
         if (succeeded) {
-          _finished[task.key] = task.decode;
-          _failures.remove(attemptKey);
-        } else if (_wanted[task.key]!.decode == task.decode) {
-          final failures = (_failures[attemptKey] ?? 0) + 1;
-          _failures[attemptKey] = failures;
+          _finished.add(task.key);
+          _failures.remove(task.key);
+        } else {
+          final failures = (_failures[task.key] ?? 0) + 1;
+          _failures[task.key] = failures;
           // Retry once without occupying a slot or looping on a broken image.
           if (failures < 2) {
-            _retryTimers[attemptKey] = Timer(const Duration(seconds: 1), () {
-              _retryTimers.remove(attemptKey);
+            _retryTimers[task.key] = Timer(const Duration(seconds: 1), () {
+              _retryTimers.remove(task.key);
               _drain();
             });
           }

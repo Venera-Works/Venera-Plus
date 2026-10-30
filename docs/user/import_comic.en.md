@@ -140,6 +140,8 @@ Online libraries provide a reading channel separate from local import/export and
 
 Online reading supports remote image directories, single-comic ZIP/CBZ files, image-based EPUB files, and PDF files. Directory comics list folders and load images on demand; ZIP/CBZ and image-based EPUB files supply images directly without extraction on the server, while PDF files render the requested original pages. A single-comic CBZ exported by VeneraPlus (or legacy VeneraNext) can retain its title, author, tags, and chapters, while EPUB uses OPF book metadata and navigation. See [Multi-cloud storage](multi_cloud.en.md) for account and directory setup.
 
+The reader loads and decodes upcoming pages according to the effective **Number of images preloaded** setting. It also prepares the previous page, prioritizing pages closest to the current page. This applies to paged, continuous, and waterfall reading, including device and per-comic setting overrides. Cloud PDF reading can fetch missing file ranges concurrently while retaining the account's shared request limits.
+
 The **Sync comic library config** switch in WebDAV Comic Library settings is off by default. When enabled, DataSync/Appdata `.venera` files include the library URL, username, password, remote path, automatic-update switch, and update interval. The receiving device must also enable this switch locally before those fields are imported. Credentials are stored in the remote `.venera` file, so enable this only for trusted WebDAV storage and accounts.
 
 ### Plain Directory Mode

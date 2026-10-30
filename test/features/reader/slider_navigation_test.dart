@@ -127,12 +127,15 @@ void main() {
         }
 
         Future<void> settleImageLoads() async {
-          await runWidgetIo(tester, () async {
-            while (PaintingBinding.instance.imageCache.pendingImageCount > 0) {
-              await Future<void>.delayed(const Duration(milliseconds: 10));
-            }
-          });
-          await tester.pump();
+          do {
+            await runWidgetIo(tester, () async {
+              while (PaintingBinding.instance.imageCache.pendingImageCount >
+                  0) {
+                await Future<void>.delayed(const Duration(milliseconds: 10));
+              }
+            });
+            await tester.pump();
+          } while (PaintingBinding.instance.imageCache.pendingImageCount > 0);
         }
 
         final reader = key.currentState!;
@@ -158,23 +161,52 @@ void main() {
           reader.type.sourceKey,
           true,
         );
-        final nextImage = ReaderImageProvider(
-          reader.images![250],
-          null,
-          reader.cid,
-          reader.eid,
-          251,
-          chapter: reader.chapter,
-          enableResize: true,
-          target: calculateReaderImageTargetFromContext(
-            tester.element(find.byType(ComicImage).first),
-            251,
-          ),
-        );
+        await settleImageLoads();
+        ReaderImageProvider imageProviderForPage(int page) =>
+            ReaderImageProvider(
+              reader.images![page - 1],
+              null,
+              reader.cid,
+              reader.eid,
+              page,
+              chapter: reader.chapter,
+              enableResize: true,
+              target: calculateReaderImageTargetFromContext(
+                tester.element(find.byType(ComicImage).first),
+                page,
+              ),
+            );
+        final nextImage = imageProviderForPage(251);
         expect(
           PaintingBinding.instance.imageCache.containsKey(nextImage),
           isTrue,
         );
+        settings.setReaderSetting(
+          reader.cid,
+          reader.type.sourceKey,
+          'preloadImageCount',
+          6,
+        );
+        reader.update();
+        await frames(15);
+        await settleImageLoads();
+        for (var page = 251; page <= 256; page++) {
+          expect(
+            PaintingBinding.instance.imageCache
+                .statusForKey(imageProviderForPage(page))
+                .keepAlive,
+            isTrue,
+            reason: 'Continuous page $page must be decoded before scrolling',
+          );
+        }
+        settings.setReaderSetting(
+          reader.cid,
+          reader.type.sourceKey,
+          'preloadImageCount',
+          1,
+        );
+        reader.update();
+        await frames(5);
         final scaffold = tester.state<ReaderScaffoldState>(
           find.byType(ReaderScaffold),
         );
@@ -357,20 +389,6 @@ void main() {
         reader.toPage(50, animated: false);
         await frames(10);
         await settleImageLoads();
-        ReaderImageProvider imageProviderForPage(int page) =>
-            ReaderImageProvider(
-              reader.images![page - 1],
-              null,
-              reader.cid,
-              reader.eid,
-              page,
-              chapter: reader.chapter,
-              enableResize: true,
-              target: calculateReaderImageTargetFromContext(
-                tester.element(find.byType(ComicImage).first),
-                page,
-              ),
-            );
         final afterNext = imageProviderForPage(52);
         final imageCache = PaintingBinding.instance.imageCache;
         imageCache.evict(afterNext);
@@ -405,7 +423,6 @@ void main() {
 
         if (!rapid) {
           final twoAhead = imageProviderForPage(53);
-          final threeAhead = imageProviderForPage(54);
           expect(imageCache.containsKey(twoAhead), isFalse);
           settings.setReaderSetting(
             reader.cid,
@@ -416,9 +433,14 @@ void main() {
           reader.update();
           await frames(15);
           await settleImageLoads();
-          expect(gallery.preCacheCount, 6);
-          expect(imageCache.statusForKey(twoAhead).keepAlive, isTrue);
-          expect(imageCache.containsKey(threeAhead), isFalse);
+          for (var page = 52; page <= 57; page++) {
+            expect(
+              imageCache.statusForKey(imageProviderForPage(page)).keepAlive,
+              isTrue,
+              reason:
+                  'Page $page must be decoded within the six-page preload window',
+            );
+          }
 
           imageCache.evict(twoAhead);
           reader.update();
