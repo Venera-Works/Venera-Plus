@@ -206,6 +206,8 @@ fvm flutter pub get --enforce-lockfile
 fvm flutter build ios --release --no-codesign --no-pub
 ```
 
+iOS CI 在安装串行化 Rustup 包装脚本前创建 `~/.cargo/bin`，并将其加入后续步骤的 `PATH`，兼容不预建该目录的 macOS 运行器。预发布版本通过 `--build-name` 和 `--build-number` 设置 iOS 包版本，保留 `pubspec.yaml` 中供应用读取的完整 Beta 版本号。
+
 ### Linux Debian 打包
 
 Linux Debian 安装包使用系统自带的 `dpkg-deb` 工具与项目脚本 `debian/build.py` 打包：

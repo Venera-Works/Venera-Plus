@@ -207,6 +207,8 @@ fvm flutter pub get --enforce-lockfile
 fvm flutter build ios --release --no-codesign --no-pub
 ```
 
+iOS CI creates `~/.cargo/bin` before installing the serialized Rustup wrapper and adds it to `PATH` for subsequent steps, supporting macOS runners where the directory is absent. Prerelease builds set the iOS package version with `--build-name` and `--build-number`, preserving the full Beta version in `pubspec.yaml` for the app to read.
+
 ### Linux Debian Packaging
 
 Linux Debian packages are built using the host system `dpkg-deb` utility and the project script `debian/build.py`:
