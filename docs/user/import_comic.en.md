@@ -328,9 +328,11 @@ Multiple bookmarks pointing to different valid pages form chapters at their dest
 }
 ```
 
-Opening reads the required document structures and first-page information. Jumping to a later page may also require the PDF engine to read preceding pages' structures and dimensions. Only requested pages are rendered; the app does not render the entire book in advance. Rendering follows the local PDF import settings: three times the original dimensions, capped at a 3000-pixel longest edge, then JPEG encoding at quality 92. Reads and rendered images reuse the account request queue, range cache, and image cache.
+Opening reads document structures and bookmarks on demand, and rendering fetches the data needed by the target page. Non-linearized PDFs are supported. Only requested pages are rendered; the app does not render the entire book in advance. Rendering follows the local PDF import settings: three times the original dimensions, capped at a 3000-pixel longest edge, then JPEG encoding at quality 92. Reads and rendered images reuse the account request queue, range cache, and image cache.
 
 Encrypted or password-protected PDFs are currently unsupported, and PDF JavaScript is not executed. The file service must support HTTP Range. Read or rendering failures produce an error without automatically downloading the entire PDF.
+
+Network failures and cancellation safely end the current task. PDFs with damaged indexes that require a complete download for repair produce an explicit error.
 
 #### ZIP/CBZ Volume and Chapter Directory
 

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as image;
 import 'package:pdfrx/pdfrx.dart';
@@ -99,6 +100,81 @@ void main() {
           );
           expect(jpeg.take(2), [0xff, 0xd8]);
           _expectBoundedReads(reader.calls, fixture);
+        },
+        timeout: const Timeout(Duration(seconds: 45)),
+      );
+
+      test(
+        'survives stream read errors, cancellation and short responses',
+        () async {
+          for (final fault in ['network', 'cancel', 'short response']) {
+            final token = CancelToken();
+            final error = StateError('Remote page stream failed');
+            final originalStack = StackTrace.current;
+            Future<Uint8List> read(int offset, int length) async {
+              final (payloadOffset, payloadLength) = fixture.unusedPagePayload;
+              if (offset > payloadOffset + 256 * 1024 &&
+                  offset < payloadOffset + payloadLength) {
+                if (fault == 'network') {
+                  Error.throwWithStackTrace(error, originalStack);
+                }
+                if (fault == 'cancel') token.cancel('Reader closed');
+                if (fault == 'short response') {
+                  return Uint8List.sublistView(
+                    fixture.bytes,
+                    offset,
+                    offset + length - 1,
+                  );
+                }
+              }
+              return Uint8List.sublistView(
+                fixture.bytes,
+                offset,
+                offset + length,
+              );
+            }
+
+            final request = RemotePdfReader.renderPage(
+              size: fixture.bytes.length,
+              read: read,
+              sourceName: 'Native comic.pdf',
+              pageNumber: 3,
+              cancelToken: token,
+            );
+            if (fault == 'network') {
+              try {
+                await request;
+                fail('The failed Range request must reach the caller');
+              } catch (failure, stack) {
+                expect(failure, same(error));
+                expect(stack.toString(), originalStack.toString());
+              }
+            } else {
+              await expectLater(
+                request,
+                throwsA(
+                  fault == 'cancel'
+                      ? isA<DioException>().having(
+                          (error) => error.type,
+                          'type',
+                          DioExceptionType.cancel,
+                        )
+                      : isA<FormatException>(),
+                ),
+              );
+            }
+          }
+
+          // The same PDFium worker remains usable after all failed operations.
+          final jpeg = await RemotePdfReader.renderPage(
+            size: fixture.bytes.length,
+            read: _RangeReader(fixture.bytes).read,
+            sourceName: 'Native comic.pdf',
+            pageNumber: 2,
+          );
+          final rendered = image.decodeJpg(jpeg)!;
+          expect((rendered.width, rendered.height), (720, 360));
+          expect(rendered.getPixel(540, 180).b, greaterThan(240));
         },
         timeout: const Timeout(Duration(seconds: 45)),
       );

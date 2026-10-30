@@ -786,58 +786,85 @@ class _PdfProbe {
   final documents = <_PdfDocument>[];
   final nativeReads = <({int offset, int length})>[];
 
-  Future<PdfDocument> open({
-    required RemotePdfCustomRead read,
+  Future<Uint8List> _readAligned(
+    ZipRangeRead read,
+    int position,
+    int length,
+    int size,
+  ) async {
+    nativeReads.add((offset: position, length: length));
+    if (position < 0 ||
+        length < 0 ||
+        position > size ||
+        length > size - position) {
+      throw const FormatException('PDF byte range is outside the document');
+    }
+    const window = 256 * 1024;
+    const maxRead = 2 * 1024 * 1024;
+    var copied = 0;
+    final result = Uint8List(length);
+    while (copied < length) {
+      final current = position + copied;
+      final start = current ~/ window * window;
+      final room = maxRead - (current - start);
+      final count = length - copied < room ? length - copied : room;
+      final roundedEnd = (current + count + window - 1) ~/ window * window;
+      final end = roundedEnd < size ? roundedEnd : size;
+      final bytes = await read(start, end - start);
+      if (bytes.length != end - start) {
+        throw const FormatException(
+          'PDF range response has an unexpected length',
+        );
+      }
+      result.setRange(copied, copied + count, bytes, current - start);
+      copied += count;
+    }
+    return result;
+  }
+
+  Future<RemotePdfDocument> open({
+    required ZipRangeRead read,
     required int size,
     required String sourceName,
-    required bool useProgressiveLoading,
-    required int maxSizeToCacheOnMemory,
+    CancelToken? cancelToken,
   }) async {
     openCount++;
     expect(size, _pdfSize);
     expect(sourceName, isNotEmpty);
-    expect(useProgressiveLoading, isTrue);
-    Future<int> trackedRead(Uint8List buffer, int offset, int length) {
-      nativeReads.add((offset: offset, length: length));
-      return read(buffer, offset, length);
+    final header = await _readAligned(read, 0, 32, size);
+    if (header.length != 32 || ascii.decode(header.sublist(0, 5)) != '%PDF-') {
+      throw const FormatException('Native bridge could not open the PDF');
     }
-
-    final header = Uint8List(32);
-    if (await trackedRead(header, 0, header.length) != header.length) {
-      throw const PdfPasswordException('Native bridge could not open the PDF');
-    }
-    expect(ascii.decode(header.sublist(0, 5)), '%PDF-');
-    final document = _PdfDocument(this, trackedRead, size, header[17] == 1);
+    final document = _PdfDocument(
+      this,
+      (offset, length) => _readAligned(read, offset, length, size),
+      size,
+      header[17] == 1,
+    );
     documents.add(document);
     return document;
   }
 }
 
-class _PdfDocument extends Fake implements PdfDocument {
-  _PdfDocument(this.probe, this.read, this.size, this.bookmarks) {
-    pages = [for (var i = 1; i <= 3; i++) _PdfPage(this, i, loaded: i == 1)];
-  }
+class _PdfDocument implements RemotePdfDocument {
+  _PdfDocument(this.probe, this.read, this.size, this.bookmarks);
   final _PdfProbe probe;
-  final RemotePdfCustomRead read;
+  final ZipRangeRead read;
   final int size;
   final bool bookmarks;
   var disposeCount = 0;
-  final frames = <_PdfImage>[];
 
   @override
-  late List<PdfPage> pages;
+  int get pageCount => 3;
 
   @override
   bool get isEncrypted => false;
 
   @override
   Future<List<PdfOutlineNode>> loadOutline() async {
-    final trailer = Uint8List(32);
-    if (await read(trailer, size - trailer.length, trailer.length) !=
-        trailer.length) {
-      throw const PdfPasswordException(
-        'Native bridge could not load the outline',
-      );
+    final trailer = await read(size - 32, 32);
+    if (trailer.length != 32) {
+      throw const FormatException('Native bridge could not load the outline');
     }
     return bookmarks
         ? const [
@@ -856,98 +883,26 @@ class _PdfDocument extends Fake implements PdfDocument {
   }
 
   @override
-  Future<void> loadPagesProgressively<T>({
-    PdfPageLoadingCallback<T>? onPageLoadProgress,
-    T? data,
-    Duration loadUnitDuration = const Duration(milliseconds: 250),
-  }) async {
-    for (var i = 0; i < pages.length; i++) {
-      if (!pages[i].isLoaded) pages[i] = _PdfPage(this, i + 1, loaded: true);
-      if (onPageLoadProgress != null &&
-          !await onPageLoadProgress(i + 1, pages.length, data)) {
-        break;
-      }
+  Future<Uint8List> renderPage(int pageNumber) async {
+    final buffer = await read(_pageOffsets[pageNumber - 1], 64);
+    if (buffer.length != 64) {
+      throw const FormatException('Native bridge could not render the page');
     }
+    expect(buffer[0], pageNumber);
+    const width = 12;
+    const height = 9;
+    final img = image.Image(width: width, height: height);
+    for (final pixel in img) {
+      pixel
+        ..r = buffer[1]
+        ..g = buffer[2]
+        ..b = buffer[3];
+    }
+    return Uint8List.fromList(image.encodeJpg(img, quality: 92));
   }
 
   @override
   Future<void> dispose() async => disposeCount++;
-}
-
-class _PdfPage extends Fake implements PdfPage {
-  _PdfPage(this.document, this.pageNumber, {required this.loaded});
-  @override
-  final _PdfDocument document;
-  @override
-  final int pageNumber;
-  final bool loaded;
-  @override
-  bool get isLoaded => loaded;
-  @override
-  double get width => 4;
-  @override
-  double get height => 3;
-  @override
-  PdfPageRenderCancellationToken createCancellationToken() => _PdfRenderToken();
-
-  @override
-  Future<PdfImage?> render({
-    int x = 0,
-    int y = 0,
-    int? width,
-    int? height,
-    double? fullWidth,
-    double? fullHeight,
-    int? backgroundColor,
-    PdfPageRotation? rotationOverride,
-    PdfAnnotationRenderingMode annotationRenderingMode =
-        PdfAnnotationRenderingMode.annotationAndForms,
-    int flags = 0,
-    PdfPageRenderCancellationToken? cancellationToken,
-  }) async {
-    expect(isLoaded, isTrue);
-    final buffer = Uint8List(64);
-    if (await document.read(
-          buffer,
-          _pageOffsets[pageNumber - 1],
-          buffer.length,
-        ) !=
-        buffer.length) {
-      throw const PdfPasswordException(
-        'Native bridge could not render the page',
-      );
-    }
-    expect(buffer[0], pageNumber);
-    final imageWidth = width ?? fullWidth?.round() ?? 4;
-    final imageHeight = height ?? fullHeight?.round() ?? 3;
-    final pixels = Uint8List(imageWidth * imageHeight * 4);
-    for (var i = 0; i < pixels.length; i += 4) {
-      pixels.setRange(i, i + 4, [buffer[3], buffer[2], buffer[1], 255]);
-    }
-    final frame = _PdfImage(imageWidth, imageHeight, pixels);
-    document.frames.add(frame);
-    return frame;
-  }
-}
-
-class _PdfRenderToken implements PdfPageRenderCancellationToken {
-  @override
-  bool isCanceled = false;
-  @override
-  void cancel() => isCanceled = true;
-}
-
-class _PdfImage implements PdfImage {
-  _PdfImage(this.width, this.height, this.pixels);
-  @override
-  final int width;
-  @override
-  final int height;
-  @override
-  final Uint8List pixels;
-  var disposed = false;
-  @override
-  void dispose() => disposed = true;
 }
 
 class _FileFixture {

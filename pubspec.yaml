@@ -87,6 +87,8 @@ dependencies:
   archive: ^4.3.0
   image: ^4.10.1
   pdfrx: ^2.4.7
+  ffi: ^2.2.0
+  pdfium_dart: ^0.2.5
   xml: ^6.6.1
   flutter_markdown_plus: ^1.0.12
 
