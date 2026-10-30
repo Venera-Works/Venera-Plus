@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:path/path.dart' as path;
 import 'package:xml/xml.dart';
@@ -79,7 +80,7 @@ class RemoteEpubIndex {
       manifest,
       spine.getAttribute('toc'),
     );
-    final sections = <_Section>[];
+    final spineItems = <_ManifestItem>[];
     for (final reference in spine.childElements.where(
       (element) => element.name.local == 'itemref',
     )) {
@@ -90,6 +91,19 @@ class RemoteEpubIndex {
       if (item == null) {
         throw const FormatException('EPUB spine references a missing item');
       }
+      spineItems.add(item);
+    }
+    await reader.prefetchDocuments(
+      spineItems
+          .where(
+            (item) =>
+                !_isRaster(item.name, item.mediaType) &&
+                _documentMediaTypes.contains(item.mediaType),
+          )
+          .map((item) => item.name),
+    );
+    final sections = <_Section>[];
+    for (final item in spineItems) {
       final images = (await _itemPages(
         reader,
         item,
@@ -158,34 +172,111 @@ class _EpubReader {
   final ZipRangeRead read;
   final entries = <String, RemoteZipEntry>{};
   final _documents = <String, XmlDocument>{};
+  final _reservedDocuments = <String>{};
+  final _prefetched = <String, ({int offset, Uint8List bytes})>{};
   var _controlBytes = 0;
 
   RemoteZipEntry entry(String name) =>
       entries[name] ??
       (throw FormatException('EPUB resource is missing: $name'));
 
-  Future<XmlDocument> document(String name) async {
-    final cached = _documents[name];
-    if (cached != null) return cached;
+  RemoteZipEntry _reserveDocument(String name) {
     if (isComicImageFileName(name)) {
       throw UnsupportedError(
         'EPUB image cannot be used as a control document: $name',
       );
     }
     final file = entry(name);
-    const maxDocumentBytes = 4 * 1024 * 1024;
-    const maxTotalBytes = 16 * 1024 * 1024;
-    final size = file.uncompressedSize > file.compressedSize
-        ? file.uncompressedSize
-        : file.compressedSize;
-    if (size > maxDocumentBytes || size > maxTotalBytes - _controlBytes) {
-      throw const FormatException(
-        'EPUB control documents exceed the size limit',
-      );
+    if (_reservedDocuments.add(name)) {
+      const maxDocumentBytes = 4 * 1024 * 1024;
+      const maxTotalBytes = 16 * 1024 * 1024;
+      final size = file.uncompressedSize > file.compressedSize
+          ? file.uncompressedSize
+          : file.compressedSize;
+      if (size > maxDocumentBytes || size > maxTotalBytes - _controlBytes) {
+        throw const FormatException(
+          'EPUB control documents exceed the size limit',
+        );
+      }
+      _controlBytes += size;
     }
-    _controlBytes += size;
-    // Exact ZIP ranges do not prefetch adjacent image payloads.
-    final bytes = await zip.readEntry(file, read, prefetch: false);
+    return file;
+  }
+
+  Future<void> prefetchDocuments(Iterable<String> names) async {
+    final pending = names
+        .where((name) => !_documents.containsKey(name))
+        .toSet();
+    if (pending.isEmpty) return;
+    for (final name in pending) {
+      _reserveDocument(name);
+    }
+    final ordered = zip.entries.toList()
+      ..sort((a, b) => a.localHeaderOffset.compareTo(b.localHeaderOffset));
+    const maxRangeBytes = 2 * 1024 * 1024;
+    const maxPrefetchBytes = 16 * 1024 * 1024;
+    var prefetchedBytes = 0;
+    for (var i = 0; i < ordered.length - 1; i++) {
+      final first = ordered[i];
+      if (!pending.contains(first.name)) continue;
+      var end = i + 1;
+      while (end < ordered.length - 1 &&
+          pending.contains(ordered[end].name) &&
+          ordered[end + 1].localHeaderOffset - first.localHeaderOffset <=
+              maxRangeBytes) {
+        end++;
+      }
+      // The next local header bounds the batch without including its payload.
+      final length = ordered[end].localHeaderOffset - first.localHeaderOffset;
+      if (length <= 0 || length > maxRangeBytes) continue;
+      if (length > maxPrefetchBytes - prefetchedBytes) break;
+      final bytes = await read(first.localHeaderOffset, length);
+      if (bytes.length != length) {
+        throw const FormatException('Truncated EPUB control range response');
+      }
+      prefetchedBytes += length;
+      for (var j = i; j < end; j++) {
+        final offset = ordered[j].localHeaderOffset;
+        _prefetched[ordered[j].name] = (
+          offset: offset,
+          // Exact entry buffers keep ZIP decode isolates from copying a batch.
+          bytes: Uint8List.fromList(
+            Uint8List.sublistView(
+              bytes,
+              offset - first.localHeaderOffset,
+              ordered[j + 1].localHeaderOffset - first.localHeaderOffset,
+            ),
+          ),
+        );
+      }
+      i = end - 1;
+    }
+  }
+
+  Future<XmlDocument> document(String name) async {
+    final cached = _documents[name];
+    if (cached != null) return cached;
+    final file = _reserveDocument(name);
+    final prefetched = _prefetched.remove(name);
+    final bytes = await zip.readEntry(
+      file,
+      prefetched == null
+          ? read
+          : (offset, length) async {
+              final start = offset - prefetched.offset;
+              if (start < 0 || length > prefetched.bytes.length - start) {
+                throw const FormatException(
+                  'EPUB control document exceeds its ZIP entry boundary',
+                );
+              }
+              return Uint8List.sublistView(
+                prefetched.bytes,
+                start,
+                start + length,
+              );
+            },
+      prefetch: false,
+    );
     final text = utf8.decode(bytes);
     if (RegExp(r'<!\s*ENTITY\b', caseSensitive: false).hasMatch(text)) {
       throw UnsupportedError('EPUB XML entity declarations are not supported');
@@ -243,6 +334,12 @@ class _Section {
   final String? label;
 }
 
+const _documentMediaTypes = {
+  'application/xhtml+xml',
+  'text/html',
+  'image/svg+xml',
+};
+
 bool _isRaster(String name, String mediaType) =>
     mediaType != 'image/svg+xml' &&
     comicFileExtension(name) != 'svg' &&
@@ -262,11 +359,7 @@ Future<List<String>> _itemPages(
 ) async {
   reader.entry(item.name);
   if (_isRaster(item.name, item.mediaType)) return [item.name];
-  if (!const {
-    'application/xhtml+xml',
-    'text/html',
-    'image/svg+xml',
-  }.contains(item.mediaType)) {
+  if (!_documentMediaTypes.contains(item.mediaType)) {
     throw UnsupportedError('Unsupported EPUB spine content: ${item.mediaType}');
   }
   final document = await reader.document(item.name);

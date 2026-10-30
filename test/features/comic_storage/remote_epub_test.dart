@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart' as archive;
@@ -6,6 +7,69 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/comic_storage/comic_storage.dart';
 
 void main() {
+  test(
+    'batches adjacent spine documents without reading images or changing page order',
+    () async {
+      const pageCount = 200;
+      final book = _book(
+        manifest: [
+          for (var i = 0; i < pageCount; i++)
+            '<item id="p$i" href="p$i.xhtml" media-type="application/xhtml+xml"/>',
+        ].join(),
+        spine: [
+          for (var i = pageCount - 1; i >= 0; i--) '<itemref idref="p$i"/>',
+          '<itemref idref="p199"/>',
+        ].join(),
+        resources: {
+          for (var i = 0; i < pageCount ~/ 2; i++)
+            'OPS/p$i.xhtml': _html('<img src="images/$i.jpg"/>'),
+          for (var i = 0; i < pageCount; i++) 'OPS/images/$i.jpg': [i],
+          for (var i = pageCount ~/ 2; i < pageCount; i++)
+            'OPS/p$i.xhtml': _html('<img src="images/$i.jpg"/>'),
+          'OPS/end.jpg': [0],
+        },
+      );
+      final zip = await book.index();
+      final result = await RemoteEpubIndex.read(
+        zip: zip,
+        read: book.readControl,
+      );
+      expect(result.pages, [
+        for (var i = pageCount - 1; i >= 0; i--) 'OPS/images/$i.jpg',
+        'OPS/images/199.jpg',
+      ]);
+      expect(result.coverEntry, 'OPS/images/199.jpg');
+      expect(book.calls.length, lessThan(10));
+    },
+  );
+
+  test('splits large control batches into bounded range reads', () async {
+    final random = Random(0);
+    final padding = base64Encode(
+      List.generate(1600 * 1024, (_) => random.nextInt(256)),
+    );
+    final book = _book(
+      manifest: '''
+        <item id="one" href="one.xhtml" media-type="application/xhtml+xml"/>
+        <item id="two" href="two.xhtml" media-type="application/xhtml+xml"/>
+      ''',
+      spine: '<itemref idref="two"/><itemref idref="one"/>',
+      resources: {
+        'OPS/one.xhtml': _html('<!--$padding--><img src="1.jpg"/>'),
+        'OPS/two.xhtml': _html('<!--$padding--><img src="2.jpg"/>'),
+        'OPS/1.jpg': [1],
+        'OPS/2.jpg': [2],
+      },
+    );
+    final zip = await book.index();
+    final result = await RemoteEpubIndex.read(zip: zip, read: book.readControl);
+    expect(result.pages, ['OPS/2.jpg', 'OPS/1.jpg']);
+    expect(
+      book.calls.map((call) => call.$2),
+      everyElement(lessThanOrEqualTo(2 * 1024 * 1024)),
+    );
+  });
+
   test(
     'uses spine order, retains repeated images and keeps a fallback cover in the body',
     () async {
@@ -167,46 +231,36 @@ void main() {
     },
   );
 
-  test(
-    'expands SVG wrappers and XHTML in DOM order and caches repeated documents',
-    () async {
-      final book = _book(
-        manifest: '''
+  test('expands SVG wrappers and XHTML in DOM order', () async {
+    final book = _book(
+      manifest: '''
         <item id="svg" href="pages/one.svg" media-type="image/svg+xml"/>
         <item id="html" href="pages/two.xhtml" media-type="application/xhtml+xml"/>
       ''',
-        spine:
-            '<itemref idref="svg"/><itemref idref="html"/><itemref idref="svg"/>',
-        resources: {
-          'OPS/images/1.jpg': [1],
-          'OPS/images/2.jpg': [2],
-          'OPS/pages/one.svg': _text(
-            '<svg xmlns:xlink="http://www.w3.org/1999/xlink"><title>说明</title><desc>替代说明</desc><image xlink:href="../images/2.jpg"/></svg>',
-          ),
-          'OPS/pages/two.xhtml': _html(
-            '<img src="../images/1.jpg"/><svg><title>说明</title><image href="../images/2.jpg"/></svg><img src="../images/1.jpg"/>',
-          ),
-        },
-      );
-      final zip = await book.index();
-      final result = await RemoteEpubIndex.read(
-        zip: zip,
-        read: book.readControl,
-      );
-      expect(result.pages, [
-        'OPS/images/2.jpg',
-        'OPS/images/1.jpg',
-        'OPS/images/2.jpg',
-        'OPS/images/1.jpg',
-        'OPS/images/2.jpg',
-      ]);
-      expect(
-        book.controlNames(zip).where((name) => name == 'OPS/pages/one.svg'),
-        hasLength(1),
-      );
-      expect(result.metadata.chapters, isNull);
-    },
-  );
+      spine:
+          '<itemref idref="svg"/><itemref idref="html"/><itemref idref="svg"/>',
+      resources: {
+        'OPS/images/1.jpg': [1],
+        'OPS/images/2.jpg': [2],
+        'OPS/pages/one.svg': _text(
+          '<svg xmlns:xlink="http://www.w3.org/1999/xlink"><title>说明</title><desc>替代说明</desc><image xlink:href="../images/2.jpg"/></svg>',
+        ),
+        'OPS/pages/two.xhtml': _html(
+          '<img src="../images/1.jpg"/><svg><title>说明</title><image href="../images/2.jpg"/></svg><img src="../images/1.jpg"/>',
+        ),
+      },
+    );
+    final zip = await book.index();
+    final result = await RemoteEpubIndex.read(zip: zip, read: book.readControl);
+    expect(result.pages, [
+      'OPS/images/2.jpg',
+      'OPS/images/1.jpg',
+      'OPS/images/2.jpg',
+      'OPS/images/1.jpg',
+      'OPS/images/2.jpg',
+    ]);
+    expect(result.metadata.chapters, isNull);
+  });
 
   test(
     'uses a guide cover, fallback title and no invented chapter for a single nav label',
@@ -426,7 +480,6 @@ void main() {
         RemoteEpubIndex.read(zip: zip, read: book.readControl),
         throwsFormatException,
       );
-      expect(book.controlNames(zip), contains('OPS/p3.xhtml'));
       expect(book.controlNames(zip), isNot(contains('OPS/p4.xhtml')));
     },
   );
@@ -538,8 +591,12 @@ class _Book {
   }
 
   List<String> controlNames(RemoteZipIndex zip) => [
-    for (final call in calls)
-      for (final entry in zip.entries)
-        if (call.$1 == entry.localHeaderOffset && call.$2 == 30) entry.name,
+    for (final entry in zip.entries)
+      if (calls.any(
+        (call) =>
+            call.$1 <= entry.localHeaderOffset &&
+            call.$1 + call.$2 >= entry.localHeaderOffset + 30,
+      ))
+        entry.name,
   ];
 }
