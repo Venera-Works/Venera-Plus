@@ -87,8 +87,24 @@ Map<String, dynamic>? parseOpenListLoginCallback(
 Map<String, dynamic> parseOpenListAuthorization(
   String text, {
   required String driver,
-}) =>
-    normalizeOpenListAuthorization(_decodePayload(text.trim()), driver: driver);
+}) {
+  final value = normalizeOpenListAuthorization(
+    _decodePayload(text.trim()),
+    driver: driver,
+  );
+  if (driver == '123 Open') {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final rawExpiresIn = value.remove('expires_in');
+    final expiresIn = rawExpiresIn is num
+        ? rawExpiresIn.toInt()
+        : int.tryParse('$rawExpiresIn') ?? 0;
+    value['token_updated_at'] ??= now;
+    value['access_token_expires_at'] ??= expiresIn > 0
+        ? now + expiresIn * 1000
+        : 0;
+  }
+  return value;
+}
 
 Map<String, dynamic> buildOpenListAuthorization({
   required String driver,
@@ -106,11 +122,28 @@ Map<String, dynamic> buildOpenListAuthorization({
   final value = <String, dynamic>{...authorization}
     ..remove('AccessToken')
     ..remove('RefreshToken');
-  return normalizeOpenListAuthorization({
+  final result = normalizeOpenListAuthorization({
     ...value,
     'access_token': accessToken.trim(),
     'refresh_token': refreshToken.trim(),
   }, driver: driver);
+  if (driver == '123 Open') {
+    final previous = normalizeOpenListAuthorization(
+      authorization,
+      driver: driver,
+    );
+    if ([
+      'AccessToken',
+      'RefreshToken',
+    ].any((key) => (previous[key] ?? '') != (result[key] ?? ''))) {
+      result['token_updated_at'] = DateTime.now().millisecondsSinceEpoch;
+      if ((previous['AccessToken'] ?? '') != (result['AccessToken'] ?? '')) {
+        result['access_token_expires_at'] = 0;
+      }
+    }
+    result.remove('expires_in');
+  }
+  return result;
 }
 
 /// Maps api.oplist.org callback fields and saved authorization to OpenList's

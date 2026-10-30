@@ -306,7 +306,9 @@ class RemoteStorageAccounts with ChangeNotifier {
         _throwRpcError(response);
       } on RemoteStorageException catch (error) {
         final pending = account.copyWith(
-          status: StorageAuthorizationStatus.unknown,
+          status: error.isAuthorizationFailure
+              ? StorageAuthorizationStatus.invalid
+              : StorageAuthorizationStatus.unknown,
           statusMessage: error.message,
         );
         appdata.settings[remoteStorageAccountsSetting] = [
@@ -468,12 +470,12 @@ class RemoteStorageAccounts with ChangeNotifier {
     return accounts.map((item) => item.toJson()).toList();
   }
 
-  Future<void> _refreshNativeAccounts() async {
+  Future<Map<String, Map<String, dynamic>>?> _readNativeAdditions() async {
     final rpc = _openListRpc;
-    if (rpc == null) return;
+    if (rpc == null) return null;
     final response = await rpc.invoke('accounts', const {});
     final data = response['data'];
-    if (data is! Map || data['accounts'] is! List) return;
+    if (data is! Map || data['accounts'] is! List) return null;
     final additions = <String, Map<String, dynamic>>{};
     for (final item in data['accounts'] as List) {
       if (item is Map && item['id'] is String && item['addition'] is Map) {
@@ -482,6 +484,14 @@ class RemoteStorageAccounts with ChangeNotifier {
         );
       }
     }
+    return additions;
+  }
+
+  Future<void> _refreshNativeAccounts() async {
+    final rpc = _openListRpc;
+    if (rpc == null) return;
+    final additions = await _readNativeAdditions();
+    if (additions == null) return;
     final current = accounts;
     final localIds = current.map((item) => item.id).toSet();
     for (final nativeId in additions.keys.where(
@@ -491,11 +501,15 @@ class RemoteStorageAccounts with ChangeNotifier {
         await rpc.invoke('deleteAccount', {'id': nativeId});
       } catch (_) {}
     }
-    for (final account in current.where(
-      (item) =>
-          item.backend == StorageBackend.openlist &&
-          !additions.containsKey(item.id),
-    )) {
+    var saved = false;
+    for (final account in current.where((item) {
+      final addition = additions[item.id];
+      return item.backend == StorageBackend.openlist &&
+          (addition == null ||
+              (item.driver == '123 Open' &&
+                  _tokenUpdatedAt(item.authorization) >
+                      _tokenUpdatedAt(addition)));
+    })) {
       try {
         _throwRpcError(
           await rpc.invoke('saveAccount', {
@@ -505,14 +519,18 @@ class RemoteStorageAccounts with ChangeNotifier {
             'addition': account.authorization,
           }),
         );
+        saved = true;
       } on RemoteStorageException {
         // A pending native account must not make local or WebDAV snapshots
         // impossible to export. Its stored authorization remains available for
         // a later core initialization.
       }
     }
+    final latest = saved
+        ? await _readNativeAdditions() ?? additions
+        : additions;
     final updated = current.map((account) {
-      final addition = additions[account.id];
+      final addition = latest[account.id];
       return addition == null
           ? account
           : applyNativeAuthorization(account, addition);
@@ -527,8 +545,8 @@ class RemoteStorageAccounts with ChangeNotifier {
   /// the current value before credentials are merged.
   List<StorageAccount> captureLocalAccounts() => List.unmodifiable(accounts);
 
-  /// Applies imported credentials only to new or explicitly invalid accounts.
-  /// Connection/list errors never mark an authorization invalid by themselves.
+  /// Retains local credentials, except for newer synchronized 123 authorizations
+  /// and replacements for explicitly invalid accounts.
   Future<void> mergeImportedSettings(
     Object? raw, {
     List<StorageAccount>? localBeforeImport,
@@ -561,9 +579,12 @@ class RemoteStorageAccounts with ChangeNotifier {
       final existing = _accountById(local, value.id);
       return existing == null ||
           replacedIds.contains(value.id) ||
-          (existing.authorizationIsKnownInvalid &&
-              existing.backend == value.backend &&
-              existing.driver == value.driver);
+          (existing.backend == value.backend &&
+              existing.driver == value.driver &&
+              (existing.authorizationIsKnownInvalid ||
+                  (value.driver == '123 Open' &&
+                      jsonEncode(existing.authorization) !=
+                          jsonEncode(value.authorization))));
     }).toList();
     for (final entry in aliases.entries.where(
       (entry) => entry.key != entry.value,
@@ -581,6 +602,7 @@ class RemoteStorageAccounts with ChangeNotifier {
         (item) => item.backend == StorageBackend.openlist,
       )) {
         try {
+          await _cancelStores(value.id);
           _throwRpcError(
             await rpc.invoke('saveAccount', {
               'id': value.id,
@@ -675,7 +697,8 @@ class RemoteStorageAccounts with ChangeNotifier {
 }
 
 /// Matches accounts by ID or by unique name within the same backend and driver.
-/// Existing local authorizations take priority unless explicitly invalid.
+/// 123 accounts take the newest complete authorization; other accounts retain
+/// local credentials unless explicitly invalid.
 List<StorageAccount> mergeRemoteStorageAccounts(
   Iterable<StorageAccount> local,
   Iterable<StorageAccount> incoming, {
@@ -711,7 +734,20 @@ List<StorageAccount> mergeRemoteStorageAccounts(
     }
     aliases[existing.id] = id;
     aliases[value.id] = id;
-    if (existing.authorizationIsKnownInvalid) {
+    final useIncoming = existing.driver == '123 Open'
+        ? !value.authorizationIsKnownInvalid &&
+              _hasActualAuthorization(value.authorization) &&
+              (_tokenUpdatedAt(value.authorization) >
+                      _tokenUpdatedAt(existing.authorization) ||
+                  (existing.authorizationIsKnownInvalid &&
+                      _tokenUpdatedAt(value.authorization) ==
+                          _tokenUpdatedAt(existing.authorization) &&
+                      _authorizationTokensChanged(
+                        existing.authorization,
+                        value.authorization,
+                      )))
+        : existing.authorizationIsKnownInvalid;
+    if (useIncoming) {
       merged[index] = existing.copyWith(
         id: id,
         name: value.name.trim(),
@@ -784,6 +820,10 @@ StorageAccount applyNativeAuthorization(
   StorageAccount account,
   Map<String, dynamic> authorization,
 ) {
+  if (account.driver == '123 Open' &&
+      _tokenUpdatedAt(account.authorization) > _tokenUpdatedAt(authorization)) {
+    return account;
+  }
   final rotated =
       _hasActualAuthorization(authorization) &&
       _authorizationTokensChanged(account.authorization, authorization);
@@ -795,6 +835,9 @@ StorageAccount applyNativeAuthorization(
     clearStatusMessage: rotated && account.authorizationIsKnownInvalid,
   );
 }
+
+int _tokenUpdatedAt(Map<String, dynamic> authorization) =>
+    (authorization['token_updated_at'] as num?)?.toInt() ?? 0;
 
 bool _authorizationTokensChanged(
   Map<String, dynamic> previous,

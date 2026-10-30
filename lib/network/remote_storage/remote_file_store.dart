@@ -87,7 +87,10 @@ class RemoteStorageException implements Exception {
   final String? code;
   final Object? cause;
   bool get isAuthorizationFailure =>
-      code == 'unauthorized' || code == 'invalid_token' || code == '401';
+      code == 'unauthorized' ||
+      code == 'invalid_token' ||
+      code == 'invalid_grant' ||
+      code == '401';
   @override
   String toString() => message;
 }
