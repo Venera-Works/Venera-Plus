@@ -52,6 +52,25 @@ void main() {
         flow.shouldLoadAfter(current: 4, threshold: 2, maxChapter: 2),
         isFalse,
       );
+      // Stops at edition boundary even when maxChapter has subsequent alternate editions
+      expect(
+        flow.shouldLoadAfter(
+          current: 4,
+          threshold: 2,
+          maxChapter: 4,
+          isLastChapter: (ch) => ch == 2,
+        ),
+        isFalse,
+      );
+      expect(
+        flow.shouldLoadAfter(
+          current: 4,
+          threshold: 2,
+          maxChapter: 4,
+          isLastChapter: (ch) => ch == 3,
+        ),
+        isTrue,
+      );
     });
 
     test('detects when previous chapter should be loaded', () {
@@ -65,8 +84,25 @@ void main() {
         firstChapterFlow.shouldLoadBefore(current: 1, threshold: 2),
         isFalse,
       );
+      // Stops at edition boundary even when firstChapter > 1 (e.g. second edition starts at ch 3)
+      final secondEditionFlow = WaterfallChapterFlow(segments: [segment(3, 5)]);
+      expect(
+        secondEditionFlow.shouldLoadBefore(
+          current: 1,
+          threshold: 2,
+          isFirstChapter: (ch) => ch == 3,
+        ),
+        isFalse,
+      );
+      expect(
+        secondEditionFlow.shouldLoadBefore(
+          current: 1,
+          threshold: 2,
+          isFirstChapter: (ch) => ch == 1,
+        ),
+        isTrue,
+      );
     });
-
     test('inserts previous chapter and keeps index offset computable', () {
       final flow = WaterfallChapterFlow(segments: [segment(3, 2)]);
 

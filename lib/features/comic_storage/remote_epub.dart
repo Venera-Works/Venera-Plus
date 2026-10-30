@@ -110,7 +110,15 @@ class RemoteEpubIndex {
         mediaTypes,
       )).where((image) => image != cover).toList();
       if (images.isNotEmpty) {
-        sections.add(_Section(images, labels[item.name]));
+        final label = labels[item.name];
+        sections.add(
+          _Section(
+            images,
+            label != null && !_isPageMarker(label) && !_isGeneratorCredit(label)
+                ? label
+                : null,
+          ),
+        );
       }
     }
     final pages = sections.expand((section) => section.pages).toList();
@@ -333,6 +341,21 @@ class _Section {
   final List<String> pages;
   final String? label;
 }
+
+final _pageMarkerPattern = RegExp(
+  r'^\s*(?:第?\s*\d+\s*[頁页叶葉]|(?:page|pg\.?|p\.)\s*[:\-_]?\s*\d+(?:\s*(?:/|of)\s*\d+)?)\s*$',
+  caseSensitive: false,
+);
+
+final _generatorCreditPattern = RegExp(
+  r'^(?:(?:\w+@\d{6,8})|(?:(?:created|generated|built)\s+by\b.*))$',
+  caseSensitive: false,
+);
+
+bool _isPageMarker(String label) => _pageMarkerPattern.hasMatch(label);
+
+bool _isGeneratorCredit(String label) =>
+    _generatorCreditPattern.hasMatch(label);
 
 const _documentMediaTypes = {
   'application/xhtml+xml',

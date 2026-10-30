@@ -89,16 +89,29 @@ class WaterfallChapterFlow {
     required int current,
     required int threshold,
     required int maxChapter,
+    bool Function(int lastChapter)? isLastChapter,
   }) {
     if (_segments.isEmpty) return false;
     if (imageCount - current >= threshold) return false;
-    return _segments.last.chapter < maxChapter;
+    if (_segments.last.chapter >= maxChapter) return false;
+    if (isLastChapter != null && isLastChapter(_segments.last.chapter)) {
+      return false;
+    }
+    return true;
   }
 
-  bool shouldLoadBefore({required int current, required int threshold}) {
+  bool shouldLoadBefore({
+    required int current,
+    required int threshold,
+    bool Function(int firstChapter)? isFirstChapter,
+  }) {
     if (_segments.isEmpty) return false;
     if (current > threshold) return false;
-    return _segments.first.chapter > 1;
+    if (_segments.first.chapter <= 1) return false;
+    if (isFirstChapter != null && isFirstChapter(_segments.first.chapter)) {
+      return false;
+    }
+    return true;
   }
 
   void addAfter(WaterfallChapterSegment segment) {

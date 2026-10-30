@@ -18,6 +18,7 @@ import 'package:venera_plus/foundation/throttled_task_runner.dart';
 import 'package:venera_plus/network/webdav.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 import 'remote_archive_comic.dart';
+import 'remote_comic_work.dart';
 import 'package:webdav_client/webdav_client.dart' hide File;
 
 typedef WebDavLibraryMetadataScraper =
@@ -457,6 +458,7 @@ class WebDavLibraryConfig {
   }
 
   String childDirectoryPath(String name) {
+    if (name.isEmpty) return legacyAnchor ?? remotePath;
     if (name.startsWith('/')) {
       return normalizeWebDavDirectoryPath(name, fallback: '/');
     }
@@ -850,6 +852,11 @@ class _WebDavLibraryEngineState {
   final snapshotContexts = <String, RemoteReadContext>{};
   final archiveReaders = <String, RemoteRangeReader>{};
   final archiveTokens = <CancelToken>{};
+  final workVolumeLoads =
+      <
+        String,
+        ({RemoteReadContext context, Future<RemoteArchiveComic> future})
+      >{};
   final contentVersion = ValueNotifier<int>(0);
   final syncStatus = ValueNotifier<WebDavLibrarySyncStatus>(
     const WebDavLibrarySyncStatus(isSyncing: false, lastSuccessfulSync: 0),
@@ -1004,6 +1011,7 @@ class WebDavLibrarySource {
     _snapshotCache.clear();
     _snapshotInFlight.clear();
     _state.snapshotContexts.clear();
+    _state.workVolumeLoads.clear();
   }
 
   static void _invalidateSynchronization() {
@@ -1286,6 +1294,16 @@ class WebDavLibrarySource {
     WebDavLibraryConfig config,
     String id,
   ) {
+    if (id.startsWith(remoteComicWorkPrefix)) {
+      final location = RemoteComicWork.location(id);
+      return (
+        directory: location.directory,
+        fileName: location.family == null
+            ? _metadataFileName
+            : '${location.family}.metadata.json',
+        title: location.family ?? _directoryName(location.directory),
+      );
+    }
     if (_isArchiveId(id)) {
       final path = _archivePath(config, id);
       final slash = path.lastIndexOf('/');
@@ -1303,6 +1321,7 @@ class WebDavLibrarySource {
   }
 
   static String _stableComicPath(WebDavLibraryConfig config, String id) {
+    if (id.startsWith(remoteComicWorkPrefix)) return id;
     if (config.remoteLibrary == null) return id;
     final fullPath = _isArchiveId(id)
         ? _archivePath(config, id)
@@ -1439,7 +1458,7 @@ class WebDavLibrarySource {
             modifiedAt: comic.modifiedAt,
           );
           discoveredCount++;
-          if (comic.archiveFile != null) {
+          if (comic.archiveFile != null || comic.work != null) {
             await _loadSnapshot(
               config,
               id,
@@ -1447,6 +1466,7 @@ class WebDavLibrarySource {
               summaryOnly: true,
               remoteDirectory: directory,
               archiveFile: comic.archiveFile,
+              work: comic.work,
               rootEntries: comic.entries,
               syncRun: run,
             );
@@ -1583,13 +1603,15 @@ class WebDavLibrarySource {
           'description': snapshot.description,
           'tags': snapshot.detailTags,
           'chapters':
+              snapshot.work?.chapters ??
               archiveDisplay?.titles ??
               (snapshot.chapters.length == 1 &&
                       snapshot.chapters.containsKey(rootChapterId)
                   ? null
                   : snapshot.chapters),
           'chapterGroups': archiveDisplay?.groups,
-          'chapterPageCounts': snapshot.archive?.chapterPageCounts,
+          'chapterPageCounts':
+              snapshot.work?.pageCounts ?? snapshot.archive?.chapterPageCounts,
           'sourceKey': _activeSourceKey,
           'comicId': id,
           'externalIds': {
@@ -1654,6 +1676,28 @@ class WebDavLibrarySource {
       return const Res.error('Invalid WebDAV comic library configuration');
     }
     try {
+      if (id.startsWith(remoteComicWorkPrefix)) {
+        final snapshot = await _loadSnapshot(config, id);
+        final work = snapshot.work!;
+        final volume = work.volume(ep ?? work.volumes.first.id);
+        if (volume == null) {
+          return const Res.error('Comic volume is unavailable');
+        }
+        final archive = await _loadWorkVolume(config, snapshot, volume.id);
+        final pages = archive.isPdf
+            ? [
+                for (var page = 1; page <= archive.pdfPageCount!; page++)
+                  'pdf:$page',
+              ]
+            : archive.epubPages ??
+                  archive.chapterImages.values
+                      .expand((pages) => pages)
+                      .toList();
+        if (pages.isEmpty) {
+          return const Res.error('No images found in the comic volume');
+        }
+        return Res([for (final page in pages) work.imageKey(volume, page)]);
+      }
       if (_isArchiveId(id)) {
         final snapshot = await _loadSnapshot(config, id);
         final archive = snapshot.archive!;
@@ -1735,6 +1779,7 @@ class WebDavLibrarySource {
     bool summaryOnly = false,
     WebDavLibraryRemoteDirectory? remoteDirectory,
     WebDavLibraryEntry? archiveFile,
+    RemoteComicWork? work,
     CancelToken? cancelToken,
     List<WebDavLibraryEntry>? rootEntries,
     Map<String, List<WebDavLibraryEntry>>? childEntries,
@@ -1787,6 +1832,7 @@ class WebDavLibrarySource {
         forceRefresh: forceRefresh,
         summaryOnly: summaryOnly,
         archiveFile: archiveFile,
+        work: work,
         cancelToken: cancelToken,
         syncRun: syncRun,
       );
@@ -1798,7 +1844,16 @@ class WebDavLibrarySource {
       final previousSnapshot = existing?.snapshot == null
           ? null
           : _WebDavComicSnapshot.fromJson(existing!.snapshot!);
-      final snapshot = _isArchiveId(id)
+      final aggregate = work ?? previousSnapshot?.work;
+      final snapshot = aggregate != null
+          ? await _buildWorkSnapshot(
+              config,
+              aggregate,
+              previousSnapshot: previousSnapshot,
+              rootEntries: rootEntries,
+              syncRun: syncRun,
+            )
+          : _isArchiveId(id)
           ? await _buildArchiveSnapshot(
               config,
               id,
@@ -1875,19 +1930,194 @@ class WebDavLibrarySource {
     );
   }
 
+  static Future<_WebDavComicSnapshot> _buildWorkSnapshot(
+    WebDavLibraryConfig config,
+    RemoteComicWork work, {
+    _WebDavComicSnapshot? previousSnapshot,
+    List<WebDavLibraryEntry>? rootEntries,
+    _WebDavLibrarySyncRun? syncRun,
+  }) async {
+    work.retainIndexes(previousSnapshot?.work);
+    final entries =
+        rootEntries ?? await _activeOps.readDir(config, work.directory);
+    if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
+    final inherited = work.volumes
+        .map((volume) => volume.archive.metadata)
+        .whereType<ComicMetaData>()
+        .firstOrNull;
+    var metadata = await _readMetadata(
+      config,
+      work.directory,
+      entries,
+      fileName: work.metadataFileName,
+      fallback: ComicMetaData(
+        title: work.title,
+        author: inherited?.author ?? '',
+        tags: inherited?.tags ?? const [],
+        description: inherited?.description ?? '',
+      ),
+    );
+    if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
+    var metadataPresent = metadata != null;
+    var status = metadataPresent
+        ? 'notNeeded'
+        : previousSnapshot?.metadataScrapeStatus ?? 'pending';
+    var scraperVersion = metadataPresent
+        ? ''
+        : previousSnapshot?.metadataScraperVersion ?? '';
+    var attemptedAt = previousSnapshot?.metadataScrapeAttemptedAt;
+    var retryAt = previousSnapshot?.metadataScrapeRetryAt;
+    var error = previousSnapshot?.metadataScrapeError;
+    if (_shouldAttemptMetadataScrape(
+      previousSnapshot: previousSnapshot,
+      metadataFilePresent: metadataPresent,
+      scraperVersion: _metadataScraperVersion,
+      now: metadataNowProvider(),
+      automaticScrapingEnabled: _canScrapeMetadata,
+    )) {
+      final scraped = await _scrapeMissingMetadata(
+        config,
+        work.id,
+        work.directory,
+        pageCount: null,
+        fileName: work.metadataFileName,
+        title: work.title,
+        syncRun: syncRun,
+      );
+      metadata = scraped.metadata ?? metadata;
+      metadataPresent = scraped.filePresent;
+      status = scraped.status;
+      scraperVersion = _metadataScraperVersion;
+      attemptedAt = scraped.attemptedAt;
+      retryAt = scraped.retryAt;
+      error = scraped.error;
+    }
+    final namedCover = _findNamedCover(entries);
+    return _WebDavComicSnapshot(
+      work: work,
+      title: metadata?.title ?? work.title,
+      author: metadata?.author ?? inherited?.author ?? '',
+      description: metadata?.description ?? inherited?.description ?? '',
+      tags: metadata?.tags ?? inherited?.tags ?? const [],
+      cover: namedCover == null
+          ? work.imageKey(work.volumes.first)
+          : config.childFilePath(work.directory, namedCover.name),
+      chapters: {for (final volume in work.volumes) volume.id: volume.title},
+      chapterImages: const {},
+      metadataChapters: const {},
+      rootImages: const [],
+      bangumiSubjectId: metadata?.bangumiSubjectId,
+      metadataFilePresent: metadataPresent,
+      metadataScrapeStatus: status,
+      metadataScraperVersion: scraperVersion,
+      metadataScrapeAttemptedAt: attemptedAt,
+      metadataScrapeRetryAt: retryAt,
+      metadataScrapeError: error,
+    );
+  }
+
+  static Future<RemoteArchiveComic> _loadWorkVolume(
+    WebDavLibraryConfig config,
+    _WebDavComicSnapshot snapshot,
+    String volumeId, {
+    CancelToken? cancelToken,
+  }) async {
+    if (cancelToken?.isCancelled == true) throw cancelToken!.cancelError!;
+    final work = snapshot.work!;
+    final volume = work.volume(volumeId);
+    if (volume == null) {
+      throw const FormatException('Comic volume is unavailable');
+    }
+    if (volume.archive.isInspected) return volume.archive;
+    final state = _state;
+    final key = jsonEncode([config.cacheKey, work.id, volumeId]);
+    final pending = state.workVolumeLoads[key];
+    if (pending != null) {
+      pending.context.promote(RemoteReadContext.current.priority);
+      try {
+        return await (cancelToken == null
+            ? pending.future
+            : Future.any([
+                pending.future,
+                cancelToken.whenCancel.then<RemoteArchiveComic>(
+                  (error) => throw error,
+                ),
+              ]));
+      } on DioException catch (error) {
+        if (!CancelToken.isCancel(error) ||
+            cancelToken?.isCancelled == true ||
+            state.disposed) {
+          rethrow;
+        }
+        if (state.workVolumeLoads[key]?.future == pending.future) {
+          state.workVolumeLoads.remove(key);
+        }
+        return _loadWorkVolume(
+          config,
+          snapshot,
+          volumeId,
+          cancelToken: cancelToken,
+        );
+      }
+    }
+    final context = RemoteReadContext.current;
+    final future = context.run(() async {
+      final member = await _buildArchiveSnapshot(
+        config,
+        volumeId,
+        summaryOnly: false,
+        previousArchive: volume.archive,
+        cancelToken: cancelToken,
+      );
+      if (state.disposed) throw StateError('Remote library is closed');
+      final memoryKey = jsonEncode([config.cacheKey, work.id]);
+      final current = _snapshotCache[memoryKey];
+      if (!identical(current?.work, work)) {
+        throw const FormatException('Comic volumes changed. Reopen the comic');
+      }
+      volume.archive = member.archive!;
+      final cached = _cache.find(config.cacheKey, work.id)!;
+      _cache.upsertSnapshot(
+        config.cacheKey,
+        WebDavLibraryCachedComic(
+          id: work.id,
+          sortIndex: cached.sortIndex,
+          title: snapshot.title,
+          author: snapshot.author,
+          tags: snapshot.tags,
+          cover: snapshot.cover,
+          snapshot: snapshot.toJson(),
+          remoteETag: cached.remoteETag,
+          remoteModifiedAt: cached.remoteModifiedAt,
+        ),
+      );
+      return volume.archive;
+    });
+    final load = (context: context, future: future);
+    state.workVolumeLoads[key] = load;
+    try {
+      return await future;
+    } finally {
+      if (state.workVolumeLoads[key]?.future == future) {
+        state.workVolumeLoads.remove(key);
+      }
+    }
+  }
+
   static Future<_WebDavComicSnapshot> _buildArchiveSnapshot(
     WebDavLibraryConfig config,
     String id, {
     required bool summaryOnly,
     _WebDavComicSnapshot? previousSnapshot,
     WebDavLibraryEntry? file,
+    RemoteArchiveComic? previousArchive,
     List<WebDavLibraryEntry>? rootEntries,
     CancelToken? cancelToken,
     _WebDavLibrarySyncRun? syncRun,
   }) async {
     final path = _archivePath(config, id);
     final target = _metadataTarget(config, id);
-    final previous = previousSnapshot?.archive;
+    final previous = previousArchive ?? previousSnapshot?.archive;
     var siblings = rootEntries;
     if (!summaryOnly) {
       if (config.remoteStore != null) {
@@ -2041,20 +2271,43 @@ class WebDavLibrarySource {
     String imageKey,
     CancelToken token,
   ) async {
-    final key = RemoteArchiveComic.parseImageKey(imageKey)!;
     final config = WebDavLibraryConfig.fromSettings();
-    final path = key.path;
-    final anchor = config.legacyAnchor ?? config.remotePath;
-    final id = config.remoteLibrary != null && config.legacyAnchor == null
-        ? path
-        : path.startsWith(anchor)
-        ? path.substring(anchor.length)
-        : path;
-    final snapshot = await _loadSnapshot(config, id, cancelToken: token);
+    late final RemoteArchiveComic archive;
+    late final ({String path, String version, String? entry}) key;
+    if (imageKey.startsWith(remoteComicWorkImagePrefix)) {
+      final workKey = RemoteComicWork.parseImageKey(imageKey);
+      final snapshot = await _loadSnapshot(
+        config,
+        workKey.work,
+        cancelToken: token,
+      );
+      archive = await _loadWorkVolume(
+        config,
+        snapshot,
+        workKey.volume,
+        cancelToken: token,
+      );
+      key = RemoteArchiveComic.parseImageKey(
+        workKey.image ?? archive.imageKey(),
+      )!;
+    } else {
+      key = RemoteArchiveComic.parseImageKey(imageKey)!;
+      final path = key.path;
+      final anchor = config.legacyAnchor ?? config.remotePath;
+      final id = config.remoteLibrary != null && config.legacyAnchor == null
+          ? path
+          : path.startsWith(anchor)
+          ? path.substring(anchor.length)
+          : path;
+      final snapshot = await _loadSnapshot(config, id, cancelToken: token);
+      final indexed = snapshot.archive;
+      if (indexed == null) {
+        throw const FormatException('Remote archive is unavailable');
+      }
+      archive = indexed;
+    }
     if (token.isCancelled) throw token.cancelError!;
-    final archive = snapshot.archive;
-    if (archive == null ||
-        !archive.isInspected ||
+    if (!archive.isInspected ||
         (key.entry != null && key.version != archive.version)) {
       throw const FormatException(
         'Remote archive changed. Refresh the comic library',
@@ -2956,26 +3209,207 @@ class WebDavLibrarySource {
     var inspectedDirectories = 0;
     final maxDirectories =
         discoveryDirectoryLimitOverride ?? _maxDiscoveryDirectories;
+    final publishedWorks = <String, _WebDavDiscoveredDirectory>{};
+    final directoryEntries = <String, List<WebDavLibraryEntry>>{};
+
+    List<WebDavLibraryEntry> archiveFiles(List<WebDavLibraryEntry> entries) =>
+        entries
+            .where(
+              (entry) =>
+                  !entry.isDirectory &&
+                  !isIgnoredComicStorageEntry(entry.name) &&
+                  isRemoteComicArchive(entry.name),
+            )
+            .toList()
+          ..sort((a, b) => compareComicFileNames(a.name, b.name));
+
+    Future<List<WebDavLibraryEntry>> readDirectory(String id, int depth) async {
+      final path = config.childDirectoryPath(id);
+      final cached = directoryEntries[path];
+      if (cached != null) return cached;
+      if (depth > _maxDiscoveryDepth ||
+          inspectedDirectories >= maxDirectories) {
+        throw FormatException('WebDAV comic discovery limit reached at $id');
+      }
+      inspectedDirectories++;
+      final entries = List<WebDavLibraryEntry>.from(
+        await _activeOps.readDir(config, path),
+      );
+      _throwIfSynchronizationObsolete(syncRun);
+      directoryEntries[path] = entries;
+      return entries;
+    }
+
+    RemoteComicVolume volume(
+      WebDavLibraryEntry file,
+      String parent, {
+      String edition = '',
+    }) {
+      final name = RemoteComicVolumeName.parse(file.name);
+      return RemoteComicVolume(
+        archive: RemoteArchiveComic(
+          path: config.childFilePath(
+            config.childDirectoryPath(parent),
+            file.name,
+          ),
+          size: file.size ?? 0,
+          eTag: file.eTag,
+          modifiedAt: file.modifiedAt,
+        ),
+        title: name.title,
+        edition: edition,
+      );
+    }
+
+    Future<_WebDavDiscoveredDirectory> publishWork(
+      RemoteComicWork work,
+      List<WebDavLibraryEntry> entries,
+    ) async {
+      final published = publishedWorks[work.id];
+      if (published != null) return published;
+      for (final volume in work.volumes) {
+        seenArchives.add(volume.id);
+      }
+      final comic = _WebDavDiscoveredDirectory(
+        id: work.id,
+        entries: entries,
+        work: work,
+      );
+      await onDiscovered(comic);
+      publishedWorks[work.id] = comic;
+      return comic;
+    }
+
+    bool homogeneous(List<WebDavLibraryEntry> files) {
+      if (files.isEmpty) return false;
+      final names = files
+          .map((file) => RemoteComicVolumeName.parse(file.name))
+          .toList();
+      return names.every((name) => name.numbered) &&
+          names
+                  .map((name) => remoteComicSeriesKey(name.series))
+                  .where((name) => name.isNotEmpty)
+                  .toSet()
+                  .length <=
+              1;
+    }
+
+    Future<_WebDavDiscoveredDirectory?> directoryWork(
+      String id,
+      List<WebDavLibraryEntry> entries,
+      int depth,
+    ) async {
+      if (_imageEntries(
+        entries,
+      ).any((entry) => !isNamedComicCover(entry.name))) {
+        return null;
+      }
+      final marked = _hasMetadataFile(entries);
+      final children = _sortedDirectories(entries);
+      if (children.isEmpty ||
+          !marked &&
+              !children.every(
+                (child) => isRemoteComicEditionDirectory(child.name),
+              )) {
+        return null;
+      }
+      final direct = archiveFiles(entries);
+      if (direct.isNotEmpty && !marked && !homogeneous(direct)) return null;
+      final volumes = [
+        for (final file in direct)
+          volume(
+            file,
+            id,
+            edition: _directoryName(config.childDirectoryPath(id)),
+          ),
+      ];
+      for (final child in children) {
+        final childId = _joinRelativeDirectoryPath(id, child.name);
+        final childEntries = await readDirectory(childId, depth + 1);
+        final files = archiveFiles(childEntries);
+        if (_sortedDirectories(childEntries).isNotEmpty ||
+            _imageEntries(
+              childEntries,
+            ).any((entry) => !isNamedComicCover(entry.name))) {
+          return null;
+        }
+        if (files.isEmpty) continue;
+        if (!marked && !homogeneous(files)) return null;
+        volumes.addAll([
+          for (final file in files) volume(file, childId, edition: child.name),
+        ]);
+      }
+      if (volumes.length < 2) return null;
+      final work = RemoteComicWork(
+        directory: config.childDirectoryPath(id),
+        title: _directoryName(config.childDirectoryPath(id)),
+        volumes: separateRemoteComicEditions(volumes),
+      );
+      return publishWork(work, entries);
+    }
 
     Future<List<_WebDavDiscoveredDirectory>> archives(
       List<WebDavLibraryEntry> entries,
       String parent,
     ) async {
-      final files =
-          entries
-              .where(
-                (entry) =>
-                    !entry.isDirectory &&
-                    !isIgnoredComicStorageEntry(entry.name) &&
-                    isRemoteComicArchive(entry.name),
-              )
-              .toList()
-            ..sort((a, b) => compareComicFileNames(a.name, b.name));
+      final files = archiveFiles(entries);
+      if (files.length >= 2 &&
+          _hasMetadataFile(entries) &&
+          _sortedDirectories(entries).isEmpty &&
+          !_imageEntries(
+            entries,
+          ).any((entry) => !isNamedComicCover(entry.name))) {
+        final work = RemoteComicWork(
+          directory: config.childDirectoryPath(parent),
+          title: _directoryName(config.childDirectoryPath(parent)),
+          volumes: separateRemoteComicEditions([
+            for (final file in files) volume(file, parent),
+          ]),
+        );
+        return [await publishWork(work, entries)];
+      }
       final comics = <_WebDavDiscoveredDirectory>[];
+      final families = <String, List<WebDavLibraryEntry>>{};
+      final titles = <String, String>{};
       for (final file in files) {
+        final name = RemoteComicVolumeName.parse(file.name);
+        if (!name.numbered) continue;
+        final family = remoteComicSeriesKey(name.series);
+        (families[family] ??= []).add(file);
+        titles.putIfAbsent(family, () => name.series);
+      }
+      final consumed = <String>{};
+      for (final family in families.entries) {
+        if (family.value.length < 2) continue;
+        final ownDirectory =
+            family.value.length == files.length &&
+            _sortedDirectories(entries).isEmpty &&
+            !_imageEntries(
+              entries,
+            ).any((entry) => !isNamedComicCover(entry.name));
+        final title = ownDirectory || titles[family.key]!.isEmpty
+            ? _directoryName(config.childDirectoryPath(parent))
+            : titles[family.key]!;
+        final work = RemoteComicWork(
+          directory: config.childDirectoryPath(parent),
+          title: title,
+          family: ownDirectory ? null : title,
+          volumes: separateRemoteComicEditions([
+            for (final file in family.value) volume(file, parent),
+          ]),
+        );
+        comics.add(await publishWork(work, entries));
+        consumed.addAll(family.value.map((file) => file.name));
+      }
+      for (final file in files) {
+        if (consumed.contains(file.name)) continue;
         _throwIfSynchronizationObsolete(syncRun);
         final archiveId = _joinRelativeDirectoryPath(parent, file.name);
-        if (!seenArchives.add(archiveId)) continue;
+        if (!seenArchives.add(
+          config.childFilePath(config.childDirectoryPath(parent), file.name),
+        )) {
+          continue;
+        }
         final comic = _WebDavDiscoveredDirectory(
           id: archiveId,
           entries: entries,
@@ -2989,6 +3423,8 @@ class WebDavLibrarySource {
       return comics;
     }
 
+    final rootWork = await directoryWork('', rootEntries, -1);
+    if (rootWork != null) return [rootWork];
     result.addAll(await archives(rootEntries, ''));
 
     Future<List<_WebDavDiscoveredDirectory>> scan({
@@ -2999,6 +3435,8 @@ class WebDavLibrarySource {
       required bool preserveFallback,
     }) async {
       _throwIfSynchronizationObsolete(syncRun);
+      final work = await directoryWork(id, entries, depth);
+      if (work != null) return [work];
       final archiveComics = await archives(entries, id);
       final chapterArchives = <_WebDavDiscoveredDirectory>[];
       final version = _directoryContentVersion(directory, entries);
@@ -3070,21 +3508,9 @@ class WebDavLibrarySource {
         );
       }
       for (final child in childDirectories) {
-        if (inspectedDirectories >= maxDirectories) {
-          Log.warning(
-            'WebDAV Library',
-            'Discovery inspection limit reached while inspecting $id',
-          );
-          throw FormatException(
-            'Discovery inspection limit reached while inspecting $id',
-          );
-        }
-        inspectedDirectories++;
         final childId = _joinRelativeDirectoryPath(id, child.name);
         final childPath = config.childDirectoryPath(childId);
-        final childEntries = List<WebDavLibraryEntry>.from(
-          await _activeOps.readDir(config, childPath),
-        );
+        final childEntries = await readDirectory(childId, depth + 1);
         _throwIfSynchronizationObsolete(syncRun);
         children.add((directory: child, id: childId, entries: childEntries));
         childEntriesMap[child.name] = childEntries;
@@ -3164,21 +3590,8 @@ class WebDavLibrarySource {
       throttleEvery: 0,
       run: (directory) async {
         _throwIfSynchronizationObsolete(syncRun);
-        if (inspectedDirectories >= maxDirectories) {
-          Log.warning(
-            'WebDAV Library',
-            'Discovery inspection limit reached at library root',
-          );
-          throw const FormatException(
-            'WebDAV comic discovery directory limit reached',
-          );
-        }
-        inspectedDirectories++;
         final id = directory.name;
-        final path = config.childDirectoryPath(id);
-        final entries = List<WebDavLibraryEntry>.from(
-          await _activeOps.readDir(config, path),
-        );
+        final entries = await readDirectory(id, 0);
         _throwIfSynchronizationObsolete(syncRun);
 
         result.addAll(
@@ -3194,8 +3607,14 @@ class WebDavLibrarySource {
       },
     );
 
-    result.sort((a, b) => compareComicFileNames(a.id, b.id));
-    return result;
+    final unique = {
+      for (final comic in result) comic.id: comic,
+    }.values.toList();
+    unique.sort(
+      (a, b) =>
+          compareComicFileNames(a.work?.title ?? a.id, b.work?.title ?? b.id),
+    );
+    return unique;
   }
 
   static ({String? eTag, int? modifiedAt}) _directoryContentVersion(
@@ -3263,7 +3682,8 @@ class WebDavLibrarySource {
     ComicImageLoadTarget? target,
   }) async {
     final config = WebDavLibraryConfig.fromSettings();
-    if (imageKey.startsWith(remoteArchiveImagePrefix)) {
+    if (imageKey.startsWith(remoteArchiveImagePrefix) ||
+        imageKey.startsWith(remoteComicWorkImagePrefix)) {
       final zone = Zone.current;
       Future<Uint8List> loadBytes(CancelToken token) {
         final priority = RemoteReadContext.current;
@@ -3285,7 +3705,8 @@ class WebDavLibrarySource {
     String imageKey,
   ) async {
     final config = WebDavLibraryConfig.fromSettings();
-    if (imageKey.startsWith(remoteArchiveImagePrefix)) {
+    if (imageKey.startsWith(remoteArchiveImagePrefix) ||
+        imageKey.startsWith(remoteComicWorkImagePrefix)) {
       final zone = Zone.current;
       Future<Uint8List> loadBytes(CancelToken token) {
         final priority = RemoteReadContext.current;
@@ -3589,6 +4010,7 @@ class _WebDavDiscoveredDirectory {
     this.eTag,
     this.modifiedAt,
     this.archiveFile,
+    this.work,
   });
 
   final String id;
@@ -3597,6 +4019,7 @@ class _WebDavDiscoveredDirectory {
   final String? eTag;
   final int? modifiedAt;
   final WebDavLibraryEntry? archiveFile;
+  final RemoteComicWork? work;
 }
 
 class _WebDavPendingMetadataWrite {
@@ -3724,6 +4147,7 @@ class _WebDavComicSnapshot {
     required this.metadataScrapeRetryAt,
     required this.metadataScrapeError,
     this.archive,
+    this.work,
   });
 
   final String title;
@@ -3744,6 +4168,7 @@ class _WebDavComicSnapshot {
   final int? metadataScrapeRetryAt;
   final String? metadataScrapeError;
   final RemoteArchiveComic? archive;
+  final RemoteComicWork? work;
 
   factory _WebDavComicSnapshot.fromJson(Map<String, dynamic> json) {
     final chapters = json['chapters'];
@@ -3753,6 +4178,11 @@ class _WebDavComicSnapshot {
     final metadataFilePresent = json['metadataFilePresent'] == true;
     return _WebDavComicSnapshot(
       title: json['title'] as String,
+      work: json['work'] is Map
+          ? RemoteComicWork.fromJson(
+              Map<String, dynamic>.from(json['work'] as Map),
+            )
+          : null,
       archive: json['archive'] is Map
           ? RemoteArchiveComic.fromJson(
               Map<String, dynamic>.from(json['archive'] as Map),
@@ -3809,6 +4239,7 @@ class _WebDavComicSnapshot {
   Map<String, dynamic> toJson() => {
     'formatVersion': webDavLibrarySnapshotFormatVersion,
     if (archive != null) 'archive': archive!.toJson(),
+    if (work != null) 'work': work!.toJson(),
     'title': title,
     'author': author,
     'description': description,
@@ -3838,6 +4269,7 @@ class _WebDavComicSnapshot {
   };
 
   int? get pageCount {
+    if (work != null) return null;
     if (archive != null) return archive!.pageCount;
     if (!chaptersInspected) return null;
     return rootImages.length +

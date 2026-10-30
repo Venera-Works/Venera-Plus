@@ -345,7 +345,7 @@ class ReaderState extends State<Reader>
             readerSetting('autoReadingSkipUnavailableImages') != true) {
           return AutoReadingStep.waiting;
         }
-        if (across && chapter < maxChapter) {
+        if (across && !isLastChapterOfGroup) {
           return toNextChapter(source: ReadingNavigationSource.automatic)
               ? AutoReadingStep.advanced
               : AutoReadingStep.waiting;
@@ -1033,39 +1033,39 @@ class ReaderState extends State<Reader>
     return ReadingProgress.seed(position, catalog: _readingCatalog);
   }
 
-  bool get isFirstChapterOfGroup {
+  @override
+  bool isFirstChapterOfGroupFor(int chapter) {
     if (widget.chapters?.isGrouped ?? false) {
       int c = chapter - 1;
       int g = 1;
-      while (c > 0) {
+      while (c > 0 && g <= widget.chapters!.groupCount) {
         c -= widget.chapters!.getGroupByIndex(g - 1).length;
         g++;
       }
-      if (c == 0) {
-        return true;
-      } else {
-        return false;
-      }
+      return c == 0;
     }
     return chapter == 1;
   }
 
-  bool get isLastChapterOfGroup {
+  @override
+  bool isLastChapterOfGroupFor(int chapter) {
     if (widget.chapters?.isGrouped ?? false) {
       int c = chapter;
       int g = 1;
-      while (c > 0) {
+      while (c > 0 && g <= widget.chapters!.groupCount) {
         c -= widget.chapters!.getGroupByIndex(g - 1).length;
         g++;
       }
-      if (c == 0) {
-        return true;
-      } else {
-        return false;
-      }
+      return c == 0;
     }
     return chapter == maxChapter;
   }
+
+  @override
+  bool get isFirstChapterOfGroup => isFirstChapterOfGroupFor(chapter);
+
+  @override
+  bool get isLastChapterOfGroup => isLastChapterOfGroupFor(chapter);
 
   /// Get the size of the reader.
   /// The size is not always the same as the size of the screen.
@@ -1331,6 +1331,13 @@ abstract mixin class ReaderLocation {
 
   int get maxChapter;
 
+  bool isFirstChapterOfGroupFor(int chapter) => chapter == 1;
+
+  bool isLastChapterOfGroupFor(int chapter) => chapter == maxChapter;
+
+  bool get isFirstChapterOfGroup => isFirstChapterOfGroupFor(chapter);
+
+  bool get isLastChapterOfGroup => isLastChapterOfGroupFor(chapter);
   bool get isLoading;
   bool get canAcceptReaderPageChanges => true;
 
@@ -1665,6 +1672,7 @@ abstract mixin class ReaderLocation {
   bool toNextChapter({
     ReadingNavigationSource source = ReadingNavigationSource.userForward,
   }) {
+    if (isLastChapterOfGroup) return false;
     return toChapter(chapter + 1, source: source);
   }
 
@@ -1674,6 +1682,7 @@ abstract mixin class ReaderLocation {
     bool toLastPage = false,
     ReadingNavigationSource source = ReadingNavigationSource.userBackward,
   }) {
+    if (isFirstChapterOfGroup) return false;
     return toChapter(chapter - 1, toLastPage: toLastPage, source: source);
   }
 

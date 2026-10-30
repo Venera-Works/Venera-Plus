@@ -1781,14 +1781,17 @@ class ContinuousModeState extends State<_ContinuousMode>
     if (!crossChapter || _isLoadingNextSegment || _nextSegmentError != null) {
       return;
     }
+    _initSegments();
     var threshold = math.max(preCacheCount, 1);
-    if (_flowImageCount - current >= threshold) return;
-    var nextChapter =
-        (_waterfallFlow.isEmpty
-            ? reader.chapter
-            : _waterfallFlow.lastChapter!) +
-        1;
-    if (nextChapter > reader.maxChapter) return;
+    if (!_waterfallFlow.shouldLoadAfter(
+      current: current,
+      threshold: threshold,
+      maxChapter: reader.maxChapter,
+      isLastChapter: reader.isLastChapterOfGroupFor,
+    )) {
+      return;
+    }
+    var nextChapter = _waterfallFlow.lastChapter! + 1;
     setState(() => _isLoadingNextSegment = true);
     var loaded = false;
     try {
@@ -1821,14 +1824,16 @@ class ContinuousModeState extends State<_ContinuousMode>
 
   Future<void> _ensureWaterfallImagesBefore(int current) async {
     if (!crossChapter || _isLoadingPrevSegment) return;
+    _initSegments();
     var threshold = math.max(preCacheCount, 1);
-    if (current > threshold) return;
-    var prevChapter =
-        (_waterfallFlow.isEmpty
-            ? reader.chapter
-            : _waterfallFlow.firstChapter!) -
-        1;
-    if (prevChapter < 1) return;
+    if (!_waterfallFlow.shouldLoadBefore(
+      current: current,
+      threshold: threshold,
+      isFirstChapter: reader.isFirstChapterOfGroupFor,
+    )) {
+      return;
+    }
+    var prevChapter = _waterfallFlow.firstChapter! - 1;
     _isLoadingPrevSegment = true;
     var insertedCount = 0;
     try {
@@ -2251,7 +2256,7 @@ class ContinuousModeState extends State<_ContinuousMode>
     var lastChapter = !_waterfallFlow.isEmpty
         ? _waterfallFlow.lastChapter!
         : reader.chapter;
-    if (lastChapter >= reader.maxChapter) {
+    if (reader.isLastChapterOfGroupFor(lastChapter)) {
       return SizedBox(
         height: 96,
         child: Center(child: Text('No more chapters'.tl)),
@@ -2772,14 +2777,12 @@ class ContinuousModeState extends State<_ContinuousMode>
         if (crossChapter &&
             acrossChapters &&
             _waterfallFlow.lastChapter != null &&
-            _waterfallFlow.lastChapter! < reader.maxChapter) {
+            !reader.isLastChapterOfGroupFor(_waterfallFlow.lastChapter!)) {
           if (_nextSegmentError != null) return AutoReadingStep.finished;
           _ensureWaterfallImagesAfter(_flowImageCount);
           return AutoReadingStep.waiting;
         }
-        if (!crossChapter &&
-            acrossChapters &&
-            reader.chapter < reader.maxChapter) {
+        if (!crossChapter && acrossChapters && !reader.isLastChapterOfGroup) {
           reader.toNextChapter(source: ReadingNavigationSource.automatic);
           return AutoReadingStep.waiting;
         }

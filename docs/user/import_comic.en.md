@@ -260,7 +260,7 @@ This `metadata.json` is the single-comic CBZ metadata format. It is not the comi
 
 ### On-Demand ZIP/CBZ, Image-based EPUB, and PDF Reading
 
-Place `.zip`, `.cbz`, image-based `.epub`, or `.pdf` files in an online library's configured recognition directories. Each file appears as one comic. ZIP/CBZ archives may contain images directly, a single top-level folder, or chapter folders. An optional single-comic `metadata.json` uses the fields and chapter-range rules above. EPUB page order and chapters follow the book structure and navigation; PDF pages are read and rendered in their original order.
+Place `.zip`, `.cbz`, image-based `.epub`, or `.pdf` files in an online library's configured recognition directories. A file can appear as an independent comic; files sharing a title and volume numbering in the same directory are aggregated into one work. ZIP/CBZ archives may contain images directly, a single top-level folder, or chapter folders. An optional single-comic `metadata.json` uses the fields and chapter-range rules above. EPUB page order and chapters follow the book structure and navigation; PDF pages are read and rendered in their original order.
 
 Image directories, ZIP/CBZ files, image-based EPUB files, and PDF files can coexist. An archive inside a comic directory appears as a separate comic without turning the image comic or its chapters into categories. For example, a book folder containing `cover.png`, a ZIP with the same name, and `全1卷/` keeps the folder name as the image comic's title and `全1卷` as its chapter; the ZIP is listed separately. Page totals count actual comic pages, excluding covers and archive files from image-directory totals. Chapters not yet scanned are inspected when comic details are opened.
 
@@ -282,11 +282,33 @@ Image directories, ZIP/CBZ files, image-based EPUB files, and PDF files can coex
 
 ZIP/CBZ and EPUB reading fetches the archive tail and central directory as needed, then metadata and the required image entries. Covers load when needed and are cached; reading pages also reuse the image cache. The full archive does not need to be downloaded or extracted first.
 
+#### Multi-file Volumes and Editions
+
+Files such as `Series Vol. 01.epub`, `Series Vol. 02.pdf`, and `Series Vol. 03.cbz` in one directory share a work, with each file becoming a reading volume. Non-overlapping volumes can mix formats. Volume, episode, chapter, and range markers retain their meaning. Bare serial filenames such as `Nedpy_01.pdf` retain their labels and natural ordering without guessing their unit. Matching file formats alone never merge different titles or separate work directories.
+
+A work directory can contain explicit format or edition folders:
+
+```text
+/venera_comics/Series/
+├── EPUB/
+│   ├── Series Vol. 01.epub
+│   └── Series Vol. 02.epub
+└── PDF Taiwan edition/
+    ├── Series_01.pdf
+    └── Series_02.pdf
+```
+
+This layout appears as one work, with chapter groups for selecting an edition in details and the reader. Continuous reading, automatic reading, and cross-volume preloading stop at the current edition's boundary; explicit chapter selection can open another edition. Duplicate volumes are retained as alternate editions rather than deleted or appended as extra consecutive volumes. A work-level `metadata.json` can explicitly mark the work boundary and supply its metadata.
+
+Discovery and work details build the member list without parsing every EPUB, PDF, or archive. A file is inspected only when its volume or cover is opened. Unknown page counts remain unspecified, while inspected indexes and image caches are reused. In an aggregated work, each file is one reading volume; EPUB spine order, original PDF page order, and ZIP/CBZ page order remain intact. Independent file comics can still use their native chapter navigation.
+
+Directory works use root-level `metadata.json` for title, author, description, and Bangumi information. Families aggregated by a shared title in a flat directory use `Title.metadata.json`. A member's full-filename sidecar continues to describe only that file. Work-level `chapters` page ranges do not span member files; the volume list comes from the members.
+
 #### Image-based EPUB
 
 The app locates the OPF through `META-INF/container.xml` and expands comic pages in OPF manifest and spine reading order, **not image file-name order**. Supported spine items include direct raster images and static XHTML `img` or SVG wrapper `image` references to images within the book. Multiple images in one document follow document order, repeated image references retain their reading positions, and `linear="no"` non-body items and blank pages are skipped.
 
-Multiple valid chapter markers from an EPUB 3 nav table of contents or EPUB 2 NCX create chapters at the corresponding spine-document boundaries. Without explicit divisions, the app provides a full-book entry instead of guessing chapters from image counts. An OPF-declared cover takes priority, and an explicit cover page is not counted again as a body page. Without a cover declaration, the first body image is used. Basic title, author, description, and tags come from OPF and can be overridden by sidecar fields.
+Multiple valid chapter markers from an EPUB 3 nav table of contents or EPUB 2 NCX create chapters at the corresponding spine-document boundaries. Page-number entries such as `第 001 页／頁` or `Page 001`, and generator credits, are not chapter markers. Without explicit divisions, the app provides continuous reading for the whole file instead of guessing chapters from image counts. An OPF-declared cover takes priority, and an explicit cover page is not counted again as a body page. Without a cover declaration, the first body image is used. Basic title, author, description, and tags come from OPF and can be overridden by sidecar fields.
 
 Initial parsing reads only the required container, OPF, navigation, and XHTML/SVG control documents; reading these entries does not prefetch neighboring images. Adjacent body control documents are read in batches to reduce first-open delays from per-page requests, without spanning image or unused entries. Covers and body images load when displayed and reuse the same account's request queue, range cache, and image cache. Text-based EPUBs, pages with body text, scripts or complex layouts, directly drawn SVG content, and DRM/encrypted books are unsupported. External images, `data:` images, and paths escaping the book are rejected without silently discarding text or downloading the entire archive.
 
