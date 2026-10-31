@@ -200,6 +200,8 @@ fvm flutter build linux --no-pub
 fvm flutter build macos --no-pub
 ```
 
+The Windows packaging script `windows/build.py` defaults `CMAKE_BUILD_PARALLEL_LEVEL` to the CPU count, enabling project-level parallel builds in CMake/MSBuild. Set the environment variable explicitly to override this default.
+
 Use a no-codesign build to validate iOS first:
 
 ```bash
@@ -207,7 +209,7 @@ fvm flutter pub get --enforce-lockfile
 fvm flutter build ios --release --no-codesign --no-pub
 ```
 
-iOS CI creates `~/.cargo/bin` before installing the serialized Rustup wrapper and adds it to `PATH` for subsequent steps, supporting macOS runners where the directory is absent. Prerelease builds set the iOS package version with `--build-name` and `--build-number`, preserving the full Beta version in `pubspec.yaml` for the app to read.
+macOS and iOS CI use the ARM64 Flutter SDK on ARM64 runners. iOS CI creates `~/.cargo/bin` before installing the serialized Rustup wrapper and adds it to `PATH` for subsequent steps, supporting macOS runners where the directory is absent. Prerelease builds set the iOS package version with `--build-name` and `--build-number`, preserving the full Beta version in `pubspec.yaml` for the app to read.
 
 ### Linux Debian Packaging
 
@@ -241,9 +243,11 @@ python .github/scripts/release_version.py --check --tag v1.2.3
 
 `pubspec.yaml`, the release tag, and the version section in `CHANGELOG.md` must match `release.json`.
 
-The `代码分析` workflow runs version and structure checks, Python script tests, Dart formatting checks across `lib` and `test` (covering subdirectories), `flutter analyze`, the full Dart test suite, and coverage reporting. `依赖安全审查` checks dependencies added or upgraded by a pull request, while `PR 平台冒烟构建` verifies Android and Windows compilation as well as native database integration test scenarios when the changed files can affect platform builds; it can also be dispatched manually to validate a released core. Before starting multi-platform builds, `完整构建` reuses the same quality workflow. Manual platform builds and tag releases both reuse `.github/workflows/build.yml` so their build definitions cannot drift apart.
+The `代码分析` workflow runs version and structure checks, Python script tests, Dart formatting checks across `lib` and `test` (covering subdirectories), `flutter analyze`, the full Dart test suite, and coverage reporting. `依赖安全审查` checks dependencies added or upgraded by a pull request, while `PR 平台冒烟构建` verifies Android and Windows compilation as well as native database integration test scenarios when the changed files can affect platform builds; it can also be dispatched manually to validate a released core. `完整构建` handles multi-platform builds and progressive Release publishing for tags. Manual platform builds and cache warming reuse `.github/workflows/build.yml`, selecting platforms through its inputs.
 
 Native CI build jobs configure compilation and dependency caching: `sccache` caches Rust on native jobs and C/C++ on supported Linux CMake generator paths (the Windows C/C++ wrapper was intentionally not retained), Cargo caches registry and Git downloads, and Android jobs reuse the Gradle build cache. Jobs print statistics via `sccache --show-stats` upon completion to verify warm-cache hits. Final release packages and installers are always rebuilt and are never reused from cache.
+
+The `构建缓存预热` workflow reuses the Windows and iOS Release builds to populate default-branch caches when dependencies, Windows/iOS native configuration, or related build scripts change on `main`. It can also be dispatched manually on `main`. Wait for warming to finish before pushing a release tag so the release can restore matching Flutter, Pub, Cargo, and sccache entries from the default branch. Different tags cannot directly share caches created in each other's scope; GitHub retention policies and repository cache quotas still apply.
 
 Android release workflows require these repository Secrets:
 

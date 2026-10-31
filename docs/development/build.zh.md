@@ -199,6 +199,8 @@ fvm flutter build linux --no-pub
 fvm flutter build macos --no-pub
 ```
 
+Windows 安装包脚本 `windows/build.py` 默认按 CPU 核数设置 `CMAKE_BUILD_PARALLEL_LEVEL`，启用 CMake/MSBuild 项目级并行；显式设置该环境变量可覆盖默认并行度。
+
 iOS 可先执行无签名构建验证：
 
 ```bash
@@ -206,7 +208,7 @@ fvm flutter pub get --enforce-lockfile
 fvm flutter build ios --release --no-codesign --no-pub
 ```
 
-iOS CI 在安装串行化 Rustup 包装脚本前创建 `~/.cargo/bin`，并将其加入后续步骤的 `PATH`，兼容不预建该目录的 macOS 运行器。预发布版本通过 `--build-name` 和 `--build-number` 设置 iOS 包版本，保留 `pubspec.yaml` 中供应用读取的完整 Beta 版本号。
+macOS 与 iOS CI 在 ARM64 runner 上使用 ARM64 Flutter SDK。iOS CI 在安装串行化 Rustup 包装脚本前创建 `~/.cargo/bin`，并将其加入后续步骤的 `PATH`，兼容不预建该目录的 macOS 运行器。预发布版本通过 `--build-name` 和 `--build-number` 设置 iOS 包版本，保留 `pubspec.yaml` 中供应用读取的完整 Beta 版本号。
 
 ### Linux Debian 打包
 
@@ -240,9 +242,11 @@ python .github/scripts/release_version.py --check --tag v1.2.3
 
 `pubspec.yaml`、发布 tag 和 `CHANGELOG.md` 版本章节必须与 `release.json` 一致。
 
-`代码分析` 工作流会运行版本与结构检查、Python 脚本测试、Dart 格式检查（`lib` 与 `test`，覆盖子目录）、`flutter analyze`、完整 Dart 测试及覆盖率汇总。`依赖安全审查` 会检查 PR 新增或升级的依赖，`PR 平台冒烟构建` 会按改动范围验证 Android 和 Windows 的编译与原生数据库集成测试场景，也可通过手动触发验证已发布的内核。`完整构建` 在开始多平台构建前会复用同一质量工作流；手动平台构建和 tag 发布则共同复用 `.github/workflows/build.yml`，避免两套构建定义产生差异。
+`代码分析` 工作流会运行版本与结构检查、Python 脚本测试、Dart 格式检查（`lib` 与 `test`，覆盖子目录）、`flutter analyze`、完整 Dart 测试及覆盖率汇总。`依赖安全审查` 会检查 PR 新增或升级的依赖，`PR 平台冒烟构建` 会按改动范围验证 Android 和 Windows 的编译与原生数据库集成测试场景，也可通过手动触发验证已发布的内核。`完整构建` 负责 tag 发布的多平台构建与渐进式 Release 发布；手动平台构建与缓存预热复用 `.github/workflows/build.yml`，按输入选择平台。
 
 原生平台 CI 构建任务配置了编译与依赖缓存：使用 `sccache` 缓存原生任务中的 Rust 编译及受支持的 Linux CMake 生成器路径下的 C/C++ 编译（未保留 Windows C/C++ 包装器），使用 Cargo 注册表与 Git 下载缓存，以及 Android Gradle 构建缓存。构建步骤在结束时通过 `sccache --show-stats` 打印统计信息，用于确认热缓存命中情况。最终发布包与安装包等产物始终重新构建生成，不会从缓存复用。
+
+`构建缓存预热` 工作流在 `main` 的依赖、Windows/iOS 原生配置或相关构建脚本变化时，复用 Windows 与 iOS Release 构建生成默认分支缓存；也可在 `main` 上手动触发。发布前等待预热完成，再推送新 tag，即可复用默认分支中匹配的 Flutter、Pub、Cargo 与 sccache 缓存。不同 tag 之间不能直接共享各自生成的缓存，缓存仍受 GitHub 的保留策略与仓库配额限制。
 
 Android release 工作流需要以下仓库 Secrets：
 

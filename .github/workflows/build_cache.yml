@@ -1,0 +1,36 @@
+name: 构建缓存预热
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build_cache.yml'
+      - '.github/workflows/build.yml'
+      - '.github/workflows/main.yml'
+      - '.github/scripts/fetch_openlist_core.py'
+      - '.github/scripts/prepare_rust_toolchain.py'
+      - '.github/scripts/serialized_rustup.py'
+      - '.fvmrc'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - 'rust-toolchain.toml'
+      - 'windows/**'
+      - 'ios/**'
+      - 'native/openlist_core/core.lock.json'
+
+permissions:
+  contents: read
+
+jobs:
+  warm:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/build.yml
+    with:
+      build_android: false
+      build_windows: true
+      build_macos: false
+      build_ios: true
+      build_linux_x64: false
+      build_linux_arm64: false

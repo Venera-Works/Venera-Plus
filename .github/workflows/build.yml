@@ -75,7 +75,7 @@ permissions:
 
 jobs:
   Build_Android:
-    if: ${{ github.event_name == 'push' || inputs.build_android }}
+    if: ${{ inputs.build_android }}
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     env:
@@ -195,7 +195,7 @@ jobs:
           retention-days: 7
 
   Build_Windows:
-    if: ${{ github.event_name == 'push' || inputs.build_windows }}
+    if: ${{ inputs.build_windows }}
     runs-on: windows-2025
     timeout-minutes: 45
     env:
@@ -282,7 +282,7 @@ jobs:
           retention-days: 7
 
   Build_MacOS:
-    if: ${{ github.event_name == 'push' || inputs.build_macos }}
+    if: ${{ inputs.build_macos }}
     runs-on: macos-15
     timeout-minutes: 45
     env:
@@ -296,7 +296,7 @@ jobs:
         with:
           channel: "stable"
           flutter-version-file: pubspec.yaml
-          architecture: x64
+          architecture: arm64
           cache: true
       - name: 配置 sccache
         id: sccache
@@ -359,7 +359,7 @@ jobs:
           retention-days: 7
 
   Build_IOS:
-    if: ${{ github.event_name == 'push' || inputs.build_ios }}
+    if: ${{ inputs.build_ios }}
     runs-on: macos-15
     timeout-minutes: 45
     env:
@@ -373,7 +373,7 @@ jobs:
         with:
           channel: "stable"
           flutter-version-file: pubspec.yaml
-          architecture: x64
+          architecture: arm64
           cache: true
       - name: 配置 sccache
         id: sccache
@@ -451,7 +451,7 @@ jobs:
           retention-days: 7
 
   Build_Linux_x64:
-    if: ${{ github.event_name == 'push' || inputs.build_linux_x64 }}
+    if: ${{ inputs.build_linux_x64 }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     env:
@@ -511,7 +511,7 @@ jobs:
           retention-days: 7
 
   Build_Linux_ARM64:
-    if: ${{ github.event_name == 'push' || inputs.build_linux_arm64 }}
+    if: ${{ inputs.build_linux_arm64 }}
     runs-on: ubuntu-22.04-arm
     timeout-minutes: 30
     env:

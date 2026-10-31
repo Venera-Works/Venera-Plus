@@ -150,7 +150,7 @@ jobs:
         with:
           channel: "stable"
           flutter-version-file: pubspec.yaml
-          architecture: x64
+          architecture: arm64
           cache: true
       - name: 配置 sccache
         id: sccache
