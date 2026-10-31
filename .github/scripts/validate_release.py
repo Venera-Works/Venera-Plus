@@ -96,7 +96,7 @@ def main() -> None:
     validate_windows_installer_metadata()
     notes = extract_release_notes(tag)
     if re.search(r"-beta\d+$", tag):
-        notes = "## **注意**\n**beta版可能存在大量bug，无必要请勿下载**\n\n" + notes
+        notes = "## **注意**\n**beta版可能存在大量bug，下载请做好备份**\n\n" + notes
 
     if args.write_notes:
         Path(args.write_notes).write_text(notes + "\n", encoding="utf-8")
