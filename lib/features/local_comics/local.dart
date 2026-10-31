@@ -17,12 +17,16 @@ import 'package:venera_plus/foundation/file_interaction.dart';
 
 import 'package:venera_plus/foundation/translations.dart';
 import 'local_storage_guard.dart';
+import 'local_storage_migration.dart';
+import 'incomplete_chapter.dart';
+import 'package:venera_plus/foundation/missing_download_page.dart';
 import 'import_export/document_import.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/features/history/history.dart';
 
 export 'local_comic_image.dart';
+export 'incomplete_chapter.dart';
 
 class LocalComic with HistoryMixin implements Comic {
   @override
@@ -55,6 +59,13 @@ class LocalComic with HistoryMixin implements Comic {
 
   final List<String> downloadedChapters;
 
+  final Map<String, IncompleteChapter> incompleteChapters;
+  bool get isIncomplete => incompleteChapters.isNotEmpty;
+  int get missingImageCount => incompleteChapters.values.fold(
+    0,
+    (count, chapter) => count + chapter.missing.length,
+  );
+
   final DateTime createdAt;
 
   const LocalComic({
@@ -68,6 +79,7 @@ class LocalComic with HistoryMixin implements Comic {
     required this.comicType,
     required this.downloadedChapters,
     required this.createdAt,
+    this.incompleteChapters = const {},
   });
 
   LocalComic.fromRow(Row row)
@@ -80,7 +92,16 @@ class LocalComic with HistoryMixin implements Comic {
       cover = row[6] as String,
       comicType = ComicType(row[7] as int),
       downloadedChapters = List.from(jsonDecode(row[8] as String)),
-      createdAt = DateTime.fromMillisecondsSinceEpoch(row[9] as int);
+      createdAt = DateTime.fromMillisecondsSinceEpoch(row[9] as int),
+      incompleteChapters = {
+        for (final entry
+            in (jsonDecode(row['incomplete_pages'] as String)
+                    as Map<String, dynamic>)
+                .entries)
+          entry.key: IncompleteChapter.fromJson(
+            Map<String, dynamic>.from(entry.value as Map),
+          ),
+      };
 
   File get coverFile => File(FilePath.join(baseDir, cover));
 
@@ -116,7 +137,11 @@ class LocalComic with HistoryMixin implements Comic {
     var history = HistoryManager().find(id, comicType);
     int? firstDownloadedChapter;
     int? firstDownloadedChapterGroup;
-    if (downloadedChapters.isNotEmpty && chapters != null) {
+    final availableChapters = {
+      ...downloadedChapters,
+      ...incompleteChapters.keys,
+    };
+    if (availableChapters.isNotEmpty && chapters != null) {
       final chapters = this.chapters!;
       if (chapters.isGrouped) {
         for (int i = 0; i < chapters.groupCount; i++) {
@@ -124,7 +149,7 @@ class LocalComic with HistoryMixin implements Comic {
           var keys = group.keys.toList();
           for (int j = 0; j < keys.length; j++) {
             var chapterId = keys[j];
-            if (downloadedChapters.contains(chapterId)) {
+            if (availableChapters.contains(chapterId)) {
               firstDownloadedChapter = j + 1;
               firstDownloadedChapterGroup = i + 1;
               break;
@@ -134,7 +159,7 @@ class LocalComic with HistoryMixin implements Comic {
       } else {
         var keys = chapters.allChapters.keys;
         for (int i = 0; i < keys.length; i++) {
-          if (downloadedChapters.contains(keys.elementAt(i))) {
+          if (availableChapters.contains(keys.elementAt(i))) {
             firstDownloadedChapter = i + 1;
             break;
           }
@@ -197,6 +222,7 @@ class LocalManager with ChangeNotifier {
   }
 
   LocalManager._();
+  (String, String)? _relocatedRoot;
 
   factory LocalManager() {
     return _instance ??= LocalManager._();
@@ -238,19 +264,33 @@ class LocalManager with ChangeNotifier {
       return "Directory is not empty";
     }
     try {
-      await copyDirectoryIsolate(directory, newDir);
-      await File(
-        FilePath.join(App.dataPath, 'local_path'),
-      ).writeAsString(newPath);
+      for (final task in downloadingTasks.toList()) {
+        task.pause();
+        await task.pendingCleanup;
+      }
+      await pendingDownloadTaskWrites;
+      await _storageMigration.move(directory, newDir);
     } catch (e, s) {
       Log.error("IO", e, s);
       return e.toString();
     }
-    await directory.deleteContents(recursive: true);
-    path = newPath;
     _checkNoMedia();
+    notifyListeners();
     return null;
   }
+
+  LocalStorageMigration get _storageMigration => LocalStorageMigration(
+    db: _db,
+    pathFile: File(FilePath.join(App.dataPath, 'local_path')),
+    persistRelated: saveCurrentDownloadingTasks,
+    publish: (source, destination) {
+      path = destination;
+      _relocatedRoot = (source, destination);
+      for (final task in downloadingTasks) {
+        task.relocateOutput(source, destination);
+      }
+    },
+  );
 
   Future<String> findDefaultPath() async {
     if (App.isAndroid) {
@@ -280,6 +320,7 @@ class LocalManager with ChangeNotifier {
       testFile.createSync();
       testFile.deleteSync();
     } catch (e) {
+      if (_relocatedRoot != null) rethrow;
       Log.error(
         "IO",
         "Failed to create test file in local path: $e\nUsing default path instead.",
@@ -315,6 +356,13 @@ class LocalManager with ChangeNotifier {
         PRIMARY KEY (id, comic_type)
       );
     ''');
+    if (!_db
+        .select('PRAGMA table_info(comics)')
+        .any((row) => row['name'] == 'incomplete_pages')) {
+      _db.execute(
+        "ALTER TABLE comics ADD COLUMN incomplete_pages TEXT NOT NULL DEFAULT '{}'",
+      );
+    }
     if (File(FilePath.join(App.dataPath, 'local_path')).existsSync()) {
       path = File(FilePath.join(App.dataPath, 'local_path')).readAsStringSync();
       if (!directory.existsSync()) {
@@ -330,12 +378,13 @@ class LocalManager with ChangeNotifier {
     } catch (e, s) {
       Log.error("IO", "Failed to create local folder: $e", s);
     }
-    await _checkPathValidation();
-    _checkNoMedia();
     if (!debugSkipComicSourceInit) {
       await ComicSourceManager().ensureInit();
     }
     restoreDownloadingTasks();
+    await _storageMigration.recover();
+    await _checkPathValidation();
+    _checkNoMedia();
   }
 
   String findValidId(ComicType type) {
@@ -354,6 +403,11 @@ class LocalManager with ChangeNotifier {
   }
 
   Future<void> add(LocalComic comic, [String? id]) async {
+    _writeComic(comic, id);
+    notifyListeners();
+  }
+
+  void _writeComic(LocalComic comic, String? id) {
     var old = find(id ?? comic.id, comic.comicType);
     if (old == null) {
       // Newly imported books already use natural ordering.
@@ -362,12 +416,20 @@ class LocalManager with ChangeNotifier {
         [id ?? comic.id, comic.comicType.value],
       );
     }
-    var downloaded = comic.downloadedChapters;
-    if (old != null) {
-      downloaded.addAll(old.downloadedChapters);
-    }
+    final downloaded = {
+      ...?old?.downloadedChapters,
+      ...comic.downloadedChapters,
+    }.toList();
+    final incomplete = {...?old?.incompleteChapters}
+      ..removeWhere(
+        (chapter, _) =>
+            comic.chapters == null ||
+            comic.downloadedChapters.contains(chapter),
+      )
+      ..addAll(comic.incompleteChapters);
+    downloaded.removeWhere(incomplete.containsKey);
     _db.execute(
-      'INSERT OR REPLACE INTO comics VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);',
+      'INSERT OR REPLACE INTO comics (id, title, subtitle, tags, directory, chapters, cover, comic_type, downloadedChapters, created_at, incomplete_pages) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);',
       [
         id ?? comic.id,
         comic.title,
@@ -379,9 +441,12 @@ class LocalManager with ChangeNotifier {
         comic.comicType.value,
         jsonEncode(downloaded),
         comic.createdAt.millisecondsSinceEpoch,
+        jsonEncode({
+          for (final entry in incomplete.entries)
+            entry.key: entry.value.toJson(),
+        }),
       ],
     );
-    notifyListeners();
   }
 
   void remove(String id, ComicType comicType, {bool notify = true}) {
@@ -478,6 +543,11 @@ class LocalManager with ChangeNotifier {
     }
     var comic = find(id, type) ?? (throw "Comic Not Found");
     var directory = Directory(comic.baseDir);
+    final chapterId = comic.chapters == null
+        ? ''
+        : ep is int
+        ? comic.chapters!.ids.elementAt(ep - 1)
+        : ep as String;
     if (comic.hasChapters) {
       var cid = ep is int
           ? comic.chapters!.ids.elementAt(ep - 1)
@@ -497,6 +567,19 @@ class LocalManager with ChangeNotifier {
       }
     }
     files.sort((a, b) => compareComicFileNames(a.name, b.name));
+    final incomplete = comic.incompleteChapters[chapterId];
+    if (incomplete != null) {
+      final byIndex = {
+        for (final file in files)
+          int.tryParse(file.name.split('.').first): file,
+      };
+      return List.generate(
+        incomplete.pageCount,
+        (index) => byIndex[index] == null
+            ? '$missingDownloadPagePrefix${Uri.encodeComponent(id)}/$index'
+            : 'file://${byIndex[index]!.path}',
+      );
+    }
     return files.map((e) => "file://${e.path}").toList();
   }
 
@@ -581,6 +664,7 @@ class LocalManager with ChangeNotifier {
             comicType: comic.comicType,
             downloadedChapters: comic.downloadedChapters,
             createdAt: comic.createdAt,
+            incompleteChapters: comic.incompleteChapters,
           ),
         );
       }
@@ -591,6 +675,35 @@ class LocalManager with ChangeNotifier {
   }
 
   List<DownloadTask> downloadingTasks = [];
+  Future<void>? downloadTransition;
+  int _downloadCommand = 0;
+  DownloadTask? get currentDownloadTask => downloadingTasks
+      .where((task) => !task.isAwaitingMissingPages)
+      .firstOrNull;
+
+  Future<void> retainIncompleteTask(DownloadTask task) async {
+    _writeComic(task.toLocalComic(), null);
+    downloadTransition = task.pendingCleanup;
+    currentDownloadTask?.resume();
+    notifyListeners();
+    await saveCurrentDownloadingTasks();
+  }
+
+  Future<void> resumeTask(DownloadTask task) async {
+    final command = ++_downloadCommand;
+    for (final other in downloadingTasks.toList()) {
+      if (!identical(other, task) && !other.isPaused) {
+        other.pause();
+        await other.pendingCleanup;
+        if (command != _downloadCommand) return;
+      }
+    }
+    if (!downloadingTasks.contains(task)) return;
+    downloadingTasks.remove(task);
+    downloadingTasks.insert(0, task);
+    task.resume();
+    notifyListeners();
+  }
 
   bool isDownloading(String id, ComicType type) {
     return downloadingTasks.any(
@@ -619,25 +732,27 @@ class LocalManager with ChangeNotifier {
     downloadingTasks.remove(task);
     notifyListeners();
     saveCurrentDownloadingTasks();
-    downloadingTasks.firstOrNull?.resume();
+    currentDownloadTask?.resume();
   }
 
   void removeTask(DownloadTask task) {
+    _downloadCommand++;
     downloadingTasks.remove(task);
     notifyListeners();
     saveCurrentDownloadingTasks();
   }
 
   void moveToFirst(DownloadTask task) {
-    if (downloadingTasks.first != task) {
-      var shouldResume = !downloadingTasks.first.isPaused;
-      downloadingTasks.first.pause();
+    final current = currentDownloadTask;
+    if (current != task && downloadingTasks.contains(task)) {
+      var shouldResume = current != null && !current.isPaused;
+      current?.pause();
       downloadingTasks.remove(task);
       downloadingTasks.insert(0, task);
       notifyListeners();
       saveCurrentDownloadingTasks();
       if (shouldResume) {
-        downloadingTasks.first.resume();
+        resumeTask(task);
       }
     }
   }
@@ -680,7 +795,7 @@ class LocalManager with ChangeNotifier {
     downloadingTasks.add(task);
     notifyListeners();
     saveCurrentDownloadingTasks();
-    downloadingTasks.first.resume();
+    currentDownloadTask?.resume();
   }
 
   void deleteComic(LocalComic c, [bool removeFileOnDisk = true]) {
@@ -708,10 +823,20 @@ class LocalManager with ChangeNotifier {
     var newDownloadedChapters = c.downloadedChapters
         .where((e) => !chapters.contains(e))
         .toList();
-    if (newDownloadedChapters.isNotEmpty) {
+    final incomplete = {...c.incompleteChapters}
+      ..removeWhere((chapter, _) => chapters.contains(chapter));
+    if (newDownloadedChapters.isNotEmpty || incomplete.isNotEmpty) {
       _db.execute(
-        'UPDATE comics SET downloadedChapters = ? WHERE id = ? AND comic_type = ?;',
-        [jsonEncode(newDownloadedChapters), c.id, c.comicType.value],
+        'UPDATE comics SET downloadedChapters = ?, incomplete_pages = ? WHERE id = ? AND comic_type = ?;',
+        [
+          jsonEncode(newDownloadedChapters),
+          jsonEncode({
+            for (final entry in incomplete.entries)
+              entry.key: entry.value.toJson(),
+          }),
+          c.id,
+          c.comicType.value,
+        ],
       );
     } else {
       _db.execute('DELETE FROM comics WHERE id = ? AND comic_type = ?;', [

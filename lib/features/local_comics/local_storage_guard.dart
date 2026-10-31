@@ -16,6 +16,7 @@ class LocalComicStorageGuard {
 
   int _imports = 0;
   Completer<void>? _exclusive;
+  bool get isExclusive => _exclusive != null;
 
   Future<T> runImport<T>(Future<T> Function() action) async {
     while (_exclusive != null) {

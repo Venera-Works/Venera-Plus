@@ -302,6 +302,11 @@ class ReaderScaffoldState extends State<ReaderScaffold>
             onClick: changeSource,
           ),
           MenuEntry(icon: Icons.share, text: 'Share'.tl, onClick: share),
+          MenuEntry(
+            icon: Icons.speed,
+            text: 'Reading diagnostics'.tl,
+            onClick: context.reader.showDiagnostics,
+          ),
         ],
       ),
     ];

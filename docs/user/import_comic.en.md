@@ -100,6 +100,14 @@ Cat's Eye.cbz
 If there is no `cover.[ext]` in the root folder, the first image from the first
 chapter is used as the cover.
 
+## Comic Archive and Restore
+
+Archive uploads from the local comic menu and downloads/imports from the archive page show individual results, remote filenames and failure details. Retry one item, retry all failures, or continue unstarted items without repeating successes. Cancellation waits for the current operation to finish safely. Closing the result dialog clears this batch's results and retry records.
+
+WebDAV uploads use conditional requests to avoid overwriting same-name files. An existing name is initially marked “Skipped (not verified)”. Retrying an uncertain upload downloads the remote file and compares it with the uploaded content, using additional bandwidth and temporary space; differing contents remain a conflict. Other cloud providers retain their service's write capabilities. If registration may already have committed, direct retry is disabled until the local library can be checked.
+
+Changing local storage pauses downloads. The copied library references and task paths are saved before the old directory is cleared. A committed move survives interrupted cleanup and is recovered on the next startup.
+
 ## PDF and Image-based EPUB
 
 Open `Library` -> `Local Comics` -> top bar `Import` and select either a PDF comic file or an image-based

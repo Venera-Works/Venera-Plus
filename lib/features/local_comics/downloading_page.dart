@@ -24,7 +24,7 @@ class _DownloadingPageState extends State<DownloadingPage> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    firstTask = LocalManager().downloadingTasks.firstOrNull;
+    firstTask = LocalManager().currentDownloadTask;
     firstTask?.addListener(update);
   }
 
@@ -42,7 +42,7 @@ class _DownloadingPageState extends State<DownloadingPage> {
   }
 
   void update() {
-    var currentFirstTask = LocalManager().downloadingTasks.firstOrNull;
+    var currentFirstTask = LocalManager().currentDownloadTask;
     if (currentFirstTask != firstTask) {
       firstTask?.removeListener(update);
       firstTask = currentFirstTask;
@@ -76,10 +76,8 @@ class _DownloadingPageState extends State<DownloadingPage> {
 
   Widget buildTop() {
     int speed = 0;
-    if (LocalManager().downloadingTasks.isNotEmpty) {
-      speed = LocalManager().downloadingTasks.first.speed;
-    }
-    var first = LocalManager().downloadingTasks.firstOrNull;
+    var first = LocalManager().currentDownloadTask;
+    speed = first?.speed ?? 0;
     return Container(
       height: 48,
       decoration: BoxDecoration(
@@ -109,7 +107,7 @@ class _DownloadingPageState extends State<DownloadingPage> {
                 ],
               ),
               onPressed: () {
-                first!.resume();
+                LocalManager().resumeTask(first!);
               },
             )
           else if (first != null)
@@ -221,16 +219,28 @@ class _DownloadTaskTileState extends State<_DownloadTaskTile> {
                           ),
                         MenuEntry(
                           icon: Icons.close,
-                          text: "Cancel".tl,
+                          text:
+                              (task.isAwaitingMissingPages
+                                      ? 'Remove from queue'
+                                      : 'Cancel')
+                                  .tl,
                           onClick: () {
                             widget.task.cancel();
                           },
                         ),
                         MenuEntry(
                           icon: Icons.vertical_align_top,
-                          text: "Move To First".tl,
+                          text:
+                              (task.isAwaitingMissingPages
+                                      ? 'Retry missing images'
+                                      : 'Move To First')
+                                  .tl,
                           onClick: () {
-                            LocalManager().moveToFirst(widget.task);
+                            if (task.isAwaitingMissingPages) {
+                              LocalManager().resumeTask(task);
+                            } else {
+                              LocalManager().moveToFirst(task);
+                            }
                           },
                         ),
                       ],
@@ -238,7 +248,9 @@ class _DownloadTaskTileState extends State<_DownloadTaskTile> {
                   ],
                 ),
                 const SizedBox(height: 8),
-                if (!widget.task.isPaused || widget.task.isError)
+                if (!widget.task.isPaused ||
+                    widget.task.isError ||
+                    widget.task.isAwaitingMissingPages)
                   InkWell(
                     onTap: () => showDialog<void>(
                       context: context,

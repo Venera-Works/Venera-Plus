@@ -16,6 +16,7 @@ import 'package:venera_plus/network/proxy.dart';
 
 import '../foundation/app.dart';
 import 'cloudflare.dart';
+import 'image_http3_fallback.dart';
 import 'cookie_jar.dart';
 
 export 'package:dio/dio.dart';
@@ -570,11 +571,21 @@ class RHttpAdapter implements HttpClientAdapter {
     Stream<Uint8List>? requestStream,
     rhttp.CancelToken cancelToken,
   ) async {
+    return performRequest(options, requestStream, cancelToken, await settings);
+  }
+
+  @protected
+  Future<rhttp.HttpResponse> performRequest(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    rhttp.CancelToken cancelToken,
+    rhttp.ClientSettings configured,
+  ) async {
     return rhttp.Rhttp.request(
       cancelToken: cancelToken,
       method: rhttp.HttpMethod(options.method),
       url: options.uri.toString(),
-      settings: await settings,
+      settings: configured,
       expectBody: rhttp.HttpExpectBody.stream,
       body: requestStream == null ? null : rhttp.HttpBody.stream(requestStream),
       headers: rhttp.HttpHeaders.rawMap(
@@ -598,14 +609,86 @@ class RHttpAdapter implements HttpClientAdapter {
       options.headers['User-Agent'] = "VeneraPlus/v${App.version}";
     }
 
-    final transfer = _RHttpResponseStream(createCancelToken());
+    var transfer = _RHttpResponseStream(createCancelToken());
+    var cancelled = false;
     if (cancelFuture != null) {
-      unawaited(cancelFuture.then((_) => transfer.cancel()));
+      unawaited(
+        cancelFuture.then((_) {
+          cancelled = true;
+          return transfer.cancel();
+        }),
+      );
     }
 
-    final rhttp.HttpResponse res;
+    late rhttp.HttpResponse res;
     try {
-      res = await request(options, requestStream, transfer.cancelToken);
+      if (options.extra['allowImageHttp3Fallback'] != true) {
+        res = await request(options, requestStream, transfer.cancelToken);
+      } else {
+        final configured = await settings;
+        try {
+          res = await performRequest(
+            options,
+            requestStream,
+            transfer.cancelToken,
+            configured,
+          );
+        } catch (originalError) {
+          final eligible =
+              !cancelled &&
+              options.method.toUpperCase() == 'GET' &&
+              options.uri.scheme == 'https' &&
+              options.data == null &&
+              requestStream == null &&
+              configured.httpVersionPref == rhttp.HttpVersionPref.all &&
+              configured.proxySettings == const rhttp.ProxySettings.noProxy() &&
+              isImageTlsConnectionInterruption(originalError);
+          if (!eligible) rethrow;
+          await transfer.cancel();
+          if (cancelled || transfer.cleanupError != null) rethrow;
+          transfer = _RHttpResponseStream(createCancelToken());
+          final fallback = transfer;
+          final timeout = imageHttp3HeaderTimeout(options, configured);
+          var expired = false;
+          final pending = performRequest(
+            options,
+            null,
+            fallback.cancelToken,
+            configured.copyWith(httpVersionPref: rhttp.HttpVersionPref.http3),
+          );
+          unawaited(
+            pending.then<void>((lateResponse) {
+              if (expired && lateResponse is rhttp.HttpStreamResponse) {
+                fallback.attach(lateResponse.body);
+              }
+            }, onError: (Object error, StackTrace stack) {}),
+          );
+          try {
+            res = await pending.timeout(
+              timeout,
+              onTimeout: () {
+                expired = true;
+                throw DioException.connectionTimeout(
+                  requestOptions: options,
+                  timeout: timeout,
+                );
+              },
+            );
+          } catch (fallbackError) {
+            await fallback.cancel();
+            if (cancelled) {
+              throw DioException.requestCancelled(
+                requestOptions: options,
+                reason: 'Image request cancelled',
+              );
+            }
+            throw ImageHttp3FallbackFailure(
+              originalError: originalError,
+              fallbackError: fallbackError,
+            );
+          }
+        }
+      }
     } catch (_) {
       transfer.finish();
       rethrow;
@@ -676,6 +759,7 @@ class _RHttpResponseStream {
   Future<void>? _cancellation;
   bool _finished = false;
   bool _cancelled = false;
+  Object? cleanupError;
 
   Stream<Uint8List> get stream => _controller.stream;
   bool get isCancelled => _cancelled;
@@ -737,6 +821,7 @@ class _RHttpResponseStream {
       // The consumer has already rejected or cancelled the response. Unexpected
       // cleanup failures remain visible; active body errors are forwarded above.
       Log.warning('Network stream cleanup', '$error\n$stack');
+      cleanupError = error;
     }
   }
 }

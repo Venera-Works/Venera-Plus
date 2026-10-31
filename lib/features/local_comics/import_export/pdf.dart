@@ -1,3 +1,4 @@
+import 'package:venera_plus/foundation/translations.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:isolate';
@@ -122,6 +123,9 @@ Future<File> createPdfFromComicIsolate(
   LocalComic comic,
   String savePath,
 ) async {
+  if (comic.isIncomplete) {
+    throw StateError('Retry missing images before exporting this comic.'.tl);
+  }
   var receivePort = ReceivePort();
   SendPort? sendPort;
   Isolate? isolate;

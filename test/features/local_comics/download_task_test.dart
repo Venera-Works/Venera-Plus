@@ -5,19 +5,25 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
+import 'package:venera_plus/app_runtime/android_downloads.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/network/images.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   const sourceKey = 'download_task_test_source';
 
   setUp(() {
     ComicSourceManager().remove(sourceKey);
     ComicSourceManager().add(_testSource(sourceKey));
     appdata.settings['downloadThreads'] = 1;
+    appdata.settings['skipUnavailableDownloadImages'] = false;
   });
 
   tearDown(() {
@@ -25,6 +31,28 @@ void main() {
     ComicSourceManager().remove(sourceKey);
     LocalManager().downloadingTasks.clear();
     LocalManager.resetForTesting();
+  });
+
+  test('the skip default applies only to new tasks', () {
+    appdata.settings['skipUnavailableDownloadImages'] = true;
+    final task = ImagesDownloadTask(
+      source: ComicSource.find(sourceKey)!,
+      comicId: 'defaults',
+    );
+    expect(task.skipUnavailableImages, isTrue);
+    final oldSnapshot = task.toJson()..remove('skipUnavailableImages');
+    expect(
+      ImagesDownloadTask.fromJson(oldSnapshot)!.skipUnavailableImages,
+      isFalse,
+    );
+    expect(
+      ImagesDownloadTask(
+        source: task.source,
+        comicId: 'override',
+        skipUnavailableImages: false,
+      ).skipUnavailableImages,
+      isFalse,
+    );
   });
 
   test('ImagesDownloadTask pause cancels active image stream', () async {
@@ -233,6 +261,7 @@ void main() {
       });
       final requests = <String, int>{};
       var repair = false;
+      final imageStarted = Completer<void>(), releaseImage = Completer<void>();
       final png = base64Decode(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==',
       );
@@ -241,6 +270,8 @@ void main() {
           (image, source, cid, eid, {target}) async* {
             requests.update(image, (count) => count + 1, ifAbsent: () => 1);
             if (image == 'missing' && !repair) {
+              if (!imageStarted.isCompleted) imageStarted.complete();
+              await releaseImage.future;
               final request = RequestOptions(
                 path: 'https://example.invalid/image',
               );
@@ -281,13 +312,43 @@ void main() {
         'chapter': 0,
         'skipUnavailableImages': true,
       })!;
-      manager.downloadingTasks.add(task);
+      final queued = _QueuedTask();
+      manager.downloadingTasks.addAll([task, queued]);
+      const channel = MethodChannel('venera/downloads');
+      final serviceCalls = <String>[];
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        serviceCalls.add(call.method);
+        return call.method == 'start' ? true : null;
+      });
+      final service = AndroidDownloads(manager: manager, channel: channel)
+        ..start();
+      addTearDown(() async {
+        await service.close();
+        messenger.setMockMethodCallHandler(channel, null);
+      });
       task.resume();
+      await imageStarted.future;
+      await pumpEventQueue();
+      expect(serviceCalls.where((method) => method == 'start'), hasLength(1));
+      service.didChangeAppLifecycleState(AppLifecycleState.paused);
+      releaseImage.complete();
       await task.debugResumeFuture!;
-      expect(task.isError, isTrue);
+      await pumpEventQueue();
+      expect(serviceCalls.where((method) => method == 'start'), hasLength(1));
+      expect(serviceCalls.where((method) => method == 'stop'), isEmpty);
+      expect(task.isError, isFalse);
+      expect(task.isAwaitingMissingPages, isTrue);
+      expect(queued.resumes, 1);
+      queued.pause();
       expect(task.missingImageCount, 1);
       expect(task.progress, 0.5);
-      expect(manager.find(task.id, task.comicType), isNull);
+      expect(manager.find(task.id, task.comicType)!.isIncomplete, isTrue);
+      final pages = await manager.getImages(task.id, task.comicType, 1);
+      expect(pages, hasLength(2));
+      expect(pages.first, startsWith('missing-download://'));
+      expect(pages.last, endsWith('1.png'));
       expect(File('${output.path}/1.png').existsSync(), isTrue);
       final saved =
           jsonDecode(
@@ -295,11 +356,12 @@ void main() {
               )
               as List;
       final restored =
-          DownloadTask.fromJson(Map<String, dynamic>.from(saved.single))!
+          DownloadTask.fromJson(Map<String, dynamic>.from(saved.first))!
               as ImagesDownloadTask;
       expect(restored.isPaused, isTrue);
       expect(restored.missingImageCount, 1);
       expect(restored.skipUnavailableImages, isTrue);
+      expect(restored.isAwaitingMissingPages, isTrue);
       manager.downloadingTasks
         ..clear()
         ..add(restored);
@@ -349,6 +411,49 @@ void main() {
     expect(task.timer, isNull);
     expect(LocalManager().downloadingTasks, isNot(contains(task)));
   });
+}
+
+class _QueuedTask extends DownloadTask {
+  int resumes = 0;
+  bool _paused = true;
+  @override
+  bool get isPaused => _paused;
+  @override
+  bool get isError => false;
+  @override
+  double get progress => 0;
+  @override
+  int get speed => 0;
+  @override
+  String get title => 'Next comic';
+  @override
+  String? get cover => null;
+  @override
+  String get message => '';
+  @override
+  String get id => 'next';
+  @override
+  ComicType get comicType => ComicType.local;
+  @override
+  void resume() {
+    resumes++;
+    _paused = false;
+  }
+
+  @override
+  void pause() {
+    _paused = true;
+  }
+
+  @override
+  void cancel() {
+    _paused = true;
+  }
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'queue-test'};
+  @override
+  LocalComic toLocalComic() => throw UnimplementedError();
 }
 
 ComicSource _testSource(String key, {LoadComicFunc? loadComicInfo}) {

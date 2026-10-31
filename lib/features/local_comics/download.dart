@@ -1,4 +1,6 @@
 import 'download_retry.dart';
+import 'local_storage_guard.dart';
+import 'package:path/path.dart' as p;
 import 'dart:async';
 import 'dart:isolate';
 
@@ -13,6 +15,7 @@ import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/features/local_comics/local.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/res.dart';
+import 'package:venera_plus/foundation/missing_download_page.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/network/file_downloader.dart';
 import 'package:venera_plus/network/images.dart';
@@ -22,6 +25,7 @@ import 'package:venera_plus/foundation/file_interaction.dart';
 import 'package:zip_flutter/zip_flutter.dart';
 
 abstract class DownloadTask with ChangeNotifier {
+  bool get isAwaitingMissingPages => false;
   Future<void> get pendingCleanup => Future.value();
   bool get isWaitingToRetry => false;
   void retryNow() {}
@@ -50,6 +54,13 @@ abstract class DownloadTask with ChangeNotifier {
 
   /// root path for the comic. If null, the task is not scheduled.
   String? path;
+
+  void relocateOutput(String source, String destination) {
+    final output = path;
+    if (output != null && p.isWithin(source, output)) {
+      path = p.join(destination, p.relative(output, from: source));
+    }
+  }
 
   /// convert current state to json, which can be used to restore the task
   Map<String, dynamic> toJson();
@@ -107,8 +118,10 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
     this.comic,
     this.chapters,
     this.comicTitle,
-    this.skipUnavailableImages = false,
-  });
+    bool? skipUnavailableImages,
+  }) : skipUnavailableImages =
+           skipUnavailableImages ??
+           appdata.settings['skipUnavailableDownloadImages'] == true;
 
   @override
   Future<void> get pendingCleanup =>
@@ -116,6 +129,38 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
 
   Future<void>? _cancellation;
   bool _cancelled = false;
+  bool _awaitingMissingPages = false;
+  bool _keepDownloadedFiles = false;
+  bool _repairExisting = false;
+  @override
+  bool get isAwaitingMissingPages => _awaitingMissingPages;
+
+  @override
+  void relocateOutput(String source, String destination) {
+    super.relocateOutput(source, destination);
+    if (_cover?.startsWith('file://') == true &&
+        p.isWithin(source, _cover!.substring(7))) {
+      _cover =
+          'file://${p.join(destination, p.relative(_cover!.substring(7), from: source))}';
+    }
+  }
+
+  factory ImagesDownloadTask.repair(LocalComic local) {
+    final source = ComicSource.fromIntKey(local.comicType.value);
+    if (source == null) throw 'Comic source is unavailable'.tl;
+    return ImagesDownloadTask(
+        source: source,
+        comicId: local.id,
+        chapters: local.chapters == null
+            ? null
+            : local.incompleteChapters.keys.toList(),
+        comicTitle: local.title,
+      )
+      ..path = local.baseDir
+      .._cover = 'file://${local.coverFile.path}'
+      .._keepDownloadedFiles = true
+      .._repairExisting = true;
+  }
 
   bool skipUnavailableImages;
   final _missingImages = <String, Set<int>>{};
@@ -155,6 +200,7 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
       final output = path;
       if (output == null) return;
       final local = LocalManager().find(id, comicType);
+      if (_keepDownloadedFiles || local?.isIncomplete == true) return;
       try {
         if (local == null) {
           await Directory(output).delete(recursive: true);
@@ -182,7 +228,9 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
   String? get cover => _cover ?? comic?.cover;
 
   @override
-  String get message => isWaitingToRetry
+  String get message => _awaitingMissingPages
+      ? '${'Waiting for missing pages'.tl}\n$_progressMessage'
+      : isWaitingToRetry
       ? 'Connection interrupted. Waiting to retry...'.tl
       : _message;
 
@@ -291,16 +339,29 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
 
   @override
   void resume() {
-    if (_isRunning || _cancelled) return;
+    if (_isRunning ||
+        _cancelled ||
+        LocalComicStorageGuard.instance.isExclusive) {
+      return;
+    }
     final previous = _resumeFuture;
+    final transition = LocalManager().downloadTransition;
     final generation = ++_generation;
     _isRunning = true;
+    _awaitingMissingPages = false;
     _isError = false;
     _message = 'Resuming...'.tl;
     notifyListeners();
     _resumeFuture = () async {
       await previous;
+      await transition;
       if (!_isCurrentRun(generation)) return;
+      if (LocalManager().downloadingTasks.contains(this) &&
+          LocalManager().currentDownloadTask != this) {
+        _isRunning = false;
+        notifyListeners();
+        return;
+      }
       _retry = DownloadRetry(
         isActive: () => _isCurrentRun(generation),
         onWaitingChanged: notifyListeners,
@@ -502,6 +563,27 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
       await LocalManager().saveCurrentDownloadingTasks();
     }
 
+    if (_repairExisting) {
+      final local = LocalManager().find(id, comicType);
+      if (local == null) throw 'Comic Not Found';
+      for (final entry in local.incompleteChapters.entries) {
+        if (_images![entry.key]?.length != entry.value.pageCount) {
+          throw 'The chapter page list changed. Download this chapter again instead of repairing it.'
+              .tl;
+        }
+        final pages = await LocalManager().getImages(id, comicType, entry.key);
+        _missingImages[entry.key] = {
+          ...entry.value.missing,
+          for (var index = 0; index < pages.length; index++)
+            if (pages[index].startsWith(missingDownloadPagePrefix)) index,
+        };
+      }
+      _chapter = _images!.length;
+      _index = 0;
+      _downloadedCount = _totalCount - missingImageCount;
+      _repairExisting = false;
+      await LocalManager().saveCurrentDownloadingTasks();
+    }
     tasks.clear();
     if (!await _retryMissingImages(generation)) return;
     while (_chapter < _images!.length) {
@@ -535,14 +617,17 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
     }
 
     if (missingImageCount > 0) {
-      final pages = [
-        for (final entry in _missingImages.entries)
-          '${comic!.chapters?.allChapters[entry.key] ?? title}: ${entry.value.map((index) => index + 1).join(', ')}',
-      ].join('\n');
-      _setError(
-        '${'Download incomplete. Start again to retry missing images; completed pages are retained.'.tl}\n$_progressMessage\n$pages',
-      );
-      await LocalManager().saveCurrentDownloadingTasks();
+      _isRunning = false;
+      _awaitingMissingPages = true;
+      _keepDownloadedFiles = true;
+      try {
+        await LocalManager().retainIncompleteTask(this);
+      } catch (error, stack) {
+        _awaitingMissingPages = false;
+        Log.error('Download checkpoint', error, stack);
+        _setError('Error: $error');
+      }
+      notifyListeners();
       return;
     }
     _isRunning = false;
@@ -586,6 +671,9 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
       "index": _index,
       "chapter": _chapter,
       "skipUnavailableImages": skipUnavailableImages,
+      'awaitingMissingPages': _awaitingMissingPages,
+      'keepDownloadedFiles': _keepDownloadedFiles,
+      'repairExisting': _repairExisting,
       "missingImages": {
         for (final entry in _missingImages.entries)
           entry.key: entry.value.toList()..sort(),
@@ -637,6 +725,11 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
         }
       }
     }
+    task._awaitingMissingPages =
+        json['awaitingMissingPages'] == true && task.missingImageCount > 0;
+    task._keepDownloadedFiles =
+        task._awaitingMissingPages || json['keepDownloadedFiles'] == true;
+    task._repairExisting = json['repairExisting'] == true;
     return task;
   }
 
@@ -659,7 +752,16 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
       chapters: comic!.chapters,
       cover: File(_cover!.split("file://").last).name,
       comicType: ComicType(source.key.hashCode),
-      downloadedChapters: chapters ?? comic?.chapters?.ids.toList() ?? [],
+      downloadedChapters: (chapters ?? comic?.chapters?.ids.toList() ?? [])
+          .where((chapter) => !_missingImages.containsKey(chapter))
+          .toList(),
+      incompleteChapters: {
+        for (final entry in _missingImages.entries)
+          entry.key: IncompleteChapter(
+            pageCount: _images![entry.key]!.length,
+            missing: entry.value,
+          ),
+      },
       createdAt: DateTime.now(),
     );
   }
@@ -900,13 +1002,15 @@ class ArchiveDownloadTask extends DownloadTask {
 
   @override
   void resume() {
-    if (_isRunning) return;
+    if (_isRunning || LocalComicStorageGuard.instance.isExclusive) return;
     final previous = _resumeFuture;
+    final transition = LocalManager().downloadTransition;
     final generation = ++_generation;
     _isRunning = true;
     notifyListeners();
     _resumeFuture = () async {
       await previous;
+      await transition;
       await _stopping;
       if (!_isCurrentRun(generation)) return;
       _retry = DownloadRetry(

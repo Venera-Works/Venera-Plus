@@ -1,3 +1,4 @@
+import 'package:venera_plus/foundation/translations.dart';
 import 'dart:convert';
 import 'package:archive/archive_io.dart' as archive_io;
 import 'package:enough_convert/enough_convert.dart';
@@ -305,6 +306,9 @@ abstract class CBZ {
   }
 
   static Future<File> export(LocalComic comic, String outFilePath) async {
+    if (comic.isIncomplete) {
+      throw StateError('Retry missing images before exporting this comic.'.tl);
+    }
     var cache = Directory(FilePath.join(App.cachePath, 'cbz_export'));
     if (cache.existsSync()) cache.deleteSync(recursive: true);
     cache.createSync();

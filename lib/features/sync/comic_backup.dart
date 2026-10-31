@@ -8,6 +8,10 @@ import 'package:venera_plus/foundation/file_system.dart';
 import 'package:venera_plus/network/webdav.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 import 'package:webdav_client/webdav_client.dart' hide File;
+import 'package:crypto/crypto.dart';
+import 'package:dio/dio.dart';
+import 'package:venera_plus/foundation/log_redaction.dart';
+import 'comic_archive_batch.dart';
 
 /// WebDAV archive backup configuration for local comic CBZ files.
 class BackupConfig {
@@ -186,7 +190,16 @@ class _WebDavComicBackupOps implements ComicBackupWebDavOps {
     String localPath,
     String remotePath,
   ) async {
-    await _client(config).writeFromFile(localPath, remotePath);
+    final client = _client(config);
+    client.c.interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (options, handler) {
+          if (options.method == 'PUT') options.headers['If-None-Match'] = '*';
+          handler.next(options);
+        },
+      ),
+    );
+    await client.writeFromFile(localPath, remotePath);
   }
 
   @override
@@ -260,7 +273,12 @@ class _RemoteComicBackupOps implements ComicBackupWebDavOps {
     BackupConfig config,
     String localPath,
     String remotePath,
-  ) => _run(config, (store) => store.upload(localPath, remotePath));
+  ) => _run(
+    config,
+    (store) => store is WebDavFileStore
+        ? store.uploadCreateOnly(localPath, remotePath)
+        : store.upload(localPath, remotePath),
+  );
 
   @override
   Future<void> downloadFile(
@@ -287,6 +305,17 @@ class BackupResult {
   final int skipped;
   final int failed;
   final List<String> errors;
+
+  factory BackupResult.fromBatch(ComicArchiveBatch batch) => BackupResult(
+    success: batch.count(ArchiveItemState.success),
+    skipped: batch.count(ArchiveItemState.skipped),
+    failed: batch.count(ArchiveItemState.failed),
+    errors: [
+      for (final item in batch.items)
+        if (item.error != null)
+          '${item.title}: ${batch.errorText(item.error!)}',
+    ],
+  );
 }
 
 /// Manager for WebDAV comic archive backup and restore operations.
@@ -356,95 +385,186 @@ class ComicBackupManager {
     }
   }
 
+  static String _safeError(Object error, BackupConfig config) {
+    var text = redactLogText(error.toString());
+    if (config.pass.length >= 4) {
+      text = text.replaceAll(config.pass, logRedactionMask);
+    }
+    return text;
+  }
+
+  static ComicArchiveBatch createBackupBatch(List<LocalComic> comics) {
+    final targets = List<LocalComic>.of(comics);
+    final config = BackupConfig.fromSettings();
+    final operations = _opsFor(config);
+    final epoch = _taskEpoch;
+    final cache = App.cachePath;
+    final exporter = exportComic;
+    final items = [
+      for (final comic in targets)
+        ArchiveItem(title: comic.title, fileName: backupFileName(comic)),
+    ];
+    final uploadedDigests = <int, Digest>{};
+    Set<String>? remoteNames;
+    Future<void>? setup;
+    Future<void> initialize() async {
+      if (!config.isValid) {
+        throw const ArchiveTransferFailure(
+          'Invalid WebDAV archive configuration',
+        );
+      }
+      await operations.ensureDirectory(config);
+      try {
+        remoteNames = {
+          for (final file in await operations.list(config)) file.name,
+        };
+      } catch (_) {
+        remoteNames = null;
+      }
+    }
+
+    return ComicArchiveBatch(
+      items: items,
+      errorText: (error) => _safeError(error, config),
+      action: (index, retry, cancelled) async {
+        bool stopped() => cancelled() || epoch != _taskEpoch;
+        if (stopped()) return ArchiveItemState.cancelled;
+        if (targets[index].isIncomplete) {
+          throw const ArchiveTransferFailure(
+            'Retry missing images before exporting this comic.',
+            retryAllowed: false,
+          );
+        }
+        if (retry) setup = null;
+        await (setup ??= initialize());
+        if (stopped()) return ArchiveItemState.cancelled;
+        final remote = config.remoteFilePath(items[index].fileName);
+        final exists = retry || remoteNames == null
+            ? await operations.exists(config, remote)
+            : remoteNames!.contains(items[index].fileName);
+        if (stopped()) return ArchiveItemState.cancelled;
+        if (exists && !retry) return ArchiveItemState.skipped;
+        final workspace = await Directory(cache).createTemp('comic-backup-');
+        try {
+          final file = File(FilePath.join(workspace.path, 'archive.cbz'));
+          if (exists) {
+            final expected = uploadedDigests[index];
+            if (expected == null) {
+              throw const ArchiveTransferFailure(
+                'Remote archive conflicts with this transfer. No file was overwritten.',
+              );
+            }
+            await operations.downloadFile(config, remote, file.path);
+            if (await sha256.bind(file.openRead()).first != expected) {
+              throw const ArchiveTransferFailure(
+                'Remote archive conflicts with this transfer. No file was overwritten.',
+              );
+            }
+            return ArchiveItemState.success;
+          }
+          if (exporter != null) {
+            await exporter(targets[index], file.path);
+          } else {
+            await CBZ.export(targets[index], file.path);
+          }
+          if (stopped()) return ArchiveItemState.cancelled;
+          uploadedDigests[index] = await sha256.bind(file.openRead()).first;
+          if (stopped()) return ArchiveItemState.cancelled;
+          await operations.uploadFile(config, file.path, remote);
+          if (epoch != _taskEpoch) return ArchiveItemState.cancelled;
+          remoteNames?.add(items[index].fileName);
+          return ArchiveItemState.success;
+        } finally {
+          await workspace.deleteIgnoreError(recursive: true);
+        }
+      },
+    );
+  }
+
+  static ComicArchiveBatch createRestoreBatch(List<BackupFile> files) {
+    final targets = List<BackupFile>.of(files);
+    final config = BackupConfig.fromSettings();
+    final operations = _opsFor(config);
+    final epoch = _taskEpoch;
+    final cache = App.cachePath;
+    final importer = importComic;
+    final register = registerImportedComic;
+    return ComicArchiveBatch(
+      items: [
+        for (final file in targets)
+          ArchiveItem(title: file.name, fileName: file.name),
+      ],
+      errorText: (error) => _safeError(error, config),
+      action: (index, retry, cancelled) =>
+          LocalComicStorageGuard.instance.runImport(() async {
+            bool stopped() => cancelled() || epoch != _taskEpoch;
+            if (!config.isValid) {
+              throw const ArchiveTransferFailure(
+                'Invalid WebDAV archive configuration',
+              );
+            }
+            final backup = targets[index];
+            if (backup.targetIdentity != null &&
+                backup.targetIdentity != config.targetIdentity) {
+              throw const ArchiveTransferFailure(
+                'Backup target changed. Refresh the archive list.',
+                retryAllowed: false,
+              );
+            }
+            if (stopped()) return ArchiveItemState.cancelled;
+            final workspace = await Directory(
+              cache,
+            ).createTemp('comic-restore-');
+            var registering = false;
+            try {
+              final file = File(
+                FilePath.join(workspace.path, sanitizeFileName(backup.name)),
+              );
+              await operations.downloadFile(
+                config,
+                config.remoteFilePath(backup.name),
+                file.path,
+              );
+              if (stopped()) return ArchiveItemState.cancelled;
+              final comic = importer != null
+                  ? await importer(file.path)
+                  : await CBZ.import(file);
+              // An import has produced local files; finish registration before cancellation.
+              registering = true;
+              if (register != null) {
+                await register(comic);
+              } else {
+                final manager = LocalManager();
+                await manager.add(comic, manager.findValidId(comic.comicType));
+              }
+              return ArchiveItemState.success;
+            } catch (error, stack) {
+              if (registering) {
+                Error.throwWithStackTrace(
+                  ArchiveTransferFailure(error.toString(), retryAllowed: false),
+                  stack,
+                );
+              }
+              rethrow;
+            } finally {
+              await workspace.deleteIgnoreError(recursive: true);
+            }
+          }),
+    );
+  }
+
   static Future<BackupResult> backup(
     List<LocalComic> comics, {
     void Function(int current, int total, String currentTitle)? onProgress,
     bool Function()? isCancelled,
   }) async {
-    final epoch = _taskEpoch;
-    final config = BackupConfig.fromSettings();
-    if (!config.isValid) {
-      return const BackupResult(
-        success: 0,
-        skipped: 0,
-        failed: 1,
-        errors: ['Invalid WebDAV archive configuration'],
-      );
-    }
-    var success = 0;
-    var skipped = 0;
-    var failed = 0;
-    final errors = <String>[];
+    final batch = createBackupBatch(comics);
     try {
-      await _opsFor(config).ensureDirectory(config);
-    } catch (e) {
-      return BackupResult(
-        success: 0,
-        skipped: 0,
-        failed: comics.length,
-        errors: [e.toString()],
-      );
+      await batch.run(onProgress: onProgress, isCancelled: isCancelled);
+      return BackupResult.fromBatch(batch);
+    } finally {
+      batch.dispose();
     }
-    // 批量获取远端已有文件，避免逐本 PROPFIND
-    final remoteFileNames = <String>{};
-    var listSuccess = false;
-    try {
-      final remoteFiles = await _opsFor(config).list(config);
-      for (final f in remoteFiles) {
-        remoteFileNames.add(f.name);
-      }
-      listSuccess = true;
-    } catch (_) {
-      // 列表失败忽略，后续退化为逐本检查
-    }
-    for (var i = 0; i < comics.length; i++) {
-      if (isCancelled?.call() == true || epoch != _taskEpoch) {
-        await cancelActiveTasks();
-        break;
-      }
-      final comic = comics[i];
-      onProgress?.call(i + 1, comics.length, comic.title);
-      final fileName = backupFileName(comic);
-      final remotePath = config.remoteFilePath(fileName);
-      final localPath = FilePath.join(
-        App.cachePath,
-        'comic_backup_${DateTime.now().microsecondsSinceEpoch}_$fileName',
-      );
-      final localFile = File(localPath);
-      try {
-        final exists = listSuccess
-            ? remoteFileNames.contains(fileName)
-            : await _opsFor(config).exists(config, remotePath);
-        if (exists) {
-          skipped++;
-          continue;
-        }
-        final exporter = exportComic;
-        if (exporter != null) {
-          await exporter(comic, localPath);
-        } else {
-          await CBZ.export(comic, localPath);
-        }
-        if (isCancelled?.call() == true || epoch != _taskEpoch) {
-          await cancelActiveTasks();
-          break;
-        }
-        await _opsFor(config).uploadFile(config, localPath, remotePath);
-        if (epoch != _taskEpoch) break;
-        success++;
-      } catch (e) {
-        failed++;
-        errors.add('${comic.title}: $e');
-      } finally {
-        await localFile.deleteIgnoreError();
-      }
-    }
-    return BackupResult(
-      success: success,
-      skipped: skipped,
-      failed: failed,
-      errors: errors,
-    );
   }
 
   static Future<BackupResult> restore(
@@ -452,79 +572,13 @@ class ComicBackupManager {
     void Function(int current, int total, String currentTitle)? onProgress,
     bool Function()? isCancelled,
   }) async {
-    final epoch = _taskEpoch;
-    final config = BackupConfig.fromSettings();
-    if (!config.isValid) {
-      return const BackupResult(
-        success: 0,
-        skipped: 0,
-        failed: 1,
-        errors: ['Invalid WebDAV archive configuration'],
-      );
+    final batch = createRestoreBatch(files);
+    try {
+      await batch.run(onProgress: onProgress, isCancelled: isCancelled);
+      return BackupResult.fromBatch(batch);
+    } finally {
+      batch.dispose();
     }
-    if (files.any(
-      (file) =>
-          file.targetIdentity != null &&
-          file.targetIdentity != config.targetIdentity,
-    )) {
-      return BackupResult(
-        success: 0,
-        skipped: 0,
-        failed: files.length,
-        errors: const ['Backup target changed. Refresh the archive list.'],
-      );
-    }
-    var success = 0;
-    var failed = 0;
-    final errors = <String>[];
-    return await LocalComicStorageGuard.instance.runImport(() async {
-      for (var i = 0; i < files.length; i++) {
-        if (isCancelled?.call() == true || epoch != _taskEpoch) {
-          await cancelActiveTasks();
-          break;
-        }
-        final backup = files[i];
-        onProgress?.call(i + 1, files.length, backup.name);
-        final remotePath = config.remoteFilePath(backup.name);
-        final localPath = FilePath.join(
-          App.cachePath,
-          'comic_restore_${DateTime.now().microsecondsSinceEpoch}_${backup.name}',
-        );
-        final localFile = File(localPath);
-        try {
-          await _opsFor(config).downloadFile(config, remotePath, localPath);
-          if (epoch != _taskEpoch) break;
-          late LocalComic comic;
-          final importer = importComic;
-          if (importer != null) {
-            comic = await importer(localPath);
-          } else {
-            comic = await CBZ.import(localFile);
-          }
-          final register = registerImportedComic;
-          if (register != null) {
-            await register(comic);
-          } else {
-            LocalManager().add(
-              comic,
-              LocalManager().findValidId(comic.comicType),
-            );
-          }
-          success++;
-        } catch (e) {
-          failed++;
-          errors.add('${backup.name}: $e');
-        } finally {
-          await localFile.deleteIgnoreError();
-        }
-      }
-      return BackupResult(
-        success: success,
-        skipped: 0,
-        failed: failed,
-        errors: errors,
-      );
-    });
   }
 
   static Future<Res<bool>> deleteBackup(BackupFile file) async {

@@ -736,6 +736,7 @@ class Settings with ChangeNotifier {
     'cacheSize': 2048, // in MB
     'historyRetentionDays': 0, // 0 means disabled
     'downloadThreads': 5,
+    'skipUnavailableDownloadImages': false,
     'enableLongPressToZoom': true,
     'longPressZoomPosition': "press", // press, center
     'checkUpdateOnStart': false,

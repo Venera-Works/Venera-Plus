@@ -43,7 +43,8 @@ Future<List<String>> loadReaderChapterImages({
       local != null &&
       (chapters == null
           ? local.chapters == null
-          : local.downloadedChapters.contains(chapterId));
+          : local.downloadedChapters.contains(chapterId) ||
+                local.incompleteChapters.containsKey(chapterId));
   var missingLocalFiles = false;
   if (type == ComicType.local || downloaded) {
     try {

@@ -9,6 +9,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/reader_diagnostics.dart';
+import 'package:venera_plus/foundation/missing_download_page.dart';
 
 abstract class BaseImageProvider<T extends BaseImageProvider<T>>
     extends ImageProvider<T> {
@@ -124,6 +126,7 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
         } on _EmptyImageDataException {
           rethrow;
         } catch (e) {
+          if (e is MissingDownloadPage) rethrow;
           // Local IO already has bounded retries. Network cache failures keep
           // the existing retry policy.
           if (e is FileSystemException && !retryFileSystemErrors) rethrow;
@@ -154,13 +157,18 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
       }
 
       final bytes = data!;
-
+      final diagnostics = ReaderDiagnostics.current;
+      final codecSpan = diagnostics?.beginImageSpan(
+        hashCode,
+        ReaderDiagnosticStage.codecInitWait,
+      );
       try {
         final buffer = await ImmutableBuffer.fromUint8List(bytes);
         final codec = await decode(
           buffer,
           getTargetSize: enableResize ? getTargetSize : null,
         );
+        codecSpan?.finish(bytes: bytes.length);
         unawaited(
           cacheImageAfterDecoding().catchError((
             Object error,
@@ -169,8 +177,11 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
             Log.warning('Image cache', '$error\n$stack');
           }),
         );
-        return codec;
+        return diagnostics == null
+            ? codec
+            : ReaderDiagnosticCodec(codec, diagnostics, hashCode);
       } catch (e) {
+        codecSpan?.finish(success: false);
         await evictDiskCache();
         if (bytes.length < 2 * 1024) {
           // data is too short, it's likely that the data is text, not image

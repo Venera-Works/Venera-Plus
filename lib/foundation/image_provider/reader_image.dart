@@ -8,6 +8,9 @@ import 'package:venera_plus/foundation/file_system.dart';
 import 'package:venera_plus/foundation/js_engine.dart';
 import 'package:venera_plus/network/images.dart';
 import 'base_image_provider.dart';
+import 'package:venera_plus/foundation/missing_download_page.dart';
+import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/foundation/reader_diagnostics.dart';
 import 'reader_image.dart' as image_provider;
 import 'package:venera_plus/foundation/appdata.dart';
 
@@ -233,103 +236,136 @@ class ReaderImageProvider
   bool get retryFileSystemErrors => !imageKey.startsWith('file://');
   @override
   Future<Uint8List> load(chunkEvents, checkStop) async {
+    if (imageKey.startsWith(missingDownloadPagePrefix)) {
+      throw MissingDownloadPage(
+        'This page has not been downloaded. Retry missing images from Downloads.'
+            .tl,
+      );
+    }
     _pendingCacheBytes[this] = null;
     Uint8List? imageBytes;
-    if (imageKey.startsWith('file://')) {
-      var file = File(imageKey.substring(7));
-      if (await file.exists()) {
-        imageBytes = await readFileBytesChecked(
-          file,
-          requireNonEmpty: true,
-          checkStop: checkStop,
-          cancelSignal: BaseImageProvider.cancelSignalOf(checkStop),
-        );
+    final diagnostics = ReaderDiagnostics.current;
+    final readSpan = diagnostics?.beginImageSpan(
+      hashCode,
+      imageKey.startsWith('file://')
+          ? ReaderDiagnosticStage.localRead
+          : ReaderDiagnosticStage.sourceRead,
+    );
+    try {
+      if (imageKey.startsWith('file://')) {
+        var file = File(imageKey.substring(7));
+        if (await file.exists()) {
+          imageBytes = await readFileBytesChecked(
+            file,
+            requireNonEmpty: true,
+            checkStop: checkStop,
+            cancelSignal: BaseImageProvider.cancelSignalOf(checkStop),
+          );
+        } else {
+          throw FileSystemException('File not found', file.path);
+        }
       } else {
-        throw FileSystemException('File not found', file.path);
-      }
-    } else {
-      await for (var event in ImageDownloader.loadComicImage(
-        imageKey,
-        sourceKey,
-        cid,
-        eid,
-        target: target,
-      )) {
-        checkStop();
-        chunkEvents.add(
-          ImageChunkEvent(
-            cumulativeBytesLoaded: event.currentBytes,
-            expectedTotalBytes: event.totalBytes,
-          ),
-        );
-        if (event.imageBytes != null) {
-          _diskCacheKeys[this] = event.diskCacheKey;
-          imageBytes = event.imageBytes;
-          if (event.diskCacheKey != _processedCacheKey) {
-            // Keep the source-processed bytes before applying the user's
-            // processing script, which still runs on subsequent cache hits.
-            _pendingCacheBytes[this] = imageBytes;
+        await for (var event in ImageDownloader.loadComicImage(
+          imageKey,
+          sourceKey,
+          cid,
+          eid,
+          target: target,
+        )) {
+          checkStop();
+          chunkEvents.add(
+            ImageChunkEvent(
+              cumulativeBytesLoaded: event.currentBytes,
+              expectedTotalBytes: event.totalBytes,
+            ),
+          );
+          if (event.imageBytes != null) {
+            _diskCacheKeys[this] = event.diskCacheKey;
+            imageBytes = event.imageBytes;
+            if (event.diskCacheKey != _processedCacheKey) {
+              // Keep the source-processed bytes before applying the user's
+              // processing script, which still runs on subsequent cache hits.
+              _pendingCacheBytes[this] = imageBytes;
+            }
+            break;
           }
-          break;
         }
       }
-    }
-    if (imageBytes == null) {
-      throw "Error: Empty response body.";
-    }
-    if (appdata.settings['enableCustomImageProcessing']) {
-      // User scripts may mutate their input; preserve shared/cache bytes.
-      imageBytes = Uint8List.fromList(imageBytes);
-      var script = appdata.settings['customImageProcessing'].toString();
-      if (!script.contains('function processImage')) {
-        return imageBytes;
+      if (imageBytes == null) {
+        throw "Error: Empty response body.";
       }
-      var func = JsEngine().runCode('''
+      readSpan?.finish(bytes: imageBytes.length);
+    } catch (_) {
+      readSpan?.finish(success: false);
+      rethrow;
+    }
+    final processingSpan =
+        appdata.settings['enableCustomImageProcessing'] == true
+        ? diagnostics?.beginImageSpan(
+            hashCode,
+            ReaderDiagnosticStage.processingWait,
+          )
+        : null;
+    try {
+      if (appdata.settings['enableCustomImageProcessing']) {
+        // User scripts may mutate their input; preserve shared/cache bytes.
+        imageBytes = Uint8List.fromList(imageBytes);
+        var script = appdata.settings['customImageProcessing'].toString();
+        if (!script.contains('function processImage')) {
+          return imageBytes;
+        }
+        var func = JsEngine().runCode('''
         (() => {
           $script
           return processImage;
         })()
       ''');
-      if (func is JSInvokable) {
-        var autoFreeFunc = JSAutoFreeFunction(func);
-        var result = autoFreeFunc([imageBytes, cid, eid, page, sourceKey]);
-        if (result is Uint8List) {
-          imageBytes = result;
-        } else if (result is Future) {
-          var futureResult = await result;
-          if (futureResult is Uint8List) {
-            imageBytes = futureResult;
-          }
-        } else if (result is Map) {
-          var image = result['image'];
-          if (image is Uint8List) {
-            imageBytes = image;
-          } else if (image is Future) {
-            JSAutoFreeFunction? onCancel;
-            if (result['onCancel'] is JSInvokable) {
-              onCancel = JSAutoFreeFunction(result['onCancel']);
+        if (func is JSInvokable) {
+          var autoFreeFunc = JSAutoFreeFunction(func);
+          var result = autoFreeFunc([imageBytes, cid, eid, page, sourceKey]);
+          if (result is Uint8List) {
+            imageBytes = result;
+          } else if (result is Future) {
+            var futureResult = await result;
+            if (futureResult is Uint8List) {
+              imageBytes = futureResult;
             }
-            if (onCancel == null) {
-              var futureImage = await image;
-              if (futureImage is Uint8List) {
-                imageBytes = futureImage;
+          } else if (result is Map) {
+            var image = result['image'];
+            if (image is Uint8List) {
+              imageBytes = image;
+            } else if (image is Future) {
+              JSAutoFreeFunction? onCancel;
+              if (result['onCancel'] is JSInvokable) {
+                onCancel = JSAutoFreeFunction(result['onCancel']);
               }
-            } else {
-              final cancelImageProcessing = onCancel;
-              final futureImage = await _waitForReaderImageProcessingResult(
-                image,
-                () => cancelImageProcessing([]),
-                checkStop,
-              );
-              if (futureImage is Uint8List) {
-                imageBytes = futureImage;
+              if (onCancel == null) {
+                var futureImage = await image;
+                if (futureImage is Uint8List) {
+                  imageBytes = futureImage;
+                }
+              } else {
+                final cancelImageProcessing = onCancel;
+                final futureImage = await _waitForReaderImageProcessingResult(
+                  image,
+                  () => cancelImageProcessing([]),
+                  checkStop,
+                );
+                if (futureImage is Uint8List) {
+                  imageBytes = futureImage;
+                }
               }
             }
           }
         }
       }
+      return imageBytes;
+    } catch (_) {
+      processingSpan?.finish(success: false);
+      rethrow;
+    } finally {
+      processingSpan?.finish(bytes: imageBytes?.length);
     }
-    return imageBytes;
   }
 
   @override

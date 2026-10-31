@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:ui' as ui;
+import 'reader_page.dart';
+import 'package:venera_plus/foundation/reader_diagnostics.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -177,6 +179,7 @@ bool shouldNotifyImageSize({
 }
 
 class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
+  ReaderDiagnosticSpan? _displaySpan;
   ImageStream? _imageStream;
   ImageInfo? _imageInfo;
   ImageChunkEvent? _loadingProgress;
@@ -404,6 +407,7 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _displaySpan?.finish(success: false);
     assert(_imageStream != null);
     WidgetsBinding.instance.removeObserver(this);
     _cancelDecodeRequest();
@@ -482,6 +486,17 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   }
 
   void _resolveImage({bool keepImage = false}) {
+    final availableDiagnostics = context
+        .findAncestorStateOfType<ReaderState>()
+        ?.diagnostics;
+    final diagnostics = availableDiagnostics?.isRecording == true
+        ? availableDiagnostics
+        : null;
+    _displaySpan?.finish(success: false);
+    _displaySpan = diagnostics?.beginImageSpan(
+      widget.image.hashCode,
+      ReaderDiagnosticStage.displayWait,
+    );
     var image = widget.image;
     final sourceSize = _sourceSize;
     if (image is ReaderImageProvider && sourceSize != null) {
@@ -491,14 +506,27 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
       context: _scrollAwareContext,
       imageProvider: image,
     );
-    final ImageStream newStream = provider.resolve(
-      createLocalImageConfiguration(
-        context,
-        size: widget.width != null && widget.height != null
-            ? Size(widget.width!, widget.height!)
-            : null,
-      ),
+    final configuration = createLocalImageConfiguration(
+      context,
+      size: widget.width != null && widget.height != null
+          ? Size(widget.width!, widget.height!)
+          : null,
     );
+    if (diagnostics?.isRecording == true) {
+      image.obtainCacheStatus(configuration: configuration).then((status) {
+        if (status != null) {
+          diagnostics!.recordCache(
+            image.hashCode,
+            pending: status.pending,
+            keepAlive: status.keepAlive,
+            live: status.live,
+          );
+        }
+      }, onError: (Object error, StackTrace stack) {});
+    }
+    final newStream = diagnostics == null
+        ? provider.resolve(configuration)
+        : diagnostics.run(() => provider.resolve(configuration));
     _updateSourceStream(newStream, image: image, keepImage: keepImage);
   }
 
@@ -521,6 +549,7 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
         },
         onError: (Object error, StackTrace? stackTrace) {
           if (!mounted || _imageStream != stream) return;
+          _displaySpan?.finish(success: false);
           setState(() {
             _lastException = error;
           });
@@ -531,6 +560,10 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   }
 
   void _handleImageFrame(ImageInfo imageInfo, bool synchronousCall) {
+    _displaySpan?.finish(
+      width: imageInfo.image.width,
+      height: imageInfo.image.height,
+    );
     final isFirstBaseFrame =
         _resolvedImage == widget.image && _layoutSize == null;
     if (isFirstBaseFrame) {

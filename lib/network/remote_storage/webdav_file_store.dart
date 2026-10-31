@@ -157,6 +157,21 @@ class WebDavFileStore implements RemoteFileStore {
       ),
     ),
   );
+  Future<void> uploadCreateOnly(String localPath, String remotePath) async {
+    final guard = InterceptorsWrapper(
+      onRequest: (options, handler) {
+        if (options.method == 'PUT') options.headers['If-None-Match'] = '*';
+        handler.next(options);
+      },
+    );
+    _webdav.c.interceptors.add(guard);
+    try {
+      await upload(localPath, remotePath);
+    } finally {
+      _webdav.c.interceptors.remove(guard);
+    }
+  }
+
   @override
   Future<void> download(
     String remotePath,

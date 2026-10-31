@@ -344,6 +344,10 @@ class _LocalStorageSettingsState extends State<_LocalStorageSettings> {
           min: 1,
           max: 16,
         ).toSliver(),
+        SwitchSetting(
+          title: 'Continue past unavailable images by default'.tl,
+          settingKey: 'skipUnavailableDownloadImages',
+        ).toSliver(),
       ],
     ),
   );

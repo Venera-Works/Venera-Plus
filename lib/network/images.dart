@@ -456,6 +456,7 @@ abstract class ImageDownloader {
             headers: headers,
             method: configs['method'] ?? 'GET',
             responseType: ResponseType.stream,
+            extra: {'allowImageHttp3Fallback': true},
           ),
         );
 
@@ -830,6 +831,7 @@ abstract class ImageDownloader {
                 headers: headers,
                 method: effectiveConfigs['method'] ?? 'GET',
                 responseType: ResponseType.stream,
+                extra: {'allowImageHttp3Fallback': true},
               ),
             );
 

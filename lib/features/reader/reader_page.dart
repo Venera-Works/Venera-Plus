@@ -1,4 +1,6 @@
 import 'screen_awake.dart';
+import 'diagnostics_dialog.dart';
+import 'package:venera_plus/foundation/reader_diagnostics.dart';
 import 'dart:async';
 import 'package:uuid/uuid.dart';
 import 'package:venera_plus/components/loading.dart';
@@ -153,6 +155,38 @@ class ReaderState extends State<Reader>
   AutoReadingController get autoReading => autoReadingController;
   final _screenAwake = ReaderScreenAwakeController(supported: App.isMobile);
   bool _foreground = true;
+  final diagnostics = ReaderDiagnostics();
+  int _diagnosticGeneration = 0;
+
+  void stopDiagnostics(ReaderDiagnosticStop reason) {
+    _diagnosticGeneration++;
+    diagnostics.stop(reason);
+  }
+
+  Future<void> showDiagnostics() async {
+    final generation = _diagnosticGeneration;
+    final start = await showDialog<bool>(
+      context: context,
+      builder: (_) => ReaderDiagnosticsDialog(diagnostics: diagnostics),
+    );
+    if (start != true ||
+        !mounted ||
+        !_foreground ||
+        generation != _diagnosticGeneration) {
+      return;
+    }
+    diagnostics.start(
+      mode: mode.isGallery
+          ? ReaderDiagnosticMode.paged
+          : mode.isWaterfall
+          ? ReaderDiagnosticMode.waterfall
+          : ReaderDiagnosticMode.continuous,
+      processingEnabled:
+          appdata.settings['enableCustomImageProcessing'] == true,
+      appVersion: App.version,
+      refreshRate: View.of(context).display.refreshRate,
+    );
+  }
 
   void _syncScreenAwake() {
     unawaited(
@@ -234,8 +268,13 @@ class ReaderState extends State<Reader>
   @override
   List<String>? images;
 
+  late ReaderMode _mode;
   @override
-  late ReaderMode mode;
+  ReaderMode get mode => _mode;
+  set mode(ReaderMode value) {
+    stopDiagnostics(ReaderDiagnosticStop.interrupted);
+    _mode = value;
+  }
 
   @override
   bool get isPortrait =>
@@ -619,6 +658,7 @@ class ReaderState extends State<Reader>
 
   @override
   void dispose() {
+    diagnostics.dispose();
     WidgetsBinding.instance.removeObserver(this);
     if (isFullscreen) {
       fullscreen();
@@ -670,6 +710,7 @@ class ReaderState extends State<Reader>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _foreground = state == AppLifecycleState.resumed;
+    if (!_foreground) stopDiagnostics(ReaderDiagnosticStop.background);
     autoReadingController.pause(
       'lifecycle',
       state != AppLifecycleState.resumed,

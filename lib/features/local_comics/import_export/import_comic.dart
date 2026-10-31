@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:path/path.dart' as path;
 import 'package:sqlite3/sqlite3.dart' as sql;
 import 'package:venera_plus/components/message.dart';
@@ -43,6 +44,8 @@ class ImportComic {
     } catch (e, s) {
       Log.error("Import Comic", e.toString(), s);
       App.rootContext.showMessage(message: e.toString());
+      controller.close();
+      return false;
     }
     controller.close();
     return registerComics(imported, false);
@@ -55,23 +58,50 @@ class ImportComic {
       if (dir != null) {
         var files = (await dir.list().toList()).whereType<File>().toList();
         files.removeWhere((file) => !isComicArchiveFileName(file.name));
-        Map<String?, List<LocalComic>> imported = {};
         var controller = showLoadingDialog(App.rootContext, allowCancel: false);
-        var comics = <LocalComic>[];
+        var importedCount = 0;
+        final failures = <String>[];
         for (var file in files) {
           try {
             var comic = await CBZ.import(file);
-            comics.add(comic);
+            await registerComic(comic, folder: selectedFolder);
+            importedCount++;
           } catch (e, s) {
-            Log.error("Import Comic", e.toString(), s);
+            Log.error("Import Comic", '${file.name}: $e', s);
+            failures.add('${file.name}: $e');
           }
         }
-        if (comics.isEmpty) {
+        if (files.isEmpty) {
           App.rootContext.showMessage(message: "No valid comics found".tl);
         }
-        imported[selectedFolder] = comics;
         controller.close();
-        return registerComics(imported, false);
+        if (failures.isNotEmpty) {
+          await showDialog<void>(
+            context: App.rootContext,
+            builder: (context) => AlertDialog(
+              title: Text(
+                'Success: @a, Failed: @b'.tlParams({
+                  'a': importedCount,
+                  'b': failures.length,
+                }),
+              ),
+              content: SingleChildScrollView(
+                child: SelectableText(failures.join('\n\n')),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: Text('Close'.tl),
+                ),
+              ],
+            ),
+          );
+        } else if (importedCount > 0) {
+          App.rootContext.showMessage(
+            message: 'Imported @a comics'.tlParams({'a': importedCount}),
+          );
+        }
+        return importedCount > 0;
       }
       return false;
     },
@@ -537,6 +567,7 @@ class ImportComic {
     Map<String?, List<LocalComic>> importedComics,
     bool copy,
   ) async {
+    if (importedComics.values.every((comics) => comics.isEmpty)) return false;
     try {
       if (copy) {
         importedComics = await _copyComicsToLocalDir(importedComics);
@@ -548,6 +579,7 @@ class ImportComic {
           importedCount++;
         }
       }
+      if (importedCount == 0) return false;
       App.rootContext.showMessage(
         message: "Imported @a comics".tlParams({'a': importedCount}),
       );

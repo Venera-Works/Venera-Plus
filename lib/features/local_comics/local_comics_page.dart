@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/menu.dart';
@@ -13,6 +14,7 @@ import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/features/local_comics/downloading_page.dart';
+import 'download.dart';
 import 'package:venera_plus/features/local_comics/local.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/features/comic_details/comic_details.dart';
@@ -46,16 +48,33 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
 
   Map<LocalComic, bool> selectedComics = {};
 
+  List<LocalComic> get visibleComics =>
+      comics.where((comic) => isBlocked(comic) == null).toList();
+
+  void reconcileSelection() {
+    final identities = {
+      for (final entry in selectedComics.entries)
+        if (entry.value) (entry.key.id, entry.key.comicType.value),
+    };
+    selectedComics = {
+      for (final comic in visibleComics)
+        if (identities.contains((comic.id, comic.comicType.value))) comic: true,
+    };
+    if (selectedComics.isEmpty) multiSelectMode = false;
+  }
+
+  void onSettingsChanged() {
+    if (mounted) setState(reconcileSelection);
+  }
+
   void update() {
-    if (keyword.isEmpty) {
-      setState(() {
-        comics = LocalManager().getComics(sortType);
-      });
-    } else {
-      setState(() {
-        comics = LocalManager().search(keyword);
-      });
-    }
+    if (!mounted) return;
+    setState(() {
+      comics = keyword.isEmpty
+          ? LocalManager().getComics(sortType)
+          : LocalManager().search(keyword);
+      reconcileSelection();
+    });
   }
 
   @override
@@ -64,12 +83,14 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
     sortType = LocalSortType.fromString(sort);
     comics = LocalManager().getComics(sortType);
     LocalManager().addListener(update);
+    appdata.settings.addListener(onSettingsChanged);
     super.initState();
   }
 
   @override
   void dispose() {
     LocalManager().removeListener(update);
+    appdata.settings.removeListener(onSettingsChanged);
     super.dispose();
   }
 
@@ -124,14 +145,20 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
   }
 
   Widget buildMultiSelectMenu() {
+    final selection = selectedComics.keys.toList();
+    bool isCurrent() =>
+        mounted &&
+        listEquals(selectedComics.keys.toList(), selection) &&
+        selection.every((comic) => isBlocked(comic) == null);
     return MenuButton(
       entries: [
         MenuEntry(
           icon: Icons.delete_outline,
           text: "Delete".tl,
           onClick: () {
-            deleteComics(selectedComics.keys.toList()).then((value) {
-              if (value) {
+            if (!isCurrent()) return;
+            deleteComics(selection, isCurrent: isCurrent).then((value) {
+              if (value && mounted) {
                 setState(() {
                   multiSelectMode = false;
                   selectedComics.clear();
@@ -144,7 +171,7 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
           icon: Icons.favorite_border,
           text: "Add to favorites".tl,
           onClick: () {
-            addFavorite(selectedComics.keys.toList());
+            if (isCurrent()) addFavorite(selection);
           },
         ),
         if (selectedComics.length == 1)
@@ -152,7 +179,7 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
             icon: Icons.folder_open,
             text: "Open Folder".tl,
             onClick: () {
-              openComicFolder(selectedComics.keys.first);
+              if (isCurrent()) openComicFolder(selection.single);
             },
           ),
         if (selectedComics.length == 1)
@@ -160,10 +187,11 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
             icon: Icons.chrome_reader_mode_outlined,
             text: "View Detail".tl,
             onClick: () {
+              if (!isCurrent()) return;
               context.to(
                 () => ComicPage(
-                  id: selectedComics.keys.first.id,
-                  sourceKey: selectedComics.keys.first.sourceKey,
+                  id: selection.single.id,
+                  sourceKey: selection.single.sourceKey,
                 ),
               );
             },
@@ -173,8 +201,9 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
             icon: Icons.cloud_upload_outlined,
             text: "Archive to Remote Storage".tl,
             onClick: () {
-              archiveComics(selectedComics.keys.toList()).then((value) {
-                if (value) {
+              if (!isCurrent()) return;
+              archiveComics(selection).then((value) {
+                if (value && mounted) {
                   setState(() {
                     multiSelectMode = false;
                     selectedComics.clear();
@@ -184,14 +213,14 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
             },
           ),
         if (selectedComics.isNotEmpty)
-          ...exportActions(selectedComics.keys.toList()),
+          ...exportActions(selection, isCurrent: isCurrent),
       ],
     );
   }
 
   void selectAll() {
     setState(() {
-      selectedComics = comics.asMap().map((k, v) => MapEntry(v, true));
+      selectedComics = {for (final comic in visibleComics) comic: true};
     });
   }
 
@@ -203,10 +232,10 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
 
   void invertSelection() {
     setState(() {
-      comics.asMap().forEach((k, v) {
-        selectedComics[v] = !selectedComics.putIfAbsent(v, () => false);
-      });
-      selectedComics.removeWhere((k, v) => !v);
+      selectedComics = {
+        for (final comic in visibleComics)
+          if (selectedComics[comic] != true) comic: true,
+      };
     });
   }
 
@@ -446,6 +475,12 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
             else
               SliverGridComics(
                 showHiddenCount: true,
+                badgeBuilder: (comic) =>
+                    comic is LocalComic && comic.isIncomplete
+                    ? 'Incomplete: @a missing pages'.tlParams({
+                        'a': comic.missingImageCount,
+                      })
+                    : null,
                 comics: comics,
                 selections: selectedComics,
                 onLongPressed: (c, heroID) {
@@ -478,6 +513,30 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
                 menuBuilder: (comic) {
                   final c = comic as LocalComic;
                   return [
+                    if (c.isIncomplete)
+                      MenuEntry(
+                        icon: Icons.download_outlined,
+                        text: 'Retry missing images'.tl,
+                        onClick: () {
+                          try {
+                            final manager = LocalManager();
+                            final task = manager.downloadingTasks
+                                .where(
+                                  (task) =>
+                                      task.id == c.id &&
+                                      task.comicType == c.comicType,
+                                )
+                                .firstOrNull;
+                            if (task != null) {
+                              manager.resumeTask(task);
+                            } else {
+                              manager.addTask(ImagesDownloadTask.repair(c));
+                            }
+                          } catch (error) {
+                            context.showMessage(message: error.toString());
+                          }
+                        },
+                      ),
                     MenuEntry(
                       icon: Icons.menu_book_outlined,
                       text: "Read".tl,
@@ -564,7 +623,10 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
     );
   }
 
-  Future<bool> deleteComics(List<LocalComic> comics) async {
+  Future<bool> deleteComics(
+    List<LocalComic> comics, {
+    bool Function()? isCurrent,
+  }) async {
     bool isDeleted = false;
     await showDialog(
       context: App.rootContext,
@@ -608,6 +670,10 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
                   ),
                 FilledButton(
                   onPressed: () {
+                    if (isCurrent?.call() == false) {
+                      context.pop();
+                      return;
+                    }
                     context.pop();
                     LocalManager().batchDeleteComics(
                       comics,
@@ -629,76 +695,48 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
 
   Future<bool> archiveComics(List<LocalComic> comics) async {
     if (comics.isEmpty) return false;
-    final config = BackupConfig.fromSettings();
-    if (!config.isValid) {
-      context.showMessage(message: "Invalid WebDAV archive configuration".tl);
+    if (!BackupConfig.fromSettings().isValid) {
+      context.showMessage(message: 'Invalid WebDAV archive configuration'.tl);
       return false;
     }
-
-    var canceled = false;
-    var loadingController = showLoadingDialog(
+    final result = await showComicArchiveTransferDialog(
       context,
-      allowCancel: true,
-      message: "${"Archive to Remote Storage".tl} 0/${comics.length}",
-      withProgress: true,
-      onCancel: () {
-        canceled = true;
-        unawaited(ComicBackupManager.cancelActiveTasks());
-      },
+      title: 'Archive to Remote Storage'.tl,
+      batch: ComicBackupManager.createBackupBatch(comics),
     );
-    try {
-      final result = await ComicBackupManager.backup(
-        comics,
-        onProgress: (current, total, title) {
-          loadingController.setMessage(
-            "${"Archive to Remote Storage".tl} $current/$total\n$title",
-          );
-          loadingController.setProgress(current / total);
-        },
-        isCancelled: () => canceled,
-      );
-      if (canceled) return false;
-      if (result.errors.isNotEmpty) {
-        Log.error("Archive Comics", result.errors.join('\n'));
-      }
-      context.showMessage(
-        message: 'Success: @a, Skipped: @b, Failed: @c'.tlParams({
-          'a': result.success,
-          'b': result.skipped,
-          'c': result.failed,
-        }),
-      );
-      return result.success > 0 || result.skipped > 0;
-    } catch (e, s) {
-      Log.error("Archive Comics", e, s);
-      context.showMessage(message: e.toString());
-      return false;
-    } finally {
-      loadingController.close();
-    }
+    return result.success > 0;
   }
 
-  List<MenuEntry> exportActions(List<LocalComic> comics) {
+  List<MenuEntry> exportActions(
+    List<LocalComic> comics, {
+    bool Function()? isCurrent,
+  }) {
     return [
       MenuEntry(
         icon: Icons.outbox_outlined,
         text: "Export as cbz".tl,
         onClick: () {
-          exportComics(comics, CBZ.export, ".cbz");
+          if (isCurrent?.call() != false) {
+            exportComics(comics, CBZ.export, ".cbz");
+          }
         },
       ),
       MenuEntry(
         icon: Icons.picture_as_pdf_outlined,
         text: "Export as pdf".tl,
         onClick: () async {
-          exportComics(comics, createPdfFromComicIsolate, ".pdf");
+          if (isCurrent?.call() != false) {
+            exportComics(comics, createPdfFromComicIsolate, ".pdf");
+          }
         },
       ),
       MenuEntry(
         icon: Icons.import_contacts_outlined,
         text: "Export as epub".tl,
         onClick: () async {
-          exportComics(comics, createEpubWithLocalComic, ".epub");
+          if (isCurrent?.call() != false) {
+            exportComics(comics, createEpubWithLocalComic, ".epub");
+          }
         },
       ),
     ];

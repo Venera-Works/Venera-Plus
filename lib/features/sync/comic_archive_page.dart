@@ -5,6 +5,7 @@ import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/loading.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/features/sync/comic_backup.dart';
+import 'comic_archive_transfer_dialog.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/file_system.dart';
 import 'package:venera_plus/foundation/translations.dart';
@@ -144,16 +145,12 @@ class _ComicArchivePageState extends State<ComicArchivePage> {
   Future<void> restoreSelected() async {
     final targets = selected.toList();
     if (targets.isEmpty) return;
-    final result = await showArchiveProgressDialog(
+    final result = await showComicArchiveTransferDialog(
+      context,
       title: "Download and Import".tl,
-      total: targets.length,
-      task: (onProgress, isCancelled) => ComicBackupManager.restore(
-        targets,
-        onProgress: onProgress,
-        isCancelled: isCancelled,
-      ),
+      batch: ComicBackupManager.createRestoreBatch(targets),
     );
-    if (!mounted || result == null) return;
+    if (!mounted) return;
     setState(() {
       selected.clear();
     });

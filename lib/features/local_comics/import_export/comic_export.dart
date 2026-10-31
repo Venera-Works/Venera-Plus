@@ -1,3 +1,4 @@
+import 'package:venera_plus/foundation/translations.dart';
 import 'dart:convert';
 import 'dart:isolate';
 
@@ -118,6 +119,9 @@ class ComicExportInfo {
   }
 
   factory ComicExportInfo.fromLocalComic(LocalComic comic) {
+    if (comic.isIncomplete) {
+      throw StateError('Retry missing images before exporting this comic.'.tl);
+    }
     final sourceDirectory = '${comic.id}_${comic.comicType.value}';
     final chapters = comic.chapters?.toJson() ?? <String, dynamic>{};
     return ComicExportInfo(

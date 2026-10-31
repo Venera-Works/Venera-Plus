@@ -1,3 +1,4 @@
+import 'package:venera_plus/foundation/translations.dart';
 import 'dart:isolate';
 
 import 'package:uuid/uuid.dart';
@@ -202,6 +203,9 @@ Future<File> createEpubWithLocalComic(
   LocalComic comic,
   String outFilePath,
 ) async {
+  if (comic.isIncomplete) {
+    throw StateError('Retry missing images before exporting this comic.'.tl);
+  }
   var chapters = <String, List<File>>{};
   if (comic.chapters == null) {
     chapters[comic.title] = (await LocalManager().getImages(
