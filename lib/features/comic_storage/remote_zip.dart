@@ -28,8 +28,14 @@ class RemoteZipEntry {
     if (name is! String) {
       throw const FormatException('ZIP entry name must be a string');
     }
+    final normalized = _normalizeName(name);
+    if (normalized == null) {
+      throw const FormatException(
+        'ZIP entry path is empty or escapes its root',
+      );
+    }
     final entry = RemoteZipEntry._(
-      name: _normalizeName(name),
+      name: normalized,
       flags: _jsonInteger(json, 'flags', max: 0xffff),
       compressionMethod: _jsonInteger(json, 'compressionMethod', max: 0xffff),
       crc32: _jsonInteger(json, 'crc32', max: 0xffffffff),
@@ -101,12 +107,14 @@ class RemoteZipIndex {
     if (size < 22 || centralOffset > size - 22 || items is! List) {
       throw const FormatException('Invalid ZIP index');
     }
-    final entries = items.map((item) {
+    final entries = <RemoteZipEntry>[];
+    for (final item in items) {
       if (item is! Map) {
         throw const FormatException('ZIP index entries must be objects');
       }
-      return RemoteZipEntry.fromJson(Map<String, dynamic>.from(item));
-    }).toList();
+      final map = Map<String, dynamic>.from(item);
+      entries.add(RemoteZipEntry.fromJson(map));
+    }
     return RemoteZipIndex._(size, centralOffset, entries);
   }
 
@@ -202,7 +210,7 @@ class RemoteZipIndex {
             directoryOffset - tailOffset + directorySize,
           )
         : await _readExact(read, directoryOffset, directorySize, fileSize);
-    final entries = _readDirectory(directory, count);
+    final entries = _readDirectory(directory, count, directoryOffset);
     return RemoteZipIndex._(fileSize, directoryOffset, entries);
   }
 
@@ -315,7 +323,11 @@ Future<Uint8List> _decodeEntry(
   return result;
 });
 
-List<RemoteZipEntry> _readDirectory(Uint8List bytes, int count) {
+List<RemoteZipEntry> _readDirectory(
+  Uint8List bytes,
+  int count,
+  int centralDirectoryOffset,
+) {
   final data = ByteData.sublistView(bytes);
   final entries = <RemoteZipEntry>[];
   var offset = 0;
@@ -384,15 +396,24 @@ List<RemoteZipEntry> _readDirectory(Uint8List bytes, int count) {
     if (disk != 0) {
       throw UnsupportedError('Split ZIP archives are not supported');
     }
-    var name = _normalizeName(
-      flags & 0x800 != 0
-          ? utf8.decode(rawName)
-          : unicodeName ?? _decodeLegacyName(rawName),
-    );
+    final rawNameString = flags & 0x800 != 0
+        ? utf8.decode(rawName)
+        : unicodeName ?? _decodeLegacyName(rawName);
     final attributes = _u32(data, offset + 38);
-    if ((attributes & 0x10 != 0 || attributes >> 16 & 0xf000 == 0x4000) &&
-        !name.endsWith('/')) {
-      name = '$name/';
+    final isDirectory =
+        attributes & 0x10 != 0 || attributes >> 16 & 0xf000 == 0x4000;
+    final name = _normalizeName(rawNameString, isDirectory: isDirectory);
+    if (name == null) {
+      _validateRootDirectoryEntry(
+        size: size,
+        compressedSize: compressedSize,
+        flags: flags,
+        compressionMethod: _u16(data, offset + 10),
+        localOffset: localOffset,
+        limit: centralDirectoryOffset,
+      );
+      offset += length;
+      continue;
     }
     final entry = RemoteZipEntry._(
       name: name,
@@ -443,7 +464,7 @@ String _decodeLegacyName(Uint8List bytes) {
   }
 }
 
-String _normalizeName(String name) {
+String? _normalizeName(String name, {bool isDirectory = false}) {
   final path = name.replaceAll('\\', '/');
   if (path.startsWith('/') || path.contains('\u0000') || path.contains(':')) {
     throw const FormatException('ZIP entry path must be a safe relative path');
@@ -452,10 +473,40 @@ String _normalizeName(String name) {
       .split('/')
       .where((part) => part.isNotEmpty && part != '.')
       .toList();
-  if (parts.isEmpty || parts.contains('..')) {
+  if (parts.contains('..')) {
     throw const FormatException('ZIP entry path is empty or escapes its root');
   }
-  return '${parts.join('/')}${path.endsWith('/') ? '/' : ''}';
+  if (parts.isEmpty) {
+    if (path.isNotEmpty && (path.endsWith('/') || isDirectory)) {
+      return null;
+    }
+    throw const FormatException('ZIP entry path is empty or escapes its root');
+  }
+  return '${parts.join('/')}${path.endsWith('/') || isDirectory ? '/' : ''}';
+}
+
+void _validateRootDirectoryEntry({
+  required int size,
+  required int compressedSize,
+  required int flags,
+  required int compressionMethod,
+  required int localOffset,
+  required int limit,
+}) {
+  // An empty Deflate stream still contains compressed bytes.
+  if (size != 0 || compressionMethod == 0 && compressedSize != 0) {
+    throw const FormatException('Stored ZIP entry has inconsistent sizes');
+  }
+  if (flags & 0x2041 != 0) {
+    throw UnsupportedError('Encrypted ZIP entries are not supported');
+  }
+  if (compressionMethod != 0 && compressionMethod != 8) {
+    throw UnsupportedError(
+      'ZIP compression method $compressionMethod is not supported',
+    );
+  }
+  _checkRange(localOffset, 30, limit);
+  _checkRange(localOffset + 30, compressedSize, limit);
 }
 
 int _jsonInteger(

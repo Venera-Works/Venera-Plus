@@ -577,6 +577,101 @@ void main() {
       throwsArgumentError,
     );
   });
+
+  test(
+    'safely ignores valid root directory entries in all reasonable forms and indexes images',
+    () async {
+      for (final rootSpec in [
+        _Spec('./', []),
+        _Spec('./', [], method: 8),
+        _Spec('.\\', []),
+        _Spec('././', []),
+        _Spec('.', [], attributes: 0x10),
+        _Spec('.', [], attributes: 0x4000 << 16),
+        _Spec('./', [], attributes: 0x10),
+        _Spec('./', [], attributes: 0x4000 << 16),
+      ]) {
+        final fixture = _zip([
+          rootSpec,
+          _Spec('1.jpg', [10, 20, 30]),
+        ]);
+        final reader = _Reader(fixture.bytes);
+        final index = await RemoteZipIndex.read(
+          fileSize: fixture.bytes.length,
+          read: reader.read,
+        );
+        expect(index.entries.map((entry) => entry.name), ['1.jpg']);
+        final page = await index.readEntry(index.entries.single, reader.read);
+        expect(page, [10, 20, 30]);
+
+        final restored = RemoteZipIndex.fromJson(index.toJson());
+        expect(restored.entries.map((entry) => entry.name), ['1.jpg']);
+        expect(await restored.readEntry(restored.entries.single, reader.read), [
+          10,
+          20,
+          30,
+        ]);
+      }
+    },
+  );
+
+  test(
+    'rejects masquerading, encrypted, or unsafe root directory entries',
+    () async {
+      for (final spec in [
+        _Spec('.', []),
+        _Spec('./', [1]),
+        _Spec('.', [], attributes: 0x10, declaredSize: 1),
+        _Spec('./', [], flags: 1),
+        _Spec('./', [], method: 9),
+      ]) {
+        final fixture = _zip([
+          spec,
+          _Spec('1.jpg', [1]),
+        ]);
+        final reader = _Reader(fixture.bytes);
+        await expectLater(
+          RemoteZipIndex.read(
+            fileSize: fixture.bytes.length,
+            read: reader.read,
+          ),
+          throwsA(anyOf(isA<FormatException>(), isA<UnsupportedError>())),
+        );
+      }
+
+      expect(
+        () => RemoteZipEntry.fromJson({
+          'name': './',
+          'flags': 0,
+          'compressionMethod': 0,
+          'crc32': 0,
+          'compressedSize': 0,
+          'uncompressedSize': 0,
+          'localHeaderOffset': 0,
+        }),
+        throwsFormatException,
+      );
+
+      expect(
+        () => RemoteZipIndex.fromJson({
+          'fileSize': 1000,
+          'centralDirectoryOffset': 500,
+          'entries': [
+            {
+              'name': './',
+              'flags': 0,
+              'compressionMethod': 0,
+              'crc32': 0,
+              'compressedSize': 1,
+              'uncompressedSize': 1,
+              'localHeaderOffset': 0,
+            },
+          ],
+        }),
+        throwsFormatException,
+      );
+    },
+  );
 }
 
 class _Reader {

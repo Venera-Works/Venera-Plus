@@ -274,6 +274,155 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets(
+    'interleaved display groups correctly highlight visited chapters with global indices and preserve clicks',
+    (tester) async {
+      final selections = <(int, int?)>[];
+      const chapters = ComicChapters({
+        'a': '正篇/第一话',
+        'b': '番外/特别篇',
+        'c': '正篇/第二话',
+      });
+      const chapterGroups = {'a': '正篇', 'b': '番外', 'c': '正篇'};
+      final details = ComicDetails.fromJson({
+        ..._detailsJson(),
+        'chapters': chapters.toJson(),
+      });
+      final history = History.fromModel(
+        model: details,
+        ep: 3,
+        page: 1,
+        readChapters: {'3'},
+      );
+
+      await _pumpChapters(
+        tester,
+        chapters: chapters,
+        chapterGroups: chapterGroups,
+        history: history,
+        readChapter: (ep, group) => selections.add((ep, group)),
+      );
+
+      final tabs = tester.widget<AppTabBar>(find.byType(AppTabBar));
+      expect(tabs.controller!.length, 2);
+      expect(tabs.controller!.index, 0);
+
+      final outline = Theme.of(
+        tester.element(find.text('第二话')),
+      ).colorScheme.outline;
+      expect(tester.widget<Text>(find.text('第一话')).style?.color, isNull);
+      expect(tester.widget<Text>(find.text('第二话')).style?.color, outline);
+
+      await tester.tap(find.text('第二话'));
+      expect(selections, [(3, null)]);
+
+      await tester.tap(find.text('第一话'));
+      expect(selections, [(3, null), (1, null)]);
+
+      await tester.tap(find.text('番外'));
+      await tester.pumpAndSettle();
+      expect(tester.widget<Text>(find.text('特别篇')).style?.color, isNull);
+
+      await tester.tap(find.text('特别篇'));
+      expect(selections, [(3, null), (1, null), (2, null)]);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'interleaved display groups do not mislabel unread chapters when another group is read',
+    (tester) async {
+      final selections = <(int, int?)>[];
+      const chapters = ComicChapters({
+        'a': '正篇/第一话',
+        'b': '番外/特别篇',
+        'c': '正篇/第二话',
+      });
+      const chapterGroups = {'a': '正篇', 'b': '番外', 'c': '正篇'};
+      final details = ComicDetails.fromJson({
+        ..._detailsJson(),
+        'chapters': chapters.toJson(),
+      });
+      final history = History.fromModel(
+        model: details,
+        ep: 2,
+        page: 1,
+        readChapters: {'2'},
+      );
+
+      await _pumpChapters(
+        tester,
+        chapters: chapters,
+        chapterGroups: chapterGroups,
+        history: history,
+        readChapter: (ep, group) => selections.add((ep, group)),
+      );
+
+      final tabs = tester.widget<AppTabBar>(find.byType(AppTabBar));
+      expect(tabs.controller!.index, 1);
+      final outline = Theme.of(
+        tester.element(find.text('特别篇')),
+      ).colorScheme.outline;
+      expect(tester.widget<Text>(find.text('特别篇')).style?.color, outline);
+
+      await tester.tap(find.text('正篇'));
+      await tester.pumpAndSettle();
+      expect(tester.widget<Text>(find.text('第一话')).style?.color, isNull);
+      expect(tester.widget<Text>(find.text('第二话')).style?.color, isNull);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'interleaved display groups respect reverse order for visited state and callbacks',
+    (tester) async {
+      final selections = <(int, int?)>[];
+      const chapters = ComicChapters({
+        'a': '正篇/第一话',
+        'b': '番外/特别篇',
+        'c': '正篇/第二话',
+      });
+      const chapterGroups = {'a': '正篇', 'b': '番外', 'c': '正篇'};
+      final details = ComicDetails.fromJson({
+        ..._detailsJson(),
+        'chapters': chapters.toJson(),
+      });
+      final history = History.fromModel(
+        model: details,
+        ep: 3,
+        page: 1,
+        readChapters: {'3'},
+      );
+
+      appdata.settings['reverseChapterOrder'] = true;
+
+      await _pumpChapters(
+        tester,
+        chapters: chapters,
+        chapterGroups: chapterGroups,
+        history: history,
+        readChapter: (ep, group) => selections.add((ep, group)),
+      );
+
+      final outline = Theme.of(
+        tester.element(find.text('第二话')),
+      ).colorScheme.outline;
+      expect(tester.widget<Text>(find.text('第二话')).style?.color, outline);
+      expect(tester.widget<Text>(find.text('第一话')).style?.color, isNull);
+
+      expect(
+        tester.getRect(find.text('第二话')).left,
+        lessThan(tester.getRect(find.text('第一话')).left),
+      );
+
+      await tester.tap(find.text('第二话'));
+      expect(selections, [(3, null)]);
+      await tester.tap(find.text('第一话'));
+      expect(selections, [(3, null), (1, null)]);
+      expect(tester.takeException(), isNull);
+    },
+  );
 }
 
 String _pages(int count) => '${"Pages".tl}: $count';

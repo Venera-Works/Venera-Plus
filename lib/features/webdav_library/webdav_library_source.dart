@@ -1844,13 +1844,19 @@ class WebDavLibrarySource {
       final previousSnapshot = existing?.snapshot == null
           ? null
           : _WebDavComicSnapshot.fromJson(existing!.snapshot!);
-      final aggregate = work ?? previousSnapshot?.work;
+      var aggregate = work ?? previousSnapshot?.work;
+      var workEntries = rootEntries;
+      if (aggregate == null && id.startsWith(remoteComicWorkPrefix)) {
+        final restored = await _restoreWork(config, id);
+        aggregate = restored.work;
+        workEntries = restored.entries;
+      }
       final snapshot = aggregate != null
           ? await _buildWorkSnapshot(
               config,
               aggregate,
               previousSnapshot: previousSnapshot,
-              rootEntries: rootEntries,
+              rootEntries: workEntries,
               syncRun: syncRun,
             )
           : _isArchiveId(id)
@@ -1927,6 +1933,102 @@ class WebDavLibrarySource {
               ),
         dio: archiveDioFactory?.call(),
       ),
+    );
+  }
+
+  static List<WebDavLibraryEntry> _archiveFiles(
+    List<WebDavLibraryEntry> entries,
+  ) =>
+      entries
+          .where(
+            (entry) =>
+                !entry.isDirectory &&
+                !isIgnoredComicStorageEntry(entry.name) &&
+                isRemoteComicArchive(entry.name),
+          )
+          .toList()
+        ..sort((a, b) => compareComicFileNames(a.name, b.name));
+
+  static RemoteComicVolume _archiveVolume(
+    WebDavLibraryConfig config,
+    WebDavLibraryEntry file,
+    String parent, {
+    String edition = '',
+  }) {
+    final name = RemoteComicVolumeName.parse(file.name);
+    return RemoteComicVolume(
+      archive: RemoteArchiveComic(
+        path: config.childFilePath(
+          config.childDirectoryPath(parent),
+          file.name,
+        ),
+        size: file.size ?? 0,
+        eTag: file.eTag,
+        modifiedAt: file.modifiedAt,
+      ),
+      title: name.title,
+      edition: edition,
+    );
+  }
+
+  static Future<({RemoteComicWork work, List<WebDavLibraryEntry> entries})>
+  _restoreWork(WebDavLibraryConfig config, String id) async {
+    final location = RemoteComicWork.location(id);
+    final directory = config.childDirectoryPath(location.directory);
+    final entries = await _activeOps.readDir(config, directory);
+    final family = location.family;
+    final familyKey = family == null ? null : remoteComicSeriesKey(family);
+    final children = family == null
+        ? _sortedDirectories(entries)
+        : const <WebDavLibraryEntry>[];
+    if (family == null && !_hasMetadataFile(entries)) {
+      children.removeWhere(
+        (child) => !isRemoteComicEditionDirectory(child.name),
+      );
+    }
+    final volumes = <RemoteComicVolume>[];
+    for (final file in _archiveFiles(entries)) {
+      if (familyKey != null) {
+        final name = RemoteComicVolumeName.parse(file.name);
+        final series = name.series.isEmpty
+            ? _directoryName(directory)
+            : name.series;
+        if (!name.numbered || remoteComicSeriesKey(series) != familyKey) {
+          continue;
+        }
+      }
+      volumes.add(
+        _archiveVolume(
+          config,
+          file,
+          directory,
+          edition: children.isEmpty ? '' : _directoryName(directory),
+        ),
+      );
+    }
+    for (final child in children) {
+      final childDirectory = config.childDirectoryPathFrom(
+        directory,
+        child.name,
+      );
+      final childEntries = await _activeOps.readDir(config, childDirectory);
+      for (final file in _archiveFiles(childEntries)) {
+        volumes.add(
+          _archiveVolume(config, file, childDirectory, edition: child.name),
+        );
+      }
+    }
+    if (volumes.isEmpty) {
+      throw const FormatException('Comic volumes are unavailable');
+    }
+    return (
+      work: RemoteComicWork(
+        directory: directory,
+        title: family ?? _directoryName(directory),
+        family: family,
+        volumes: separateRemoteComicEditions(volumes),
+      ),
+      entries: entries,
     );
   }
 
@@ -2588,7 +2690,9 @@ class WebDavLibrarySource {
         final entries = List<WebDavLibraryEntry>.from(
           await _activeOps.readDir(config, target.directory),
         );
-        final pageCount = _isArchiveId(pending.comicId)
+        final pageCount = pending.comicId.startsWith(remoteComicWorkPrefix)
+            ? null
+            : _isArchiveId(pending.comicId)
             ? archive?.pageCount
             : _metadataPageCount(entries);
         final metadataEntry = entries.firstWhereOrNull(
@@ -2828,7 +2932,8 @@ class WebDavLibrarySource {
               comicPath,
               latestEntries,
               fileName: fileName,
-              pageCount: _isArchiveId(id)
+              pageCount:
+                  _isArchiveId(id) || id.startsWith(remoteComicWorkPrefix)
                   ? pageCount
                   : _metadataPageCount(latestEntries),
             ),
@@ -2868,7 +2973,8 @@ class WebDavLibrarySource {
               comicPath,
               refreshedEntries,
               fileName: fileName,
-              pageCount: _isArchiveId(id)
+              pageCount:
+                  _isArchiveId(id) || id.startsWith(remoteComicWorkPrefix)
                   ? pageCount
                   : _metadataPageCount(refreshedEntries),
             ),
@@ -3212,17 +3318,6 @@ class WebDavLibrarySource {
     final publishedWorks = <String, _WebDavDiscoveredDirectory>{};
     final directoryEntries = <String, List<WebDavLibraryEntry>>{};
 
-    List<WebDavLibraryEntry> archiveFiles(List<WebDavLibraryEntry> entries) =>
-        entries
-            .where(
-              (entry) =>
-                  !entry.isDirectory &&
-                  !isIgnoredComicStorageEntry(entry.name) &&
-                  isRemoteComicArchive(entry.name),
-            )
-            .toList()
-          ..sort((a, b) => compareComicFileNames(a.name, b.name));
-
     Future<List<WebDavLibraryEntry>> readDirectory(String id, int depth) async {
       final path = config.childDirectoryPath(id);
       final cached = directoryEntries[path];
@@ -3238,27 +3333,6 @@ class WebDavLibrarySource {
       _throwIfSynchronizationObsolete(syncRun);
       directoryEntries[path] = entries;
       return entries;
-    }
-
-    RemoteComicVolume volume(
-      WebDavLibraryEntry file,
-      String parent, {
-      String edition = '',
-    }) {
-      final name = RemoteComicVolumeName.parse(file.name);
-      return RemoteComicVolume(
-        archive: RemoteArchiveComic(
-          path: config.childFilePath(
-            config.childDirectoryPath(parent),
-            file.name,
-          ),
-          size: file.size ?? 0,
-          eTag: file.eTag,
-          modifiedAt: file.modifiedAt,
-        ),
-        title: name.title,
-        edition: edition,
-      );
     }
 
     Future<_WebDavDiscoveredDirectory> publishWork(
@@ -3313,11 +3387,12 @@ class WebDavLibrarySource {
               )) {
         return null;
       }
-      final direct = archiveFiles(entries);
+      final direct = _archiveFiles(entries);
       if (direct.isNotEmpty && !marked && !homogeneous(direct)) return null;
       final volumes = [
         for (final file in direct)
-          volume(
+          _archiveVolume(
+            config,
             file,
             id,
             edition: _directoryName(config.childDirectoryPath(id)),
@@ -3326,7 +3401,7 @@ class WebDavLibrarySource {
       for (final child in children) {
         final childId = _joinRelativeDirectoryPath(id, child.name);
         final childEntries = await readDirectory(childId, depth + 1);
-        final files = archiveFiles(childEntries);
+        final files = _archiveFiles(childEntries);
         if (_sortedDirectories(childEntries).isNotEmpty ||
             _imageEntries(
               childEntries,
@@ -3336,7 +3411,8 @@ class WebDavLibrarySource {
         if (files.isEmpty) continue;
         if (!marked && !homogeneous(files)) return null;
         volumes.addAll([
-          for (final file in files) volume(file, childId, edition: child.name),
+          for (final file in files)
+            _archiveVolume(config, file, childId, edition: child.name),
         ]);
       }
       if (volumes.length < 2) return null;
@@ -3352,7 +3428,7 @@ class WebDavLibrarySource {
       List<WebDavLibraryEntry> entries,
       String parent,
     ) async {
-      final files = archiveFiles(entries);
+      final files = _archiveFiles(entries);
       if (files.length >= 2 &&
           _hasMetadataFile(entries) &&
           _sortedDirectories(entries).isEmpty &&
@@ -3363,7 +3439,7 @@ class WebDavLibrarySource {
           directory: config.childDirectoryPath(parent),
           title: _directoryName(config.childDirectoryPath(parent)),
           volumes: separateRemoteComicEditions([
-            for (final file in files) volume(file, parent),
+            for (final file in files) _archiveVolume(config, file, parent),
           ]),
         );
         return [await publishWork(work, entries)];
@@ -3382,6 +3458,7 @@ class WebDavLibrarySource {
       for (final family in families.entries) {
         if (family.value.length < 2) continue;
         final ownDirectory =
+            !config.directories.contains(config.childDirectoryPath(parent)) &&
             family.value.length == files.length &&
             _sortedDirectories(entries).isEmpty &&
             !_imageEntries(
@@ -3395,7 +3472,8 @@ class WebDavLibrarySource {
           title: title,
           family: ownDirectory ? null : title,
           volumes: separateRemoteComicEditions([
-            for (final file in family.value) volume(file, parent),
+            for (final file in family.value)
+              _archiveVolume(config, file, parent),
           ]),
         );
         comics.add(await publishWork(work, entries));

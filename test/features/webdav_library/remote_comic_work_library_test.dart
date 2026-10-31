@@ -675,6 +675,222 @@ void main() {
       expect(flatDocument['author'], 'Flat Author');
     },
   );
+
+  test(
+    'flat work identity survives adding and removing another title',
+    () async {
+      final bytes = _createZip(1);
+      store.addFile('/library/Book A 01.cbz', bytes);
+      store.addFile('/library/Book A 02.cbz', bytes);
+      final firstSync = await engine.synchronize();
+      expect(firstSync.success, isTrue, reason: firstSync.errorMessage);
+      final firstList = await source.explorePages.single.loadPage!(1);
+      final saved = firstList.data.single;
+      expect(saved.title, 'Book A');
+      expect(RemoteComicWork.location(saved.id).family, 'Book A');
+      await engine.writeMetadata(
+        saved.id,
+        const ComicMetaData(title: 'Book A', author: 'Author A', tags: []),
+      );
+
+      store.addFile('/library/Book B 01.cbz', bytes);
+      store.addFile('/library/Book B 02.cbz', bytes);
+      final expandedSync = await engine.synchronize(force: true);
+      expect(expandedSync.success, isTrue, reason: expandedSync.errorMessage);
+      final expanded = await source.explorePages.single.loadPage!(1);
+      expect(
+        expanded.data.firstWhere((item) => item.title == 'Book A').id,
+        saved.id,
+      );
+      final info = await source.loadComicInfo!(saved.id);
+      expect(info.data.tags['作者'], ['Author A']);
+      expect(info.data.chapters!.allChapters.keys, [
+        '/library/Book A 01.cbz',
+        '/library/Book A 02.cbz',
+      ]);
+      expect(store.texts.keys, ['/library/Book A.metadata.json']);
+
+      store.files.remove('/library/Book B 01.cbz');
+      store.files.remove('/library/Book B 02.cbz');
+      final reducedSync = await engine.synchronize(force: true);
+      expect(reducedSync.success, isTrue, reason: reducedSync.errorMessage);
+      final reduced = await source.explorePages.single.loadPage!(1);
+      expect(reduced.data.single.id, saved.id);
+    },
+  );
+
+  for (final layout in [
+    (
+      name: 'flat family',
+      directory: '/library/',
+      family: 'Saved 系列 %',
+      members: ['Saved 系列 % 01.cbz', 'Saved 系列 % 02.cbz'],
+      grouped: false,
+    ),
+    (
+      name: 'work directory',
+      directory: '/library/Saved 作品 %/',
+      family: null,
+      members: ['Vol. 01.cbz', 'Vol. 02.cbz'],
+      grouped: false,
+    ),
+    (
+      name: 'edition directories',
+      directory: '/library/Saved 版本 %/',
+      family: null,
+      members: ['CBZ/Vol. 01.cbz', 'ZIP/Vol. 01.cbz'],
+      grouped: true,
+    ),
+  ]) {
+    test(
+      'saved ${layout.name} opens without a local snapshot or index',
+      () async {
+        final bytes = _createZip(1);
+        final members = [
+          for (final name in layout.members) '${layout.directory}$name',
+        ];
+        for (final path in members) {
+          store.addFile(path, bytes);
+        }
+        if (layout.family != null) {
+          store.addFile('/library/Other Series 01.cbz', bytes);
+          store.addFile('/library/Other Series 02.cbz', bytes);
+        }
+        final savedId = RemoteComicWork(
+          directory: layout.directory,
+          title: '',
+          family: layout.family,
+          volumes: [],
+        ).id;
+
+        final info = await source.loadComicInfo!(savedId);
+        expect(info.success, isTrue, reason: info.errorMessage);
+        expect(info.data.chapters!.allChapters.keys, members);
+        expect(info.data.chapters!.isGrouped, layout.grouped);
+        expect(store.links, 0);
+        expect(ranges, isEmpty);
+
+        final selected = members.last;
+        final pages = await source.loadComicPages!(savedId, selected);
+        expect(pages.success, isTrue, reason: pages.errorMessage);
+        expect(pages.data, hasLength(3));
+        expect(
+          await ImageDownloader.loadComicImageBytes(
+            pages.data.first,
+            source.key,
+            savedId,
+            selected,
+          ),
+          [1, 1],
+        );
+        expect(ranges.map((range) => range.path).toSet(), {selected});
+        expect(nonRangeRequests, 0);
+        expect(store.downloads, 0);
+      },
+    );
+  }
+
+  test('work metadata updates preserve existing chapter ranges', () async {
+    const root = '/library/Metadata Work/';
+    const path = '${root}metadata.json';
+    const chapters = [
+      {'title': 'Opening', 'start': 1, 'end': 2},
+      {'title': 'Finale', 'start': 3, 'end': 5},
+    ];
+    final bytes = _createZip(1);
+    store.addFile('${root}Vol. 01.cbz', bytes);
+    store.addFile('${root}Vol. 02.cbz', bytes);
+    store.texts[path] = RemoteTextFile(
+      content: jsonEncode({
+        'title': 'Original title',
+        'author': 'Original author',
+        'tags': <String>[],
+        'chapters': chapters,
+        'extension': {'preserve': true},
+      }),
+      eTag: '"original"',
+    );
+    final id = RemoteComicWork(
+      directory: root,
+      title: 'Metadata Work',
+      volumes: [],
+    ).id;
+
+    await engine.writeMetadata(
+      id,
+      const ComicMetaData(
+        title: 'Updated title',
+        author: 'Updated author',
+        tags: ['Updated tag'],
+      ),
+    );
+
+    final written = jsonDecode(store.texts[path]!.content) as Map;
+    expect(written['title'], 'Updated title');
+    expect(written['chapters'], chapters);
+    expect(written['extension'], {'preserve': true});
+  });
+
+  for (final duringCreate in [false, true]) {
+    test(
+      'work scraping reads concurrent metadata ${duringCreate ? 'on create conflict' : 'after scraping'}',
+      () async {
+        const root = '/library/Concurrent Work/';
+        const path = '${root}metadata.json';
+        const chapters = [
+          {'title': 'Opening', 'start': 1, 'end': 5},
+        ];
+        store.backend = StorageBackend.webdav;
+        final bytes = _createZip(1);
+        store.addFile('${root}Vol. 01.cbz', bytes);
+        store.addFile('${root}Vol. 02.cbz', bytes);
+        void publishConcurrentMetadata() {
+          store.texts[path] = RemoteTextFile(
+            content: jsonEncode({
+              'title': 'Concurrent title',
+              'author': 'Concurrent author',
+              'tags': <String>[],
+              'chapters': chapters,
+            }),
+            eTag: '"concurrent"',
+          );
+        }
+
+        WebDavLibrarySource.configureMetadataScraper((_) async {
+          if (duringCreate) {
+            store.beforeWrite = (writtenPath, _) {
+              if (writtenPath == path) {
+                store.beforeWrite = null;
+                publishConcurrentMetadata();
+              }
+            };
+          } else {
+            publishConcurrentMetadata();
+          }
+          return const ComicMetaData(
+            title: 'Scraped title',
+            author: 'Scraped author',
+            tags: [],
+          );
+        });
+        final id = RemoteComicWork(
+          directory: root,
+          title: 'Concurrent Work',
+          volumes: [],
+        ).id;
+
+        final info = await source.loadComicInfo!(id);
+
+        expect(info.success, isTrue, reason: info.errorMessage);
+        expect(info.data.title, 'Concurrent title');
+        expect(info.data.tags['作者'], ['Concurrent author']);
+        expect(
+          (jsonDecode(store.texts[path]!.content) as Map)['chapters'],
+          chapters,
+        );
+      },
+    );
+  }
 }
 
 image.Pixel _decodeJpeg(Uint8List bytes) {
@@ -938,6 +1154,7 @@ class _MultiFileStore implements RemoteFileStore {
           int? ifUnmodifiedSince,
         })
       >[];
+  void Function(String path, int writeNumber)? beforeWrite;
   var links = 0;
   var stats = 0;
   var downloads = 0;
@@ -1094,6 +1311,7 @@ class _MultiFileStore implements RemoteFileStore {
       ifMatch: ifMatch,
       ifUnmodifiedSince: ifUnmodifiedSince,
     ));
+    beforeWrite?.call(path, textWrites.length);
     final existing = texts[path];
     if (createOnly && existing != null) {
       throw const WebDavPreconditionFailedException('Conflict');

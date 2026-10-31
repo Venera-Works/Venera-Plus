@@ -861,7 +861,20 @@ Future<void> openComicFolder(LocalComic comic) async {
 }
 
 void showDeleteChaptersPopWindow(BuildContext context, LocalComic comic) {
-  var chapters = <String>[];
+  var selectedChapters = <String>[];
+  final available = {
+    ...comic.downloadedChapters,
+    ...comic.incompleteChapters.keys,
+  };
+  final chapterIds = <String>[];
+  if (comic.chapters != null) {
+    for (final id in comic.chapters!.ids) {
+      if (available.remove(id)) {
+        chapterIds.add(id);
+      }
+    }
+  }
+  chapterIds.addAll(available);
 
   showPopUpWidget(
     context,
@@ -873,19 +886,19 @@ void showDeleteChaptersPopWindow(BuildContext context, LocalComic comic) {
             children: [
               Expanded(
                 child: ListView.builder(
-                  itemCount: comic.downloadedChapters.length,
+                  itemCount: chapterIds.length,
                   itemBuilder: (context, index) {
-                    var id = comic.downloadedChapters[index];
-                    var chapter = comic.chapters![id] ?? "Unknown Chapter";
+                    var id = chapterIds[index];
+                    var chapter = comic.chapters?[id] ?? "Unknown Chapter";
                     return CheckboxListTile(
                       title: Text(chapter),
-                      value: chapters.contains(id),
+                      value: selectedChapters.contains(id),
                       onChanged: (v) {
                         setState(() {
                           if (v == true) {
-                            chapters.add(id);
+                            selectedChapters.add(id);
                           } else {
-                            chapters.remove(id);
+                            selectedChapters.remove(id);
                           }
                         });
                       },
@@ -901,9 +914,16 @@ void showDeleteChaptersPopWindow(BuildContext context, LocalComic comic) {
                     FilledButton(
                       onPressed: () {
                         Future.delayed(const Duration(milliseconds: 200), () {
-                          LocalManager().deleteComicChapters(comic, chapters);
+                          LocalManager().deleteComicChapters(
+                            comic,
+                            selectedChapters,
+                          );
                         });
-                        App.rootContext.pop();
+                        if (App.rootNavigatorKey.currentContext != null) {
+                          App.rootContext.pop();
+                        } else {
+                          context.pop();
+                        }
                       },
                       child: Text("Submit".tl),
                     ),

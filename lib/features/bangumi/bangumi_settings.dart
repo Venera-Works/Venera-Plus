@@ -110,26 +110,6 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
                 ),
               ],
             ),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.primaryContainer,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.info_outline, size: 20),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Your Bangumi account (Access Token and username) and bindings are included in WebDAV app data sync. Only sync with a trusted WebDAV server; pending submissions and retries stay on this device.'
-                          .tl,
-                    ),
-                  ),
-                ],
-              ),
-            ),
             const SizedBox(height: 12),
             SwitchListTile(
               key: const Key('bangumi-auto-sync'),

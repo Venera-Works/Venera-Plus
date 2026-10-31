@@ -51,6 +51,7 @@ class ComicChaptersView extends StatelessWidget {
       }
       return _GroupedComicChapters(
         chapters: ComicChapters.grouped(groups),
+        chapterIndices: chapterIndices,
         pageCounts: pageCounts,
         history: history,
         initialGroup: currentGroup == null
@@ -234,6 +235,7 @@ class _GroupedComicChapters extends StatefulWidget {
     required this.pageCounts,
     this.initialGroup,
     this.history,
+    this.chapterIndices,
     required this.readChapter,
   });
 
@@ -242,7 +244,7 @@ class _GroupedComicChapters extends StatefulWidget {
   final ComicChapters chapters;
 
   final Map<String, int> pageCounts;
-
+  final Map<String, int>? chapterIndices;
   final History? history;
 
   final void Function(int chapter, int? group)? readChapter;
@@ -370,21 +372,28 @@ class _GroupedComicChaptersState extends State<_GroupedComicChapters>
                 }
                 var key = group.keys.elementAt(i);
                 var value = group[key]!;
-                var chapterIndex = 0;
-                for (var j = 0; j < chapters.groupCount; j++) {
-                  if (j == index) {
-                    chapterIndex += i;
-                    break;
-                  }
-                  chapterIndex += chapters.getGroupByIndex(j).length;
-                }
-                String rawIndex = (chapterIndex + 1).toString();
-                String groupedIndex = "${index + 1}-${i + 1}";
                 bool visited = false;
                 if (history != null) {
-                  visited =
-                      history!.readEpisode.contains(groupedIndex) ||
-                      history!.readEpisode.contains(rawIndex);
+                  if (widget.chapterIndices != null) {
+                    final rawIndex = widget.chapterIndices![key]?.toString();
+                    visited =
+                        rawIndex != null &&
+                        history!.readEpisode.contains(rawIndex);
+                  } else {
+                    var chapterIndex = 0;
+                    for (var j = 0; j < chapters.groupCount; j++) {
+                      if (j == index) {
+                        chapterIndex += i;
+                        break;
+                      }
+                      chapterIndex += chapters.getGroupByIndex(j).length;
+                    }
+                    String rawIndex = (chapterIndex + 1).toString();
+                    String groupedIndex = "${index + 1}-${i + 1}";
+                    visited =
+                        history!.readEpisode.contains(groupedIndex) ||
+                        history!.readEpisode.contains(rawIndex);
+                  }
                 }
                 return Padding(
                   padding: const EdgeInsets.fromLTRB(4, 4, 4, 4),
