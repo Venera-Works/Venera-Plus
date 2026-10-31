@@ -205,6 +205,78 @@ void main() {
       );
 
       test(
+        'thumbnail stop signal closes the stream while its resolver is pending',
+        () async {
+          final started = Completer<void>();
+          final config = Completer<Map<String, dynamic>>();
+          final cancel = Completer<void>();
+          var loaderCalls = 0;
+          ImageDownloader.configureSourceImageLoading(
+            thumbnailLoadingConfig: (source, image) {
+              started.complete();
+              return config.future;
+            },
+          );
+          final result = ImageDownloader.loadThumbnail(
+            'cancelled-cover',
+            'cloud',
+            null,
+            cancel.future,
+          ).toList();
+          await started.future.timeout(const Duration(seconds: 5));
+          cancel.complete();
+          expect(await result.timeout(const Duration(seconds: 1)), isEmpty);
+          config.complete({
+            'loadBytes': (CancelToken token) async {
+              loaderCalls++;
+              return Uint8List.fromList([1, 2, 3]);
+            },
+          });
+          await pumpEventQueue();
+          expect(loaderCalls, 0);
+          expect(
+            await CacheManager().findCache('cancelled-cover@cloud'),
+            isNull,
+          );
+        },
+      );
+
+      test(
+        'thumbnail timeout cancels a stalled loader and discards late bytes',
+        () async {
+          final started = Completer<CancelToken>();
+          final release = Completer<Uint8List>();
+          ImageDownloader.configureSourceImageLoading(
+            thumbnailLoadingConfig: (source, image) {
+              Future<Uint8List> loadBytes(CancelToken token) {
+                started.complete(token);
+                return release.future;
+              }
+
+              return {'loadBytes': loadBytes};
+            },
+          );
+          final result = ImageDownloader.loadThumbnail(
+            'stalled-cover',
+            'cloud',
+          ).toList();
+          final failed = expectLater(result, throwsA(isA<TimeoutException>()));
+          final token = await started.future.timeout(
+            const Duration(seconds: 5),
+          );
+          try {
+            await failed.timeout(const Duration(seconds: 35));
+            expect(token.isCancelled, isTrue);
+          } finally {
+            release.complete(Uint8List.fromList([1, 2, 3]));
+          }
+          await pumpEventQueue();
+          expect(await CacheManager().findCache('stalled-cover@cloud'), isNull);
+        },
+        timeout: const Timeout(Duration(seconds: 45)),
+      );
+
+      test(
         'native thumbnail caches processed bytes and does not resolve cover URLs',
         () async {
           var resolverCalls = 0;

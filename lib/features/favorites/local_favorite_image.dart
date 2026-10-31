@@ -38,7 +38,12 @@ class LocalFavoriteImageProvider
       await file.create(recursive: true);
     }
     checkStop();
-    await for (var progress in ImageDownloader.loadThumbnail(url, sourceKey)) {
+    await for (var progress in ImageDownloader.loadThumbnail(
+      url,
+      sourceKey,
+      null,
+      BaseImageProvider.cancelSignalOf(checkStop),
+    )) {
       checkStop();
       chunkEvents.add(
         ImageChunkEvent(
@@ -52,6 +57,7 @@ class LocalFavoriteImageProvider
         return data;
       }
     }
+    checkStop();
     throw "Error: Empty response body.";
   }
 

@@ -37,6 +37,7 @@ class HistoryImageProvider
       url,
       history.type.sourceKey,
       history.id,
+      BaseImageProvider.cancelSignalOf(checkStop),
     )) {
       checkStop();
       chunkEvents.add(
@@ -49,6 +50,7 @@ class HistoryImageProvider
         return progress.imageBytes!;
       }
     }
+    checkStop();
     throw "Error: Empty response body.";
   }
 

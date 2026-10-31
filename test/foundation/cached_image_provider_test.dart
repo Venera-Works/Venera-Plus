@@ -1,11 +1,18 @@
 import 'dart:async';
-import 'dart:typed_data';
+import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/image_provider/cached_image.dart';
+import 'package:venera_plus/network/app_dio.dart' show CancelToken;
+import 'package:venera_plus/network/images.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   test('cached image provider limits concurrent thumbnail loads', () async {
     var active = 0;
     var maxActive = 0;
@@ -90,6 +97,110 @@ void main() {
 
     expect(CachedImageProvider.loadingCount, 0);
   });
+
+  test(
+    'cancelling active thumbnail providers unblocks a disk-cached cover',
+    () async {
+      final directory = await Directory.systemTemp.createTemp('cover-queue-');
+      App.dataPath = directory.path;
+      App.cachePath = directory.path;
+      CacheManager.debugDisableInitialScan = true;
+      final previousErrorHandler = FlutterError.onError;
+      final errors = <FlutterErrorDetails>[];
+      FlutterError.onError = errors.add;
+      final started = List.generate(9, (_) => Completer<CancelToken>());
+      final release = List.generate(9, (_) => Completer<Uint8List>());
+      final holders = <(ImageStreamCompleter, ImageStreamListener)>[];
+      final chunkEvents = StreamController<ImageChunkEvent>.broadcast();
+      var fallbackCalls = 0;
+      const cachedUrl = 'https://example.invalid/cached-cover.png';
+
+      ImageDownloader.configureSourceImageLoading(
+        thumbnailLoadingConfig: (source, url) {
+          final index = int.parse(Uri.parse(url).pathSegments.last);
+          Future<Uint8List> loadBytes(CancelToken token) {
+            started[index].complete(token);
+            return release[index].future;
+          }
+
+          return {'loadBytes': loadBytes};
+        },
+      );
+
+      try {
+        await CacheManager().writeCache('$cachedUrl@probe', [8, 9]);
+        for (var index = 0; index < 9; index++) {
+          final provider = CachedImageProvider(
+            'https://example.invalid/$index',
+            sourceKey: 'probe',
+            fallback: () {
+              fallbackCalls++;
+              return Uint8List.fromList([1]);
+            },
+          );
+          final completer = provider.loadImage(
+            provider,
+            (buffer, {getTargetSize}) =>
+                throw StateError('Cancelled covers must not be decoded'),
+          );
+          final listener = ImageStreamListener((image, synchronous) {
+            image.dispose();
+            fail('Cancelled covers must not produce an image');
+          });
+          completer.addListener(listener);
+          holders.add((completer, listener));
+        }
+        final tokens = await Future.wait(
+          started.map((item) => item.future),
+        ).timeout(const Duration(seconds: 5));
+        var cachedFinished = false;
+        final cached = const CachedImageProvider(cachedUrl, sourceKey: 'probe')
+            .load(chunkEvents, () {})
+            .then((bytes) {
+              cachedFinished = true;
+              return bytes;
+            });
+        await pumpEventQueue();
+        expect(cachedFinished, isFalse);
+        expect(CachedImageProvider.loadingCount, 9);
+
+        for (final (completer, listener) in holders) {
+          completer.removeListener(listener);
+        }
+        holders.clear();
+
+        expect(await cached.timeout(const Duration(seconds: 5)), [8, 9]);
+        await pumpEventQueue();
+        expect(tokens.every((token) => token.isCancelled), isTrue);
+        expect(release.every((item) => !item.isCompleted), isTrue);
+        expect(CachedImageProvider.loadingCount, 0);
+        expect(fallbackCalls, 0);
+        expect(errors, hasLength(9));
+        expect(
+          errors.every(
+            (error) => error.exception.toString().contains(
+              '_ImageLoadingStopException',
+            ),
+          ),
+          isTrue,
+        );
+      } finally {
+        for (final (completer, listener) in holders) {
+          completer.removeListener(listener);
+        }
+        for (final item in release) {
+          if (!item.isCompleted) item.complete(Uint8List.fromList([1]));
+        }
+        await pumpEventQueue();
+        await chunkEvents.close();
+        ImageDownloader.debugResetSourceImageLoading();
+        await ImageDownloader.debugFlushImageCacheWrites();
+        await CacheManager.resetForTesting();
+        FlutterError.onError = previousErrorHandler;
+        await directory.delete(recursive: true);
+      }
+    },
+  );
 
   test(
     'cached image provider uses fallback after primary load fails',

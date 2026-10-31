@@ -1,4 +1,4 @@
-import 'dart:async' show Completer, Future, FutureOr;
+import 'dart:async' show Completer, Future, FutureOr, StreamController;
 import 'dart:collection';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -67,7 +67,10 @@ class CachedImageProvider
     );
   }
 
-  Future<Uint8List> _loadImage(chunkEvents, checkStop) async {
+  Future<Uint8List> _loadImage(
+    StreamController<ImageChunkEvent> chunkEvents,
+    void Function() checkStop,
+  ) async {
     try {
       if (url.startsWith("file://")) {
         var file = File(url.substring(7));
@@ -77,6 +80,7 @@ class CachedImageProvider
         url,
         sourceKey,
         cid,
+        BaseImageProvider.cancelSignalOf(checkStop),
       )) {
         checkStop();
         chunkEvents.add(
@@ -89,8 +93,10 @@ class CachedImageProvider
           return progress.imageBytes!;
         }
       }
+      checkStop();
       throw "Error: Empty response body.";
     } catch (e) {
+      checkStop();
       final fallbackImage = await fallback?.call();
       if (fallbackImage != null) {
         if (fallbackImage.isNotEmpty) {

@@ -395,14 +395,29 @@ abstract class ImageDownloader {
     String url,
     String? sourceKey, [
     String? cid,
+    Future<void>? cancelSignal,
   ]) {
+    const timeout = Duration(seconds: 30);
     final cancelToken = CancelToken();
-    return _StreamWrapper<ImageDownloadProgress>(
-      _loadThumbnail(url, sourceKey, cid, cancelToken),
+    final wrapper = _StreamWrapper<ImageDownloadProgress>(
+      _loadThumbnail(url, sourceKey, cid, cancelToken).timeout(
+        timeout,
+        onTimeout: (sink) {
+          final error = TimeoutException(
+            'Thumbnail loading timed out',
+            timeout,
+          );
+          cancelToken.cancel(error);
+          sink.addError(error);
+          sink.close();
+        },
+      ),
       (_) {},
       readContext: RemoteReadContext(priority: RemoteReadPriority.cover),
       onCancel: cancelToken.cancel,
-    ).stream;
+    );
+    cancelSignal?.then((_) => wrapper.cancel());
+    return wrapper.stream;
   }
 
   static Stream<ImageDownloadProgress> _loadThumbnail(
@@ -479,12 +494,10 @@ abstract class ImageDownloader {
         await for (final data in stream) {
           if (cancelToken.isCancelled) return;
           chunks.add(data);
-          if (expectedBytes != null) {
-            yield ImageDownloadProgress(
-              currentBytes: chunks.length,
-              totalBytes: expectedBytes,
-            );
-          }
+          yield ImageDownloadProgress(
+            currentBytes: chunks.length,
+            totalBytes: expectedBytes,
+          );
         }
         buffer = chunks.takeBytes();
       }
