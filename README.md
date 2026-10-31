@@ -14,20 +14,20 @@ VeneraPlus 是一款在手机和电脑上使用的漫画阅读器，可以读本
 
 - **本地阅读**：导入图片文件夹、CBZ / CB7 / ZIP / 7Z 压缩包、PDF 和图片型 EPUB。
 - **多种阅读方式**：单页、双页、连续滚动、瀑布流，支持左右翻页、自动翻页、亮度和条漫边距调节。
-- **网盘漫画库**：连接百度网盘、夸克、115、123 云盘、OneDrive、Google Drive 或 WebDAV，按需加载漫画图片。
+- **网盘漫画库**：连接百度网盘、夸克、115、123 云盘、OneDrive、Google Drive 或 WebDAV，按需阅读图片目录、ZIP/CBZ、图片型 EPUB 和 PDF，支持作品分卷聚合与阅读版本。
 - **收藏与进度**：管理收藏、阅读记录和下载，可关联 Bangumi 条目并向 Bangumi 同步阅读进度。可为网盘漫画刮削元数据。
 - **同步与备份**：在设备间同步收藏、设置和阅读记录，也可单独备份漫画文件。
 
 ## 下载安装
 
-点击下表链接下载 **v3.1.3 正式版**，也可前往 [最新正式版发布页](https://github.com/Venera-Works/Venera-Plus/releases/latest) 查看更新：
+点击下表链接下载 **v3.2.0 正式版**，也可前往 [最新正式版发布页](https://github.com/Venera-Works/Venera-Plus/releases/latest) 查看更新：
 
 | 设备 | 选择哪个文件 |
 |---|---|
-| Android 手机 / 平板 | 安卓设备可下载 [arm64](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/VeneraPlus-3.1.3-android-arm64-v8a.apk) 版本，不清楚型号时安装 [通用版](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/VeneraPlus-3.1.3-android.apk) |
-| Windows | [Windows-installer.exe](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/VeneraPlus-3.1.3-windows-installer.exe) 安装版，或 [Windows-portable.zip](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/VeneraPlus-3.1.3-windows-portable.zip) 解压便携版 |
-| Linux | Ubuntu / Debian：[.deb（x64）](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/venera-plus_3.1.3_amd64.deb)、[.deb（ARM64）](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/venera-plus_3.1.3_arm64.deb)；Arch Linux：[.pkg.tar.zst（x64）](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/venera-plus-3.1.3-30-x86_64.pkg.tar.zst) |
-| iPhone / iPad | [.ipa](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.1.3/VeneraPlus-ios-3.1.3%2B30.ipa)，需自行签名安装 |
+| Android 手机 / 平板 | 安卓设备可下载 [arm64](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.2.0/VeneraPlus-3.2.0-android-arm64-v8a.apk) 版本，不清楚型号时安装 [通用版](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.2.0/VeneraPlus-3.2.0-android.apk) |
+| Windows | [Windows-installer.exe](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.2.0/VeneraPlus-3.2.0-windows-installer.exe) 安装版，或 [Windows-portable.zip](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.2.0/VeneraPlus-3.2.0-windows-portable.zip) 解压便携版 |
+| Linux | Ubuntu / Debian：[.deb（x64）](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.2.0/venera-plus_3.2.0_amd64.deb)、[.deb（ARM64）](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.2.0/venera-plus_3.2.0_arm64.deb)；Arch Linux：[.pkg.tar.zst（x64）](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.2.0/venera-plus-3.2.0-38-x86_64.pkg.tar.zst) |
+| iPhone / iPad | [.ipa](https://github.com/Venera-Works/Venera-Plus/releases/download/v3.2.0/VeneraPlus-ios-3.2.0%2B38.ipa)，需自行签名安装 |
 | macOS | 当前暂无正式安装包，可参阅[构建指南](docs/development/build.zh.md)自行构建 |
 
 `Source code` 是源码，不是安装包。
@@ -35,7 +35,7 @@ VeneraPlus 是一款在手机和电脑上使用的漫画阅读器，可以读本
 ## 第一次使用
 
 1. **读本地漫画**：打开「书库 → 本地漫画 → 导入」，选择漫画文件夹、压缩包、PDF 或图片型 EPUB。
-2. **读网盘漫画**：在「设置 → 存储与同步 → 网盘账号」添加账号，再到「在线漫画库」选择存放漫画的目录；回到「发现」选择该漫画库即可阅读。网盘里的压缩包需先解压为图片目录。
+2. **读网盘漫画**：在「设置 → 存储与同步 → 网盘账号」添加账号，再到「在线漫画库」选择存放漫画的目录；回到「发现」选择该漫画库即可阅读图片目录、ZIP/CBZ、图片型 EPUB 或 PDF。按需阅读文件要求存储服务支持 HTTP Range。
 3. **使用漫画源**：在「设置 → 来源与服务 → 管理漫画源」安装自行获取的扩展，再到「发现」浏览或使用右上角搜索。
 
 主页可以绑定常看的收藏夹。
