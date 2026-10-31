@@ -624,7 +624,7 @@ void main() {
       }
 
       Future<void> reloadSources() =>
-          runWidgetIo(tester, () => manager.reload());
+          runWidgetIo(tester, () => manager.refreshRuntimeSources());
 
       List<String> orderedSourceKeys() => ExplorePage.deriveOrderedSources(
         allSources: manager.all(),

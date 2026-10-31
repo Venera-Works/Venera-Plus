@@ -204,6 +204,26 @@ class ComicSourceManager with ChangeNotifier, Init {
 
   Future<void> reload() => _mutate(_reloadSources);
 
+  /// Refreshes built-in sources without re-evaluating website scripts.
+  Future<void> refreshRuntimeSources() => _mutate(() async {
+    final previous = {for (final source in _sources) source.key: source};
+    final sources = _sources
+        .where((source) => source.filePath.isNotEmpty)
+        .toList();
+    final runtimeSources =
+        _runtimeComicSourcesProvider?.call() ?? const <ComicSource>[];
+    for (final source in runtimeSources) {
+      if (sources.any((item) => item.key == source.key)) continue;
+      final old = previous[source.key];
+      if (old != null) source.shareSessionWith(old);
+      sources.add(source);
+    }
+    _sources
+      ..clear()
+      ..addAll(sources);
+    notifyListeners();
+  });
+
   Future<void> _reloadSources() async {
     final previous = {for (final source in _sources) source.key: source};
     final loaded = <ComicSource>[];

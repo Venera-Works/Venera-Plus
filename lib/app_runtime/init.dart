@@ -141,7 +141,7 @@ void _watchRemoteLibraryConfiguration(RemoteStorageAccounts accounts) {
     final signature = _remoteLibrarySignature();
     if (signature == _remoteLibraryConfigurationSignature) return;
     _remoteLibraryConfigurationSignature = signature;
-    unawaited(ComicSourceManager().reload().wait());
+    unawaited(ComicSourceManager().refreshRuntimeSources().wait());
   });
 }
 
