@@ -6,7 +6,11 @@ abstract class OpenCC {
   static late final Map<int, int> _s2t;
   static late final Map<int, int> _t2s;
 
-  static Future<void> init() async {
+  static Future<void>? _initialization;
+
+  static Future<void> init() => _initialization ??= _load();
+
+  static Future<void> _load() async {
     var data = await rootBundle.load("assets/opencc.txt");
     var txt = utf8.decode(data.buffer.asUint8List());
     _s2t = <int, int>{};

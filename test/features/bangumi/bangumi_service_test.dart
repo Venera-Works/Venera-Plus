@@ -3,8 +3,12 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/bangumi/bangumi.dart';
 import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/opencc.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(OpenCC.init);
+
   late FakeBangumiGateway gateway;
   late BangumiService service;
   var saveCount = 0;
@@ -316,15 +320,18 @@ void main() {
     'metadata matching preserves unrecognized bracketed title content',
     () async {
       connectSettings();
-      gateway.searchResults = const [];
-
-      await service.matchSubjectForMetadata('Work[Special] Volume 1');
-      await service.matchSubjectForMetadata('Work[Special][Author]');
-
-      expect(gateway.searchKeywords, [
-        'Work[Special] Volume 1',
-        'Work[Special][Author]',
-      ]);
+      gateway.searchResults = [subject(title: 'Work[Special] Volume 1')];
+      gateway.subjects[42] = gateway.searchResults.single;
+      expect(
+        (await service.matchSubjectForMetadata('Work[Special] Volume 1'))?.id,
+        42,
+      );
+      gateway.searchResults = [subject(title: 'Work')];
+      gateway.subjects[42] = gateway.searchResults.single;
+      expect(
+        await service.matchSubjectForMetadata('Work[Special][Author]'),
+        isNull,
+      );
     },
   );
 
@@ -436,11 +443,247 @@ void main() {
         totalVolumes: 0,
       ),
     ];
+    gateway.subjects[43] = gateway.searchResults.single;
 
     final result = await service.matchSubjectForMetadata('Title');
 
     expect(result, isNull);
-    expect(gateway.subjectCalls, isEmpty);
+  });
+
+  test(
+    'page and control filenames do not replace a valid work title',
+    () async {
+      connectSettings();
+      gateway.searchResults = [subject(title: '猫之眼')];
+      gateway.subjects[42] = gateway.searchResults.single;
+      final matched = await service.matchSubjectForMetadata(
+        '猫之眼',
+        fileNames: [
+          '001_cover.jpg',
+          '002_img0001.jpg',
+          '628_i_u_photo.jpg',
+          'metadata.json',
+        ],
+      );
+      expect(matched?.id, 42);
+    },
+  );
+
+  test(
+    'mixed release markers and author labels are order independent',
+    () async {
+      connectSettings();
+      gateway.searchResults = [subject(title: '猫之眼')];
+      gateway.subjects[42] = subject(title: '猫之眼', authors: ['北条司']);
+      final matched = await service.matchSubjectForMetadata(
+        '(成年コミック) 猫之眼 [中国翻訳] [無修正] [DL版] 作者:[北条司]',
+      );
+      expect(matched?.id, 42);
+      expect(matched?.authors, ['北条司']);
+    },
+  );
+
+  test(
+    'a catalog prefix needs independent filename or author evidence',
+    () async {
+      connectSettings();
+      gateway.searchResults = [subject(title: '女儿的朋友', nameCn: '女儿的朋友')];
+      gateway.subjects[42] = gateway.searchResults.single;
+      expect(await service.matchSubjectForMetadata('N 女儿的朋友'), isNull);
+      final matched = await service.matchSubjectForMetadata(
+        'N 女儿的朋友',
+        fileNames: ['[女兒的朋友]卷01.kepub.epub'],
+      );
+      expect(matched?.id, 42);
+    },
+  );
+
+  test('a shared parent directory cannot identify an unnamed file', () async {
+    connectSettings();
+    gateway.searchResults = [subject(title: 'Library')];
+    gateway.subjects[42] = gateway.searchResults.single;
+    expect(
+      await service.matchSubjectForMetadata(
+        '001',
+        directoryTitle: 'Library',
+        fileNames: ['001.cbz'],
+      ),
+      isNull,
+    );
+  });
+
+  test('a creator prefix must match actual creative credits', () async {
+    connectSettings();
+    gateway.searchResults = [subject(title: '猫之眼')];
+    gateway.subjects[42] = subject(title: '猫之眼', authors: ['北条司']);
+    expect(
+      (await service.matchSubjectForMetadata(
+        '[北条司][猫之眼]',
+        fileNames: ['[北条司][猫之眼]卷01_p001_img001.png'],
+      ))?.id,
+      42,
+    );
+    gateway.persons[42] = const [
+      BangumiSubjectPerson(name: '汉化组', relation: '出版社'),
+    ];
+    expect(
+      await service.matchSubjectForMetadata(
+        '猫之眼',
+        fileNames: ['[汉化组][猫之眼]卷01_p001_img001.png'],
+      ),
+      isNull,
+    );
+  });
+
+  test(
+    'conflicting member works cannot be outweighed by duplicate pages',
+    () async {
+      connectSettings();
+      gateway.searchResults = [
+        subject(title: '作品甲'),
+        subject(id: 43, title: '作品乙'),
+      ];
+      gateway.subjects[42] = gateway.searchResults.first;
+      gateway.subjects[43] = gateway.searchResults.last;
+      final matched = await service.matchSubjectForMetadata(
+        '待整理',
+        fileNames: [
+          for (var page = 1; page <= 100; page++)
+            '[作品甲]卷01_p${page}_img001.png',
+          '[作品乙]卷02_p001_img001.png',
+        ],
+      );
+      expect(matched, isNull);
+    },
+  );
+
+  test('detail aliases can confirm a regional translated title', () async {
+    connectSettings();
+    gateway.searchResults = [subject(title: '另一译名')];
+    gateway.subjects[42] = subject(title: '另一译名', aliases: ['膽大黨']);
+    final matched = await service.matchSubjectForMetadata('胆大党');
+    expect(matched?.id, 42);
+    expect(matched?.title, '另一译名');
+  });
+
+  test('an alias shared by two works remains ambiguous', () async {
+    connectSettings();
+    gateway.searchResults = [
+      subject(title: '作品甲'),
+      subject(id: 43, title: '作品乙'),
+    ];
+    gateway.subjects[42] = subject(title: '作品甲', aliases: ['共同别名']);
+    gateway.subjects[43] = subject(id: 43, title: '作品乙', aliases: ['共同别名']);
+    expect(await service.matchSubjectForMetadata('共同别名'), isNull);
+  });
+
+  test(
+    'Japanese long vowels and numeric title content stay significant',
+    () async {
+      connectSettings();
+      gateway.searchResults = [subject(title: 'ガール')];
+      gateway.subjects[42] = gateway.searchResults.single;
+      expect(await service.matchSubjectForMetadata('ガル'), isNull);
+      gateway.searchResults = [subject(title: '20世纪少年')];
+      gateway.subjects[42] = gateway.searchResults.single;
+      expect((await service.matchSubjectForMetadata('20世纪少年'))?.id, 42);
+      expect(await service.matchSubjectForMetadata('21世纪少年'), isNull);
+    },
+  );
+
+  test(
+    'magazine issues match after release cleanup and digit normalization',
+    () async {
+      connectSettings();
+      gateway.searchResults = [
+        subject(title: 'COMIC BAVEL 2026年07月号', platform: '杂志'),
+      ];
+      gateway.subjects[42] = gateway.searchResults.single;
+      final matched = await service.matchSubjectForMetadata(
+        'COMIC BAVEL ２０２６年７月号 [中国翻訳] [無修正] [DL版]',
+      );
+      expect(matched?.id, 42);
+    },
+  );
+
+  test(
+    'another magazine issue and the series entry cannot satisfy an issue',
+    () async {
+      connectSettings();
+      gateway.searchResults = [
+        subject(title: 'COMIC BAVEL', platform: '杂志'),
+        subject(id: 43, title: 'COMIC BAVEL 2026年8月号', platform: '杂志'),
+      ];
+      gateway.subjects[42] = gateway.searchResults.first;
+      gateway.subjects[43] = gateway.searchResults.last;
+      expect(
+        await service.matchSubjectForMetadata('COMIC BAVEL 2026年7月号'),
+        isNull,
+      );
+    },
+  );
+
+  test('detail platform is checked even if the summary omits it', () async {
+    connectSettings();
+    gateway.searchResults = [subject(title: 'Title')];
+    gateway.subjects[42] = subject(title: 'Title', platform: '小说');
+    expect(await service.matchSubjectForMetadata('Title'), isNull);
+  });
+
+  test(
+    'a creator FANBOX collection does not use its external number as an id',
+    () async {
+      connectSettings();
+      gateway.searchResults = [subject(id: 3446917, title: 'pixivFANBOX')];
+      expect(
+        await service.matchSubjectForMetadata(
+          '3446917-[反発属性] pixivFANBOX [Chinese]',
+        ),
+        isNull,
+      );
+      expect(gateway.searchKeywords, isEmpty);
+      expect(gateway.subjectCalls, isEmpty);
+    },
+  );
+
+  test('a bare serial stem cannot invent or override a work title', () async {
+    connectSettings();
+    gateway.searchResults = [subject(title: '女儿的朋友', nameCn: '女儿的朋友')];
+    gateway.subjects[42] = gateway.searchResults.single;
+    expect(
+      await service.matchSubjectForMetadata(
+        'Nedpy',
+        fileNames: ['Nedpy_01.pdf'],
+      ),
+      isNull,
+    );
+    expect(
+      (await service.matchSubjectForMetadata(
+        '女儿的朋友',
+        fileNames: ['Nedpy_01.pdf'],
+      ))?.id,
+      42,
+    );
+  });
+
+  test(
+    'a detail budget never turns unchecked duplicates into a match',
+    () async {
+      connectSettings();
+      gateway.searchResults = [for (var id = 1; id <= 6; id++) subject(id: id)];
+      expect(await service.matchSubjectForMetadata('Title'), isNull);
+      expect(gateway.subjectCalls.length, lessThanOrEqualTo(5));
+    },
+  );
+
+  test('searches stay bounded when member names conflict', () async {
+    connectSettings();
+    final matched = await service.matchSubjectForMetadata(
+      '待整理',
+      fileNames: ['[作品甲]卷01.epub', '[作品乙]卷02.epub', '[作品丙]卷03.epub'],
+    );
+    expect(matched, isNull);
+    expect(gateway.searchKeywords.length, 3);
   });
 
   test('binding does not wait for the metadata writer', () async {
@@ -4524,10 +4767,22 @@ void setBindings(Iterable<BangumiBinding> bindings) {
   };
 }
 
-BangumiSubject subject() => const BangumiSubject(
-  id: 42,
-  title: 'Title',
-  originalTitle: 'Original',
+BangumiSubject subject({
+  int id = 42,
+  String title = 'Title',
+  String originalTitle = 'Original',
+  String nameCn = '',
+  String? platform,
+  List<String> authors = const [],
+  List<String> aliases = const [],
+}) => BangumiSubject(
+  id: id,
+  title: title,
+  originalTitle: originalTitle,
+  nameCn: nameCn,
+  platform: platform,
+  authors: authors,
+  aliases: aliases,
   coverUrl: 'cover',
   totalEpisodes: 24,
   totalVolumes: 4,
@@ -4602,7 +4857,10 @@ class FakeBangumiGateway implements BangumiGateway {
   }
 
   @override
-  Future<List<BangumiSubject>> searchSubjects(String keyword) async {
+  Future<List<BangumiSubject>> searchSubjects(
+    String keyword, {
+    bool includeMagazines = false,
+  }) async {
     searchKeywords.add(keyword);
     operationCalls.add('search:$keyword');
     await searchBlockers[keyword]?.future;

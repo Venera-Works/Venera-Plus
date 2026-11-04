@@ -4,7 +4,10 @@ import 'package:venera_plus/network/app_dio.dart';
 
 abstract interface class BangumiGateway {
   Future<BangumiUser> currentUser();
-  Future<List<BangumiSubject>> searchSubjects(String keyword);
+  Future<List<BangumiSubject>> searchSubjects(
+    String keyword, {
+    bool includeMagazines = false,
+  });
   Future<BangumiSubject> getSubject(int subjectId);
   Future<List<BangumiSubjectPerson>> getSubjectPersons(int subjectId);
   Future<BangumiCollection?> getCollection(String username, int subjectId);
@@ -41,6 +44,8 @@ class BangumiApi implements BangumiGateway {
   final Dio _dio;
   final String _token;
 
+  static const _magazinePlatforms = {'杂志', '雜誌', '雑誌'};
+
   @override
   Future<BangumiUser> currentUser() async {
     final response = await _get('/v0/me');
@@ -48,7 +53,10 @@ class BangumiApi implements BangumiGateway {
   }
 
   @override
-  Future<List<BangumiSubject>> searchSubjects(String keyword) async {
+  Future<List<BangumiSubject>> searchSubjects(
+    String keyword, {
+    bool includeMagazines = false,
+  }) async {
     final response = await _post(
       '/v0/search/subjects',
       {
@@ -77,7 +85,10 @@ class BangumiApi implements BangumiGateway {
       }
       try {
         final subject = BangumiSubject.fromJson(_jsonMap(item));
-        if (subject.platform == null || subject.platform == '漫画') {
+        final platform = subject.platform?.trim();
+        if (platform == null ||
+            platform == '漫画' ||
+            (includeMagazines && _magazinePlatforms.contains(platform))) {
           subjects.add(subject);
         }
       } catch (_) {

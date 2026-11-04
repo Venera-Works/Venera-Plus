@@ -501,6 +501,8 @@ class _Gateway implements BangumiGateway {
       throw UnsupportedError('unused');
 
   @override
-  Future<List<BangumiSubject>> searchSubjects(String keyword) =>
-      throw UnsupportedError('unused');
+  Future<List<BangumiSubject>> searchSubjects(
+    String keyword, {
+    bool includeMagazines = false,
+  }) => throw UnsupportedError('unused');
 }

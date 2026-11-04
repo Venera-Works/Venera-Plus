@@ -1050,7 +1050,10 @@ class _Gateway implements BangumiGateway {
       const BangumiUser('alice', 'Alice');
 
   @override
-  Future<List<BangumiSubject>> searchSubjects(String keyword) async {
+  Future<List<BangumiSubject>> searchSubjects(
+    String keyword, {
+    bool includeMagazines = false,
+  }) async {
     searches.add(keyword);
     if (searchCompleter != null) return searchCompleter!.future;
     return [subject];

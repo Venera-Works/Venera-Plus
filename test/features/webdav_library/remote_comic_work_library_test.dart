@@ -8,6 +8,8 @@ import 'package:dio/io.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as image;
 import 'package:pdfrx/pdfrx.dart';
+import 'package:venera_plus/app_runtime/app_runtime.dart';
+import 'package:venera_plus/features/bangumi/bangumi.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_storage/comic_storage.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library.dart';
@@ -891,6 +893,121 @@ void main() {
       },
     );
   }
+
+  test(
+    'compound bracket series names like [作者][作品]卷01 and 卷02 aggregate into one work preserving compound name',
+    () async {
+      store.addFile('/library/[作者][作品]卷01.cbz', _createZip(1), eTag: '"cbz-1"');
+      store.addFile('/library/[作者][作品]卷02.cbz', _createZip(1), eTag: '"cbz-2"');
+
+      final sync = await engine.synchronize();
+      expect(sync.success, isTrue, reason: sync.errorMessage);
+      final list = await source.explorePages.single.loadPage!(1);
+      expect(list.data, hasLength(1));
+
+      final work = list.data.single;
+      expect(work.id.startsWith(remoteComicWorkPrefix), isTrue);
+      final loc = RemoteComicWork.location(work.id);
+      expect(loc.directory, '/library/');
+      expect(loc.family, '[作者][作品]');
+      expect(work.title, '[作者][作品]');
+
+      final info = await source.loadComicInfo!(work.id);
+      expect(info.data.chapters!.allChapters.keys.toList(), [
+        '/library/[作者][作品]卷01.cbz',
+        '/library/[作者][作品]卷02.cbz',
+      ]);
+    },
+  );
+
+  test(
+    'automatic metadata selection keeps sibling work members isolated',
+    () async {
+      store.addFile(
+        '/library/Series Alpha 01.cbz',
+        _createZip(1),
+        eTag: '"alpha-1"',
+      );
+      store.addFile(
+        '/library/Series Alpha 02.cbz',
+        _createZip(1),
+        eTag: '"alpha-2"',
+      );
+      store.addFile(
+        '/library/Series Beta 01.epub',
+        _createEpub(1),
+        eTag: '"beta-1"',
+      );
+      store.addFile(
+        '/library/Series Beta 02.epub',
+        _createEpub(1),
+        eTag: '"beta-2"',
+      );
+
+      final previousToken = appdata.settings['bangumiAccessToken'];
+      final previousUsername = appdata.settings['bangumiUsername'];
+      appdata.settings['bangumiAccessToken'] = 'test-token';
+      appdata.settings['bangumiUsername'] = 'test-user';
+      addTearDown(() {
+        appdata.settings['bangumiAccessToken'] = previousToken;
+        appdata.settings['bangumiUsername'] = previousUsername;
+      });
+      final gateway = _MetadataGateway();
+      final bangumi = BangumiService.forTesting(gatewayFactory: (_) => gateway);
+      store.backend = StorageBackend.webdav;
+      WebDavLibrarySource.configureMetadataScraper(
+        (input) => scrapeBangumiMetadataForWebDav(input, service: bangumi),
+      );
+
+      final sync = await engine.synchronize();
+      expect(sync.success, isTrue, reason: sync.errorMessage);
+
+      final alpha =
+          jsonDecode(
+                store.texts['/library/Series Alpha.metadata.json']!.content,
+              )
+              as Map;
+      final beta =
+          jsonDecode(store.texts['/library/Series Beta.metadata.json']!.content)
+              as Map;
+      expect(alpha['title'], 'Series Alpha');
+      expect(alpha['bangumiSubjectId'], 1);
+      expect(beta['title'], 'Series Beta');
+      expect(beta['bangumiSubjectId'], 2);
+      expect(ranges, isEmpty);
+    },
+  );
+}
+
+class _MetadataGateway extends Fake implements BangumiGateway {
+  final subjects = {
+    1: const BangumiSubject(
+      id: 1,
+      title: 'Series Alpha',
+      originalTitle: 'Series Alpha',
+      coverUrl: '',
+      totalEpisodes: 0,
+      totalVolumes: 2,
+    ),
+    2: const BangumiSubject(
+      id: 2,
+      title: 'Series Beta',
+      originalTitle: 'Series Beta',
+      coverUrl: '',
+      totalEpisodes: 0,
+      totalVolumes: 2,
+    ),
+  };
+
+  @override
+  Future<List<BangumiSubject>> searchSubjects(
+    String keyword, {
+    bool includeMagazines = false,
+  }) async => subjects.values.toList();
+
+  @override
+  Future<BangumiSubject> getSubject(int subjectId) async =>
+      subjects[subjectId]!;
 }
 
 image.Pixel _decodeJpeg(Uint8List bytes) {

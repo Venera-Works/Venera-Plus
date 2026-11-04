@@ -2,10 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:venera_plus/features/bangumi/bangumi_api.dart';
+import 'package:venera_plus/features/bangumi/bangumi_metadata.dart';
 import 'package:venera_plus/features/bangumi/bangumi_models.dart';
 import 'package:venera_plus/features/bangumi/bangumi_server.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/opencc.dart';
 
 typedef BangumiGatewayFactory = BangumiGateway Function(String token);
 typedef BangumiSettingsSaver = Future<void> Function();
@@ -242,62 +244,139 @@ class BangumiService {
       _runConnection(() => _gateway().getSubject(subjectId));
   Future<List<BangumiSubjectPerson>> getSubjectPersons(int subjectId) =>
       _runConnection(() => _gateway().getSubjectPersons(subjectId));
-  Future<BangumiSubject?> matchSubjectForMetadata(String directoryTitle) async {
-    final hints = _metadataTitleHints(directoryTitle);
-    if (hints.title.isEmpty) return null;
-    final results = await _runConnection(
-      () => _gateway().searchSubjects(hints.title),
-      priority: _BangumiRequestPriority.metadata,
+  Future<BangumiSubject?> matchSubjectForMetadata(
+    String title, {
+    String? directoryTitle,
+    Iterable<String> fileNames = const [],
+    Iterable<String> authors = const [],
+  }) async {
+    await OpenCC.init();
+    final hints = BangumiMetadataHints.parse(
+      title,
+      directoryTitle: directoryTitle,
+      fileNames: fileNames,
+      authors: authors,
     );
-    final normalizedTitle = _normalizeMetadataMatchValue(hints.title);
-    final exact = <BangumiSubject>[];
-    final ids = <int>{};
-    for (final subject in results) {
-      if (subject.id <= 0 || !ids.add(subject.id)) continue;
-      if (_normalizeMetadataMatchValue(subject.title) == normalizedTitle ||
-          _normalizeMetadataMatchValue(subject.originalTitle) ==
-              normalizedTitle) {
-        exact.add(subject);
-      }
-    }
-    if (exact.isEmpty || (exact.length > 1 && hints.author == null)) {
-      return null;
-    }
-
-    final matched = <BangumiSubject>[];
-    for (final candidate in exact) {
-      final detailed = await _runConnection(
-        () => _gateway().getSubject(candidate.id),
+    if (hints.keywords.isEmpty) return null;
+    final results = <int, BangumiSubject>{};
+    for (final keyword in hints.keywords) {
+      final searched = await _runConnection(
+        () => _gateway().searchSubjects(
+          keyword,
+          includeMagazines: hints.isMagazine,
+        ),
         priority: _BangumiRequestPriority.metadata,
       );
-      final authorHint = hints.author;
-      if (authorHint == null ||
-          await _metadataAuthorMatches(detailed, authorHint)) {
-        matched.add(detailed);
+      for (final subject in searched) {
+        if (subject.id > 0) results.putIfAbsent(subject.id, () => subject);
       }
     }
-    return matched.length == 1 ? matched.single : null;
-  }
+    final exact = results.values
+        .where(
+          (subject) => hints.names.any((name) => hints.matches(name, subject)),
+        )
+        .toList(growable: false);
+    final details = <int, BangumiSubject>{};
+    final people = <int, List<BangumiSubjectPerson>>{};
 
-  Future<bool> _metadataAuthorMatches(
-    BangumiSubject subject,
-    String authorHint,
-  ) async {
-    final normalizedAuthor = _normalizeMetadataMatchValue(authorHint);
-    if (subject.authors.any(
-      (author) => _normalizeMetadataMatchValue(author) == normalizedAuthor,
-    )) {
+    Future<bool> validSubject(BangumiSubject subject) async {
+      Future<bool> authorsMatch(Iterable<String> names) async {
+        for (final name in names) {
+          final key = BangumiMetadataHints.chineseKey(name);
+          if (subject.authors.any(
+            (author) => BangumiMetadataHints.chineseKey(author) == key,
+          )) {
+            continue;
+          }
+          var persons = people[subject.id];
+          if (persons == null) {
+            persons = await _runConnection<List<BangumiSubjectPerson>>(
+              () => _gateway().getSubjectPersons(subject.id),
+              priority: _BangumiRequestPriority.metadata,
+            );
+            people[subject.id] = persons;
+          }
+          if (!persons.any(
+            (person) =>
+                _isAuthorRelation(person.relation) &&
+                BangumiMetadataHints.chineseKey(person.name) == key,
+          )) {
+            return false;
+          }
+        }
+        return true;
+      }
+
+      Future<bool> validName(BangumiMetadataName name) async {
+        if (!hints.matches(name, subject)) return false;
+        if (name.needsCorroboration &&
+            hints.authors.isEmpty &&
+            name.authors.isEmpty &&
+            !hints.members.any(
+              (member) => member.any(
+                (other) =>
+                    !other.needsCorroboration && hints.matches(other, subject),
+              ),
+            )) {
+          return false;
+        }
+        return authorsMatch(name.authors);
+      }
+
+      if (!await authorsMatch(hints.authors)) return false;
+      var named = false;
+      for (final name in hints.names) {
+        if (await validName(name)) {
+          named = true;
+          break;
+        }
+      }
+      if (!named) return false;
+      for (final member in hints.members) {
+        var agrees = false;
+        for (final name in member) {
+          if (await validName(name)) {
+            agrees = true;
+            break;
+          }
+        }
+        if (!agrees) return false;
+      }
       return true;
     }
-    final persons = await _runConnection(
-      () => _gateway().getSubjectPersons(subject.id),
-      priority: _BangumiRequestPriority.metadata,
+
+    Future<({BangumiSubject? subject, bool complete})> confirm(
+      List<BangumiSubject> candidates,
+    ) async {
+      if (details.length + candidates.length > 5) {
+        return (subject: null, complete: false);
+      }
+      BangumiSubject? matched;
+      for (final candidate in candidates) {
+        final detailed = await _runConnection(
+          () => _gateway().getSubject(candidate.id),
+          priority: _BangumiRequestPriority.metadata,
+        );
+        details[candidate.id] = detailed;
+        if (!await validSubject(detailed)) continue;
+        if (matched != null) return (subject: null, complete: false);
+        matched = detailed;
+      }
+      return (subject: matched, complete: true);
+    }
+
+    if (exact.isNotEmpty) {
+      final confirmed = await confirm(exact);
+      if (confirmed.subject != null || !confirmed.complete) {
+        return confirmed.subject;
+      }
+    }
+    final fallback = await confirm(
+      results.values
+          .where((subject) => !details.containsKey(subject.id))
+          .toList(growable: false),
     );
-    return persons.any(
-      (person) =>
-          _isAuthorRelation(person.relation) &&
-          _normalizeMetadataMatchValue(person.name) == normalizedAuthor,
-    );
+    return fallback.subject;
   }
 
   static bool _isAuthorRelation(String relation) {
@@ -329,73 +408,6 @@ class BangumiService {
         .where((value) => value.isNotEmpty)
         .any(values.contains);
   }
-
-  static final _metadataLabeledNoiseSuffix = RegExp(
-    r'\s*(?:语言|language|版本|version|汉化者|汉化组)\s*[:：]?\s*'
-    r'(?:\[([^\[\]]+)\]|【([^【】]+)】)\s*$',
-    caseSensitive: false,
-  );
-  static final _metadataLabeledAuthorSuffix = RegExp(
-    r'\s*(?:作者|著者|原作|作画|漫画|脚本|剧本|繪者|绘者|author|writer|artist)'
-    r'\s*(?:(?:[:：]\s*)?(?:\[([^\[\]]+)\]|【([^【】]+)】)|'
-    r'[:：]\s*([^【】\[\]]+))\s*$',
-    caseSensitive: false,
-  );
-  static final _metadataBracketSuffix = RegExp(
-    r'^(.*?)(?:\[([^\[\]]+)\]|【([^【】]+)】)\s*$',
-  );
-  static final _metadataNoiseMarker = RegExp(
-    r'^(?:chinese|中文|无修正|dl版|完结|已完结|完結|已完結|'
-    r'全\d+(?:卷|册|冊)|kindle(?:版)?|高清(?:版)?|日文(?:版)?|日本語|'
-    r'台版|台湾版|台灣版|典藏版|珍藏版|重制版|重製版|'
-    r'(?:19|20)\d{2}(?:年)?(?:重制|重製|重制版|重製版|新版|修订版|修訂版)?)$',
-    caseSensitive: false,
-  );
-
-  static ({String title, String? author}) _metadataTitleHints(String value) {
-    var remaining = value.trim();
-    while (true) {
-      final match = _metadataLabeledNoiseSuffix.firstMatch(remaining);
-      if (match == null) break;
-      remaining = remaining.substring(0, match.start).trimRight();
-    }
-    while (true) {
-      final match = _metadataBracketSuffix.firstMatch(remaining);
-      if (match == null) break;
-      final marker = (match.group(2) ?? match.group(3) ?? '').trim();
-      if (!_metadataNoiseMarker.hasMatch(
-        marker.replaceAll(RegExp(r'\s+'), ''),
-      )) {
-        break;
-      }
-      remaining = match.group(1)!.trimRight();
-    }
-
-    String? author;
-    final labeledAuthor = _metadataLabeledAuthorSuffix.firstMatch(remaining);
-    if (labeledAuthor != null) {
-      author =
-          (labeledAuthor.group(1) ??
-                  labeledAuthor.group(2) ??
-                  labeledAuthor.group(3) ??
-                  '')
-              .trim();
-      remaining = remaining.substring(0, labeledAuthor.start).trimRight();
-    }
-    final title = remaining
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .replaceFirst(RegExp(r'[\s\-—_·|｜,，;；]+$'), '')
-        .trim();
-    return (title: title, author: author?.isEmpty == true ? null : author);
-  }
-
-  static String _normalizeMetadataMatchValue(String value) => value
-      .toLowerCase()
-      .replaceAll(
-        RegExp(r'[\s\u3000·・:：!！?？,，.。\-—_~～/／\\|｜「」『』【】\[\]()（）]+'),
-        '',
-      )
-      .replaceAll(RegExp('[\'"“”‘’]'), '');
 
   BangumiBinding? bindingFor(String sourceKey, String comicId) {
     final rawBindings = appdata.settings['bangumiBindings'];

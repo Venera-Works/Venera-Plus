@@ -527,9 +527,9 @@ void main() {
         zip = createZip(revision, includeMetadata: false);
         final original = Uint8List.fromList(zip);
         store.backend = StorageBackend.webdav;
-        final titles = <String>[];
-        WebDavLibrarySource.configureMetadataScraper((title) async {
-          titles.add(title);
+        final scrapedInputs = <WebDavLibraryMetadataInput>[];
+        WebDavLibrarySource.configureMetadataScraper((input) async {
+          scrapedInputs.add(input);
           return const ComicMetaData(
             title: 'Matched title',
             author: 'Scraped author',
@@ -539,11 +539,13 @@ void main() {
           );
         });
         await engine.synchronize();
-        expect(titles, isEmpty);
+        expect(scrapedInputs, isEmpty);
         expect(ranges, isEmpty);
         final info = await source.loadComicInfo!(id);
         expect(info.success, isTrue, reason: info.errorMessage);
-        expect(titles, ['漫画 %']);
+        expect(scrapedInputs.single.title, '漫画 %');
+        expect(scrapedInputs.single.directoryTitle, 'library');
+        expect(scrapedInputs.single.fileNames, contains('漫画 %.$extension'));
         expect(info.data.title, 'Matched title');
         expect(info.data.maxPage, 2);
         expect(info.data.chapters!.titles, ['Part']);
@@ -557,7 +559,7 @@ void main() {
         final requests = ranges.length;
         await engine.synchronize(force: true);
         expect((await source.loadComicInfo!(id)).data.title, 'Matched title');
-        expect(titles, hasLength(1));
+        expect(scrapedInputs, hasLength(1));
         expect(ranges, hasLength(requests));
       },
     );

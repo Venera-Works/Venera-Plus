@@ -81,6 +81,68 @@ void main() {
     );
 
     test(
+      'filters magazine platforms by default and permits them when opted in',
+      () async {
+        final adapter = QueueAdapter.json([
+          (
+            200,
+            {
+              'data': [
+                {'id': 1, 'name': 'Manga', 'platform': '漫画'},
+                {'id': 2, 'name': 'Magazine Simplified', 'platform': '杂志'},
+                {'id': 3, 'name': 'Magazine Traditional', 'platform': '雜誌'},
+                {'id': 4, 'name': 'Magazine Japanese', 'platform': '雑誌'},
+                {'id': 5, 'name': 'Novel', 'platform': '小说'},
+                {'id': 6, 'name': 'Artbook', 'platform': '画集'},
+                {'id': 7, 'name': 'Anime', 'platform': '动画'},
+                {'id': 8, 'name': 'Unknown Platform', 'platform': null},
+              ],
+            },
+          ),
+          (
+            200,
+            {
+              'data': [
+                {'id': 1, 'name': 'Manga', 'platform': '漫画'},
+                {'id': 2, 'name': 'Magazine Simplified', 'platform': '杂志'},
+                {'id': 3, 'name': 'Magazine Traditional', 'platform': '雜誌'},
+                {'id': 4, 'name': 'Magazine Japanese', 'platform': '雑誌'},
+                {'id': 5, 'name': 'Novel', 'platform': '小说'},
+                {'id': 6, 'name': 'Artbook', 'platform': '画集'},
+                {'id': 7, 'name': 'Anime', 'platform': '动画'},
+                {'id': 8, 'name': 'Unknown Platform', 'platform': null},
+              ],
+            },
+          ),
+        ]);
+        final api = BangumiApi(token: 'secret-token', dio: dioWith(adapter));
+
+        // Default: includeMagazines = false preserves manga and null platforms only
+        final defaultResults = await api.searchSubjects('comic');
+        expect(defaultResults.map((s) => s.id), [1, 8]);
+
+        // Opt-in: includeMagazines = true additionally permits magazine platforms,
+        // but still excludes novels (5), artbooks (6), and anime (7).
+        final magazineResults = await api.searchSubjects(
+          'comic',
+          includeMagazines: true,
+        );
+        expect(magazineResults.map((s) => s.id), [1, 2, 3, 4, 8]);
+
+        // Verify both requests kept the canonical request body without guessed filters
+        for (final req in adapter.requests) {
+          expect(req.data, {
+            'keyword': 'comic',
+            'sort': 'match',
+            'filter': {
+              'type': [1],
+            },
+          });
+        }
+      },
+    );
+
+    test(
       'skips malformed subjects without dropping valid search results',
       () async {
         final adapter = QueueAdapter.json([

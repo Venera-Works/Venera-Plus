@@ -191,14 +191,19 @@ ComicMetaData _metadataFromBangumiSubject(BangumiSubject subject) =>
 
 @visibleForTesting
 Future<ComicMetaData?> scrapeBangumiMetadataForWebDav(
-  String directoryTitle, {
+  WebDavLibraryMetadataInput input, {
   BangumiService? service,
 }) async {
   final bangumi = service ?? BangumiService();
   if (!bangumi.isConnected) {
     throw StateError('Bangumi is not connected');
   }
-  final subject = await bangumi.matchSubjectForMetadata(directoryTitle);
+  final subject = await bangumi.matchSubjectForMetadata(
+    input.title,
+    directoryTitle: input.directoryTitle,
+    fileNames: input.fileNames,
+    authors: input.authors,
+  );
   return subject == null ? null : _metadataFromBangumiSubject(subject);
 }
 

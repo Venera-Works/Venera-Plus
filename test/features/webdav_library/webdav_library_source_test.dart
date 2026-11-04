@@ -1604,8 +1604,8 @@ void main() {
       WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
     final scrapedTitles = <String>[];
-    WebDavLibrarySource.configureMetadataScraper((directoryTitle) async {
-      scrapedTitles.add(directoryTitle);
+    WebDavLibrarySource.configureMetadataScraper((input) async {
+      scrapedTitles.add(input.title);
       return const ComicMetaData(
         title: 'Cat Eye',
         author: 'Tsukasa Hojo',
@@ -2419,10 +2419,10 @@ void main() {
       ];
 
       final scrapedTitles = <String>[];
-      WebDavLibrarySource.configureMetadataScraper((directoryTitle) async {
-        scrapedTitles.add(directoryTitle);
+      WebDavLibrarySource.configureMetadataScraper((input) async {
+        scrapedTitles.add(input.title);
         return ComicMetaData(
-          title: directoryTitle,
+          title: input.title,
           author: 'Author',
           tags: const ['Action'],
           description: '',
@@ -2453,8 +2453,8 @@ void main() {
         WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       final scrapedTitles = <String>[];
-      WebDavLibrarySource.configureMetadataScraper((directoryTitle) async {
-        scrapedTitles.add(directoryTitle);
+      WebDavLibrarySource.configureMetadataScraper((input) async {
+        scrapedTitles.add(input.title);
         return const ComicMetaData(
           title: 'Cat Eye',
           author: 'Tsukasa Hojo',
@@ -2545,8 +2545,8 @@ void main() {
         WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       final scrapedTitles = <String>[];
-      WebDavLibrarySource.configureMetadataScraper((directoryTitle) async {
-        scrapedTitles.add(directoryTitle);
+      WebDavLibrarySource.configureMetadataScraper((input) async {
+        scrapedTitles.add(input.title);
         return const ComicMetaData(
           title: 'Cat Eye',
           author: 'Tsukasa Hojo',
@@ -2882,7 +2882,7 @@ void main() {
         WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       var scraperCalls = 0;
-      WebDavLibrarySource.configureMetadataScraper((directoryTitle) async {
+      WebDavLibrarySource.configureMetadataScraper((_) async {
         scraperCalls++;
         return null;
       });
@@ -2907,7 +2907,7 @@ void main() {
         WebDavLibraryEntry(name: '001.jpg', isDirectory: false, eTag: 'p1'),
       ];
       var scraperCalls = 0;
-      WebDavLibrarySource.configureMetadataScraper((directoryTitle) async {
+      WebDavLibrarySource.configureMetadataScraper((_) async {
         scraperCalls++;
         return null;
       });
@@ -2935,7 +2935,7 @@ void main() {
         WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       var scraperCalls = 0;
-      WebDavLibrarySource.configureMetadataScraper((directoryTitle) async {
+      WebDavLibrarySource.configureMetadataScraper((_) async {
         scraperCalls++;
         return null;
       });
@@ -2956,7 +2956,7 @@ void main() {
       WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
     var scraperCalls = 0;
-    WebDavLibrarySource.configureMetadataScraper((directoryTitle) async {
+    WebDavLibrarySource.configureMetadataScraper((_) async {
       scraperCalls++;
       return null;
     }, scraperVersion: '1');
@@ -2964,7 +2964,7 @@ void main() {
     await WebDavLibrarySource.synchronize();
     expect(scraperCalls, 1);
 
-    WebDavLibrarySource.configureMetadataScraper((directoryTitle) async {
+    WebDavLibrarySource.configureMetadataScraper((_) async {
       scraperCalls++;
       return null;
     }, scraperVersion: '2');
@@ -2983,7 +2983,7 @@ void main() {
         WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       var scraperCalls = 0;
-      WebDavLibrarySource.configureMetadataScraper((directoryTitle) async {
+      WebDavLibrarySource.configureMetadataScraper((_) async {
         scraperCalls++;
         return const ComicMetaData(
           title: 'Cat Eye',
@@ -3009,7 +3009,7 @@ void main() {
       ops.dirs['/manga/Cat Eye[Tsukasa Hojo]/'] = const [
         WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
-      WebDavLibrarySource.configureMetadataScraper((directoryTitle) async {
+      WebDavLibrarySource.configureMetadataScraper((_) async {
         throw StateError('Bangumi is not connected');
       });
 
@@ -3039,7 +3039,7 @@ void main() {
     ops.dirs['/manga/Cat Eye[Tsukasa Hojo]/'] = const [
       WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
-    WebDavLibrarySource.configureMetadataScraper((directoryTitle) async {
+    WebDavLibrarySource.configureMetadataScraper((_) async {
       return null;
     });
 
@@ -3070,7 +3070,7 @@ void main() {
       var calls = 0;
       var enabled = true;
       WebDavLibrarySource.configureMetadataScraper(
-        (directoryTitle) async {
+        (_) async {
           calls++;
           return null;
         },
@@ -3106,7 +3106,7 @@ void main() {
       WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
     var scraperCalls = 0;
-    WebDavLibrarySource.configureMetadataScraper((directoryTitle) async {
+    WebDavLibrarySource.configureMetadataScraper((_) async {
       scraperCalls++;
       throw StateError('Bangumi is not connected');
     });
@@ -3134,7 +3134,7 @@ void main() {
       WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
     var scraperCalls = 0;
-    WebDavLibrarySource.configureMetadataScraper((directoryTitle) async {
+    WebDavLibrarySource.configureMetadataScraper((_) async {
       scraperCalls++;
       throw StateError('Bangumi is not connected');
     });
@@ -3268,6 +3268,61 @@ void main() {
 
       expect(calls, 2);
       expect(ops.writtenTexts, contains('/manga/Book/metadata.json'));
+    },
+  );
+
+  test(
+    'lazy directory inspection retains pending scraping until chapter evidence exists',
+    () async {
+      ops.dirs['/manga/'] = const [
+        WebDavLibraryEntry(name: 'Complex Comic', isDirectory: true),
+      ];
+      ops.dirs['/manga/Complex Comic/'] = const [
+        WebDavLibraryEntry(name: 'cover.jpg', isDirectory: false),
+        WebDavLibraryEntry(name: '000.jpg', isDirectory: false),
+        WebDavLibraryEntry(name: '第01话', isDirectory: true),
+        WebDavLibraryEntry(name: '第02话', isDirectory: true),
+      ];
+      ops.dirs['/manga/Complex Comic/第01话/'] = const [
+        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      ];
+      ops.dirs['/manga/Complex Comic/第02话/'] = const [
+        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      ];
+
+      final inputs = <WebDavLibraryMetadataInput>[];
+      WebDavLibrarySource.configureMetadataScraper((input) async {
+        inputs.add(input);
+        return null;
+      });
+
+      final sync = await WebDavLibrarySource.synchronize();
+      expect(sync.success, isTrue);
+
+      expect(ops.readPaths.any((p) => p.contains('/第01话')), isFalse);
+      expect(inputs, isEmpty);
+
+      final config = WebDavLibraryConfig.fromSettings();
+      final cached = WebDavLibraryCache.instance.find(
+        config.cacheKey,
+        'Complex Comic',
+      );
+      expect(cached, isNotNull);
+      expect(cached!.snapshot!['metadataScrapeStatus'], 'pending');
+
+      final info = await WebDavLibrarySource.loadComicInfo('Complex Comic');
+      expect(info.success, isTrue);
+      expect(inputs, hasLength(1));
+      final input = inputs.single;
+      expect(input.title, 'Complex Comic');
+      expect(input.directoryTitle, 'Complex Comic');
+      expect(input.fileNames, containsAll(['第01话', '第02话', '001.jpg']));
+
+      final afterInfo = WebDavLibraryCache.instance.find(
+        config.cacheKey,
+        'Complex Comic',
+      );
+      expect(afterInfo!.snapshot!['metadataScrapeStatus'], 'noMatch');
     },
   );
 

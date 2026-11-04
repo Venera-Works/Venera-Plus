@@ -21,8 +21,22 @@ import 'remote_archive_comic.dart';
 import 'remote_comic_work.dart';
 import 'package:webdav_client/webdav_client.dart' hide File;
 
+class WebDavLibraryMetadataInput {
+  const WebDavLibraryMetadataInput({
+    required this.title,
+    this.directoryTitle,
+    this.fileNames = const [],
+    this.authors = const [],
+  });
+
+  final String title;
+  final String? directoryTitle;
+  final Iterable<String> fileNames;
+  final Iterable<String> authors;
+}
+
 typedef WebDavLibraryMetadataScraper =
-    Future<ComicMetaData?> Function(String directoryTitle);
+    Future<ComicMetaData?> Function(WebDavLibraryMetadataInput input);
 
 typedef WebDavLibraryMetadataWriteGuard =
     FutureOr<bool> Function(String libraryId, String comicId, int? subjectId);
@@ -896,7 +910,7 @@ class WebDavLibrarySource {
       DateTime.now().millisecondsSinceEpoch;
   static const _maxMetadataMergeAttempts = 3;
   static const _maxMetadataRetryAttempts = 4;
-  static const _defaultScraperVersion = '1';
+  static const _defaultScraperVersion = '2';
   static const _metadataPendingKey = 'webdavMetadataPending';
   static String get _metadataPendingStorageKey {
     final config = WebDavLibraryConfig.fromSettings();
@@ -2077,13 +2091,35 @@ class WebDavLibrarySource {
       now: metadataNowProvider(),
       automaticScrapingEnabled: _canScrapeMetadata,
     )) {
+      final workDirectoryName = _directoryName(work.directory);
+      final fileNames = <String>{
+        for (final volume in work.volumes) ...[
+          _directoryName(volume.archive.path),
+          if (volume.archive.index case final index?)
+            for (final entry in index.entries) _directoryName(entry.name),
+          if (volume.archive.epubPages case final pages?)
+            for (final page in pages) _directoryName(page),
+        ],
+      }.toList(growable: false);
+      final authors = _metadataAuthors([
+        inherited?.author,
+        for (final volume in work.volumes) ...[
+          volume.archive.metadata?.author,
+          volume.archive.embeddedMetadata?.author,
+        ],
+      ]);
       final scraped = await _scrapeMissingMetadata(
         config,
         work.id,
         work.directory,
         pageCount: null,
         fileName: work.metadataFileName,
-        title: work.title,
+        input: WebDavLibraryMetadataInput(
+          title: work.title,
+          directoryTitle: workDirectoryName.isEmpty ? null : workDirectoryName,
+          fileNames: fileNames,
+          authors: authors,
+        ),
         syncRun: syncRun,
       );
       metadata = scraped.metadata ?? metadata;
@@ -2325,13 +2361,33 @@ class WebDavLibrarySource {
           now: metadataNowProvider(),
           automaticScrapingEnabled: _canScrapeMetadata,
         )) {
+      final archiveDirectoryName = _directoryName(target.directory);
+      final fileNames = <String>{
+        _directoryName(path),
+        if (archive.index case final index?)
+          for (final entry in index.entries)
+            if (!_isIgnoredEntry(entry.name)) _directoryName(entry.name),
+        if (archive.epubPages case final pages?)
+          for (final page in pages) _directoryName(page),
+      }.toList(growable: false);
+      final authors = _metadataAuthors([
+        archive.embeddedMetadata?.author,
+        archive.metadata?.author,
+      ]);
       final scraped = await _scrapeMissingMetadata(
         config,
         id,
         target.directory,
         pageCount: archive.pageCount,
         fileName: target.fileName,
-        title: target.title,
+        input: WebDavLibraryMetadataInput(
+          title: target.title,
+          directoryTitle: archiveDirectoryName.isEmpty
+              ? null
+              : archiveDirectoryName,
+          fileNames: fileNames,
+          authors: authors,
+        ),
         syncRun: syncRun,
       );
       if (scraped.metadata != null) {
@@ -2495,31 +2551,6 @@ class WebDavLibrarySource {
       pageCount: directories.isEmpty ? rootImages.length : null,
     );
     if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
-    final shouldScrape = _shouldAttemptMetadataScrape(
-      previousSnapshot: previousSnapshot,
-      metadataFilePresent: metadataFilePresent,
-      scraperVersion: _metadataScraperVersion,
-      now: metadataNowProvider(),
-      automaticScrapingEnabled: _canScrapeMetadata,
-    );
-    if (shouldScrape) {
-      if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
-      final scraped = await _scrapeMissingMetadata(
-        config,
-        id,
-        comicPath,
-        pageCount: directories.isEmpty ? rootImages.length : null,
-        syncRun: syncRun,
-      );
-      if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
-      metadata = scraped.metadata;
-      metadataFilePresent = scraped.filePresent;
-      metadataScrapeStatus = scraped.status;
-      metadataScraperVersion = _metadataScraperVersion;
-      metadataScrapeAttemptedAt = scraped.attemptedAt;
-      metadataScrapeRetryAt = scraped.retryAt;
-      metadataScrapeError = scraped.error;
-    }
 
     final inspectedChapterEntries = <String, List<WebDavLibraryEntry>>{
       ...?childEntries,
@@ -2586,14 +2617,63 @@ class WebDavLibrarySource {
       if (rootImages.isNotEmpty) {
         chapterMap[rootChapterId] = rootChapterTitle;
       }
-    } else if (metadata?.chapters?.isNotEmpty == true) {
+    }
+
+    final shouldScrape =
+        chaptersInspected &&
+        _shouldAttemptMetadataScrape(
+          previousSnapshot: previousSnapshot,
+          metadataFilePresent: metadataFilePresent,
+          scraperVersion: _metadataScraperVersion,
+          now: metadataNowProvider(),
+          automaticScrapingEnabled: _canScrapeMetadata,
+        );
+    if (shouldScrape) {
+      if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
+      final dirName = _directoryName(id);
+      final fileNames = <String>{
+        for (final entry in entries)
+          if (!entry.isDirectory && !_isIgnoredEntry(entry.name)) entry.name,
+        for (final dir in directories) dir.name,
+        for (final chapterEntries in inspectedChapterEntries.values)
+          for (final entry in chapterEntries)
+            if (!entry.isDirectory && !_isIgnoredEntry(entry.name)) entry.name,
+      }.toList(growable: false);
+      final authors = _metadataAuthors([
+        previousSnapshot?.author,
+        metadata?.author,
+      ]);
+      final scraped = await _scrapeMissingMetadata(
+        config,
+        id,
+        comicPath,
+        pageCount: directories.isEmpty ? rootImages.length : null,
+        input: WebDavLibraryMetadataInput(
+          title: dirName,
+          directoryTitle: dirName.isEmpty ? null : dirName,
+          fileNames: fileNames,
+          authors: authors,
+        ),
+        syncRun: syncRun,
+      );
+      if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
+      metadata = scraped.metadata ?? metadata;
+      metadataFilePresent = scraped.filePresent;
+      metadataScrapeStatus = scraped.status;
+      metadataScraperVersion = _metadataScraperVersion;
+      metadataScrapeAttemptedAt = scraped.attemptedAt;
+      metadataScrapeRetryAt = scraped.retryAt;
+      metadataScrapeError = scraped.error;
+    }
+
+    if (directories.isEmpty && metadata?.chapters?.isNotEmpty == true) {
       for (var index = 0; index < metadata!.chapters!.length; index++) {
         final chapter = metadata.chapters![index];
         final chapterId = '$_metadataChapterPrefix$index';
         metadataChapters[chapterId] = chapter;
         chapterMap[chapterId] = chapter.title;
       }
-    } else if (rootImages.isNotEmpty) {
+    } else if (directories.isEmpty && rootImages.isNotEmpty) {
       chapterMap[rootChapterId] = rootChapterTitle;
     }
     if (chapterMap.isEmpty && chaptersInspected) {
@@ -2891,7 +2971,7 @@ class WebDavLibrarySource {
     String comicPath, {
     required int? pageCount,
     String fileName = _metadataFileName,
-    String? title,
+    required WebDavLibraryMetadataInput input,
     _WebDavLibrarySyncRun? syncRun,
   }) async {
     final scraper = _metadataScraper;
@@ -2907,7 +2987,7 @@ class WebDavLibrarySource {
     }
     final attemptedAt = metadataNowProvider();
     try {
-      final scraped = await scraper(title ?? _directoryName(id));
+      final scraped = await scraper(input);
       if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
       if (scraped == null) {
         return (
@@ -3038,6 +3118,20 @@ class WebDavLibrarySource {
     return _imageEntries(
       entries,
     ).where((entry) => !isNamedComicCover(entry.name)).length;
+  }
+
+  static List<String> _metadataAuthors(Iterable<String?> rawAuthors) {
+    final result = <String>{};
+    for (final raw in rawAuthors) {
+      if (raw == null || raw.trim().isEmpty) continue;
+      for (final part in raw.split(RegExp(r'[,，;；/、]'))) {
+        final trimmed = part.trim();
+        if (trimmed.isNotEmpty) {
+          result.add(trimmed);
+        }
+      }
+    }
+    return result.toList(growable: false);
   }
 
   static String _encodeMetadata(ComicMetaData metadata) =>

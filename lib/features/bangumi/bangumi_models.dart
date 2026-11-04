@@ -351,6 +351,35 @@ class BangumiSubject {
     'writer',
     'artist',
   };
+  static const _aliasInfoboxKeys = {
+    '别名',
+    '別名',
+    'alias',
+    'aliases',
+    '中文名',
+    'chinese name',
+    '简体中文名',
+    '簡體中文名',
+    '繁体中文名',
+    '繁體中文名',
+    '第二中文名',
+    '日文名',
+    'japanese name',
+    '英文名',
+    'english name',
+    '纯假名',
+    '純假名',
+    'kana',
+    '罗马字',
+    '羅馬字',
+    'romaji',
+    '台湾名称',
+    '台灣名稱',
+    '港澳名称',
+    '港澳名稱',
+    '马新名称',
+    '馬新名稱',
+  };
 
   final int id;
   final String title;
@@ -363,6 +392,7 @@ class BangumiSubject {
   final String? platform;
   final List<String> authors;
   final List<String> tags;
+  final List<String> aliases;
 
   const BangumiSubject({
     required this.id,
@@ -376,6 +406,7 @@ class BangumiSubject {
     this.platform,
     this.authors = const [],
     this.tags = const [],
+    this.aliases = const [],
   });
 
   String get metadataTitle =>
@@ -389,6 +420,7 @@ class BangumiSubject {
     final images = json['images'];
     final apiCoverUrl = images is Map ? images['common'] as String? : null;
     final localAuthors = _stringValues(json['authors']);
+    final localAliases = _stringValues(json['aliases']);
     return BangumiSubject(
       id: (json['id'] as num?)?.toInt() ?? 0,
       title: nameCn.isNotEmpty
@@ -407,6 +439,9 @@ class BangumiSubject {
           ? localAuthors
           : _authorsFromInfobox(json['infobox']),
       tags: _tagsFromJson(json),
+      aliases: localAliases.isNotEmpty
+          ? localAliases
+          : _aliasesFromInfobox(json['infobox']),
     );
   }
 
@@ -422,6 +457,7 @@ class BangumiSubject {
     'platform': platform,
     'authors': authors,
     'tags': tags,
+    'aliases': aliases,
   };
 
   static List<String> _authorsFromInfobox(Object? raw) {
@@ -432,6 +468,21 @@ class BangumiSubject {
       final key = item['key'];
       if (key is! String ||
           !_authorInfoboxKeys.contains(key.trim().toLowerCase())) {
+        continue;
+      }
+      _addUnique(result, _wikiValues(item['value']));
+    }
+    return result;
+  }
+
+  static List<String> _aliasesFromInfobox(Object? raw) {
+    if (raw is! List) return const [];
+    final result = <String>[];
+    for (final item in raw) {
+      if (item is! Map) continue;
+      final key = item['key'];
+      if (key is! String ||
+          !_aliasInfoboxKeys.contains(key.trim().toLowerCase())) {
         continue;
       }
       _addUnique(result, _wikiValues(item['value']));

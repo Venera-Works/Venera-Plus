@@ -285,6 +285,7 @@ void main() {
       'platform': 'TV',
       'authors': <String>[],
       'tags': <String>[],
+      'aliases': <String>[],
     });
     expect(BangumiCollection.fromJson({}).toJson(), {
       'type': 0,
@@ -318,6 +319,7 @@ void main() {
     expect(restoredSubject.totalEpisodes, localSubject.totalEpisodes);
     expect(restoredSubject.totalVolumes, localSubject.totalVolumes);
     expect(restoredSubject.platform, localSubject.platform);
+    expect(restoredSubject.aliases, localSubject.aliases);
 
     const localCollection = BangumiCollection(
       type: 2,
@@ -389,6 +391,78 @@ void main() {
     expect(restored.tags, subject.tags);
     expect(restored.summary, subject.summary);
   });
+
+  test(
+    'Bangumi subject extracts and deduplicates aliases from infobox and local JSON',
+    () {
+      final subject = BangumiSubject.fromJson({
+        'id': 100,
+        'name': 'Original Comic',
+        'name_cn': '原生漫画',
+        'summary': '简介',
+        'infobox': [
+          {'key': '中文名', 'value': '中文名称'},
+          {
+            'key': '别名',
+            'value': [
+              {'v': '别名一'},
+              {'k': '英文名', 'v': 'English Alias'},
+              {'v': '别名一'}, // duplicate
+              {'v': '   '}, // blank ignored
+            ],
+          },
+          {
+            'key': '別名',
+            'value': ['別名二', 'English Alias'], // duplicate across keys
+          },
+          {'key': '英文名', 'value': 'Official English Name'},
+          {'key': '日文名', 'value': '日本語の別名'},
+          {'key': '第二中文名', 'value': '次要中文名'},
+          {'key': '純假名', 'value': 'にほんごのべつめい'},
+          {'key': '羅馬字', 'value': 'Nihongo no Betsumei'},
+          {'key': '台灣名稱', 'value': '臺灣譯名'},
+          {'key': '港澳名稱', 'value': '港澳譯名'},
+          {'key': '馬新名稱', 'value': '馬新譯名'},
+          {'key': '出版社', 'value': '集英社'}, // unrelated ignored
+          {'key': '价格', 'value': '500円'}, // unrelated ignored
+          {'key': '发售日', 'value': '2024-01-01'}, // unrelated ignored
+          {'key': '页数', 'value': '200'}, // unrelated ignored
+        ],
+      });
+
+      expect(subject.aliases, [
+        '中文名称',
+        '别名一',
+        'English Alias',
+        '別名二',
+        'Official English Name',
+        '日本語の別名',
+        '次要中文名',
+        'にほんごのべつめい',
+        'Nihongo no Betsumei',
+        '臺灣譯名',
+        '港澳譯名',
+        '馬新譯名',
+      ]);
+
+      // Roundtrip through toJson / fromJson
+      final json = subject.toJson();
+      expect(json['aliases'], subject.aliases);
+      final restored = BangumiSubject.fromJson(json);
+      expect(restored.aliases, subject.aliases);
+
+      // Local aliases in JSON takes precedence over infobox
+      final overridden = BangumiSubject.fromJson({
+        'id': 101,
+        'name': 'Title',
+        'aliases': ['Explicit Local Alias'],
+        'infobox': [
+          {'key': '别名', 'value': 'Infobox Alias'},
+        ],
+      });
+      expect(overridden.aliases, ['Explicit Local Alias']);
+    },
+  );
 
   test('Bangumi metadata title falls back to the original name', () {
     final subject = BangumiSubject.fromJson({

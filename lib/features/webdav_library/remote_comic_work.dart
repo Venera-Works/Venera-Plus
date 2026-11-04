@@ -178,6 +178,7 @@ class RemoteComicVolumeName {
   static final _serial = RegExp(r'^(.*?)[\s_.-]+(\d+)(?:\s*[-~～–—]\s*(\d+))?$');
   static final _fullWidthDigits = RegExp(r'[０-９]');
   static final _seriesSuffix = RegExp(r'[\s_—–-]+$');
+  static final _singleBracket = RegExp(r'^\[([^\[\]]+)\]$|^【([^【】]+)】$');
 
   static RemoteComicVolumeName parse(String fileName) {
     var stem = comicFileStem(fileName);
@@ -226,10 +227,9 @@ class RemoteComicVolumeName {
 
   static String _series(String value) {
     var result = value.trim().replaceFirst(_seriesSuffix, '');
-    if (result.length > 1 &&
-        (result.startsWith('[') && result.endsWith(']') ||
-            result.startsWith('【') && result.endsWith('】'))) {
-      result = result.substring(1, result.length - 1).trim();
+    final bracket = _singleBracket.firstMatch(result);
+    if (bracket != null) {
+      result = (bracket[1] ?? bracket[2]!).trim();
     }
     return result;
   }

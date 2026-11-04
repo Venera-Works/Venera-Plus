@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/app_runtime/app_runtime.dart';
 import 'package:venera_plus/features/bangumi/bangumi.dart';
+import 'package:venera_plus/features/webdav_library/webdav_library.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 
@@ -73,7 +74,10 @@ void main() {
       );
 
       await expectLater(
-        scrapeBangumiMetadataForWebDav('Cat Eye', service: service),
+        scrapeBangumiMetadataForWebDav(
+          const WebDavLibraryMetadataInput(title: 'Cat Eye'),
+          service: service,
+        ),
         throwsA(
           isA<StateError>().having(
             (e) => e.message,
