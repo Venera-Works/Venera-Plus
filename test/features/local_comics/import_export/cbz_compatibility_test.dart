@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:archive/archive_io.dart' as archive_io;
 import 'package:enough_convert/enough_convert.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -217,68 +219,86 @@ void main() {
       },
     );
 
-    test('extractArchiveForTesting extracts zip with Dart fallback', () async {
-      final temp = Directory.systemTemp.createTempSync('cbz_extract_');
-      try {
-        final archive = archive_io.Archive()
-          ..addFile(archive_io.ArchiveFile.directory('猫之眼[北条司]/'))
-          ..addFile(archive_io.ArchiveFile.bytes('猫之眼[北条司]/第01卷/001.jpg', [1]));
-        final archiveFile = File(FilePath.join(temp.path, 'book.cbz'))
-          ..writeAsBytesSync(archive_io.ZipEncoder().encodeBytes(archive));
-        final out = Directory(FilePath.join(temp.path, 'out'))..createSync();
+    for (final (description, encoding) in <(String, Encoding)>[
+      ('UTF-8', utf8),
+      ('UTF-8 without its ZIP flag', latin1),
+      ('GBK', const GbkCodec()),
+    ]) {
+      test('Dart ZIP fallback preserves $description entry names', () async {
+        final temp = Directory.systemTemp.createTempSync('cbz_extract_');
+        try {
+          String storedName(String name) =>
+              encoding == latin1 ? latin1.decode(utf8.encode(name)) : name;
+          final archive = archive_io.Archive()
+            ..addFile(archive_io.ArchiveFile.directory(storedName('猫之眼[北条司]/')))
+            ..addFile(
+              archive_io.ArchiveFile.bytes(
+                storedName('猫之眼[北条司]/第01卷/001.jpg'),
+                [1, 2, 3],
+              ),
+            );
+          final archiveFile = File(FilePath.join(temp.path, 'book.cbz'))
+            ..writeAsBytesSync(
+              archive_io.ZipEncoder(
+                filenameEncoding: encoding,
+              ).encodeBytes(archive),
+            );
+          final out = Directory(FilePath.join(temp.path, 'out'))..createSync();
 
-        await CBZ.extractArchiveForTesting(
-          archiveFile,
-          out,
-          zipExtractor: (archivePath, outputPath, threads) async {
-            throw const FormatException('Missing extension byte', null, 24);
-          },
-          sevenZipExtractor: (archivePath, outputPath, threads) async {
-            throw Exception('Failed to open archive.');
-          },
-        );
-
-        expect(
-          File(
-            FilePath.join(out.path, '猫之眼[北条司]', '第01卷', '001.jpg'),
-          ).existsSync(),
-          isTrue,
-        );
-      } finally {
-        temp.deleteSync(recursive: true);
-      }
-    });
-
-    test('extractArchiveForTesting decodes GBK zip entry names', () async {
-      final temp = Directory.systemTemp.createTempSync('cbz_extract_');
-      try {
-        final archive = archive_io.Archive()
-          ..addFile(archive_io.ArchiveFile.directory('猫之眼[北条司]/'))
-          ..addFile(archive_io.ArchiveFile.bytes('猫之眼[北条司]/第01卷/001.jpg', [1]));
-        final archiveFile = File(FilePath.join(temp.path, 'book.cbz'))
-          ..writeAsBytesSync(
-            archive_io.ZipEncoder(
-              filenameEncoding: const GbkCodec(),
-            ).encodeBytes(archive),
+          await CBZ.extractArchiveForTesting(
+            archiveFile,
+            out,
+            zipExtractor: (archivePath, outputPath, threads) async {
+              throw const FormatException('Missing extension byte', null, 24);
+            },
+            sevenZipExtractor: (archivePath, outputPath, threads) async {
+              throw Exception('Failed to open archive.');
+            },
           );
+
+          expect(
+            File(
+              FilePath.join(out.path, '猫之眼[北条司]', '第01卷', '001.jpg'),
+            ).readAsBytesSync(),
+            [1, 2, 3],
+          );
+        } finally {
+          temp.deleteSync(recursive: true);
+        }
+      });
+    }
+
+    test('Dart ZIP fallback reports damaged compressed data', () async {
+      final temp = Directory.systemTemp.createTempSync('cbz_extract_');
+      try {
+        final archive = archive_io.Archive()
+          ..addFile(
+            archive_io.ArchiveFile.bytes('001.jpg', List.filled(256, 1))
+              ..compression = archive_io.CompressionType.deflate,
+          );
+        final bytes = archive_io.ZipEncoder().encodeBytes(archive);
+        final header = ByteData.sublistView(bytes);
+        final contentOffset =
+            30 +
+            header.getUint16(26, Endian.little) +
+            header.getUint16(28, Endian.little);
+        bytes[contentOffset] = 0x07; // Reserved DEFLATE block type.
+        final archiveFile = File(FilePath.join(temp.path, 'damaged.cbz'))
+          ..writeAsBytesSync(bytes);
         final out = Directory(FilePath.join(temp.path, 'out'))..createSync();
 
-        await CBZ.extractArchiveForTesting(
-          archiveFile,
-          out,
-          zipExtractor: (archivePath, outputPath, threads) async {
-            throw const FormatException('Missing extension byte', null, 24);
-          },
-          sevenZipExtractor: (archivePath, outputPath, threads) async {
-            throw Exception('Failed to open archive.');
-          },
-        );
-
-        expect(
-          File(
-            FilePath.join(out.path, '猫之眼[北条司]', '第01卷', '001.jpg'),
-          ).existsSync(),
-          isTrue,
+        await expectLater(
+          CBZ.extractArchiveForTesting(
+            archiveFile,
+            out,
+            zipExtractor: (archivePath, outputPath, threads) async {
+              throw const FormatException('Native ZIP extraction failed');
+            },
+            sevenZipExtractor: (archivePath, outputPath, threads) async {
+              throw const FormatException('7z extraction failed');
+            },
+          ),
+          throwsA(isA<archive_io.ArchiveException>()),
         );
       } finally {
         temp.deleteSync(recursive: true);

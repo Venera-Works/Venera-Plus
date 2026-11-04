@@ -16,6 +16,8 @@ updates:
       # rhttp 0.18+ requires a newer flutter_rust_bridge than this project pins.
       - dependency-name: rhttp
         versions: [">= 0.18.0"]
+      # rhttp 0.15.1 requires flutter_rust_bridge 2.11.1.
+      - dependency-name: flutter_rust_bridge
 
   - package-ecosystem: github-actions
     directory: /

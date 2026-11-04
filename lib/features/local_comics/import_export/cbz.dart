@@ -74,7 +74,10 @@ abstract class CBZ {
   ) async {
     final input = archive_io.InputFileStream(archivePath);
     try {
-      final archive = archive_io.ZipDecoder().decodeStream(input);
+      // Preserve legacy name bytes and report damaged archives as failures.
+      final archive = archive_io.ZipDecoder(
+        filenameEncoding: latin1,
+      ).decodeStream(input, throwOnError: true);
       for (final entry in archive) {
         final entryName = _normalizeZipEntryName(entry.name);
         if (entryName == null) continue;
@@ -119,6 +122,11 @@ abstract class CBZ {
     final bytes = name.codeUnits;
     if (bytes.any((byte) => byte > 0xff)) {
       return name;
+    }
+    try {
+      return utf8.decode(bytes);
+    } on FormatException {
+      // Legacy names without valid UTF-8 are decoded as GBK below.
     }
     try {
       final decoded = const GbkCodec().decode(bytes);
