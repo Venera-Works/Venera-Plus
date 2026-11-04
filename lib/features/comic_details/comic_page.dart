@@ -205,6 +205,21 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
   }
 
   @override
+  Future<void> refreshDetails() async {
+    final res = await loadData();
+    if (!mounted) return;
+    if (res.success) {
+      data = res.data;
+      await onDataLoaded();
+      if (mounted) {
+        setState(() {});
+      }
+    } else {
+      context.showMessage(message: (res.errorMessage ?? 'Error').tl);
+    }
+  }
+
+  @override
   ComicDetails get comic => data!;
 
   void onScroll() {

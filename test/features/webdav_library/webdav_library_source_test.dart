@@ -3439,6 +3439,216 @@ void main() {
     expect(snapshot['metadataScrapeError'], contains('scraper unavailable'));
     expect(ops.writeRequests, isEmpty);
   });
+
+  test(
+    'manual scraping retries only the selected unmatched comic and updates details',
+    () async {
+      ops.dirs['/manga/Comic A/'] = const [
+        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      ];
+      ops.dirs['/manga/Comic B/'] = const [
+        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      ];
+      ops.dirs['/manga/'] = const [
+        WebDavLibraryEntry(name: 'Comic A', isDirectory: true),
+        WebDavLibraryEntry(name: 'Comic B', isDirectory: true),
+      ];
+
+      final boundSubjects = <({String comicId, int subjectId})>[];
+      WebDavLibrarySource.configureMetadataSubjectHandler(({
+        required scopeId,
+        required sourceKey,
+        required comicId,
+        required subjectId,
+      }) {
+        boundSubjects.add((comicId: comicId, subjectId: subjectId));
+      });
+
+      var scraperCalls = 0;
+      WebDavLibrarySource.configureMetadataScraper((input) async {
+        scraperCalls++;
+        return null;
+      }, scraperVersion: 'v1');
+
+      final initialSync = await WebDavLibrarySource.synchronize();
+      expect(initialSync.success, isTrue);
+      expect(scraperCalls, 2);
+
+      final config = WebDavLibraryConfig.fromSettings();
+      expect(
+        WebDavLibraryCache.instance
+            .find(config.cacheKey, 'Comic A')!
+            .snapshot!['metadataScrapeStatus'],
+        'noMatch',
+      );
+      expect(
+        WebDavLibraryCache.instance
+            .find(config.cacheKey, 'Comic B')!
+            .snapshot!['metadataScrapeStatus'],
+        'noMatch',
+      );
+
+      // Scraper now returns a match for Comic A, but still null for Comic B
+      WebDavLibrarySource.configureMetadataScraper((input) async {
+        scraperCalls++;
+        if (input.title.contains('Comic A')) {
+          return const ComicMetaData(
+            title: 'Comic A Matched',
+            author: 'Author A',
+            tags: ['Action'],
+            bangumiSubjectId: 101,
+          );
+        }
+        return null;
+      }, scraperVersion: 'v1');
+
+      // Forced sync must NOT retry because both are cached as noMatch for v1
+      final forcedSync = await WebDavLibrarySource.synchronize(force: true);
+      expect(forcedSync.success, isTrue);
+      expect(scraperCalls, 2);
+
+      // Manual retry on Comic A bypasses noMatch
+      final result = await WebDavLibrarySource.retryMetadataScrape('Comic A');
+      expect(result.success, isTrue, reason: result.errorMessage);
+      expect(result.data, WebDavMetadataScrapeResult.matched);
+      expect(scraperCalls, 3);
+      expect(boundSubjects, [(comicId: 'Comic A', subjectId: 101)]);
+
+      // Details and file for Comic A are updated
+      final detailsA = await WebDavLibrarySource.loadComicInfo('Comic A');
+      expect(detailsA.success, isTrue);
+      expect(detailsA.data.title, 'Comic A Matched');
+      expect(detailsA.data.tags['作者'], ['Author A']);
+      expect(
+        ops.writtenTexts.containsKey('/manga/Comic A/metadata.json'),
+        isTrue,
+      );
+      final writtenA =
+          jsonDecode(ops.writtenTexts['/manga/Comic A/metadata.json']!) as Map;
+      expect(writtenA['bangumiSubjectId'], 101);
+
+      // Comic B remains completely isolated and unchanged
+      final snapshotB = WebDavLibraryCache.instance
+          .find(config.cacheKey, 'Comic B')!
+          .snapshot!;
+      expect(snapshotB['metadataScrapeStatus'], 'noMatch');
+      expect(
+        ops.writtenTexts.containsKey('/manga/Comic B/metadata.json'),
+        isFalse,
+      );
+    },
+  );
+
+  test(
+    'retryMetadataScrape succeeds when automatic scraping is disabled, while network error records failed instead of noMatch',
+    () async {
+      ops.dirs['/manga/Manual Book/'] = const [
+        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      ];
+      ops.dirs['/manga/'] = const [
+        WebDavLibraryEntry(name: 'Manual Book', isDirectory: true),
+      ];
+
+      var scraperCalls = 0;
+      WebDavLibrarySource.configureMetadataScraper((input) async {
+        scraperCalls++;
+        return const ComicMetaData(
+          title: 'Manual Matched',
+          author: 'Manual Author',
+          tags: [],
+        );
+      }, isEnabled: () => false);
+
+      final sync = await WebDavLibrarySource.synchronize();
+      expect(sync.success, isTrue);
+      expect(scraperCalls, 0);
+      expect(
+        ops.writtenTexts.containsKey('/manga/Manual Book/metadata.json'),
+        isFalse,
+      );
+
+      // Manual retry succeeds even though auto scraping is disabled
+      final manualResult = await WebDavLibrarySource.retryMetadataScrape(
+        'Manual Book',
+      );
+      expect(manualResult.success, isTrue, reason: manualResult.errorMessage);
+      expect(manualResult.data, WebDavMetadataScrapeResult.matched);
+      expect(scraperCalls, 1);
+      expect(
+        ops.writtenTexts.containsKey('/manga/Manual Book/metadata.json'),
+        isTrue,
+      );
+
+      // Network error during retry records failed status instead of noMatch
+      ops.dirs['/manga/Net Fail Book/'] = const [
+        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      ];
+      WebDavLibrarySource.configureMetadataScraper(
+        (input) async => throw const SocketException('Connection timed out'),
+      );
+
+      final failResult = await WebDavLibrarySource.retryMetadataScrape(
+        'Net Fail Book',
+      );
+      expect(failResult.success, isFalse);
+
+      final config = WebDavLibraryConfig.fromSettings();
+      final snapshotFail = WebDavLibraryCache.instance
+          .find(config.cacheKey, 'Net Fail Book')!
+          .snapshot!;
+      expect(snapshotFail['metadataScrapeStatus'], 'failed');
+      expect(
+        snapshotFail['metadataScrapeError'],
+        contains('Connection timed out'),
+      );
+    },
+  );
+
+  test(
+    'retryMetadataScrape returns notNeeded and never overwrites existing metadata',
+    () async {
+      ops.dirs['/manga/Existing Book/'] = const [
+        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
+      ];
+      ops.textFiles['/manga/Existing Book/metadata.json'] = jsonEncode({
+        'title': 'Original Title',
+        'author': 'Original Author',
+        'tags': ['Original Tag'],
+        'bangumiSubjectId': 42,
+      });
+
+      var scraperCalls = 0;
+      WebDavLibrarySource.configureMetadataScraper((input) async {
+        scraperCalls++;
+        return const ComicMetaData(
+          title: 'Replacement Title',
+          author: 'Replacement Author',
+          bangumiSubjectId: 99,
+          tags: [],
+        );
+      });
+
+      final result = await WebDavLibrarySource.retryMetadataScrape(
+        'Existing Book',
+      );
+      expect(result.success, isTrue, reason: result.errorMessage);
+      expect(result.data, WebDavMetadataScrapeResult.notNeeded);
+      expect(scraperCalls, 0);
+      expect(ops.writeRequests, isEmpty);
+      expect(
+        jsonDecode(
+          ops.textFiles['/manga/Existing Book/metadata.json']!,
+        )['title'],
+        'Original Title',
+      );
+
+      final details = await WebDavLibrarySource.loadComicInfo('Existing Book');
+      expect(details.success, isTrue);
+      expect(details.data.title, 'Original Title');
+      expect(details.data.tags['作者'], ['Original Author']);
+    },
+  );
 }
 
 class _MetadataBindingGateway extends Fake implements BangumiGateway {

@@ -26,10 +26,65 @@ import 'package:venera_plus/foundation/file_interaction.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 import 'package:venera_plus/routing/page_jump_target.dart';
+import 'package:venera_plus/features/webdav_library/webdav_library.dart';
 
 abstract mixin class ComicPageActions {
   BuildContext get context;
   void update();
+
+  Future<void> refreshDetails();
+
+  bool get isWebDavComic =>
+      WebDavLibraryEngines.find(comic.sourceKey) != null ||
+      comic.sourceKey == WebDavLibrarySource.sourceKey;
+
+  bool _isRetryingMetadataScrape = false;
+
+  Future<void> retryMetadataScrape() async {
+    if (_isRetryingMetadataScrape) return;
+    if (!BangumiService().isConnected) {
+      App.rootContext.showMessage(
+        message: 'Connect Bangumi in Settings first'.tl,
+      );
+      return;
+    }
+    _isRetryingMetadataScrape = true;
+    final loadingController = showLoadingDialog(
+      App.rootContext,
+      barrierDismissible: false,
+      allowCancel: false,
+      message: 'Rescraping metadata...'.tl,
+    );
+    try {
+      final engine = WebDavLibraryEngines.find(comic.sourceKey);
+      final res =
+          await (engine?.retryMetadataScrape(comic.id) ??
+              WebDavLibrarySource.retryMetadataScrape(comic.id));
+      if (!context.mounted) return;
+      if (res.error) {
+        App.rootContext.showMessage(message: (res.errorMessage ?? 'Error').tl);
+      } else {
+        switch (res.data) {
+          case WebDavMetadataScrapeResult.matched:
+            await refreshDetails();
+            break;
+          case WebDavMetadataScrapeResult.noMatch:
+            App.rootContext.showMessage(message: 'No match found'.tl);
+            break;
+          case WebDavMetadataScrapeResult.notNeeded:
+            App.rootContext.showMessage(
+              message:
+                  'Existing metadata does not need automatic scraping. Use manual binding to adjust.'
+                      .tl,
+            );
+            break;
+        }
+      }
+    } finally {
+      loadingController.close();
+      _isRetryingMetadataScrape = false;
+    }
+  }
 
   ComicDetails get comic;
 
@@ -423,6 +478,12 @@ abstract mixin class ComicPageActions {
         text: 'Switch source'.tl,
         onClick: changeSource,
       ),
+      if (isWebDavComic)
+        MenuEntry(
+          icon: Icons.auto_awesome,
+          text: 'Rescrape metadata'.tl,
+          onClick: retryMetadataScrape,
+        ),
       MenuEntry(icon: Icons.share, text: 'Share'.tl, onClick: share),
       MenuEntry(
         icon: Icons.copy,

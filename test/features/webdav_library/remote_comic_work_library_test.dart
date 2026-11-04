@@ -13,6 +13,7 @@ import 'package:venera_plus/features/bangumi/bangumi.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_storage/comic_storage.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library.dart';
+import 'package:venera_plus/features/webdav_library/webdav_library_cache.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
@@ -975,6 +976,171 @@ void main() {
       expect(beta['title'], 'Series Beta');
       expect(beta['bangumiSubjectId'], 2);
       expect(ranges, isEmpty);
+    },
+  );
+
+  test(
+    'unmatched works retain scrape state across volume reads, sync, and reopen',
+    () async {
+      store.backend = StorageBackend.webdav;
+      final zip1 = _createZip(1);
+      final zip2 = _createZip(1);
+      store.files['/library/Multi Unmatched/Vol 01.cbz'] = _FileFixture(
+        path: '/library/Multi Unmatched/Vol 01.cbz',
+        bytes: zip1,
+      );
+      store.files['/library/Multi Unmatched/Vol 02.cbz'] = _FileFixture(
+        path: '/library/Multi Unmatched/Vol 02.cbz',
+        bytes: zip2,
+      );
+
+      var scraperCalls = 0;
+      final scrapedTitles = <String>[];
+      WebDavLibrarySource.configureMetadataScraper((input) async {
+        scraperCalls++;
+        scrapedTitles.add(input.title);
+        return null;
+      });
+
+      final sync = await engine.synchronize();
+      expect(sync.success, isTrue, reason: sync.errorMessage);
+      expect(scraperCalls, 1);
+      expect(scrapedTitles, ['Multi Unmatched']);
+      expect(store.texts, isEmpty);
+
+      final list = await source.explorePages.single.loadPage!(1);
+      expect(list.data, hasLength(1));
+      final work = list.data.single;
+
+      final cacheKey = 'remote-library:${engine.library.id}';
+      final cached = WebDavLibraryCache.instance.find(cacheKey, work.id);
+      expect(cached?.snapshot?['metadataScrapeStatus'], 'noMatch');
+
+      // Loading cover must not scrape or write member sidecars
+      final info = await source.loadComicInfo!(work.id);
+      expect(info.success, isTrue, reason: info.errorMessage);
+      final thumbConfig = await source.getThumbnailLoadingConfig!(
+        info.data.cover,
+      );
+      final loadBytes =
+          thumbConfig['loadBytes'] as Future<Uint8List> Function(CancelToken);
+      expect(await loadBytes(CancelToken()), [9, 1]);
+      expect(scraperCalls, 1);
+      expect(store.texts, isEmpty);
+
+      // Loading distinct volumes must not scrape or write member sidecars
+      final vol1Pages = await source.loadComicPages!(
+        work.id,
+        '/library/Multi Unmatched/Vol 01.cbz',
+      );
+      expect(vol1Pages.success, isTrue, reason: vol1Pages.errorMessage);
+      final vol2Pages = await source.loadComicPages!(
+        work.id,
+        '/library/Multi Unmatched/Vol 02.cbz',
+      );
+      expect(vol2Pages.success, isTrue, reason: vol2Pages.errorMessage);
+      expect(scraperCalls, 1);
+      expect(store.texts, isEmpty);
+
+      // Repeated sync on validatorless files rebuilds index but must not re-scrape
+      final secondSync = await engine.synchronize();
+      expect(secondSync.success, isTrue, reason: secondSync.errorMessage);
+      expect(scraperCalls, 1);
+      expect(store.texts, isEmpty);
+
+      // Reopening engine reloads persistent cache without calling scraper
+      final reopenedEngine = WebDavLibraryEngine(
+        library: engine.library,
+        store: store,
+      );
+      addTearDown(reopenedEngine.cancel);
+      final reopenedSource = reopenedEngine.create();
+      final reopenedSync = await reopenedEngine.synchronize();
+      expect(reopenedSync.success, isTrue, reason: reopenedSync.errorMessage);
+      final reopenedInfo = await reopenedSource.loadComicInfo!(work.id);
+      expect(reopenedInfo.success, isTrue, reason: reopenedInfo.errorMessage);
+      expect(scraperCalls, 1);
+      expect(store.texts, isEmpty);
+
+      // Manual retry on reopened engine bypasses noMatch and transitions to matched
+      WebDavLibrarySource.configureMetadataScraper((input) async {
+        scraperCalls++;
+        return const ComicMetaData(
+          title: 'Multi Matched',
+          author: 'Matched Author',
+          tags: ['Action'],
+          bangumiSubjectId: 888,
+        );
+      });
+
+      final retry = await reopenedEngine.retryMetadataScrape(work.id);
+      expect(retry.success, isTrue, reason: retry.errorMessage);
+      expect(retry.data, WebDavMetadataScrapeResult.matched);
+      expect(scraperCalls, 2);
+      expect(store.texts.keys, ['/library/Multi Unmatched/metadata.json']);
+      final updatedDetails = await reopenedSource.loadComicInfo!(work.id);
+      expect(updatedDetails.data.title, 'Multi Matched');
+      expect(updatedDetails.data.tags['作者'], ['Matched Author']);
+    },
+  );
+
+  test(
+    'work-level valid metadata prevents volume-level scraping during member loading',
+    () async {
+      store.backend = StorageBackend.webdav;
+      store.addFile(
+        '/library/Valid Work/Vol 01.cbz',
+        _createZip(1),
+        eTag: '"v1"',
+      );
+      store.addFile(
+        '/library/Valid Work/Vol 02.cbz',
+        _createZip(1),
+        eTag: '"v2"',
+      );
+      store.texts['/library/Valid Work/metadata.json'] = RemoteTextFile(
+        content: jsonEncode({
+          'title': 'Valid Work Title',
+          'author': 'Valid Author',
+          'tags': <String>[],
+          'bangumiSubjectId': 1234,
+        }),
+        eTag: '"meta-1"',
+      );
+
+      var scraperCalls = 0;
+      WebDavLibrarySource.configureMetadataScraper((input) async {
+        scraperCalls++;
+        return const ComicMetaData(
+          title: 'Should Not Scrape Volume',
+          author: 'Unknown',
+          tags: [],
+        );
+      });
+
+      final sync = await engine.synchronize();
+      expect(sync.success, isTrue, reason: sync.errorMessage);
+      expect(scraperCalls, 0);
+
+      final list = await source.explorePages.single.loadPage!(1);
+      final work = list.data.singleWhere(
+        (comic) => comic.id.startsWith(remoteComicWorkPrefix),
+      );
+
+      final p1 = await source.loadComicPages!(
+        work.id,
+        '/library/Valid Work/Vol 01.cbz',
+      );
+      expect(p1.success, isTrue, reason: p1.errorMessage);
+      final p2 = await source.loadComicPages!(
+        work.id,
+        '/library/Valid Work/Vol 02.cbz',
+      );
+      expect(p2.success, isTrue, reason: p2.errorMessage);
+
+      expect(scraperCalls, 0);
+      expect(store.textWrites, isEmpty);
+      expect(store.texts.keys, ['/library/Valid Work/metadata.json']);
     },
   );
 }

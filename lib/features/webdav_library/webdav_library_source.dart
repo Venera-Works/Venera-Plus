@@ -784,6 +784,8 @@ class _RemoteFileStoreLibraryOps implements WebDavLibraryOps {
   }
 }
 
+enum WebDavMetadataScrapeResult { matched, noMatch, notNeeded }
+
 enum WebDavMetadataPendingFailure {
   none,
   authentication,
@@ -1700,6 +1702,38 @@ class WebDavLibrarySource {
     }
   }
 
+  static Future<Res<WebDavMetadataScrapeResult>> retryMetadataScrape(
+    String id,
+  ) async {
+    final config = WebDavLibraryConfig.fromSettings();
+    if (!config.isValid) {
+      return const Res.error('Invalid WebDAV comic library configuration');
+    }
+    if (_metadataScraper == null) {
+      return const Res.error('Metadata scraping is unavailable');
+    }
+    try {
+      final snapshot = await _loadSnapshot(
+        config,
+        id,
+        forceRefresh: true,
+        forceMetadataScrape: true,
+      );
+      _notifyMetadataSubject(config, id, snapshot.bangumiSubjectId);
+      contentVersion.value++;
+      return switch (snapshot.metadataScrapeStatus) {
+        'matched' => const Res(WebDavMetadataScrapeResult.matched),
+        'noMatch' => const Res(WebDavMetadataScrapeResult.noMatch),
+        'notNeeded' => const Res(WebDavMetadataScrapeResult.notNeeded),
+        _ => Res.error(
+          snapshot.metadataScrapeError ?? 'Metadata scraping is unavailable',
+        ),
+      };
+    } catch (error) {
+      return Res.error(error.toString());
+    }
+  }
+
   static ({Map<String, String> titles, Map<String, String> groups})
   _archiveChapterDisplay(RemoteArchiveComic archive) {
     final titles = Map<String, String>.from(archive.chapterTitles);
@@ -1840,6 +1874,7 @@ class WebDavLibrarySource {
     String id, {
     bool forceRefresh = false,
     bool summaryOnly = false,
+    bool forceMetadataScrape = false,
     WebDavLibraryRemoteDirectory? remoteDirectory,
     WebDavLibraryEntry? archiveFile,
     RemoteComicWork? work,
@@ -1894,6 +1929,7 @@ class WebDavLibrarySource {
         id,
         forceRefresh: forceRefresh,
         summaryOnly: summaryOnly,
+        forceMetadataScrape: forceMetadataScrape,
         archiveFile: archiveFile,
         work: work,
         cancelToken: cancelToken,
@@ -1919,6 +1955,7 @@ class WebDavLibrarySource {
               config,
               aggregate,
               previousSnapshot: previousSnapshot,
+              forceMetadataScrape: forceMetadataScrape,
               rootEntries: workEntries,
               syncRun: syncRun,
             )
@@ -1927,6 +1964,7 @@ class WebDavLibrarySource {
               config,
               id,
               summaryOnly: summaryOnly,
+              forceMetadataScrape: forceMetadataScrape,
               previousSnapshot: previousSnapshot,
               file: archiveFile,
               rootEntries: rootEntries,
@@ -1940,6 +1978,7 @@ class WebDavLibrarySource {
               childEntries: childEntries,
               previousSnapshot: previousSnapshot,
               summaryOnly: summaryOnly,
+              forceMetadataScrape: forceMetadataScrape,
               syncRun: syncRun,
             );
       if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
@@ -2099,6 +2138,7 @@ class WebDavLibrarySource {
     WebDavLibraryConfig config,
     RemoteComicWork work, {
     _WebDavComicSnapshot? previousSnapshot,
+    bool forceMetadataScrape = false,
     List<WebDavLibraryEntry>? rootEntries,
     _WebDavLibrarySyncRun? syncRun,
   }) async {
@@ -2139,6 +2179,7 @@ class WebDavLibrarySource {
       scraperVersion: _metadataScraperVersion,
       now: metadataNowProvider(),
       automaticScrapingEnabled: _canScrapeMetadata,
+      forceMetadataScrape: forceMetadataScrape,
     )) {
       final workDirectoryName = _directoryName(work.directory);
       final fileNames = <String>{
@@ -2170,6 +2211,7 @@ class WebDavLibrarySource {
           authors: authors,
         ),
         syncRun: syncRun,
+        forceMetadataScrape: forceMetadataScrape,
       );
       metadata = scraped.metadata ?? metadata;
       metadataPresent = scraped.filePresent;
@@ -2253,6 +2295,7 @@ class WebDavLibrarySource {
         config,
         volumeId,
         summaryOnly: false,
+        scrapeMetadata: false,
         previousArchive: volume.archive,
         cancelToken: cancelToken,
       );
@@ -2295,6 +2338,8 @@ class WebDavLibrarySource {
     WebDavLibraryConfig config,
     String id, {
     required bool summaryOnly,
+    bool scrapeMetadata = true,
+    bool forceMetadataScrape = false,
     _WebDavComicSnapshot? previousSnapshot,
     WebDavLibraryEntry? file,
     RemoteArchiveComic? previousArchive,
@@ -2399,7 +2444,8 @@ class WebDavLibrarySource {
     int? attemptedAt = previousSnapshot?.metadataScrapeAttemptedAt;
     int? retryAt = previousSnapshot?.metadataScrapeRetryAt;
     String? error = previousSnapshot?.metadataScrapeError;
-    if (!summaryOnly &&
+    if (scrapeMetadata &&
+        !summaryOnly &&
         _shouldAttemptMetadataScrape(
           previousSnapshot:
               previousSnapshot?.metadataFilePresent == true && !metadataPresent
@@ -2409,6 +2455,7 @@ class WebDavLibrarySource {
           scraperVersion: _metadataScraperVersion,
           now: metadataNowProvider(),
           automaticScrapingEnabled: _canScrapeMetadata,
+          forceMetadataScrape: forceMetadataScrape,
         )) {
       final archiveDirectoryName = _directoryName(target.directory);
       final fileNames = <String>{
@@ -2438,6 +2485,7 @@ class WebDavLibrarySource {
           authors: authors,
         ),
         syncRun: syncRun,
+        forceMetadataScrape: forceMetadataScrape,
       );
       if (scraped.metadata != null) {
         archive = archive.withMetadata(scraped.metadata);
@@ -2566,6 +2614,7 @@ class WebDavLibrarySource {
     Map<String, List<WebDavLibraryEntry>>? childEntries,
     _WebDavComicSnapshot? previousSnapshot,
     bool summaryOnly = false,
+    bool forceMetadataScrape = false,
     _WebDavLibrarySyncRun? syncRun,
   }) async {
     final comicPath = config.childDirectoryPath(id);
@@ -2676,6 +2725,7 @@ class WebDavLibrarySource {
           scraperVersion: _metadataScraperVersion,
           now: metadataNowProvider(),
           automaticScrapingEnabled: _canScrapeMetadata,
+          forceMetadataScrape: forceMetadataScrape,
         );
     if (shouldScrape) {
       if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
@@ -2704,6 +2754,7 @@ class WebDavLibrarySource {
           authors: authors,
         ),
         syncRun: syncRun,
+        forceMetadataScrape: forceMetadataScrape,
       );
       if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
       metadata = scraped.metadata ?? metadata;
@@ -3022,9 +3073,10 @@ class WebDavLibrarySource {
     String fileName = _metadataFileName,
     required WebDavLibraryMetadataInput input,
     _WebDavLibrarySyncRun? syncRun,
+    bool forceMetadataScrape = false,
   }) async {
     final scraper = _metadataScraper;
-    if (scraper == null || !_canScrapeMetadata) {
+    if (scraper == null || (!forceMetadataScrape && !_canScrapeMetadata)) {
       return (
         metadata: null,
         filePresent: false,
@@ -4179,6 +4231,9 @@ class WebDavLibraryEngine {
 
   Future<void> writeMetadata(String comicId, ComicMetaData metadata) =>
       _run(() => WebDavLibrarySource.writeMetadata(comicId, metadata));
+
+  Future<Res<WebDavMetadataScrapeResult>> retryMetadataScrape(String comicId) =>
+      _run(() => WebDavLibrarySource.retryMetadataScrape(comicId));
 }
 
 class WebDavLibraryEngines {

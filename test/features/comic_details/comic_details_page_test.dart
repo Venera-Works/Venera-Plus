@@ -10,10 +10,13 @@ import 'package:image/image.dart' as img;
 import 'package:venera_plus/components/gesture.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/custom_slider.dart';
+import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/window_frame.dart';
 import 'package:venera_plus/features/comic_details/comic_details.dart';
 import 'package:venera_plus/features/comic_details/chapters.dart';
 import 'package:venera_plus/features/comic_details/thumbnails.dart';
+import 'package:venera_plus/features/comic_storage/comic_storage.dart';
+import 'package:venera_plus/features/webdav_library/webdav_library.dart';
 import 'package:venera_plus/features/favorites/favorites_manager.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
@@ -29,6 +32,7 @@ import 'package:venera_plus/features/reader/scaffold.dart';
 import 'package:venera_plus/foundation/app_page_route.dart';
 import 'package:venera_plus/foundation/image_provider/reader_image.dart';
 import 'package:venera_plus/features/sync/data_sync.dart';
+import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
@@ -1212,6 +1216,128 @@ void main() {
     },
     skip: !_sqliteAvailable(),
   );
+
+  testWidgets(
+    'rescrape metadata action is only visible for cloud webdav comics',
+    (tester) async {
+      final fixture = await _createFixture(tester, grouped: false);
+      await tester.pumpWidget(fixture.page);
+      await _waitForText(tester, 'Read');
+      await tester.tap(find.byIcon(Icons.more_horiz));
+      await tester.pumpAndSettle();
+      expect(find.text('Rescrape metadata'), findsNothing);
+    },
+    skip: !_sqliteAvailable(),
+  );
+
+  testWidgets(
+    'rescrape metadata action handles not connected, no-match, and matched refresh',
+    (tester) async {
+      registerShowMessageHandler((context, message) {
+        showToast(context: context, message: message);
+      });
+      late _ComicDetailsFixture fixture;
+      fixture = await _createFixture(
+        tester,
+        grouped: false,
+        sourceKey: WebDavLibrarySource.sourceKey,
+        loadComicDetails: (id) async {
+          final result = await WebDavLibrarySource.loadComicInfo(id);
+          if (result.error) return result;
+          return Res(
+            ComicDetails.fromJson({
+              ...result.data.toJson(),
+              'cover': fixture.imageUrls.first,
+            }),
+          );
+        },
+      );
+      final ops = _MetadataRetryOps();
+      WebDavLibrarySource.resetCacheForTesting();
+      WebDavLibrarySource.ops = ops;
+      appdata.settings['webdavComicLibrary'] = [
+        'https://example.com/dav',
+        'user',
+        'pass',
+      ];
+      appdata.settings['webdavComicLibraryPath'] = '/manga/';
+      var attempts = 0;
+      WebDavLibrarySource.configureMetadataScraper((_) async {
+        attempts++;
+        return null;
+      }, isEnabled: () => false);
+      addTearDown(() {
+        WebDavLibrarySource.configureMetadataScraper(null);
+        WebDavLibrarySource.resetOps();
+        WebDavLibrarySource.resetCacheForTesting();
+      });
+
+      // 1. Bangumi not connected -> warns user
+      appdata.settings['bangumiAccessToken'] = '';
+      appdata.settings['bangumiUsername'] = '';
+
+      await tester.pumpWidget(
+        MaterialApp(
+          navigatorKey: App.rootNavigatorKey,
+          builder: (context, child) => OverlayWidget(WindowFrame(child!)),
+          home: ComicPage(id: fixture.comicId, sourceKey: fixture.sourceKey),
+        ),
+      );
+      await _waitForText(tester, 'Read');
+
+      await tester.tap(find.byIcon(Icons.more_horiz));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Rescrape metadata'), findsOneWidget);
+      await tester.tap(find.text('Rescrape metadata'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Connect Bangumi in Settings first'), findsOneWidget);
+      expect(attempts, 0);
+
+      // Connect Bangumi
+      appdata.settings['bangumiAccessToken'] = 'test-token';
+      appdata.settings['bangumiUsername'] = 'test-user';
+
+      // 2. No match found
+
+      await tester.tap(find.byIcon(Icons.more_horiz));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Rescrape metadata'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('No match found'), findsOneWidget);
+      expect(attempts, 1);
+      expect(ops.metadata, isNull);
+
+      // 3. Matched -> details refresh
+      WebDavLibrarySource.configureMetadataScraper((_) async {
+        attempts++;
+        return const ComicMetaData(
+          title: 'Scraped WebDAV Title',
+          author: 'Scraped Author',
+          description: 'Scraped Bangumi description',
+          tags: [],
+        );
+      }, isEnabled: () => false);
+
+      await tester.tap(find.byIcon(Icons.more_horiz));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Rescrape metadata'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.widgetWithText(SelectableText, 'Scraped WebDAV Title'),
+        findsOneWidget,
+      );
+      expect(find.text('Scraped Bangumi description'), findsOneWidget);
+      expect(attempts, 2);
+      expect(jsonDecode(ops.metadata!)['title'], 'Scraped WebDAV Title');
+    },
+    skip: !_sqliteAvailable(),
+  );
 }
 
 bool _sqliteAvailable() {
@@ -1233,6 +1359,8 @@ Future<_ComicDetailsFixture> _createFixture(
   bool includeThirdChapter = false,
   bool withChapterComments = false,
   FavoriteData? favoriteData,
+  String? sourceKey,
+  Future<Res<ComicDetails>> Function(String id)? loadComicDetails,
 }) async {
   final previousSettings =
       jsonDecode(jsonEncode(appdata.toJson()['settings']))
@@ -1248,7 +1376,8 @@ Future<_ComicDetailsFixture> _createFixture(
   final temporary = Directory.systemTemp.createTempSync(
     'comic-details-history-',
   );
-  final sourceKey =
+  final effectiveSourceKey =
+      sourceKey ??
       'comic_details_history_${DateTime.now().microsecondsSinceEpoch}';
   final comicId = grouped ? 'grouped-comic' : 'flat-comic';
   final imageBytes = img.encodePng(img.Image(width: 100, height: 160));
@@ -1305,17 +1434,18 @@ Future<_ComicDetailsFixture> _createFixture(
     'tags': <String, dynamic>{},
     'chapters': chapterData,
     'thumbnails': imageUrls,
-    'sourceKey': sourceKey,
+    'sourceKey': effectiveSourceKey,
     'comicId': comicId,
     'maxPage': 4,
   });
   final requestedChapterIds = <String>[];
   final source = _comicSource(
-    sourceKey: sourceKey,
+    sourceKey: effectiveSourceKey,
     details: details,
     imageUrls: imageUrls,
     requestedChapterIds: requestedChapterIds,
     favoriteData: favoriteData,
+    loadComicDetails: loadComicDetails,
     chapterCommentsLoader: withChapterComments
         ? (comicId, epId, page, replyTo) async =>
               const Res(<Comment>[], subData: 1)
@@ -1376,7 +1506,7 @@ Future<_ComicDetailsFixture> _createFixture(
   );
 
   final fixture = _ComicDetailsFixture(
-    sourceKey: sourceKey,
+    sourceKey: effectiveSourceKey,
     comicId: comicId,
     details: details,
     histories: histories,
@@ -1393,7 +1523,7 @@ Future<_ComicDetailsFixture> _createFixture(
       await _pumpAsyncWork(tester, histories.flushReadingProgress());
       await _pumpAsyncWork(tester, histories.waitForAsyncWrites());
     } finally {
-      ComicSourceManager().remove(sourceKey);
+      ComicSourceManager().remove(effectiveSourceKey);
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
         const MethodChannel('flutter_memory_info'),
         null,
@@ -1445,6 +1575,7 @@ ComicSource _comicSource({
   ChapterCommentsLoader? chapterCommentsLoader,
   FavoriteData? favoriteData,
   SearchPageData? searchPageData,
+  Future<Res<ComicDetails>> Function(String id)? loadComicDetails,
 }) => ComicSource(
   'Comic details test source',
   sourceKey,
@@ -1455,7 +1586,7 @@ ComicSource _comicSource({
   const [],
   searchPageData,
   null,
-  (id) async => Res(details),
+  loadComicDetails ?? ((id) async => Res(details)),
   (id, next) async => const Res(<String>[]),
   (id, ep) async {
     requestedChapterIds.add(ep ?? 'single');
@@ -1712,4 +1843,43 @@ class _TestFavorites extends ChangeNotifier implements LocalFavoritesManager {
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _MetadataRetryOps implements WebDavLibraryOps {
+  String? metadata;
+
+  @override
+  Future<void> test(WebDavLibraryConfig config) async {}
+
+  @override
+  Future<List<WebDavLibraryEntry>> readDir(
+    WebDavLibraryConfig config,
+    String remotePath,
+  ) async => [
+    const WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+    if (metadata != null)
+      const WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
+  ];
+
+  @override
+  Future<WebDavTextFile> readText(
+    WebDavLibraryConfig config,
+    String remotePath,
+  ) async => WebDavTextFile(content: metadata!, eTag: '"metadata-v1"');
+
+  @override
+  Future<WebDavWriteResult> writeText(
+    WebDavLibraryConfig config,
+    String remotePath,
+    String content, {
+    bool createOnly = false,
+    String? ifMatch,
+    int? ifUnmodifiedSince,
+  }) async {
+    if (createOnly && metadata != null) {
+      throw WebDavPreconditionFailedException(remotePath);
+    }
+    metadata = content;
+    return const WebDavWriteResult(eTag: '"metadata-v1"');
+  }
 }
