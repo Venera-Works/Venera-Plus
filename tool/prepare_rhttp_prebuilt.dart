@@ -139,7 +139,9 @@ void main() {
     final packageEntry = packageEntries.cast<Map>().firstWhere(
       (entry) => entry['name'] == 'rhttp',
     );
-    final root = packageConfig.uri.resolve(packageEntry['rootUri'] as String);
+    final root = Directory.fromUri(
+      packageConfig.uri.resolve(packageEntry['rootUri'] as String),
+    ).uri;
     final packageSpec =
         loadYaml(File.fromUri(root.resolve('pubspec.yaml')).readAsStringSync())
             as Map;
