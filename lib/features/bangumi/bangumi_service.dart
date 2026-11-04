@@ -480,6 +480,40 @@ class BangumiService {
     );
   });
 
+  Future<void> bindFromMetadata({
+    required String scopeId,
+    required String sourceKey,
+    required String comicId,
+    required int subjectId,
+  }) async {
+    if (!isConnected ||
+        subjectId <= 0 ||
+        bindingFor(sourceKey, comicId) != null) {
+      return;
+    }
+    final expected = _operationSnapshotFor(sourceKey, comicId);
+    if (expected.scopeId != scopeId) return;
+    await _runBinding(sourceKey, comicId, () async {
+      if (bindingFor(sourceKey, comicId) != null) return;
+      await _runConnection(() async {
+        _ensureOperationCurrent(expected);
+        final subject = await _awaitRemoteOperation(
+          expected,
+          _gateway().getSubject(subjectId),
+        );
+        if (subject.id != subjectId) {
+          throw StateError('Bangumi subject does not match the metadata id');
+        }
+        await _bind(
+          sourceKey: sourceKey,
+          comicId: comicId,
+          subject: subject,
+          mode: BangumiProgressMode.auto,
+        );
+      }, priority: _BangumiRequestPriority.metadata);
+    });
+  }
+
   Future<BangumiBinding> bind({
     required String sourceKey,
     required String comicId,
@@ -939,20 +973,17 @@ class BangumiService {
     required String chapterTitle,
   }) async {
     _refreshAuthenticationPause();
-    if (!isConnected ||
-        appdata.settings['bangumiAutoSyncEnabled'] != true ||
-        bindingFor(sourceKey, comicId) == null) {
+    if (!isConnected || appdata.settings['bangumiAutoSyncEnabled'] != true) {
       return;
     }
     try {
-      await _runBinding(
-        sourceKey,
-        comicId,
-        () => _runConnection(
+      await _runBinding(sourceKey, comicId, () async {
+        if (bindingFor(sourceKey, comicId) == null) return;
+        await _runConnection(
           () => _onChapterCompleted(sourceKey, comicId, chapterTitle),
           priority: _BangumiRequestPriority.chapter,
-        ),
-      );
+        );
+      });
     } catch (_) {
       // Automatic upload must never interrupt the reader.
     }

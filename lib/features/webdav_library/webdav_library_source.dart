@@ -38,6 +38,14 @@ class WebDavLibraryMetadataInput {
 typedef WebDavLibraryMetadataScraper =
     Future<ComicMetaData?> Function(WebDavLibraryMetadataInput input);
 
+typedef WebDavLibraryMetadataSubjectHandler =
+    FutureOr<void> Function({
+      required String scopeId,
+      required String sourceKey,
+      required String comicId,
+      required int subjectId,
+    });
+
 typedef WebDavLibraryMetadataWriteGuard =
     FutureOr<bool> Function(String libraryId, String comicId, int? subjectId);
 
@@ -970,6 +978,7 @@ class WebDavLibrarySource {
   static bool Function()? _metadataScrapingEnabled;
   static String _metadataScraperVersion = _defaultScraperVersion;
   static WebDavLibraryMetadataWriteGuard? _metadataWriteGuard;
+  static WebDavLibraryMetadataSubjectHandler? _metadataSubjectHandler;
   static int get _metadataPayloadSequence => _state.metadataPayloadSequence;
   static set _metadataPayloadSequence(int value) =>
       _state.metadataPayloadSequence = value;
@@ -992,6 +1001,38 @@ class WebDavLibrarySource {
     _metadataScraperVersion = scraperVersion.trim().isEmpty
         ? _defaultScraperVersion
         : scraperVersion.trim();
+  }
+
+  static void configureMetadataSubjectHandler(
+    WebDavLibraryMetadataSubjectHandler? handler,
+  ) {
+    _metadataSubjectHandler = handler;
+  }
+
+  static void _notifyMetadataSubject(
+    WebDavLibraryConfig config,
+    String comicId,
+    int? subjectId,
+  ) {
+    final handler = _metadataSubjectHandler;
+    if (handler == null ||
+        subjectId == null ||
+        subjectId <= 0 ||
+        _state.disposed) {
+      return;
+    }
+    unawaited(
+      Future.sync(
+        () => handler(
+          scopeId: config.libraryId,
+          sourceKey: _activeSourceKey,
+          comicId: comicId,
+          subjectId: subjectId,
+        ),
+      ).catchError((Object error, StackTrace stackTrace) {
+        Log.error('WebDAV metadata binding', error, stackTrace);
+      }),
+    );
   }
 
   static void configureMetadataWriteGuard(
@@ -1473,7 +1514,7 @@ class WebDavLibrarySource {
           );
           discoveredCount++;
           if (comic.archiveFile != null || comic.work != null) {
-            await _loadSnapshot(
+            final snapshot = await _loadSnapshot(
               config,
               id,
               forceRefresh: true,
@@ -1485,6 +1526,7 @@ class WebDavLibrarySource {
               syncRun: run,
             );
             _throwIfSynchronizationObsolete(run);
+            _notifyMetadataSubject(config, id, snapshot.bangumiSubjectId);
             if (config.remoteLibrary != null) {
               _cache.addRootMembership(configKey, config.remotePath, id);
             }
@@ -1506,6 +1548,11 @@ class WebDavLibrarySource {
                 modifiedAt: directory.modifiedAt,
               );
           if (!shouldRefresh) {
+            _notifyMetadataSubject(
+              config,
+              id,
+              cached.snapshot?['bangumiSubjectId'] as int?,
+            );
             if (config.remoteLibrary != null) {
               _cache.addRootMembership(configKey, config.remotePath, id);
             }
@@ -1513,7 +1560,7 @@ class WebDavLibrarySource {
           }
           total++;
           try {
-            await _loadSnapshot(
+            final snapshot = await _loadSnapshot(
               config,
               id,
               forceRefresh: true,
@@ -1524,6 +1571,7 @@ class WebDavLibrarySource {
               syncRun: run,
             );
             _throwIfSynchronizationObsolete(run);
+            _notifyMetadataSubject(config, id, snapshot.bangumiSubjectId);
             if (config.remoteLibrary != null) {
               _cache.addRootMembership(configKey, config.remotePath, id);
             }
@@ -1606,6 +1654,7 @@ class WebDavLibrarySource {
     }
     try {
       final snapshot = await _loadSnapshot(config, id);
+      _notifyMetadataSubject(config, id, snapshot.bangumiSubjectId);
       final archiveDisplay = snapshot.archive == null
           ? null
           : _archiveChapterDisplay(snapshot.archive!);

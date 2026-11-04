@@ -267,6 +267,9 @@ Future<void> init({bool deferBackgroundTasks = false}) async {
         BangumiService().isConnected &&
         appdata.settings['bangumiAutoMetadataScrapeEnabled'] == true,
   );
+  WebDavLibrarySource.configureMetadataSubjectHandler(
+    BangumiService().bindFromMetadata,
+  );
   configureBangumiBindingMetadataHandler(({
     required String scopeId,
     required String sourceKey,

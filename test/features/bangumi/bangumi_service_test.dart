@@ -686,6 +686,203 @@ void main() {
     expect(gateway.searchKeywords.length, 3);
   });
 
+  test(
+    'metadata id binds once and keeps existing remote progress without metadata writes',
+    () async {
+      connectSettings();
+      gateway.subjects[42] = subject();
+      gateway.collection = collection(
+        epStatus: 12,
+        volStatus: 3,
+        rate: 8,
+        type: 2,
+      );
+      var metadataWrites = 0;
+      configureBangumiBindingMetadataHandler(({
+        required String scopeId,
+        required String sourceKey,
+        required String comicId,
+        required BangumiSubject subject,
+      }) async {
+        metadataWrites++;
+      });
+
+      await Future.wait([
+        for (var count = 0; count < 3; count++)
+          service.bindFromMetadata(
+            scopeId: '',
+            sourceKey: 'source',
+            comicId: 'comic',
+            subjectId: 42,
+          ),
+      ]);
+
+      final bound = service.bindingFor('source', 'comic')!;
+      expect(bound.subjectId, 42);
+      expect(bound.progressMode, BangumiProgressMode.auto);
+      expect(bound.lastRemoteEpisode, 12);
+      expect(bound.lastRemoteVolume, 3);
+      expect(bound.rating, 8);
+      expect(bound.collectionStatus, BangumiCollectionStatus.completed);
+      expect(gateway.subjectCalls, [42]);
+      expect(gateway.createFields, isEmpty);
+      expect(gateway.patchFields, isEmpty);
+      expect(metadataWrites, 0);
+      expect(saveCount, 1);
+    },
+  );
+
+  test(
+    'a completed chapter waits for metadata binding and uploads the first progress',
+    () async {
+      connectSettings();
+      gateway.subjects[42] = subject();
+      final waiting = Completer<void>();
+      gateway.getCollectionBlocker = waiting;
+      final binding = service.bindFromMetadata(
+        scopeId: '',
+        sourceKey: 'source',
+        comicId: 'comic',
+        subjectId: 42,
+      );
+      await pumpEventQueue();
+      final completed = service.onChapterCompleted(
+        sourceKey: 'source',
+        comicId: 'comic',
+        chapterTitle: '第2话',
+      );
+      waiting.complete();
+      await Future.wait([binding, completed]);
+
+      expect(gateway.createFields.single.$1, 42);
+      expect(gateway.createFields.single.$2, {'type': 1});
+      expect(gateway.collection!.type, 3);
+      expect(gateway.collection!.epStatus, 2);
+      expect(service.bindingFor('source', 'comic')!.lastRemoteEpisode, 2);
+    },
+  );
+
+  test(
+    'metadata binding preserves an explicit subject and parsing mode',
+    () async {
+      connectSettings();
+      final original = binding().copyWith(
+        subjectId: 99,
+        progressMode: BangumiProgressMode.volume,
+      );
+      setBinding(original);
+      await service.bindFromMetadata(
+        scopeId: '',
+        sourceKey: 'source',
+        comicId: 'comic',
+        subjectId: 42,
+      );
+      expect(service.bindingFor('source', 'comic'), original);
+      expect(gateway.operationCalls, isEmpty);
+      expect(gateway.subjectCalls, isEmpty);
+      expect(saveCount, 0);
+    },
+  );
+
+  test(
+    'metadata binding defers until connected and does not enable automatic upload',
+    () async {
+      gateway.subjects[42] = subject();
+      await service.bindFromMetadata(
+        scopeId: '',
+        sourceKey: 'source',
+        comicId: 'comic',
+        subjectId: 42,
+      );
+      expect(service.bindingFor('source', 'comic'), isNull);
+      connectSettings();
+      appdata.settings['bangumiAutoSyncEnabled'] = false;
+      for (final id in [0, -1]) {
+        await service.bindFromMetadata(
+          scopeId: '',
+          sourceKey: 'source',
+          comicId: 'comic',
+          subjectId: id,
+        );
+      }
+      expect(gateway.subjectCalls, isEmpty);
+      await service.bindFromMetadata(
+        scopeId: '',
+        sourceKey: 'source',
+        comicId: 'comic',
+        subjectId: 42,
+      );
+      await service.onChapterCompleted(
+        sourceKey: 'source',
+        comicId: 'comic',
+        chapterTitle: '第2话',
+      );
+      expect(service.bindingFor('source', 'comic')!.subjectId, 42);
+      expect(gateway.collection!.epStatus, 0);
+      expect(gateway.patchFields, isEmpty);
+      expect(appdata.settings['bangumiAutoSyncEnabled'], isFalse);
+    },
+  );
+
+  for (final changeCredentials in [false, true]) {
+    test(
+      'metadata binding ignores a stale ${changeCredentials ? 'account' : 'library'} during subject lookup',
+      () async {
+        connectSettings();
+        gateway.subjects[42] = subject();
+        final waiting = Completer<void>();
+        gateway.subjectBlocker = waiting;
+        var scope = 'library-a';
+        final scoped = BangumiService.forTesting(
+          gatewayFactory: (_) => gateway,
+          scopeResolver: (_) => scope,
+        );
+        final binding = scoped.bindFromMetadata(
+          scopeId: scope,
+          sourceKey: 'source',
+          comicId: 'comic',
+          subjectId: 42,
+        );
+        final rejected = expectLater(binding, throwsA(isA<Exception>()));
+        await pumpEventQueue();
+        if (changeCredentials) {
+          appdata.settings['bangumiUsername'] = 'another-user';
+        } else {
+          scope = 'library-b';
+        }
+        waiting.complete();
+        await rejected;
+        expect(scoped.bindingFor('source', 'comic'), isNull);
+        expect(gateway.collectionCalls, isEmpty);
+        expect(gateway.createFields, isEmpty);
+      },
+    );
+  }
+
+  test('failed metadata lookup can be retried on the next detection', () async {
+    connectSettings();
+    gateway.subjectError = const BangumiApiException(503, 'Unavailable');
+    await expectLater(
+      service.bindFromMetadata(
+        scopeId: '',
+        sourceKey: 'source',
+        comicId: 'comic',
+        subjectId: 42,
+      ),
+      throwsA(isA<BangumiApiException>()),
+    );
+    expect(service.bindingFor('source', 'comic'), isNull);
+    gateway.subjectError = null;
+    gateway.subjects[42] = subject();
+    await service.bindFromMetadata(
+      scopeId: '',
+      sourceKey: 'source',
+      comicId: 'comic',
+      subjectId: 42,
+    );
+    expect(service.bindingFor('source', 'comic')!.subjectId, 42);
+  });
+
   test('binding does not wait for the metadata writer', () async {
     connectSettings();
     final started = Completer<void>();
@@ -4835,6 +5032,8 @@ class FakeBangumiGateway implements BangumiGateway {
   BangumiCollection? collection;
   Object? currentUserError;
   Completer<void>? currentUserBlocker;
+  Completer<void>? subjectBlocker;
+  Object? subjectError;
   Object? createError;
   Object? patchError;
   Object? getCollectionError;
@@ -4870,6 +5069,8 @@ class FakeBangumiGateway implements BangumiGateway {
   @override
   Future<BangumiSubject> getSubject(int subjectId) async {
     subjectCalls.add(subjectId);
+    await subjectBlocker?.future;
+    if (subjectError != null) throw subjectError!;
     return subjects[subjectId]!;
   }
 

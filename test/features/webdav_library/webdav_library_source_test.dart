@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:venera_plus/features/bangumi/bangumi.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library.dart';
 import 'package:venera_plus/features/comic_storage/comic_storage.dart';
@@ -20,6 +21,7 @@ void main() {
     App.dataPath = dataDir.path;
     WebDavLibrarySource.resetCacheForTesting();
     WebDavLibrarySource.configureMetadataScraper(null);
+    WebDavLibrarySource.configureMetadataSubjectHandler(null);
     ops = _FakeWebDavLibraryOps();
     WebDavLibrarySource.ops = ops;
     appdata.settings['webdavComicLibrary'] = [
@@ -38,6 +40,7 @@ void main() {
     WebDavLibrarySource.resetOps();
     WebDavLibrarySource.resetCacheForTesting();
     WebDavLibrarySource.configureMetadataScraper(null);
+    WebDavLibrarySource.configureMetadataSubjectHandler(null);
     appdata.settings['webdavComicLibrary'] = [];
     appdata.settings['webdavComicLibraryPath'] = '/venera_comics/';
     appdata.settings['webdavComicLibraryAutoSync'] = true;
@@ -1596,6 +1599,88 @@ void main() {
       },
     );
   });
+  for (final connectedAtScan in [true, false]) {
+    test(
+      'metadata id binds through ${connectedAtScan ? 'library scan' : 'cached details after connection'} and uploads progress',
+      () async {
+        ops.dirs['/manga/'] = const [
+          WebDavLibraryEntry(name: 'Book', isDirectory: true),
+        ];
+        ops.dirs['/manga/Book/'] = const [
+          WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
+          WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        ];
+        final document = jsonEncode({
+          'title': 'Local title',
+          'author': 'Local author',
+          'tags': <String>[],
+          'bangumiSubjectId': 123,
+        });
+        ops.textFiles['/manga/Book/metadata.json'] = document;
+        final previous = <String, dynamic>{
+          for (final key in [
+            'bangumiAccessToken',
+            'bangumiUsername',
+            'bangumiBindings',
+            'bangumiAutoSyncEnabled',
+          ])
+            key: appdata.settings[key],
+        };
+        appdata.settings['bangumiAccessToken'] = connectedAtScan ? 'token' : '';
+        appdata.settings['bangumiUsername'] = connectedAtScan ? 'alice' : '';
+        appdata.settings['bangumiBindings'] = <String, dynamic>{};
+        appdata.settings['bangumiAutoSyncEnabled'] = true;
+        final gateway = _MetadataBindingGateway();
+        final saved = Completer<void>();
+        final service = BangumiService.forTesting(
+          gatewayFactory: (_) => gateway,
+          scopeResolver: (_) => WebDavLibrarySource.currentLibraryId,
+          saveSettings: () async {
+            if (!saved.isCompleted) saved.complete();
+          },
+        );
+        addTearDown(() {
+          WebDavLibrarySource.configureMetadataSubjectHandler(null);
+          service.dispose();
+          for (final entry in previous.entries) {
+            appdata.settings[entry.key] = entry.value;
+          }
+        });
+        WebDavLibrarySource.configureMetadataSubjectHandler(
+          service.bindFromMetadata,
+        );
+
+        expect((await WebDavLibrarySource.synchronize()).success, isTrue);
+        final reads = List<String>.from(ops.readPaths);
+        if (!connectedAtScan) {
+          expect(service.bindingFor('webdav_library', 'Book'), isNull);
+          appdata.settings['bangumiAccessToken'] = 'token';
+          appdata.settings['bangumiUsername'] = 'alice';
+        } else {
+          await saved.future;
+        }
+        final details = await WebDavLibrarySource.loadComicInfo('Book');
+        await saved.future;
+        final binding = service.bindingFor('webdav_library', 'Book')!;
+        expect(binding.subjectId, 123);
+        expect(binding.scopeId, WebDavLibrarySource.currentLibraryId);
+        expect(binding.progressMode, BangumiProgressMode.auto);
+        expect(details.data.title, 'Local title');
+        expect(ops.readPaths, reads);
+        expect(ops.textFiles['/manga/Book/metadata.json'], document);
+        expect(ops.writeRequests, isEmpty);
+        await service.onChapterCompleted(
+          sourceKey: 'webdav_library',
+          comicId: 'Book',
+          chapterTitle: '第6话',
+        );
+        expect(gateway.collection.epStatus, 6);
+        expect(gateway.collection.volStatus, 2);
+        expect(gateway.collection.rate, 7);
+      },
+    );
+  }
+
   test('missing metadata is scraped and written back to WebDAV', () async {
     ops.dirs['/manga/'] = const [
       WebDavLibraryEntry(name: 'Cat Eye[Tsukasa Hojo]', isDirectory: true),
@@ -3354,6 +3439,44 @@ void main() {
     expect(snapshot['metadataScrapeError'], contains('scraper unavailable'));
     expect(ops.writeRequests, isEmpty);
   });
+}
+
+class _MetadataBindingGateway extends Fake implements BangumiGateway {
+  BangumiCollection collection = const BangumiCollection(
+    type: 3,
+    rate: 7,
+    epStatus: 5,
+    volStatus: 2,
+  );
+
+  @override
+  Future<BangumiSubject> getSubject(int id) async => BangumiSubject(
+    id: id,
+    title: 'Bangumi title',
+    originalTitle: 'Original title',
+    coverUrl: '',
+    totalEpisodes: 24,
+    totalVolumes: 4,
+  );
+
+  @override
+  Future<BangumiCollection?> getCollection(
+    String username,
+    int subjectId,
+  ) async => collection;
+
+  @override
+  Future<void> patchCollection(
+    int subjectId,
+    Map<String, dynamic> fields,
+  ) async {
+    collection = BangumiCollection(
+      type: fields['type'] as int? ?? collection.type,
+      rate: fields['rate'] as int? ?? collection.rate,
+      epStatus: fields['ep_status'] as int? ?? collection.epStatus,
+      volStatus: fields['vol_status'] as int? ?? collection.volStatus,
+    );
+  }
 }
 
 class _FakeRemoteFileStore implements RemoteFileStore {
