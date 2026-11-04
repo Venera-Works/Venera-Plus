@@ -1,0 +1,8 @@
+# rhttp 0.15.1; FRB 2.11.1; Rust 1.85.1; NDK 28.0.13004108; Android API 21
+cargo:
+  release:
+    extra_flags:
+      - --locked
+precompiled_binaries:
+  url_prefix: https://github.com/Venera-Works/Venera-Native-Prebuilts/releases/download/precompiled_
+  public_key: db21b417de676d841aca6c49c186f7ae206e70df4775d67e11b825e0ff333500

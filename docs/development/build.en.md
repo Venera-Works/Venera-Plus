@@ -55,6 +55,22 @@ and run the application CI.
 
 See [Dependency Governance](dependencies.en.md) for Git fork provenance, pinned commits, and upgrade requirements.
 
+## Precompiled rhttp native libraries
+
+`Venera-Works/Venera-Native-Prebuilts` builds, signs, and releases the `rhttp` native libraries independently; its local checkout is `cache/Venera-Native-Prebuilts`. The application's `native/prebuilts/rhttp/lock.json` pins the package archive digest, bridge version, and toolchain versions. The adjacent `cargokit.yaml` pins the release URL, public key, and build arguments. Keep both files identical to the resource repository's `rhttp/` files.
+
+After resolving Flutter dependencies, each platform CI runs `dart tool/prepare_rhttp_prebuilt.dart`. It checks `pubspec.lock`, configures the resolved `rhttp` package, and makes that package's Cargokit accept precompiled artifacts only. The subsequent build downloads artifacts by source hash and verifies their Ed25519 signatures. A missing target file or invalid signature fails the build instead of falling back to Cargo. Repeated preparation is idempotent; unexpected dependency source is rejected before modification.
+
+For local builds using prebuilts, use a project-specific Pub cache in the PowerShell process used for the build so other projects' shared packages are not modified:
+
+```powershell
+$env:PUB_CACHE = Join-Path $PWD '.pub-cache'
+fvm flutter pub get --enforce-lockfile
+fvm dart tool/prepare_rhttp_prebuilt.dart
+```
+
+Complete the matching prebuild release in the resource repository before building the application. Artifacts cover four Android ABIs (including x86 for Debug), Windows x64, Linux x64/ARM64, both macOS architectures, and iOS devices/simulators. On upgrade, synchronize both repositories' lock and configuration files, review the Cargokit source digests, and verify native bindings and networking. Application build permission requirements still apply.
+
 ### Critical Version Pin
 
 The project uses `rhttp 0.15.1` and must keep `flutter_rust_bridge 2.11.1`. With an incompatible version, a build may succeed while the resulting application cannot access the network and reports:
@@ -148,7 +164,7 @@ New-Item -ItemType Directory -Path $smokeDir -Force | Out-Null
 flutter drive --driver=test/driver/platform_smoke_driver.dart --target=test/integration/platform_smoke.dart -d windows "--dart-define=CI_NATIVE_SMOKE=true" "--dart-define=SMOKE_ARTIFACT_DIR=$smokeDir" --timeout 900
 ```
 
-Dart formatting checks cover `lib` and `test` (recursively covering all subdirectories). The `main` branch requires code analysis, dependency review, and the platform smoke-build gate to pass, and direct force-pushes or branch deletion are disabled.
+Dart formatting checks cover `lib`, `test`, and `tool` (recursively covering all subdirectories). The `main` branch requires code analysis, dependency review, and the platform smoke-build gate to pass, and direct force-pushes or branch deletion are disabled.
 
 For release-related changes, also run:
 
@@ -243,7 +259,7 @@ python .github/scripts/release_version.py --check --tag v1.2.3
 
 `pubspec.yaml`, the release tag, and the version section in `CHANGELOG.md` must match `release.json`.
 
-The `代码分析` workflow runs version and structure checks, Python script tests, Dart formatting checks across `lib` and `test` (covering subdirectories), `flutter analyze`, the full Dart test suite, and coverage reporting. `依赖安全审查` checks dependencies added or upgraded by a pull request, while `PR 平台冒烟构建` verifies Android and Windows compilation as well as native database integration test scenarios when the changed files can affect platform builds; it can also be dispatched manually to validate a released core. `完整构建` handles multi-platform builds and progressive Release publishing for tags. Manual platform builds and cache warming reuse `.github/workflows/build.yml`, selecting platforms through its inputs.
+The `代码分析` workflow runs version and structure checks, Python script tests, Dart formatting checks across `lib`, `test`, and `tool` (covering subdirectories), `flutter analyze`, the full Dart test suite, and coverage reporting. `依赖安全审查` checks dependencies added or upgraded by a pull request, while `PR 平台冒烟构建` verifies Android and Windows compilation as well as native database integration test scenarios when the changed files can affect platform builds; it can also be dispatched manually to validate a released core. `完整构建` handles multi-platform builds and progressive Release publishing for tags. Manual platform builds and cache warming reuse `.github/workflows/build.yml`, selecting platforms through its inputs.
 
 Native CI build jobs configure compilation and dependency caching: `sccache` caches Rust on native jobs and C/C++ on supported Linux CMake generator paths (the Windows C/C++ wrapper was intentionally not retained), Cargo caches registry and Git downloads, and Android jobs reuse the Gradle build cache. Jobs print statistics via `sccache --show-stats` upon completion to verify warm-cache hits. Final release packages and installers are always rebuilt and are never reused from cache.
 

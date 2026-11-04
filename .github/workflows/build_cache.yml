@@ -12,6 +12,8 @@ on:
       - '.github/scripts/fetch_openlist_core.py'
       - '.github/scripts/prepare_rust_toolchain.py'
       - '.github/scripts/serialized_rustup.py'
+      - 'tool/prepare_rhttp_prebuilt.dart'
+      - 'native/prebuilts/rhttp/**'
       - '.fvmrc'
       - 'pubspec.yaml'
       - 'pubspec.lock'

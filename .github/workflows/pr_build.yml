@@ -37,7 +37,7 @@ jobs:
             changed_files="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" --)"
             printf '%s\n' "$changed_files"
             if printf '%s\n' "$changed_files" | grep -Eq \
-              '^(test/integration/|test/driver/|test/features/comic_source/(source_parser_test\.dart|source_lifecycle_test\.dart|source_files_test\.dart|comic_source_save_test\.dart)$|test/features/sync/app_data_transfer_test\.dart$|test/foundation/(js_engine_test\.dart|image_processing_test\.dart)$|lib/|assets/|android/|windows/|ios/|macos/|linux/|debian/|patch/|native/openlist_core/core\.lock\.json$|\.github/workflows/|\.github/scripts/|pubspec\.yaml$|pubspec\.lock$|rust-toolchain\.toml$|analysis_options\.yaml$)'; then
+              '^(test/integration/|test/driver/|test/features/comic_source/(source_parser_test\.dart|source_lifecycle_test\.dart|source_files_test\.dart|comic_source_save_test\.dart)$|test/features/sync/app_data_transfer_test\.dart$|test/foundation/(js_engine_test\.dart|image_processing_test\.dart)$|lib/|assets/|android/|windows/|ios/|macos/|linux/|debian/|patch/|native/openlist_core/core\.lock\.json$|native/prebuilts/|tool/prepare_rhttp_prebuilt\.dart$|\.github/workflows/|\.github/scripts/|pubspec\.yaml$|pubspec\.lock$|rust-toolchain\.toml$|analysis_options\.yaml$)'; then
               echo "platform=true" >> "$GITHUB_OUTPUT"
             else
               echo "platform=false" >> "$GITHUB_OUTPUT"
@@ -110,6 +110,8 @@ jobs:
             'storeFile=../debug.keystore' \
             > android/key.properties
       - run: flutter pub get --enforce-lockfile
+      - name: 配置 rhttp 签名预编译库
+        run: dart tool/prepare_rhttp_prebuilt.dart
       - name: 下载 OpenList Android 内核
         run: python3 .github/scripts/fetch_openlist_core.py android
       - name: 构建 Android Debug APK (arm64)
@@ -150,6 +152,8 @@ jobs:
           architecture: x64
           cache: true
       - run: flutter pub get --enforce-lockfile
+      - name: 配置 rhttp 签名预编译库
+        run: dart tool/prepare_rhttp_prebuilt.dart
       - name: 下载 OpenList Windows 内核
         shell: pwsh
         run: python .github/scripts/fetch_openlist_core.py windows-x64

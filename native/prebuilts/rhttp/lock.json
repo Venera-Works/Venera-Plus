@@ -1,0 +1,11 @@
+{
+  "package": "rhttp",
+  "version": "0.15.1",
+  "archiveSha256": "b111638045b730f825a85cb045017b5bd3dfb47b38e98eb293b0519ee6050f2e",
+  "flutterRustBridgeVersion": "2.11.1",
+  "flutterVersion": "3.41.4",
+  "rustVersion": "1.85.1",
+  "androidNdkVersion": "28.0.13004108",
+  "androidMinSdkVersion": 21,
+  "repository": "Venera-Works/Venera-Native-Prebuilts"
+}

@@ -54,6 +54,22 @@ Venera-OpenList-Core 发布新版本，确认全部资产与许可证存在后�
 
 Git fork 的来源、固定 commit 和升级要求见[依赖治理](dependencies.zh.md)。
 
+## rhttp 原生库预编译
+
+`rhttp` 原生库由 `Venera-Works/Venera-Native-Prebuilts` 独立编译和签名发布，本地资源仓库位于 `cache/Venera-Native-Prebuilts`。应用的 `native/prebuilts/rhttp/lock.json` 固定包归档摘要、桥接库与工具链版本，旁边的 `cargokit.yaml` 固定下载地址、公钥和编译参数；两份文件必须与资源仓库的 `rhttp/` 保持一致。
+
+各平台 CI 在获取 Flutter 依赖后执行 `dart tool/prepare_rhttp_prebuilt.dart`，核对 `pubspec.lock`，配置已解析的 `rhttp` 包，并将该包的 Cargokit 改为只接受预编译产物。后续构建通过 Cargokit 按源码 hash 下载并验证 Ed25519 签名。缺少任一目标文件或签名无效时明确失败，不回退到 Cargo 编译。配置脚本重复执行不会改变结果；依赖源码与预期不符时拒绝修改。
+
+本地使用预编译库时，在用于构建的 PowerShell 进程内使用项目专用 Pub 缓存，避免改动其他项目共用的包：
+
+```powershell
+$env:PUB_CACHE = Join-Path $PWD '.pub-cache'
+fvm flutter pub get --enforce-lockfile
+fvm dart tool/prepare_rhttp_prebuilt.dart
+```
+
+先在资源仓库完成对应版本的完整预编译发布，再运行应用构建。产物覆盖 Android 四个 ABI（含 Debug 所需的 x86）、Windows x64、Linux x64/ARM64、macOS 双架构和 iOS 真机／模拟器。升级时同步更新资源仓库与应用中的锁定文件、配置及 Cargokit 源码校验，再验证原生绑定与联网功能。应用构建权限要求仍适用。
+
 ### 关键依赖锁定
 
 项目依赖 `rhttp 0.15.1`，必须保持 `flutter_rust_bridge 2.11.1`。版本不匹配时，构建可能成功，但应用启动后无法联网，并提示：
@@ -147,7 +163,7 @@ New-Item -ItemType Directory -Path $smokeDir -Force | Out-Null
 flutter drive --driver=test/driver/platform_smoke_driver.dart --target=test/integration/platform_smoke.dart -d windows "--dart-define=CI_NATIVE_SMOKE=true" "--dart-define=SMOKE_ARTIFACT_DIR=$smokeDir" --timeout 900
 ```
 
-Dart 格式检查覆盖 `lib` 与 `test`（自动递归覆盖子目录）。`main` 分支要求 PR 通过代码分析、依赖审查和平台冒烟构建门禁，并禁止直接强推或删除分支。
+Dart 格式检查覆盖 `lib`、`test` 与 `tool`（自动递归覆盖子目录）。`main` 分支要求 PR 通过代码分析、依赖审查和平台冒烟构建门禁，并禁止直接强推或删除分支。
 
 涉及发布版本时再运行：
 
@@ -242,7 +258,7 @@ python .github/scripts/release_version.py --check --tag v1.2.3
 
 `pubspec.yaml`、发布 tag 和 `CHANGELOG.md` 版本章节必须与 `release.json` 一致。
 
-`代码分析` 工作流会运行版本与结构检查、Python 脚本测试、Dart 格式检查（`lib` 与 `test`，覆盖子目录）、`flutter analyze`、完整 Dart 测试及覆盖率汇总。`依赖安全审查` 会检查 PR 新增或升级的依赖，`PR 平台冒烟构建` 会按改动范围验证 Android 和 Windows 的编译与原生数据库集成测试场景，也可通过手动触发验证已发布的内核。`完整构建` 负责 tag 发布的多平台构建与渐进式 Release 发布；手动平台构建与缓存预热复用 `.github/workflows/build.yml`，按输入选择平台。
+`代码分析` 工作流会运行版本与结构检查、Python 脚本测试、Dart 格式检查（`lib`、`test` 与 `tool`，覆盖子目录）、`flutter analyze`、完整 Dart 测试及覆盖率汇总。`依赖安全审查` 会检查 PR 新增或升级的依赖，`PR 平台冒烟构建` 会按改动范围验证 Android 和 Windows 的编译与原生数据库集成测试场景，也可通过手动触发验证已发布的内核。`完整构建` 负责 tag 发布的多平台构建与渐进式 Release 发布；手动平台构建与缓存预热复用 `.github/workflows/build.yml`，按输入选择平台。
 
 原生平台 CI 构建任务配置了编译与依赖缓存：使用 `sccache` 缓存原生任务中的 Rust 编译及受支持的 Linux CMake 生成器路径下的 C/C++ 编译（未保留 Windows C/C++ 包装器），使用 Cargo 注册表与 Git 下载缓存，以及 Android Gradle 构建缓存。构建步骤在结束时通过 `sccache --show-stats` 打印统计信息，用于确认热缓存命中情况。最终发布包与安装包等产物始终重新构建生成，不会从缓存复用。
 

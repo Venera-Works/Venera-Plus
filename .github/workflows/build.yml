@@ -157,6 +157,8 @@ jobs:
       - name: 检查 rust-toolchain.toml
         run: rustup show
       - run: flutter pub get --enforce-lockfile
+      - name: 配置 rhttp 签名预编译库
+        run: dart tool/prepare_rhttp_prebuilt.dart
       - name: 下载 OpenList Android 内核
         run: python3 .github/scripts/fetch_openlist_core.py android
       - run: flutter build apk --release
@@ -228,6 +230,8 @@ jobs:
             cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-
       - name: 获取 Flutter 依赖
         run: flutter pub get --enforce-lockfile
+      - name: 配置 rhttp 签名预编译库
+        run: dart tool/prepare_rhttp_prebuilt.dart
       - name: 下载 OpenList Windows 内核
         shell: pwsh
         run: python .github/scripts/fetch_openlist_core.py windows-x64
@@ -326,6 +330,8 @@ jobs:
           echo "RUSTUP_REAL_BINARY=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
           echo "RUSTUP_LOCK_FILE=$RUNNER_TEMP/venera-plus-rustup.lock" >> "$GITHUB_ENV"
       - run: flutter pub get --enforce-lockfile
+      - name: 配置 rhttp 签名预编译库
+        run: dart tool/prepare_rhttp_prebuilt.dart
       - name: 下载 OpenList macOS 内核
         run: python3 .github/scripts/fetch_openlist_core.py macos-universal
       - name: 检查 rust-toolchain.toml
@@ -406,6 +412,8 @@ jobs:
           echo "RUSTUP_REAL_BINARY=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
           echo "RUSTUP_LOCK_FILE=$RUNNER_TEMP/venera-plus-rustup.lock" >> "$GITHUB_ENV"
       - run: flutter pub get --enforce-lockfile
+      - name: 配置 rhttp 签名预编译库
+        run: dart tool/prepare_rhttp_prebuilt.dart
       - name: 下载 OpenList iOS 内核
         run: python3 .github/scripts/fetch_openlist_core.py ios
       - name: 构建 iOS 应用
@@ -483,6 +491,8 @@ jobs:
       - name: 准备 Rust 工具链
         run: python3 .github/scripts/prepare_rust_toolchain.py
       - run: flutter pub get --enforce-lockfile
+      - name: 配置 rhttp 签名预编译库
+        run: dart tool/prepare_rhttp_prebuilt.dart
       - name: 下载 OpenList Linux x64 内核
         run: python3 .github/scripts/fetch_openlist_core.py linux-x64
       - name: 安装 Linux 构建依赖
@@ -547,6 +557,8 @@ jobs:
       - name: 准备 Rust 工具链
         run: python3 .github/scripts/prepare_rust_toolchain.py
       - run: flutter pub get --enforce-lockfile
+      - name: 配置 rhttp 签名预编译库
+        run: dart tool/prepare_rhttp_prebuilt.dart
       - name: 下载 OpenList Linux ARM64 内核
         run: python3 .github/scripts/fetch_openlist_core.py linux-arm64
       - name: 安装 Linux 构建依赖
