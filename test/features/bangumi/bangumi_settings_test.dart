@@ -3,11 +3,20 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/features/bangumi/bangumi.dart';
 import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/context.dart';
 
 void main() {
+  setUp(() {
+    registerShowMessageHandler((context, message) {
+      showToast(context: context, message: message);
+    });
+  });
+
   tearDown(() {
+    registerShowMessageHandler((_, _) {});
     appdata.settings['bangumiAccessToken'] = '';
     appdata.settings['bangumiUsername'] = '';
     appdata.settings['bangumiAutoSyncEnabled'] = true;
@@ -66,12 +75,16 @@ void main() {
     expect(find.text('Failed to open Access Token page'), findsNothing);
   });
 
-  testWidgets('connect displays the verified username', (tester) async {
+  testWidgets('connect and repeated verification show success messages', (
+    tester,
+  ) async {
+    final gateway = _Gateway();
     var changes = 0;
     await tester.pumpWidget(
       MaterialApp(
+        builder: (context, child) => OverlayWidget(child!),
         home: BangumiSettingsPage(
-          service: BangumiService.forTesting(gatewayFactory: (_) => _Gateway()),
+          service: BangumiService.forTesting(gatewayFactory: (_) => gateway),
           onConnectionChanged: () => changes++,
         ),
       ),
@@ -87,12 +100,26 @@ void main() {
     expect(appdata.settings['bangumiAccessToken'], 'token');
     expect(appdata.settings['bangumiUsername'], 'alice');
     expect(find.text('alice'), findsOneWidget);
+    expect(find.text('Connection successful'), findsOneWidget);
     expect(changes, 1);
+
+    await tester.pump(const Duration(seconds: 2));
+    expect(find.text('Connection successful'), findsNothing);
+    await tester.tap(find.byKey(const Key('bangumi-connect')));
+    await tester.pumpAndSettle();
+
+    expect(gateway.currentUserCalls, 2);
+    expect(find.text('Connection successful'), findsOneWidget);
+    expect(changes, 2);
+    await tester.pump(const Duration(seconds: 2));
   });
 
   testWidgets('failed connection keeps the entered token', (tester) async {
+    appdata.settings['bangumiAccessToken'] = 'saved-token';
+    appdata.settings['bangumiUsername'] = 'alice';
     await tester.pumpWidget(
       MaterialApp(
+        builder: (context, child) => OverlayWidget(child!),
         home: BangumiSettingsPage(
           service: BangumiService.forTesting(
             gatewayFactory: (_) => _Gateway(shouldFail: true),
@@ -115,11 +142,14 @@ void main() {
           .text,
       'token',
     );
-    expect(appdata.settings['bangumiAccessToken'], isEmpty);
+    expect(appdata.settings['bangumiAccessToken'], 'saved-token');
+    expect(appdata.settings['bangumiUsername'], 'alice');
+    expect(find.text('Failed to connect to Bangumi'), findsOneWidget);
     expect(
       find.textContaining('Failed to connect to Bangumi:'),
       findsOneWidget,
     );
+    await tester.pump(const Duration(seconds: 2));
   });
 
   testWidgets('empty token is rejected without calling Bangumi', (
@@ -148,6 +178,7 @@ void main() {
     appdata.settings['bangumiUsername'] = 'alice';
     await tester.pumpWidget(
       MaterialApp(
+        builder: (context, child) => OverlayWidget(child!),
         home: BangumiSettingsPage(
           service: BangumiService.forTesting(
             gatewayFactory: (_) => _Gateway(authenticationFailure: true),
@@ -172,6 +203,8 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('alice'), findsNothing);
+    expect(find.text('Failed to connect to Bangumi'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 2));
   });
 
   testWidgets('disconnect clears the saved connection only', (tester) async {

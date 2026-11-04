@@ -23,40 +23,50 @@ class BangumiServerSetting extends StatelessWidget {
   final BangumiServerProbe probe;
 
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Text('Bangumi server'.tl, style: Theme.of(context).textTheme.titleMedium),
-      Wrap(
-        spacing: 12,
-        runSpacing: 4,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          Text(
-            currentBangumiServer.name,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          OutlinedButton.icon(
-            key: const Key('bangumi-server-list'),
-            icon: const Icon(Icons.list),
-            label: Text('Website list'.tl),
-            onPressed: enabled
-                ? () async {
-                    await showDialog<void>(
-                      context: context,
-                      builder: (_) => _BangumiServerList(
-                        saveSettings: saveSettings,
-                        onChanged: onChanged,
-                        probe: probe,
-                      ),
-                    );
-                  }
-                : null,
-          ),
-        ],
-      ),
-    ],
+  Widget build(BuildContext context) => SizedBox(
+    width: double.infinity,
+    child: Wrap(
+      alignment: WrapAlignment.spaceBetween,
+      spacing: 12,
+      runSpacing: 4,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Bangumi server'.tl,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              currentBangumiServer.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          ],
+        ),
+        OutlinedButton.icon(
+          key: const Key('bangumi-server-list'),
+          icon: const Icon(Icons.list),
+          label: Text('Website list'.tl),
+          onPressed: enabled
+              ? () async {
+                  await showDialog<void>(
+                    context: context,
+                    builder: (_) => _BangumiServerList(
+                      saveSettings: saveSettings,
+                      onChanged: onChanged,
+                      probe: probe,
+                    ),
+                  );
+                }
+              : null,
+        ),
+      ],
+    ),
   );
 }
 

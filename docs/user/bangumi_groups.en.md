@@ -31,6 +31,8 @@ Custom entries require the actual API address; `https://` may be omitted. The na
 
 Opening the list automatically tests every API, with a manual retest option. Latency measures one anonymous public API request from this device using the app's network settings; probes do not send your Token to the listed servers. Verification pages, timeouts, and incompatible responses have separate statuses. A working public endpoint does not verify account synchronization; use **Verify connection** for the selected account. Closing the list cancels remaining probes.
 
+The server name aligns with the page content, with **Website list** on the right and automatic wrapping on narrow screens. **Connect** and **Verify connection** show a success or failure notification. Failure details remain on the page to help check the Token or network settings.
+
 If a cloud comic's effective metadata contains `bangumiSubjectId`, scanning the library or opening details while connected to Bangumi automatically binds reading progress. Existing bindings and remote progress are preserved. A missing collection is created as **Wish to read**, and subsequent uploads still follow the **Automatic sync** switch. Automatic binding does not rewrite metadata; retaining the metadata ID causes another scan or details load to bind it again after unbinding.
 
 Bindings for the same subject share confirmed remote episode and volume progress, rating, and collection status. Updating one source also updates the other bindings' cached state. Progress parsing remains source-specific; local chapter and page positions are independent.

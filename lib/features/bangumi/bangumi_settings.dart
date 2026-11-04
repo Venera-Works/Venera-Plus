@@ -7,6 +7,7 @@ import 'package:venera_plus/features/bangumi/bangumi_service.dart';
 import 'package:venera_plus/features/bangumi/bangumi_server.dart';
 import 'package:venera_plus/features/bangumi/bangumi_server_settings.dart';
 import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 
@@ -202,6 +203,7 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
     if (_isConnecting) return;
     if (_tokenController.text.trim().isEmpty) {
       setState(() => _errorMessage = 'Access Token cannot be empty'.tl);
+      context.showMessage(message: _errorMessage!);
       return;
     }
     setState(() => _isConnecting = true);
@@ -213,6 +215,7 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
           _connectionInvalid = false;
           _errorMessage = null;
         });
+        context.showMessage(message: 'Connection successful'.tl);
       }
     } catch (error) {
       if (!mounted) return;
@@ -229,6 +232,7 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
           _errorMessage = '${'Failed to connect to Bangumi'.tl}: $error';
         });
       }
+      context.showMessage(message: 'Failed to connect to Bangumi'.tl);
     } finally {
       if (mounted) setState(() => _isConnecting = false);
     }
