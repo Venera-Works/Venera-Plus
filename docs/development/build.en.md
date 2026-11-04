@@ -61,6 +61,8 @@ See [Dependency Governance](dependencies.en.md) for Git fork provenance, pinned 
 
 After resolving Flutter dependencies, each platform CI runs `dart tool/prepare_rhttp_prebuilt.dart`. It checks `pubspec.lock`, configures the resolved `rhttp` package, and makes that package's Cargokit accept precompiled artifacts only. The subsequent build downloads artifacts by source hash and verifies their Ed25519 signatures. A missing target file or invalid signature fails the build instead of falling back to Cargo. Repeated preparation is idempotent; unexpected dependency source is rejected before modification.
 
+The preparation script resolves Pub package URIs as directories, supporting absolute or relative URIs, an omitted trailing `/`, and paths containing spaces. Apple CI creates `~/.cargo/bin` before installing the Rustup wrapper and adds that directory to subsequent steps' `PATH` so Rustup installation operations are serialized during parallel plugin builds.
+
 For local builds using prebuilts, use a project-specific Pub cache in the PowerShell process used for the build so other projects' shared packages are not modified:
 
 ```powershell

@@ -60,6 +60,8 @@ Git fork 的来源、固定 commit 和升级要求见[依赖治理](dependencies
 
 各平台 CI 在获取 Flutter 依赖后执行 `dart tool/prepare_rhttp_prebuilt.dart`，核对 `pubspec.lock`，配置已解析的 `rhttp` 包，并将该包的 Cargokit 改为只接受预编译产物。后续构建通过 Cargokit 按源码 hash 下载并验证 Ed25519 签名。缺少任一目标文件或签名无效时明确失败，不回退到 Cargo 编译。配置脚本重复执行不会改变结果；依赖源码与预期不符时拒绝修改。
 
+配置脚本按目录解析 Pub 返回的包 URI，支持绝对或相对 URI、末尾省略 `/` 以及带空格的路径。Apple CI 在安装 Rustup 包装器前创建 `~/.cargo/bin`，并将该目录加入后续步骤的 `PATH`，使并行插件构建中的 Rustup 安装操作串行执行。
+
 本地使用预编译库时，在用于构建的 PowerShell 进程内使用项目专用 Pub 缓存，避免改动其他项目共用的包：
 
 ```powershell
