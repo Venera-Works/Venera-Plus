@@ -360,16 +360,23 @@ void main() {
         );
 
         test(
-          'reading during pending request acknowledges the returned version',
+          'reading during pending request does not suppress later discovered updates',
           () async {
             final response = Completer<Res<ComicDetails>>();
             final started = Completer<void>();
+            var loaderCall = 0;
             ComicSourceManager().add(
               _source(
                 sourceKey,
                 loadComicInfo: (id) {
-                  started.complete();
-                  return response.future;
+                  loaderCall++;
+                  if (loaderCall == 1) {
+                    started.complete();
+                    return response.future;
+                  }
+                  return Future.value(
+                    Res(_details(sourceKey, id, updateTime: _laterTime)),
+                  );
                 },
               ),
             );
@@ -381,15 +388,20 @@ void main() {
               manager.markAsRead(item.id, item.type);
               response.complete(Res(_details(sourceKey, item.id)));
               final result = await pending;
-              expect(result.updated, isFalse);
+              expect(result.updated, isTrue);
+              expect(result.status, ComicUpdateCheckStatus.updated);
               expect(
                 manager
                     .getComicWithUpdatesInfo('在读', item.id, item.type)
                     .updateTime,
                 _newTime,
               );
+              expect(manager.hasNewUpdate(item.id, item.type), isTrue);
+              manager.markAsRead(item.id, item.type);
               expect(manager.hasNewUpdate(item.id, item.type), isFalse);
-              manager.updateUpdateTime('在读', item.id, item.type, _laterTime);
+              final secondResult = await refreshComic(item);
+              expect(secondResult.updated, isTrue);
+              expect(secondResult.status, ComicUpdateCheckStatus.updated);
               expect(manager.hasNewUpdate(item.id, item.type), isTrue);
             });
           },
@@ -434,12 +446,14 @@ void main() {
         });
 
         test(
-          'network-only metadata never inserts into local favorites',
+          'network-only metadata never inserts into local favorites and persists state',
           () async {
+            var remoteTime = _newTime;
             ComicSourceManager().add(
               _source(
                 sourceKey,
-                loadComicInfo: (id) async => Res(_details(sourceKey, id)),
+                loadComicInfo: (id) async =>
+                    Res(_details(sourceKey, id, updateTime: remoteTime)),
               ),
             );
             await _withLiveFavorites((manager) async {
@@ -447,8 +461,82 @@ void main() {
               final result = await refreshComic(item);
               expect(result.item?.name, 'Fresh title');
               expect(result.updateTime, _newTime);
+              expect(result.status, ComicUpdateCheckStatus.baseline);
               expect(manager.find(item.id, item.type), isEmpty);
               expect(manager.count('在读'), 0);
+              expect(manager.hasNewUpdate(item.id, item.type), isFalse);
+              expect(manager.getUpdateCheckTime(item.id, item.type), isNotNull);
+              remoteTime = _laterTime;
+              final updated = await refreshComic(item);
+              expect(updated.status, ComicUpdateCheckStatus.updated);
+              expect(manager.hasNewUpdate(item.id, item.type), isTrue);
+              expect(manager.find(item.id, item.type), isEmpty);
+            });
+          },
+        );
+
+        test(
+          'refresh distinguishes baseline, unknown, unchanged and updated with progress counters',
+          () async {
+            ComicSourceManager().add(
+              _source(
+                sourceKey,
+                loadComicInfo: (id) async {
+                  if (id == 'baseline-item') {
+                    return Res(
+                      ComicDetails.fromJson({
+                        'sourceKey': sourceKey,
+                        'comicId': id,
+                        'title': 'Baseline Comic',
+                        'cover': 'cover.jpg',
+                        'tags': <String, List<String>>{},
+                        'chapters': {'ch1': 'Chapter 1'},
+                      }),
+                    );
+                  }
+                  if (id == 'unknown-item') {
+                    return Res(
+                      ComicDetails.fromJson({
+                        'sourceKey': sourceKey,
+                        'comicId': id,
+                        'title': 'Unknown Comic',
+                        'cover': 'cover.jpg',
+                        'tags': <String, List<String>>{},
+                      }),
+                    );
+                  }
+                  return Res(_details(sourceKey, id));
+                },
+              ),
+            );
+            await _withLiveFavorites((manager) async {
+              final baselineItem = FavoriteItem(
+                id: 'baseline-item',
+                name: 'Baseline Comic',
+                coverPath: 'cover.jpg',
+                author: 'Author',
+                type: ComicType.fromKey(sourceKey),
+                tags: const [],
+              );
+              final baselineRes = await refreshComic(baselineItem);
+              expect(baselineRes.status, ComicUpdateCheckStatus.baseline);
+              expect(baselineRes.updated, isFalse);
+
+              final unknownItem = FavoriteItem(
+                id: 'unknown-item',
+                name: 'Unknown Comic',
+                coverPath: 'cover.jpg',
+                author: 'Author',
+                type: ComicType.fromKey(sourceKey),
+                tags: const [],
+              );
+              final unknownRes = await refreshComic(unknownItem);
+              expect(unknownRes.status, ComicUpdateCheckStatus.unknown);
+              expect(unknownRes.updated, isFalse);
+
+              final unchangedRes = await refreshComic(baselineItem);
+              expect(unchangedRes.status, ComicUpdateCheckStatus.unchanged);
+              expect(unchangedRes.updated, isFalse);
             });
           },
         );

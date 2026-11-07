@@ -138,6 +138,109 @@ void main() {
     });
   }
 
+  testWidgets(
+    'finishing the final new chapter keeps another new chapter pending',
+    (tester) async {
+      final chapters = _CountingChapters({
+        'old': 'Old',
+        'new-one': 'New One',
+        'new-two': 'New Two',
+      });
+      final snapshot = ComicUpdateSnapshot.fromChapters(chapters.toJson());
+      var updates = ComicUpdateState.empty()
+          .observe(ComicUpdateSnapshot.fromChapters({'old': 'Old'}))
+          .state
+          .observe(snapshot)
+          .state;
+      configureReaderChapterCompletedHandler((event) {
+        updates = updates.acknowledgeSnapshot(
+          event.updateSnapshot!,
+          chapterId: event.chapterKey,
+          groupId: event.groupId,
+          isLastChapter: event.isLastChapter,
+        );
+      });
+      final key = GlobalKey<_MetadataReaderState>();
+      try {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: _MetadataReader(
+              key: key,
+              chapters: chapters,
+              updateSnapshot: snapshot,
+            ),
+          ),
+        );
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(updates.hasNewUpdate, isTrue);
+        final reader = key.currentState!;
+        reader.selectChapter(3);
+        await tester.pump();
+        reader.images = ['first', 'second'];
+        reader.pageValue = 2;
+        reader.onReaderContentReady();
+        await tester.pump();
+        expect(updates.hasNewUpdate, isTrue);
+        reader.selectChapter(2);
+        await tester.pump();
+        reader.images = ['first', 'second'];
+        reader.pageValue = 2;
+        reader.onReaderContentReady();
+        await tester.pump();
+        expect(updates.hasNewUpdate, isFalse);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump(const Duration(seconds: 1));
+      }
+    },
+  );
+
+  testWidgets(
+    'a comic without chapters confirms its loaded page version at the last page',
+    (tester) async {
+      final snapshot = ComicUpdateSnapshot.fromChapters(null, maxPage: 2);
+      var updates = ComicUpdateState.empty()
+          .observe(ComicUpdateSnapshot.fromChapters(null, maxPage: 1))
+          .state
+          .observe(snapshot)
+          .state;
+      configureReaderChapterCompletedHandler((event) {
+        updates = updates.acknowledgeSnapshot(
+          event.updateSnapshot!,
+          chapterId: event.chapterKey,
+          isLastChapter: event.isLastChapter,
+        );
+      });
+      final key = GlobalKey<_MetadataReaderState>();
+      try {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: _MetadataReader(
+              key: key,
+              chapters: null,
+              updateSnapshot: snapshot,
+            ),
+          ),
+        );
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(updates.hasNewUpdate, isTrue);
+        final reader = key.currentState!;
+        reader.images = ['first', 'second'];
+        reader.pageValue = 1;
+        reader.onReaderContentReady();
+        await tester.pump();
+        expect(updates.hasNewUpdate, isTrue);
+        reader.pageValue = 2;
+        reader.notifyChapterCompletedIfNeeded();
+        await tester.pump();
+        expect(updates.hasNewUpdate, isFalse);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump(const Duration(seconds: 1));
+      }
+    },
+  );
+
   for (final chapters in [
     null,
     _CountingChapters({}),
@@ -212,23 +315,26 @@ class _CountingChapters extends ComicChapters {
 }
 
 class _MetadataReader extends Reader {
-  _MetadataReader({required super.key, required super.chapters})
-    : super(
-        type: ComicType.local,
-        cid: 'book',
-        name: 'Book',
-        author: '',
-        tags: const [],
-        initialChapter: 1,
-        history: History.fromMap({
-          'id': 'book',
-          'type': 0,
-          'time': 1000,
-          'title': 'Book',
-          'ep': 1,
-          'page': 1,
-        }),
-      );
+  _MetadataReader({
+    required super.key,
+    required super.chapters,
+    super.updateSnapshot,
+  }) : super(
+         type: ComicType.local,
+         cid: 'book',
+         name: 'Book',
+         author: '',
+         tags: const [],
+         initialChapter: 1,
+         history: History.fromMap({
+           'id': 'book',
+           'type': 0,
+           'time': 1000,
+           'title': 'Book',
+           'ep': 1,
+           'page': 1,
+         }),
+       );
 
   @override
   ReaderState createState() => _MetadataReaderState();
@@ -283,6 +389,16 @@ class _EmptyDatabase implements Database {
 class _Favorites extends ChangeNotifier implements LocalFavoritesManager {
   @override
   void onRead(String id, ComicType type) {}
+
+  @override
+  void acknowledgeChapter(
+    String id,
+    ComicType type,
+    ComicUpdateSnapshot snapshot, {
+    required String chapterId,
+    String? groupId,
+    required bool isLastChapter,
+  }) {}
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);

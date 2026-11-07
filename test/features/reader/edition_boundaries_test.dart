@@ -189,6 +189,15 @@ class _EmptyFavorites extends ChangeNotifier implements LocalFavoritesManager {
   @override
   void onRead(String id, ComicType type) {}
   @override
+  void acknowledgeChapter(
+    String id,
+    ComicType type,
+    ComicUpdateSnapshot snapshot, {
+    required String chapterId,
+    String? groupId,
+    required bool isLastChapter,
+  }) {}
+  @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 

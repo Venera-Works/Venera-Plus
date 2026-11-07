@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/foundation/sync_records.dart';
+import 'comic_update_state.dart';
 
 /// Escapes a SQL identifier (such as a table or column name) by enclosing it
 /// in double quotes and doubling any embedded double quotes.
@@ -13,6 +15,7 @@ const internalFavoriteTables = <String>{
   'folder_sync',
   'folder_metadata',
   'android_metadata',
+  'comic_update_state',
 };
 
 /// Returns true if the table name is an internal SQLite or metadata table.
@@ -79,19 +82,166 @@ class FavoriteSyncData {
     final columns = db.select('PRAGMA table_info($quoted);');
     final colNames = columns.map((c) => c['name'] as String).toSet();
 
-    if (!colNames.contains('last_update_time')) {
-      db.execute('ALTER TABLE $quoted ADD COLUMN last_update_time TEXT;');
-    }
-    if (!colNames.contains('has_new_update')) {
-      db.execute(
-        'ALTER TABLE $quoted ADD COLUMN has_new_update INT DEFAULT 0;',
-      );
-    }
-    if (!colNames.contains('last_check_time')) {
-      db.execute('ALTER TABLE $quoted ADD COLUMN last_check_time INT;');
-    }
+    ensureComicUpdateSchema(db);
     if (!colNames.contains('translated_tags')) {
       db.execute('ALTER TABLE $quoted ADD COLUMN translated_tags TEXT;');
+    }
+  }
+
+  /// Migrates per-folder update flags into one state per source identity.
+  static void ensureComicUpdateSchema(Database db) {
+    db.execute('SAVEPOINT comic_update_migration;');
+    try {
+      final tables = db
+          .select("SELECT name FROM sqlite_master WHERE type = 'table';")
+          .map((row) => row['name'] as String)
+          .toSet();
+      if (tables.contains('comic_update_state')) {
+        final columns = db.select('PRAGMA table_info(comic_update_state);');
+        if (!columns.any((column) => column['name'] == 'state')) {
+          var renamed = 'comic_update_state (2)';
+          var suffix = 3;
+          while (tables.contains(renamed)) {
+            renamed = 'comic_update_state (${suffix++})';
+          }
+          db.execute(
+            'ALTER TABLE comic_update_state RENAME TO ${quoteSqlIdentifier(renamed)};',
+          );
+          for (final table in [
+            'folder_order',
+            'folder_sync',
+            'folder_metadata',
+          ]) {
+            if (tables.contains(table)) {
+              db.execute(
+                'UPDATE $table SET folder_name = ? WHERE folder_name = ?;',
+                [renamed, 'comic_update_state'],
+              );
+            }
+          }
+          tables
+            ..remove('comic_update_state')
+            ..add(renamed);
+        }
+      }
+      db.execute('''
+        CREATE TABLE IF NOT EXISTS comic_update_state (
+          id TEXT NOT NULL,
+          type INTEGER NOT NULL,
+          state TEXT NOT NULL,
+          last_check_time INTEGER,
+          PRIMARY KEY (id, type)
+        );
+      ''');
+      for (final table in tables) {
+        if (isInternalFavoriteTable(table)) continue;
+        final quoted = quoteSqlIdentifier(table);
+        final columns = db
+            .select('PRAGMA table_info($quoted);')
+            .map((column) => column['name'] as String)
+            .toSet();
+        final legacy = {
+          'last_update_time',
+          'has_new_update',
+          'last_check_time',
+        }.intersection(columns);
+        if (legacy.isEmpty) continue;
+        final time = columns.contains('last_update_time')
+            ? 'last_update_time'
+            : 'NULL';
+        final unread = columns.contains('has_new_update')
+            ? 'has_new_update'
+            : '0';
+        final checked = columns.contains('last_check_time')
+            ? 'last_check_time'
+            : 'NULL';
+        for (final row in db.select(
+          'SELECT id, type, $time AS update_time, $unread AS unread, '
+          '$checked AS checked_at FROM $quoted;',
+        )) {
+          final updateTime = row['update_time'] as String?;
+          final hasUnread = row['unread'] == 1;
+          final checkedAt = row['checked_at'] as int?;
+          if (updateTime == null && !hasUnread && checkedAt == null) continue;
+          final previous = db.select(
+            'SELECT state, last_check_time FROM comic_update_state WHERE id = ? AND type = ?;',
+            [row['id'], row['type']],
+          );
+          var state = ComicUpdateState.fromLegacy(
+            updateTime: updateTime,
+            unread: hasUnread,
+          );
+          var lastCheck = checkedAt;
+          if (previous.isNotEmpty) {
+            state = state.merge(
+              ComicUpdateState.fromJson(
+                jsonDecode(previous.single['state'] as String),
+              ),
+            );
+            final oldCheck = previous.single['last_check_time'] as int?;
+            if (oldCheck != null &&
+                (lastCheck == null || oldCheck > lastCheck)) {
+              lastCheck = oldCheck;
+            }
+          }
+          db.execute(
+            'INSERT OR REPLACE INTO comic_update_state (id, type, state, last_check_time) VALUES (?, ?, ?, ?);',
+            [row['id'], row['type'], jsonEncode(state.toJson()), lastCheck],
+          );
+        }
+        for (final column in legacy) {
+          db.execute('ALTER TABLE $quoted DROP COLUMN $column;');
+        }
+      }
+      db.execute('RELEASE comic_update_migration;');
+    } catch (_) {
+      db.execute('ROLLBACK TO comic_update_migration;');
+      db.execute('RELEASE comic_update_migration;');
+      rethrow;
+    }
+  }
+
+  static Map<(String, int), ComicUpdateState> readComicUpdateStates(
+    Database db,
+  ) {
+    ensureComicUpdateSchema(db);
+    return {
+      for (final row in db.select(
+        'SELECT id, type, state FROM comic_update_state;',
+      ))
+        (row['id'] as String, row['type'] as int): ComicUpdateState.fromJson(
+          jsonDecode(row['state'] as String),
+        ),
+    };
+  }
+
+  /// Joins discovery and confirmation evidence; local check times are untouched.
+  static bool mergeComicUpdateStates(
+    Database db,
+    Map<(String, int), ComicUpdateState> incoming,
+  ) {
+    if (incoming.isEmpty) return false;
+    final existing = readComicUpdateStates(db);
+    var changed = false;
+    db.execute('SAVEPOINT comic_update_merge;');
+    try {
+      for (final entry in incoming.entries) {
+        final old = existing[entry.key];
+        final merged = old == null ? entry.value : old.merge(entry.value);
+        if (old == merged) continue;
+        db.execute(
+          'INSERT INTO comic_update_state (id, type, state) VALUES (?, ?, ?) '
+          'ON CONFLICT(id, type) DO UPDATE SET state = excluded.state;',
+          [entry.key.$1, entry.key.$2, jsonEncode(merged.toJson())],
+        );
+        changed = true;
+      }
+      db.execute('RELEASE comic_update_merge;');
+      return changed;
+    } catch (_) {
+      db.execute('ROLLBACK TO comic_update_merge;');
+      db.execute('RELEASE comic_update_merge;');
+      rethrow;
     }
   }
 
@@ -211,6 +361,7 @@ class FavoriteSyncData {
   /// Excludes `last_check_time`, derived `translated_tags`, and local caches.
   /// If [readingFolderId] is provided, exports `favoriteRole ['reading']`.
   static SyncRecords readSyncRecords(Database db, {String? readingFolderId}) {
+    ensureComicUpdateSchema(db);
     ensureFolderMetadataTable(db);
     final records = <String, Map<String, Object?>>{};
 
@@ -246,7 +397,7 @@ class FavoriteSyncData {
 
       final quotedPhysical = quoteSqlIdentifier(physicalName);
       final comicRows = db.select('''
-        SELECT id, type, name, author, tags, cover_path, time, display_order, last_update_time, has_new_update
+        SELECT id, type, name, author, tags, cover_path, time, display_order
         FROM $quotedPhysical
         ORDER BY display_order;
       ''');
@@ -261,8 +412,6 @@ class FavoriteSyncData {
         final tags = tagsStr.split(',').where((t) => t.isNotEmpty).toList();
         final time = cRow['time'] as String? ?? '';
         final displayOrder = cRow['display_order'] as int? ?? 0;
-        final lastUpdateTime = cRow['last_update_time'] as String?;
-        final hasNewUpdate = (cRow['has_new_update'] as int? ?? 0) == 1;
 
         // Canonical fields ONLY: 'title' and 'cover'
         records[syncRecordKey('favorite', [folderId, comicId, comicType])] = {
@@ -272,10 +421,13 @@ class FavoriteSyncData {
           'tags': tags,
           'time': time,
           'displayOrder': displayOrder,
-          if (lastUpdateTime != null) 'lastUpdateTime': lastUpdateTime,
-          'hasNewUpdate': hasNewUpdate,
         };
       }
+    }
+
+    for (final entry in readComicUpdateStates(db).entries) {
+      records[syncRecordKey('comicUpdate', [entry.key.$1, entry.key.$2])] =
+          entry.value.toJson();
     }
 
     if (readingFolderId != null) {
@@ -355,18 +507,20 @@ class FavoriteSyncData {
   /// - Escapes all SQLite identifiers against injection and quotes.
   /// - Survives concurrent folder deletion when alive favorites exist (revives folder metadata).
   /// - Updates items per record without wiping DB or touching unrelated tables.
-  /// - Preserves local `translated_tags` and `last_check_time`.
+  /// - Preserves local translated tags and per-comic check times.
   /// - Materialized view absence of `favoriteRole ['reading']` clears reading role.
   static FavoriteApplyResult applyFavoriteSyncRecords(
     Database db,
     SyncRecords records, {
     String? currentReadingFolderId,
   }) {
+    ensureComicUpdateSchema(db);
     ensureFolderMetadataTable(db);
 
     final incomingFolders = <String, Map<String, Object?>>{};
     final incomingFavorites =
         <String, List<(String, int, Map<String, Object?>)>>{};
+    final incomingUpdates = <(String, int), ComicUpdateState>{};
     String? incomingReadingFolderId;
     var hasIncomingReadingRole = false;
 
@@ -394,7 +548,27 @@ class FavoriteSyncData {
             type,
             fields,
           ));
+          if (fields.containsKey('lastUpdateTime') ||
+              fields.containsKey('hasNewUpdate')) {
+            final identity = (comicId, type);
+            final migrated = ComicUpdateState.fromLegacy(
+              updateTime: fields['lastUpdateTime'] as String?,
+              unread: fields['hasNewUpdate'] == true,
+            );
+            incomingUpdates[identity] =
+                incomingUpdates[identity]?.merge(migrated) ?? migrated;
+          }
         }
+      } else if (domain == 'comicUpdate') {
+        if (decoded.length != 3 ||
+            decoded[1] is! String ||
+            decoded[2] is! int) {
+          throw const FormatException('Invalid comic update identity');
+        }
+        final identity = (decoded[1] as String, decoded[2] as int);
+        final state = ComicUpdateState.fromJson(fields);
+        incomingUpdates[identity] =
+            incomingUpdates[identity]?.merge(state) ?? state;
       } else if (domain == 'favoriteRole') {
         if (decoded.length >= 2 && decoded[1] == 'reading') {
           hasIncomingReadingRole = true;
@@ -630,7 +804,7 @@ class FavoriteSyncData {
 
         final quotedPhysical = quoteSqlIdentifier(targetPhysicalName);
         final existingRows = db.select('''
-          SELECT id, type, name, author, tags, cover_path, time, display_order, last_update_time, has_new_update, translated_tags, last_check_time
+          SELECT id, type, name, author, tags, cover_path, time, display_order, translated_tags
           FROM $quotedPhysical;
         ''');
         final existingMap = <(String, int), Row>{};
@@ -677,15 +851,13 @@ class FavoriteSyncData {
           final displayOrder = fields['displayOrder'] is num
               ? (fields['displayOrder'] as num).toInt()
               : 0;
-          final lastUpdateTime = fields['lastUpdateTime'] as String?;
-          final hasNewUpdate = fields['hasNewUpdate'] == true ? 1 : 0;
 
           final existingRow = existingMap[(comicId, comicType)];
           if (existingRow == null) {
             db.execute(
               '''
-              INSERT INTO $quotedPhysical (id, name, author, type, tags, cover_path, time, display_order, translated_tags, last_update_time, has_new_update, last_check_time)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+              INSERT INTO $quotedPhysical (id, name, author, type, tags, cover_path, time, display_order, translated_tags)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
             ''',
               [
                 comicId,
@@ -696,9 +868,6 @@ class FavoriteSyncData {
                 cover,
                 time,
                 displayOrder,
-                null,
-                lastUpdateTime,
-                hasNewUpdate,
                 null,
               ],
             );
@@ -711,23 +880,17 @@ class FavoriteSyncData {
             final oldTags = existingRow['tags'] as String? ?? '';
             final oldTime = existingRow['time'] as String? ?? '';
             final oldOrder = existingRow['display_order'] as int? ?? 0;
-            final oldUpdateTime = existingRow['last_update_time'] as String?;
-            final oldHasNew = (existingRow['has_new_update'] as int? ?? 0) == 1
-                ? 1
-                : 0;
 
             if (oldTitle != title ||
                 oldAuthor != author ||
                 oldCover != cover ||
                 oldTags != tags ||
                 oldTime != time ||
-                oldOrder != displayOrder ||
-                oldUpdateTime != lastUpdateTime ||
-                oldHasNew != hasNewUpdate) {
+                oldOrder != displayOrder) {
               db.execute(
                 '''
                 UPDATE $quotedPhysical
-                SET name = ?, author = ?, cover_path = ?, tags = ?, time = ?, display_order = ?, last_update_time = ?, has_new_update = ?
+                SET name = ?, author = ?, cover_path = ?, tags = ?, time = ?, display_order = ?
                 WHERE id = ? AND type = ?;
               ''',
                 [
@@ -737,8 +900,6 @@ class FavoriteSyncData {
                   tags,
                   time,
                   displayOrder,
-                  lastUpdateTime,
-                  hasNewUpdate,
                   comicId,
                   comicType,
                 ],
@@ -750,6 +911,7 @@ class FavoriteSyncData {
         }
       }
 
+      if (mergeComicUpdateStates(db, incomingUpdates)) changed = true;
       db.execute('COMMIT');
     } catch (e) {
       db.execute('ROLLBACK');
@@ -804,9 +966,6 @@ class FavoriteSyncData {
         time TEXT,
         display_order INT,
         translated_tags TEXT,
-        last_update_time TEXT,
-        has_new_update INT DEFAULT 0,
-        last_check_time INT,
         PRIMARY KEY (id, type)
       );
     ''');

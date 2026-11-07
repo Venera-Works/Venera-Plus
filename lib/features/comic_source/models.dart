@@ -321,49 +321,70 @@ class ComicDetails with HistoryMixin {
       return null;
     }
 
-    DateTime? dateTime;
-
     final timestamp = int.tryParse(value);
-
     if (timestamp != null) {
+      DateTime dateTime;
       try {
         dateTime = DateTime.fromMillisecondsSinceEpoch(
           timestamp < 10000000000 ? timestamp * 1000 : timestamp,
+          isUtc: true,
         );
       } catch (_) {
         return null;
       }
-    } else {
-      dateTime = DateTime.tryParse(value);
+      if (dateTime.year < 2000 || dateTime.year > 3000) {
+        return null;
+      }
+      return dateTime.toIso8601String();
     }
 
-    if (dateTime == null) {
-      return null;
+    if (RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(value)) {
+      final parts = value.split('-');
+      final y = int.tryParse(parts[0]);
+      final m = int.tryParse(parts[1]);
+      final d = int.tryParse(parts[2]);
+      if (y == null || m == null || d == null) return null;
+      if (y < 2000 || y > 3000 || m < 1 || m > 12 || d < 1 || d > 31) {
+        return null;
+      }
+      final year = y.toString().padLeft(4, '0');
+      final month = m.toString().padLeft(2, '0');
+      final day = d.toString().padLeft(2, '0');
+      return "$year-$month-$day";
     }
 
-    final local = dateTime.toLocal();
+    final normalizedInput =
+        value.endsWith('Z') ||
+            value.contains('+') ||
+            RegExp(r'-\d{2}:\d{2}$').hasMatch(value)
+        ? value
+        : '${value.replaceFirst(' ', 'T')}Z';
 
-    if (local.year < 2000 || local.year > 3000) {
-      return null;
-    }
+    final dt = DateTime.tryParse(normalizedInput);
+    if (dt == null) return null;
 
-    final year = local.year.toString().padLeft(4, '0');
-    final month = local.month.toString().padLeft(2, '0');
-    final day = local.day.toString().padLeft(2, '0');
+    final utc = dt.toUtc();
+    if (utc.year < 2000 || utc.year > 3000) return null;
 
-    return "$year-$month-$day";
+    return utc.toIso8601String();
   }
 
   String? findUpdateTime() {
     if (updateTime != null) {
-      return _validateUpdateTime(updateTime!);
+      final valid = _validateUpdateTime(updateTime!);
+      if (valid != null) {
+        return valid;
+      }
     }
     const acceptedNamespaces = ["更新", "最後更新", "最后更新", "update", "last update"];
     for (var entry in tags.entries) {
-      if (acceptedNamespaces.contains(entry.key.toLowerCase()) &&
-          entry.value.isNotEmpty) {
-        var value = entry.value.first;
-        return _validateUpdateTime(value);
+      if (acceptedNamespaces.contains(entry.key.trim().toLowerCase())) {
+        for (var value in entry.value) {
+          final valid = _validateUpdateTime(value);
+          if (valid != null) {
+            return valid;
+          }
+        }
       }
     }
     return null;

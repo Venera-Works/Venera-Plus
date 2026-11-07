@@ -121,6 +121,8 @@ venera-plus --headless updatesubscribe --update-comic-by-id-type "comic-id" "sou
 - **`Progress`**：表示更新流程中的一个步骤成功。
 - **`ProgressError`**：表示更新某个漫画时发生错误。
 
+进度和 `Update check complete.` 汇总中的 `data` 提供 `updated`、`unchanged`、`baseline`、`unknown`、`errors` 计数，以及本次发现的新增章节数 `newChapters`。首次获得比较依据计入 `baseline`；缺少可比较章节、页数和日期计入 `unknown`，不计为没有更新。单本进度还提供 `updateStatus`，值为 `updated`、`unchanged`、`baseline` 或 `unknown`；请求失败通过 `ProgressError` 和 `error` 字段报告，不重复计入 `unknown` 数量。
+
 **`Progress` 日志示例：**
 
 ```json
@@ -163,7 +165,7 @@ venera-plus --headless updatesubscribe --update-comic-by-id-type "comic-id" "sou
 
 **最终输出：**
 
-更新完成后会返回最终 JSON 对象，其中 `data` 是本次检测到更新的漫画列表。
+更新完成后会返回最终 JSON 对象，其中 `data` 是当前仍有待确认更新的漫画列表，包含此前检查发现且尚未读完或手动确认的更新。
 
 ```json
 {

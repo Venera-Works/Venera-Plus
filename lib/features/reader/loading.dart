@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/loading.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/reader/reader_page.dart';
@@ -48,6 +49,7 @@ class _ReaderWithLoadingState
       initialNavigationSource: widget.initialNavigationSource,
       author: data.author,
       tags: data.tags,
+      updateSnapshot: data.updateSnapshot,
     );
   }
 
@@ -81,6 +83,10 @@ class _ReaderWithLoadingState
           }
         }
       }
+      final updateSnapshot = ComicUpdateSnapshot.fromChapters(
+        localComic.chapters?.toJson(),
+        maxPage: localComic.maxPage,
+      );
       return Res(
         ReaderProps(
           type: ComicType.fromKey(widget.sourceKey),
@@ -90,6 +96,7 @@ class _ReaderWithLoadingState
           history: history,
           author: localComic.subtitle,
           tags: localComic.tags,
+          updateSnapshot: updateSnapshot,
         ),
       );
     }
@@ -113,6 +120,12 @@ class _ReaderWithLoadingState
         }
       }
     }
+    final updateSnapshot = ComicUpdateSnapshot.fromChapters(
+      comic.data.chapters?.toJson(),
+      updateTime: comic.data.findUpdateTime(),
+      maxPage: comic.data.maxPage,
+      chapterPageCounts: comic.data.chapterPageCounts,
+    );
     return Res(
       ReaderProps(
         type: ComicType.fromKey(widget.sourceKey),
@@ -122,6 +135,7 @@ class _ReaderWithLoadingState
         history: history,
         author: comic.data.findAuthor() ?? "",
         tags: comic.data.plainTags,
+        updateSnapshot: updateSnapshot,
       ),
     );
   }
@@ -142,6 +156,8 @@ class ReaderProps {
 
   final List<String> tags;
 
+  final ComicUpdateSnapshot? updateSnapshot;
+
   const ReaderProps({
     required this.type,
     required this.cid,
@@ -150,5 +166,6 @@ class ReaderProps {
     required this.history,
     required this.author,
     required this.tags,
+    this.updateSnapshot,
   });
 }

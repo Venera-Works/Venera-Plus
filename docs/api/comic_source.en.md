@@ -110,15 +110,26 @@ for (const chapter of [...apiChapters].reverse()) {
 
 ### Timestamps and Author Namespaces
 
-The `updateTime` and `uploadTime` fields accept:
+The `updateTime` and `uploadTime` fields accept the formats below. Update checks retain the precision supplied by `updateTime`: date-only values are compared as dates, while datetime strings and Unix timestamps retain their full instant. Display formatting is separate.
 
 - Standard date strings: `YYYY-MM-DD` (e.g. `2026-09-01`) or `YYYY-MM-DD HH:mm:ss`.
 - Unix timestamps: 10-digit second or 13-digit millisecond timestamps (e.g. `1788220800`).
 - ISO 8601 datetime strings: strings with date, time, and timezone indicators (e.g. `2026-09-01T12:00:00Z`).
 
-The app normalizes these formats to a local date string (`YYYY-MM-DD`). If `updateTime` is omitted, the app extracts the first tag from namespaces such as `update`, `last update`, `更新`, or `最后更新`.
+Timezone-aware datetimes and Unix timestamps normalize to UTC. Datetimes without a timezone are interpreted as UTC so device timezone settings do not change comparison results. Date-only values remain calendar dates without timezone conversion. Sources should include an explicit offset when the timezone is known.
+
+If `updateTime` is missing or cannot be parsed, the app continues looking for a valid date in the `update`, `last update`, `更新`, `最後更新`, and `最后更新` tag namespaces.
 
 Author namespaces include `author`, `authors`, `artist`, `artists`, `作者`, or `画师`.
+
+### Comic Update Detection and Read Confirmation
+
+Home, local favorites, network favorites, and headless checks share persistent update state keyed by source and comic ID. Checks compare stable chapter IDs, valid page-count growth, and forward changes in the source update time. Added chapters can be detected even when the date is unchanged or absent. Renaming, reordering, or removing chapters alone does not create an update; a new chapter ID is detected even when the total count stays the same. Duplicate chapter IDs within grouped catalogs are distinguished by group identity.
+
+Details may provide `chapterPageCounts: {chapterId: positiveInteger}` for chapter page counts and `maxPage` for a comic without chapters. Chapter counts must uniquely match the current catalog; unmatched counts or counts ambiguous across groups are excluded from comparison. When chapters, page counts, and a parseable date are all unavailable, the result is unknown rather than unchanged. An empty catalog or temporarily missing fields does not erase an established baseline.
+
+The first usable chapter catalog or other comparison basis establishes a baseline and preserves an existing update badge. A badge represents newly detected content awaiting confirmation, rather than every unread chapter predating the favorite. Entering the reader does not clear it. Completing a chapter confirms only that chapter's visible content version; users can also explicitly mark currently known updates as read. Reading an old chapter does not clear a new chapter, and discoveries made during reading remain pending.
+
 
 ## 3. Search, Explore, and Categories
 

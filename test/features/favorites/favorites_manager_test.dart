@@ -347,7 +347,14 @@ void main() {
             manager.addComic('other', second, null, 'old');
             await manager.waitForPendingReads();
             expect(manager.totalComics, 2);
-            manager.updateUpdateTime('other', first.id, first.type, 'new');
+            manager.saveUpdateState(
+              first.id,
+              first.type,
+              ComicUpdateState.fromLegacy(
+                updateTime: '2026-10-08',
+                unread: true,
+              ),
+            );
             expect(manager.getAllComicsWithUpdatesInfo(), hasLength(2));
             expect(manager.hasNewUpdate(first.id, first.type), isTrue);
             expect(manager.hasNewUpdate(second.id, second.type), isFalse);
@@ -358,24 +365,48 @@ void main() {
       );
 
       test(
-        'same timestamp retains unread until reading clears all memberships',
+        'opening an old chapter retains updates until the new chapter completes',
         () async {
           await _withManager((manager) async {
             manager.createFolder('other');
             final comic = _favorite('shared');
             for (final folder in manager.folderNames) {
-              manager.addComic(folder, comic, null, 'old');
-              manager.updateUpdateTime(folder, comic.id, comic.type, 'new');
-              manager.updateUpdateTime(folder, comic.id, comic.type, 'new');
+              manager.addComic(folder, comic, null, '2026-10-07');
+            }
+            final oldCatalog = ComicUpdateSnapshot.fromChapters({'old': 'Old'});
+            final newCatalog = ComicUpdateSnapshot.fromChapters({
+              'old': 'Old',
+              'new': 'New',
+            });
+            final state = ComicUpdateState.empty()
+                .observe(oldCatalog)
+                .state
+                .observe(newCatalog)
+                .state;
+            manager.saveUpdateState(comic.id, comic.type, state);
+            appdata.settings['moveFavoriteAfterRead'] = 'none';
+            manager.onRead(comic.id, comic.type);
+            manager.acknowledgeChapter(
+              comic.id,
+              comic.type,
+              oldCatalog,
+              chapterId: 'old',
+              isLastChapter: true,
+            );
+            for (final folder in manager.folderNames) {
               expect(
                 manager.hasNewUpdate(comic.id, comic.type, folder),
                 isTrue,
               );
             }
-            appdata.settings['moveFavoriteAfterRead'] = 'none';
-            manager.onRead(comic.id, comic.type);
+            manager.acknowledgeChapter(
+              comic.id,
+              comic.type,
+              newCatalog,
+              chapterId: 'new',
+              isLastChapter: true,
+            );
             for (final folder in manager.folderNames) {
-              manager.updateUpdateTime(folder, comic.id, comic.type, 'new');
               expect(
                 manager.hasNewUpdate(comic.id, comic.type, folder),
                 isFalse,
@@ -386,7 +417,7 @@ void main() {
       );
 
       test(
-        'delete operations clear only removed identities from unread cache',
+        'deleting memberships preserves shared check history without folder badges',
         () async {
           await _withManager((manager) async {
             manager.createFolder('在读');
@@ -394,7 +425,14 @@ void main() {
             for (final id in ['one', 'batch', 'all']) {
               final comic = _favorite(id);
               manager.addComic('在读', comic, null, 'old');
-              manager.updateUpdateTime('在读', id, comic.type, 'new');
+              manager.saveUpdateState(
+                id,
+                comic.type,
+                ComicUpdateState.fromLegacy(
+                  updateTime: '2026-10-08',
+                  unread: true,
+                ),
+              );
             }
             manager.deleteComicWithId('在读', 'one', ComicType.local);
             manager.batchDeleteComics('在读', [_favorite('batch')]);
@@ -402,7 +440,11 @@ void main() {
               ComicID(ComicType.local, 'all'),
             ]);
             for (final id in ['one', 'batch', 'all']) {
-              expect(manager.hasNewUpdate(id, ComicType.local), isFalse);
+              expect(manager.hasNewUpdate(id, ComicType.local, '在读'), isFalse);
+              expect(
+                manager.getUpdateState(id, ComicType.local).hasNewUpdate,
+                isTrue,
+              );
             }
           });
         },
@@ -418,7 +460,14 @@ void main() {
             manager.createFolder('copied');
             final comic = _favorite('unread');
             manager.addComic('在读', comic, null, 'old');
-            manager.updateUpdateTime('在读', comic.id, comic.type, 'new');
+            manager.saveUpdateState(
+              comic.id,
+              comic.type,
+              ComicUpdateState.fromLegacy(
+                updateTime: '2026-10-08',
+                unread: true,
+              ),
+            );
             manager.moveFavorite('在读', 'moved', comic.id, comic.type);
             manager.batchCopyFavorites('moved', 'copied', [comic]);
             manager.addComic('在读', comic);
@@ -428,7 +477,7 @@ void main() {
                 comic.id,
                 comic.type,
               );
-              expect(state.updateTime, 'new');
+              expect(state.updateTime, '2026-10-08');
               expect(state.hasNewUpdate, isTrue);
             }
             manager.batchMoveFavorites('moved', 'copied', [comic]);
@@ -482,11 +531,13 @@ void main() {
             final second = _favorite('c2');
             manager.addComic('Read later', first, 1, 'old');
             manager.addComic('Read later', second, 2, 'old');
-            manager.updateUpdateTime(
-              'Read later',
+            manager.saveUpdateState(
               second.id,
               second.type,
-              'new',
+              ComicUpdateState.fromLegacy(
+                updateTime: '2026-10-08',
+                unread: true,
+              ),
             );
             await manager.waitForPendingReads();
             manager.close();
@@ -502,8 +553,127 @@ void main() {
               'c2',
               'c1',
             ]);
+            expect(manager.hasNewUpdate('c2', ComicType.local), isTrue);
+            manager.markAsRead('c2', ComicType.local);
             expect(manager.hasNewUpdate('c2', ComicType.local), isFalse);
           });
+        },
+      );
+      test(
+        'network-only update state survives reopen without adding favorites',
+        () async {
+          await _withManager((manager) async {
+            const type = ComicType(91);
+            final baseline = ComicUpdateSnapshot.fromChapters({'one': 'One'});
+            final current = ComicUpdateSnapshot.fromChapters({
+              'one': 'One',
+              'two': 'Two',
+            });
+            final state = ComicUpdateState.empty()
+                .observe(baseline)
+                .state
+                .observe(current)
+                .state;
+            manager.saveUpdateState(
+              'network-only',
+              type,
+              state,
+              checkedAt: 123456,
+            );
+            await manager.waitForPendingReads();
+            manager.close();
+            await manager.init();
+            expect(manager.isExist('network-only', type), isFalse);
+            expect(manager.hasNewUpdate('network-only', type), isTrue);
+            expect(manager.getUpdateCheckTime('network-only', type), 123456);
+            expect(manager.getAllComicsWithUpdatesInfo(), isEmpty);
+          });
+        },
+      );
+
+      test(
+        'legacy folder flags merge once and retain dates and local check time',
+        () async {
+          await _withManager(
+            (manager) async {
+              const type = ComicType.local;
+              expect(
+                manager.getUpdateState('shared', type).updateTime,
+                '2026-10-08',
+              );
+              expect(manager.hasNewUpdate('shared', type, 'legacy_a'), isTrue);
+              expect(manager.hasNewUpdate('shared', type, 'legacy_b'), isTrue);
+              expect(manager.getUpdateCheckTime('shared', type), 200);
+              final catalog = ComicUpdateSnapshot.fromChapters({'one': 'One'});
+              final observation = manager
+                  .getUpdateState('shared', type)
+                  .observe(catalog);
+              expect(observation.newChapterCount, 0);
+              manager.saveUpdateState('shared', type, observation.state);
+              expect(manager.hasNewUpdate('shared', type), isTrue);
+              manager.markAsRead('shared', type);
+              await manager.waitForPendingReads();
+              manager.close();
+              await manager.init();
+              expect(manager.hasNewUpdate('shared', type), isFalse);
+              final db = sqlite3.open('${App.dataPath}/local_favorite.db');
+              try {
+                for (final folder in ['legacy_a', 'legacy_b']) {
+                  final columns = db
+                      .select('PRAGMA table_info($folder);')
+                      .map((row) => row['name'])
+                      .toSet();
+                  expect(
+                    columns.intersection({
+                      'last_update_time',
+                      'has_new_update',
+                      'last_check_time',
+                    }),
+                    isEmpty,
+                  );
+                }
+              } finally {
+                db.close();
+              }
+            },
+            seed: (db) {
+              for (final (folder, date, unread, checked) in [
+                ('legacy_a', '2026-10-07', 1, 100),
+                ('legacy_b', '2026-10-08', 0, 200),
+              ]) {
+                _seedFolder(db, folder);
+                db.execute(
+                  'ALTER TABLE $folder ADD COLUMN last_update_time TEXT;',
+                );
+                db.execute(
+                  'ALTER TABLE $folder ADD COLUMN has_new_update INT DEFAULT 0;',
+                );
+                db.execute(
+                  'ALTER TABLE $folder ADD COLUMN last_check_time INT;',
+                );
+                db.execute(
+                  'UPDATE $folder SET id = ?, last_update_time = ?, has_new_update = ?, last_check_time = ? WHERE id = ?;',
+                  ['shared', date, unread, checked, '$folder-0'],
+                );
+              }
+            },
+          );
+        },
+      );
+
+      test(
+        'a legacy folder named like the new internal table remains accessible',
+        () async {
+          await _withManager((manager) async {
+            expect(manager.folderNames, contains('comic_update_state (2)'));
+            expect(
+              manager
+                  .getFolderComics('comic_update_state (2)')
+                  .map((comic) => comic.id),
+              containsAll(['comic_update_state-0', 'comic_update_state-1']),
+            );
+            expect(manager.folderNames, isNot(contains('comic_update_state')));
+          }, seed: (db) => _seedFolder(db, 'comic_update_state'));
         },
       );
     },

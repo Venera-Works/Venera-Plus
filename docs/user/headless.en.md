@@ -121,6 +121,8 @@ During an update, you will receive `Progress` or `ProgressError` messages.
 - **`Progress`**: Indicates a successful step in the update process.
 - **`ProgressError`**: Indicates an error occurred while updating a specific comic.
 
+Progress and `Update check complete.` payloads include counts for `updated`, `unchanged`, `baseline`, `unknown`, and `errors`, plus `newChapters` for newly discovered chapters in this check. The first usable comparison basis counts as `baseline`. Missing comparable chapters, page counts, and dates count as `unknown` rather than unchanged. Individual progress also includes `updateStatus`: `updated`, `unchanged`, `baseline`, or `unknown`. Request failures use `ProgressError` and the `error` field and are not counted again under `unknown`.
+
 **Example `Progress` Log:**
 
 ```json
@@ -164,7 +166,7 @@ During an update, you will receive `Progress` or `ProgressError` messages.
 
 **Final Output:**
 
-Once the update process is complete, a final JSON object is returned with a list of all comics that have been updated.
+Once checking completes, the final JSON object lists comics with updates still awaiting confirmation, including discoveries from earlier checks that have not been completed in the reader or explicitly marked as read.
 
 ```json
 {

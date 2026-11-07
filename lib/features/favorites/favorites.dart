@@ -5,3 +5,4 @@ export 'favorites_manager.dart';
 export 'favorites_page.dart';
 export 'reading_favorites_view.dart';
 export 'favorite_sync_data.dart';
+export 'comic_update_state.dart';

@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:venera_plus/features/favorites/favorites.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
 
 @immutable
 class ReaderChapterCompletedEvent {
@@ -8,13 +10,21 @@ class ReaderChapterCompletedEvent {
     required this.sourceKey,
     required this.comicId,
     required this.chapterKey,
-    required this.chapterTitle,
+    this.chapterTitle,
+    this.groupId,
+    this.updateSnapshot,
+    this.isLastChapter = false,
+    this.comicType,
   });
 
   final String sourceKey;
   final String comicId;
   final String chapterKey;
-  final String chapterTitle;
+  final String? chapterTitle;
+  final String? groupId;
+  final ComicUpdateSnapshot? updateSnapshot;
+  final bool isLastChapter;
+  final ComicType? comicType;
 
   @override
   bool operator ==(Object other) =>
@@ -22,10 +32,23 @@ class ReaderChapterCompletedEvent {
       other.sourceKey == sourceKey &&
       other.comicId == comicId &&
       other.chapterKey == chapterKey &&
-      other.chapterTitle == chapterTitle;
+      other.chapterTitle == chapterTitle &&
+      other.groupId == groupId &&
+      other.isLastChapter == isLastChapter &&
+      other.updateSnapshot == updateSnapshot &&
+      other.comicType == comicType;
 
   @override
-  int get hashCode => Object.hash(sourceKey, comicId, chapterKey, chapterTitle);
+  int get hashCode => Object.hash(
+    sourceKey,
+    comicId,
+    chapterKey,
+    chapterTitle,
+    groupId,
+    isLastChapter,
+    updateSnapshot,
+    comicType,
+  );
 }
 
 typedef ReaderChapterCompletedHandler =
@@ -102,14 +125,16 @@ class ReaderChapterCompletionNotifier {
     : _handler = handler ?? _chapterCompletedHandler;
 
   final ReaderChapterCompletedHandler? _handler;
-  final Set<String> _notified = <String>{};
+  final Set<(String?, String)> _notified = <(String?, String)>{};
 
   Future<void> notify({
     required bool isAtEnd,
     required ReaderChapterCompletedEvent event,
   }) async {
     final handler = _handler;
-    if (!isAtEnd || handler == null || !_notified.add(event.chapterKey)) {
+    if (!isAtEnd ||
+        handler == null ||
+        !_notified.add((event.groupId, event.chapterKey))) {
       return;
     }
     await Future.sync(() => handler(event));

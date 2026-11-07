@@ -53,6 +53,7 @@ class Reader extends StatefulWidget {
     this.returnSourceChanges = false,
     required this.author,
     required this.tags,
+    this.updateSnapshot,
   });
 
   final ComicType type;
@@ -81,7 +82,7 @@ class Reader extends StatefulWidget {
   final bool returnSourceChanges;
 
   final History history;
-
+  final ComicUpdateSnapshot? updateSnapshot;
   @override
   State<Reader> createState() => ReaderState();
 }
@@ -292,7 +293,7 @@ class ReaderState extends State<Reader>
   bool _readingProgressResolutionComplete = true;
   String? _readingProgressResolutionError;
   bool _showProgressConflict = false;
-
+  late final ComicUpdateSnapshot? _updateSnapshot;
   bool _reportedMissingLocalFiles = false;
 
   void onLocalChapterRecoveredOnline() {
@@ -398,6 +399,9 @@ class ReaderState extends State<Reader>
     _chapterTitles =
         widget.chapters?.titles.toList(growable: false) ?? const [];
     sessionRoundId = widget.history.activeRereadId;
+    _updateSnapshot =
+        widget.updateSnapshot ??
+        ComicUpdateSnapshot.fromChapters(widget.chapters?.toJson());
     _initialNavigationCommandId = const Uuid().v4();
     _applyInitialHistoryPosition(widget.history);
     _initialObservedProgress = _captureReadingProgressSnapshot();
@@ -866,8 +870,6 @@ class ReaderState extends State<Reader>
 
   Future<void> _notifyChapterCompletedIfNeeded() async {
     if (!mounted) return;
-    final chapters = widget.chapters;
-    if (chapters == null) return;
     final lifecycleState = WidgetsBinding.instance.lifecycleState;
     if (!canCompleteReaderChapter(
       isContentReady: _readerContentReady,
@@ -884,10 +886,27 @@ class ReaderState extends State<Reader>
     )) {
       return;
     }
-    final chapterKey = readingChapter?.id;
-    final completedChapterTitle = chapterTitle;
-    if (chapterKey == null || completedChapterTitle == null) {
-      return;
+    final chapters = widget.chapters;
+    final String chapterKey;
+    final String? completedChapterTitle;
+    final String? groupId;
+    final bool isLast;
+    if (chapters != null) {
+      final currentChapter = readingChapter;
+      final key = currentChapter?.id;
+      final title = chapterTitle;
+      if (key == null || title == null) {
+        return;
+      }
+      chapterKey = key;
+      completedChapterTitle = title;
+      groupId = currentChapter?.groupId;
+      isLast = chapter >= maxChapter;
+    } else {
+      chapterKey = '';
+      completedChapterTitle = null;
+      groupId = null;
+      isLast = true;
     }
     try {
       await _chapterCompletionNotifier.notify(
@@ -897,6 +916,10 @@ class ReaderState extends State<Reader>
           comicId: cid,
           chapterKey: chapterKey,
           chapterTitle: completedChapterTitle,
+          groupId: groupId,
+          isLastChapter: isLast,
+          updateSnapshot: _updateSnapshot,
+          comicType: type,
         ),
       );
     } catch (error, stackTrace) {

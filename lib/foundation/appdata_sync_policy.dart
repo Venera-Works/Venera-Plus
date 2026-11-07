@@ -60,6 +60,7 @@ const appdataSyncDomains = <String>{
   'folder',
   'favorite',
   'favoriteRole',
+  'comicUpdate',
   'history',
   'historyChapter',
   'imageFavorite',
@@ -68,7 +69,7 @@ const appdataSyncDomains = <String>{
 /// User-facing sync scope groups and their concrete record domains.
 const appdataSyncDomainGroups = <String, Set<String>>{
   'settings': {'setting'},
-  'favorites': {'folder', 'favorite', 'favoriteRole'},
+  'favorites': {'folder', 'favorite', 'favoriteRole', 'comicUpdate'},
   'reading': {'history', 'historyChapter'},
   'images': {'imageFavorite'},
   'search': {'search'},

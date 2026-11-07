@@ -159,20 +159,18 @@ void main() {
     );
 
     test(
-      'exportSyncRecords adheres to contract: canonical fields only, excludes last_check_time and aliases',
+      'sync records separate shared update evidence from membership and local check times',
       () async {
         await _withManager((manager) async {
           manager.createFolder('测试导出');
           final comic = _testComic('c1');
           manager.addComic('测试导出', comic);
-          manager.updateUpdateTime(
-            '测试导出',
+          manager.saveUpdateState(
             'c1',
             ComicType.local,
-            '2026-10-07 12:00:00',
-            unread: true,
+            ComicUpdateState.fromLegacy(updateTime: '2026-10-07', unread: true),
+            checkedAt: 123456,
           );
-          manager.updateCheckTime('测试导出', 'c1', ComicType.local);
 
           final exported = manager.exportSyncRecords();
           final folderId = manager.getFolderId('测试导出')!;
@@ -190,8 +188,16 @@ void main() {
           expect(fields['author'], equals('Author c1'));
           expect(fields['cover'], equals('cover-c1.jpg'));
           expect(fields['tags'], equals(['action', 'comedy']));
-          expect(fields['lastUpdateTime'], equals('2026-10-07 12:00:00'));
-          expect(fields['hasNewUpdate'], isTrue);
+          final updateFields =
+              exported[syncRecordKey('comicUpdate', [
+                'c1',
+                ComicType.local.value,
+              ])]!;
+          final updateState = ComicUpdateState.fromJson(updateFields);
+          expect(updateState.updateTime, '2026-10-07');
+          expect(updateState.hasNewUpdate, isTrue);
+          expect(fields.containsKey('lastUpdateTime'), isFalse);
+          expect(fields.containsKey('hasNewUpdate'), isFalse);
 
           // Redundant aliases MUST NOT be exported
           expect(fields.containsKey('name'), isFalse);
@@ -202,6 +208,8 @@ void main() {
           expect(fields.containsKey('lastCheckTime'), isFalse);
           expect(fields.containsKey('translated_tags'), isFalse);
           expect(fields.containsKey('translatedTags'), isFalse);
+          expect(updateFields.containsKey('lastCheckTime'), isFalse);
+          expect(updateFields.containsKey('last_check_time'), isFalse);
         });
       },
     );
@@ -683,6 +691,59 @@ void main() {
           final listenerCountAfterSync = listenerFired;
           manager.applySyncRecords(records);
           expect(listenerFired, equals(listenerCountAfterSync));
+        });
+      },
+    );
+    test(
+      'sync merges chapter confirmations without clearing a concurrent new chapter',
+      () async {
+        await _withManager((manager) async {
+          manager.createFolder('Shared');
+          final comic = _testComic('concurrent');
+          manager.addComic('Shared', comic);
+          final one = ComicUpdateSnapshot.fromChapters({'one': 'One'});
+          final two = ComicUpdateSnapshot.fromChapters({
+            'one': 'One',
+            'two': 'Two',
+          });
+          final three = ComicUpdateSnapshot.fromChapters({
+            'one': 'One',
+            'two': 'Two',
+            'three': 'Three',
+          });
+          final baseline = ComicUpdateState.empty().observe(one).state;
+          final updated = baseline.observe(two).state;
+          final read = updated.acknowledgeSnapshot(
+            two,
+            chapterId: 'two',
+            isLastChapter: true,
+          );
+          manager.saveUpdateState(
+            comic.id,
+            comic.type,
+            read,
+            checkedAt: 123456,
+          );
+          final records = manager.exportSyncRecords();
+          final updateKey = syncRecordKey('comicUpdate', [
+            comic.id,
+            comic.type.value,
+          ]);
+          records[updateKey] = updated.observe(three).state.toJson();
+          manager.applySyncRecords(records);
+          expect(manager.hasNewUpdate(comic.id, comic.type, 'Shared'), isTrue);
+          expect(manager.getUpdateCheckTime(comic.id, comic.type), 123456);
+          records[updateKey] = read.toJson();
+          manager.applySyncRecords(records);
+          expect(manager.hasNewUpdate(comic.id, comic.type), isTrue);
+          manager.acknowledgeChapter(
+            comic.id,
+            comic.type,
+            three,
+            chapterId: 'three',
+            isLastChapter: true,
+          );
+          expect(manager.hasNewUpdate(comic.id, comic.type), isFalse);
         });
       },
     );

@@ -47,6 +47,47 @@ void main() {
     expect(events, [first, second]);
   });
 
+  test('same chapter key in different groups emits independently', () async {
+    final events = <ReaderChapterCompletedEvent>[];
+    final notifier = ReaderChapterCompletionNotifier(events.add);
+    const first = ReaderChapterCompletedEvent(
+      sourceKey: 'source',
+      comicId: 'comic',
+      chapterKey: 'duplicate',
+      chapterTitle: '第 1 话',
+      groupId: 'Volume 1',
+    );
+    const second = ReaderChapterCompletedEvent(
+      sourceKey: 'source',
+      comicId: 'comic',
+      chapterKey: 'duplicate',
+      chapterTitle: '第 1 话',
+      groupId: 'Volume 2',
+    );
+
+    await notifier.notify(isAtEnd: true, event: first);
+    await notifier.notify(isAtEnd: true, event: second);
+
+    expect(events, [first, second]);
+  });
+
+  test('duplicate chapter key in the same group emits only once', () async {
+    final events = <ReaderChapterCompletedEvent>[];
+    final notifier = ReaderChapterCompletionNotifier(events.add);
+    const event = ReaderChapterCompletedEvent(
+      sourceKey: 'source',
+      comicId: 'comic',
+      chapterKey: 'duplicate',
+      chapterTitle: '第 1 话',
+      groupId: 'Volume 1',
+    );
+
+    await notifier.notify(isAtEnd: true, event: event);
+    await notifier.notify(isAtEnd: true, event: event);
+
+    expect(events, [event]);
+  });
+
   test('configured handler is captured and awaited', () async {
     final events = <ReaderChapterCompletedEvent>[];
     final completed = Completer<void>();
@@ -72,19 +113,6 @@ void main() {
     await notification;
 
     expect(events, [event]);
-  });
-
-  test('notifier without a handler ignores completion', () async {
-    configureReaderChapterCompletedHandler(null);
-    final notifier = ReaderChapterCompletionNotifier();
-    const event = ReaderChapterCompletedEvent(
-      sourceKey: 'source',
-      comicId: 'comic',
-      chapterKey: 'one',
-      chapterTitle: '第 1 话',
-    );
-
-    await notifier.notify(isAtEnd: true, event: event);
   });
 
   test('completion position requires content and a valid final page', () {

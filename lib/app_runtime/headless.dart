@@ -162,6 +162,21 @@ Future<void> runHeadlessMode(List<String> args) async {
           Map<String, dynamic> data = {
             'current': 1,
             'total': 1,
+            'updated': result.updated ? 1 : 0,
+            'errors': result.errorMessage != null ? 1 : 0,
+            'baseline': result.status == ComicUpdateCheckStatus.baseline
+                ? 1
+                : 0,
+            'unknown':
+                result.errorMessage == null &&
+                    result.status == ComicUpdateCheckStatus.unknown
+                ? 1
+                : 0,
+            'unchanged': result.status == ComicUpdateCheckStatus.unchanged
+                ? 1
+                : 0,
+            'newChapters': result.newChapterCount,
+            'updateStatus': result.status.name,
             'comic': {
               'id': comic.id,
               'name': comic.name,
@@ -188,6 +203,18 @@ Future<void> runHeadlessMode(List<String> args) async {
               'total': 1,
               'updated': result.updated ? 1 : 0,
               'errors': result.errorMessage != null ? 1 : 0,
+              'baseline': result.status == ComicUpdateCheckStatus.baseline
+                  ? 1
+                  : 0,
+              'unknown':
+                  result.errorMessage == null &&
+                      result.status == ComicUpdateCheckStatus.unknown
+                  ? 1
+                  : 0,
+              'unchanged': result.status == ComicUpdateCheckStatus.unchanged
+                  ? 1
+                  : 0,
+              'newChapters': result.newChapterCount,
             },
           });
 
@@ -202,14 +229,31 @@ Future<void> runHeadlessMode(List<String> args) async {
           int total = 0;
           int updated = 0;
           int errors = 0;
+          int baseline = 0;
+          int unknown = 0;
+          int unchanged = 0;
+          int newChapters = 0;
           await for (var progress in updateFolder(folder, true)) {
             total = progress.total;
             updated = progress.updated;
             errors = progress.errors;
+            baseline = progress.baseline;
+            unknown = progress.unknown;
+            unchanged = progress.unchanged;
+            newChapters = progress.newChapters;
             Map<String, dynamic> data = {
               'current': progress.current,
               'total': progress.total,
+              'updated': progress.updated,
+              'errors': progress.errors,
+              'baseline': progress.baseline,
+              'unknown': progress.unknown,
+              'unchanged': progress.unchanged,
+              'newChapters': progress.newChapters,
             };
+            if (progress.status != null) {
+              data['updateStatus'] = progress.status!.name;
+            }
             if (progress.comic != null) {
               data['comic'] = {
                 'id': progress.comic!.id,
@@ -231,7 +275,15 @@ Future<void> runHeadlessMode(List<String> args) async {
           cliPrint({
             'status': 'running',
             'message': 'Update check complete.',
-            'data': {'total': total, 'updated': updated, 'errors': errors},
+            'data': {
+              'total': total,
+              'updated': updated,
+              'errors': errors,
+              'baseline': baseline,
+              'unknown': unknown,
+              'unchanged': unchanged,
+              'newChapters': newChapters,
+            },
           });
           var json = await getUpdatedComicsAsJson(folder);
           cliPrint({

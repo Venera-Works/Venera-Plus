@@ -237,6 +237,12 @@ abstract mixin class ComicPageActions {
         HistoryManager().find(comic.id, comic.comicType) ??
         History.fromModel(model: comic, ep: 0, page: 0);
     final hasExplicitTarget = ep != null || page != null || group != null;
+    final updateSnapshot = ComicUpdateSnapshot.fromChapters(
+      comic.chapters?.toJson(),
+      updateTime: comic.findUpdateTime(),
+      maxPage: comic.maxPage,
+      chapterPageCounts: comic.chapterPageCounts,
+    );
     App.rootContext
         .to<ComicDetails>(
           () => Reader(
@@ -254,6 +260,7 @@ abstract mixin class ComicPageActions {
             history: currentHistory,
             author: comic.findAuthor() ?? '',
             tags: comic.plainTags,
+            updateSnapshot: updateSnapshot,
           ),
         )
         .then((selected) {

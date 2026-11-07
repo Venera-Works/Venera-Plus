@@ -289,13 +289,28 @@ Future<void> init({bool deferBackgroundTasks = false}) async {
     if (source == null || source.libraryId != scopeId) return;
     await source.writeMetadata(comicId, _metadataFromBangumiSubject(detailed));
   });
-  configureReaderChapterCompletedHandler(
-    (event) => BangumiService().onChapterCompleted(
-      sourceKey: event.sourceKey,
-      comicId: event.comicId,
-      chapterTitle: event.chapterTitle,
-    ),
-  );
+  configureReaderChapterCompletedHandler((event) async {
+    final snapshot = event.updateSnapshot;
+    if (snapshot != null) {
+      final comicType = event.comicType ?? ComicType.fromKey(event.sourceKey);
+      LocalFavoritesManager().acknowledgeChapter(
+        event.comicId,
+        comicType,
+        snapshot,
+        chapterId: event.chapterKey,
+        groupId: event.groupId,
+        isLastChapter: event.isLastChapter,
+      );
+    }
+    final title = event.chapterTitle;
+    if (title != null && title.isNotEmpty) {
+      await BangumiService().onChapterCompleted(
+        sourceKey: event.sourceKey,
+        comicId: event.comicId,
+        chapterTitle: title,
+      );
+    }
+  });
   configureRuntimeComicSourcesProvider(_runtimeRemoteComicSources);
   configureComicWidgets(
     comicPageBuilder:

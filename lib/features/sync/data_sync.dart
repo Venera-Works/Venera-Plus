@@ -19,6 +19,7 @@ import 'package:webdav_client/webdav_client.dart' as dav;
 import 'package:venera_plus/foundation/extensions.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/file_system.dart';
+import 'package:venera_plus/features/sync/comic_update_sync.dart';
 
 enum _DataSyncTask { upload, download }
 
@@ -80,6 +81,7 @@ class DataSync with ChangeNotifier {
     if (_disposed ||
         _isDownloading ||
         isAppDataImporting ||
+        isComicUpdateSyncMerging ||
         !hasConfiguration) {
       return;
     }
@@ -688,6 +690,13 @@ class DataSync with ChangeNotifier {
         retained.remove(oldest);
       }
       if (!_isTaskCurrent(epoch)) return const Res(true);
+      await syncComicUpdatesWithWebDav(
+        client,
+        remoteBaseDirectory: _remoteDirectory,
+        uploadSelf: true,
+        isCurrent: () => _isTaskCurrent(epoch),
+      );
+      if (!_isTaskCurrent(epoch)) return const Res(true);
       appdata.settings['lastSyncTime'] = DateTime.now().millisecondsSinceEpoch;
       await appdata.saveData(false);
       Log.info("Upload Data", "Data uploaded successfully");
@@ -736,6 +745,13 @@ class DataSync with ChangeNotifier {
             ..sort((a, b) => _compareSnapshotNames(b.name!, a.name!));
       var file = files.firstOrNull;
       if (file == null) {
+        if (!_isTaskCurrent(epoch)) return const Res(true);
+        await syncComicUpdatesWithWebDav(
+          client,
+          remoteBaseDirectory: _remoteDirectory,
+          uploadSelf: false,
+          isCurrent: () => _isTaskCurrent(epoch),
+        );
         throw 'No data file found';
       }
       var version = file.name!.split('-').elementAtOrNull(1)?.split('.').first;
@@ -743,6 +759,13 @@ class DataSync with ChangeNotifier {
         var currentVersion = appdata.settings['dataVersion'];
         if (currentVersion != null && int.parse(version) <= currentVersion) {
           Log.info("Data Sync", 'No new data to download');
+          if (!_isTaskCurrent(epoch)) return const Res(true);
+          await syncComicUpdatesWithWebDav(
+            client,
+            remoteBaseDirectory: _remoteDirectory,
+            uploadSelf: false,
+            isCurrent: () => _isTaskCurrent(epoch),
+          );
           return const Res(true);
         }
       }
@@ -753,6 +776,13 @@ class DataSync with ChangeNotifier {
       await importAppData(localFile, checkVersion: true);
       _downloadApplied = true;
       await localFile.delete();
+      if (!_isTaskCurrent(epoch)) return const Res(true);
+      await syncComicUpdatesWithWebDav(
+        client,
+        remoteBaseDirectory: _remoteDirectory,
+        uploadSelf: false,
+        isCurrent: () => _isTaskCurrent(epoch),
+      );
       HistoryManager().notifyChanges();
       LocalFavoritesManager().notifyChanges();
       ImageFavoriteManager().notifyChanges();
@@ -817,6 +847,13 @@ class DataSync with ChangeNotifier {
         retained.remove(oldest);
       }
       if (!_isTaskCurrent(epoch)) return const Res(true);
+      await syncComicUpdatesWithStore(
+        store,
+        remoteBaseDirectory: directory,
+        uploadSelf: true,
+        isCurrent: () => _isTaskCurrent(epoch),
+      );
+      if (!_isTaskCurrent(epoch)) return const Res(true);
       appdata.settings['lastSyncTime'] = DateTime.now().millisecondsSinceEpoch;
       await appdata.saveData(false);
       return const Res(true);
@@ -851,12 +888,26 @@ class DataSync with ChangeNotifier {
             ..sort((a, b) => _compareSnapshotNames(b.name, a.name));
       final file = snapshots.firstOrNull;
       if (file == null) {
+        if (!_isTaskCurrent(epoch)) return const Res(true);
+        await syncComicUpdatesWithStore(
+          store,
+          remoteBaseDirectory: location.directory,
+          uploadSelf: false,
+          isCurrent: () => _isTaskCurrent(epoch),
+        );
         return const Res.error('No data file found');
       }
       final version = file.name.split('-').elementAtOrNull(1)?.split('.').first;
       if (version != null && int.tryParse(version) != null) {
         final current = appdata.settings['dataVersion'];
         if (current is int && int.parse(version) <= current) {
+          if (!_isTaskCurrent(epoch)) return const Res(true);
+          await syncComicUpdatesWithStore(
+            store,
+            remoteBaseDirectory: location.directory,
+            uploadSelf: false,
+            isCurrent: () => _isTaskCurrent(epoch),
+          );
           return const Res(true);
         }
       }
@@ -865,6 +916,13 @@ class DataSync with ChangeNotifier {
       if (!_isTaskCurrent(epoch)) return const Res(true);
       await importAppData(localFile, checkVersion: true);
       _downloadApplied = true;
+      if (!_isTaskCurrent(epoch)) return const Res(true);
+      await syncComicUpdatesWithStore(
+        store,
+        remoteBaseDirectory: location.directory,
+        uploadSelf: false,
+        isCurrent: () => _isTaskCurrent(epoch),
+      );
       HistoryManager().notifyChanges();
       LocalFavoritesManager().notifyChanges();
       ImageFavoriteManager().notifyChanges();

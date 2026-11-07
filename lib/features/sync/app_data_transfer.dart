@@ -18,6 +18,8 @@ import 'package:venera_plus/foundation/extensions.dart';
 import 'package:venera_plus/foundation/file_system.dart';
 import 'package:zip_flutter/zip_flutter.dart';
 
+import 'package:venera_plus/features/sync/comic_update_sync.dart';
+
 FutureOr<void> Function()? _appDataSettingsChangedHandler;
 bool _appDataImportInProgress = false;
 
@@ -133,11 +135,67 @@ Future<void> importAppData(File file, {bool checkVersion = false}) async {
           ? importedSettings["dataVersion"]
           : null;
       if (version is int && version <= appdata.settings["dataVersion"]) {
+        if (localFavoriteFile.existsSync() && isComicUpdateSyncEnabled()) {
+          final db = sqlite3.open(localFavoriteFile.path);
+          try {
+            FavoriteSyncData.ensureComicUpdateSchema(db);
+            final archiveStates = FavoriteSyncData.readComicUpdateStates(db);
+            if (archiveStates.isNotEmpty) {
+              applyComicUpdateStatesLocally(archiveStates, notify: true);
+            }
+          } finally {
+            db.close();
+          }
+        }
         return;
       }
     }
 
     backupDir.createSync();
+    Map<(String, int), int>? preservedCheckTimes;
+    Map<(String, int), ComicUpdateState>? preservedUpdateStates;
+    if (checkVersion) {
+      final manager = LocalFavoritesManager.cache;
+      if (manager != null && manager.isCurrentGeneration(manager.generation)) {
+        preservedUpdateStates = manager.exportComicUpdateStates();
+        preservedCheckTimes = {
+          for (final entry in preservedUpdateStates.entries)
+            if (manager.getUpdateCheckTime(
+                  entry.key.$1,
+                  ComicType(entry.key.$2),
+                ) !=
+                null)
+              entry.key: manager.getUpdateCheckTime(
+                entry.key.$1,
+                ComicType(entry.key.$2),
+              )!,
+        };
+      } else {
+        final localDbFile = File(
+          FilePath.join(App.dataPath, 'local_favorite.db'),
+        );
+        if (localDbFile.existsSync()) {
+          final localDb = sqlite3.open(localDbFile.path);
+          try {
+            FavoriteSyncData.ensureComicUpdateSchema(localDb);
+            preservedUpdateStates = FavoriteSyncData.readComicUpdateStates(
+              localDb,
+            );
+            final rows = localDb.select(
+              'SELECT id, type, last_check_time FROM comic_update_state '
+              'WHERE last_check_time IS NOT NULL;',
+            );
+            preservedCheckTimes = {
+              for (final row in rows)
+                (row['id'] as String, row['type'] as int):
+                    row['last_check_time'] as int,
+            };
+          } finally {
+            localDb.close();
+          }
+        }
+      }
+    }
 
     if (await historyFile.exists()) {
       await _closeHistoryManagerForImport();
@@ -151,6 +209,32 @@ Future<void> importAppData(File file, {bool checkVersion = false}) async {
       );
     }
     if (await localFavoriteFile.exists()) {
+      if (checkVersion) {
+        final db = sqlite3.open(localFavoriteFile.path);
+        try {
+          FavoriteSyncData.ensureComicUpdateSchema(db);
+          db.execute('UPDATE comic_update_state SET last_check_time = NULL;');
+          if (isComicUpdateSyncEnabled() &&
+              preservedUpdateStates != null &&
+              preservedUpdateStates.isNotEmpty) {
+            FavoriteSyncData.mergeComicUpdateStates(db, preservedUpdateStates);
+          }
+          if (preservedCheckTimes != null && preservedCheckTimes.isNotEmpty) {
+            final stmt = db.prepare(
+              'UPDATE comic_update_state SET last_check_time = ? WHERE id = ? AND type = ?;',
+            );
+            try {
+              for (final entry in preservedCheckTimes.entries) {
+                stmt.execute([entry.value, entry.key.$1, entry.key.$2]);
+              }
+            } finally {
+              stmt.close();
+            }
+          }
+        } finally {
+          db.close();
+        }
+      }
       await _closeLocalFavoritesManagerForImport();
       reloadLocalFavorites = true;
       await _replaceFileForImport(
@@ -191,6 +275,15 @@ Future<void> importAppData(File file, {bool checkVersion = false}) async {
     }
     if (reloadLocalFavorites) {
       await LocalFavoritesManager().init();
+      if (checkVersion &&
+          isComicUpdateSyncEnabled() &&
+          preservedUpdateStates != null &&
+          preservedUpdateStates.isNotEmpty) {
+        LocalFavoritesManager().mergeComicUpdateStates(
+          preservedUpdateStates,
+          notify: false,
+        );
+      }
       LocalFavoritesManager().notifyChanges();
     }
     if (reloadCookies) {

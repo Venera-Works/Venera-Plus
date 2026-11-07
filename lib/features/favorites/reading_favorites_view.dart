@@ -224,8 +224,7 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
   }
 
   Future<void> _onRefresh() async {
-    int updatedCount = 0;
-    int errorCount = 0;
+    UpdateProgress? lastProgress;
     String? lastError;
     String? refreshedFolder;
     try {
@@ -238,30 +237,24 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
       }
 
       await for (var progress in updateFolder(folder, true)) {
-        updatedCount = progress.updated;
-        errorCount = progress.errors;
+        lastProgress = progress;
         if (progress.errorMessage != null) {
           lastError = progress.errorMessage;
         }
       }
       if (mounted && manager.readingFolder == refreshedFolder) {
-        if (errorCount > 0 && updatedCount > 0) {
-          context.showMessage(
-            message: "Updated @c comics, @e failed".tlParams({
-              'c': updatedCount,
-              'e': errorCount,
-            }),
+        if (lastProgress != null) {
+          final summary = buildRefreshSummary(
+            total: lastProgress.total,
+            updated: lastProgress.updated,
+            unchanged: lastProgress.unchanged,
+            baseline: lastProgress.baseline,
+            unknown: lastProgress.unknown,
+            errors: lastProgress.errors,
+            newChapters: lastProgress.newChapters,
+            firstError: lastError,
           );
-        } else if (updatedCount > 0) {
-          context.showMessage(
-            message: "Updated @c comics".tlParams({'c': updatedCount}),
-          );
-        } else if (errorCount > 0) {
-          context.showMessage(
-            message: lastError != null && errorCount == 1
-                ? "Failed to check for updates: @e".tlParams({'e': lastError})
-                : "Failed to check for updates".tl,
-          );
+          context.showMessage(message: summary);
         }
       }
     } catch (e, s) {

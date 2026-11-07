@@ -25,15 +25,15 @@ This document is the English companion for the repository structure rules. The C
 - `app_update/`: application release checks, release notes and platform asset selection, Android APK downloads and the system installer. Startup checks and About share the same update prompt.
 - `comic_details/`: comic detail page and its chapters, comments, favorites, cover, and thumbnail modules.
 - `discovery/`: unified source browsing and categories, category comic lists, and rankings. Dual-capability sources support horizontal swipes between Browse and Categories while preserving browse-tab selection and view state; standalone `CategoriesPage` is retired.
-- `favorites/`: the Home favorites view (`ReadingFavoritesView`), local/network favorites, folders, and favorite actions. It manages the optional folder binding (`readingFolder`) shared with automatic update checks; the default is unbound, without creating or renaming folders.
-- `follow_updates/`: background update checks for the user-bound favorites folder, without a standalone page or Home summary.
+- `favorites/`: the Home favorites view (`ReadingFavoritesView`), local/network favorites, folders, and favorite actions. It manages the optional folder binding (`readingFolder`) shared with automatic checks. `comic_update_state.dart` compares chapters, page counts, and timestamps and confirms specific content versions; update state is persisted once per comic identity in the favorites database.
+- `follow_updates/`: update checking, request scheduling, and refresh summaries shared by Home, local favorites, network favorites, and headless commands. Automatic checks use the user-bound favorites folder.
 - `history/`: reading history, history page, image favorite models, image favorite manager, and image favorite provider (reading record entry point lives in Library).
 - `image_favorites/`: image favorite page, gallery, and photo view UI (display entry point lives in Library).
 - `local_comics/`: local library, downloads, and import/export tools under `import_export/` (browsing and management entry points live in Library).
 - `reader/`: reader page, gestures, chapters, image loading, waterfall flow, clipboard image handling, and reader-only platform interactions.
 - `search/`: search page, result page, aggregate search, and search query filters.
 - `settings/`: settings pages, reader settings, reusable setting controls, and structured setting destinations (grouped by Reading & Browsing, Sources & Data, and System; personal content moved to Library, obsolete standalone setting classes cleaned up).
-- `sync/`: WebDAV data sync, top bar `SyncActionButton`, app data import/export, and local comic backup/restore.
+- `sync/`: WebDAV data sync, top-bar `SyncActionButton`, app data import/export, and local comic backup/restore. Comic update discoveries and confirmations merge through per-device state files; other data retains full-snapshot restore behavior.
 - `webdav_library/`: WebDAV comic library online reading source for remote directory image structures.
 
 New domains should generally follow this shape:

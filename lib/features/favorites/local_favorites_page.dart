@@ -388,8 +388,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
   }
 
   Future<void> _onRefresh() async {
-    int updatedCount = 0;
-    int errorCount = 0;
+    UpdateProgress? lastProgress;
     String? lastError;
     final targetFolder = isAllFolder ? localAllFolderLabel : widget.folder;
     try {
@@ -400,31 +399,25 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
         return;
       }
       await for (var progress in updateFolder(targetFolder, true)) {
-        updatedCount = progress.updated;
-        errorCount = progress.errors;
+        lastProgress = progress;
         if (progress.errorMessage != null) {
           lastError = progress.errorMessage;
         }
       }
       final currentFolder = isAllFolder ? localAllFolderLabel : widget.folder;
       if (mounted && currentFolder == targetFolder) {
-        if (errorCount > 0 && updatedCount > 0) {
-          context.showMessage(
-            message: "Updated @c comics, @e failed".tlParams({
-              'c': updatedCount,
-              'e': errorCount,
-            }),
+        if (lastProgress != null) {
+          final summary = buildRefreshSummary(
+            total: lastProgress.total,
+            updated: lastProgress.updated,
+            unchanged: lastProgress.unchanged,
+            baseline: lastProgress.baseline,
+            unknown: lastProgress.unknown,
+            errors: lastProgress.errors,
+            newChapters: lastProgress.newChapters,
+            firstError: lastError,
           );
-        } else if (updatedCount > 0) {
-          context.showMessage(
-            message: "Updated @c comics".tlParams({'c': updatedCount}),
-          );
-        } else if (errorCount > 0) {
-          context.showMessage(
-            message: lastError != null && errorCount == 1
-                ? "Failed to check for updates: @e".tlParams({'e': lastError})
-                : "Failed to check for updates".tl,
-          );
+          context.showMessage(message: summary);
         }
       }
     } catch (e, s) {

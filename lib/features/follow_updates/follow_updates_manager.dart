@@ -5,16 +5,21 @@ import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/network/cache.dart';
 import 'package:venera_plus/network/request_scope.dart';
 
 import 'follow_update_queue.dart';
 
 class ComicUpdateResult {
-  final bool updated;
   final String? errorMessage;
+  final ComicUpdateCheckStatus status;
+  final int newChapterCount;
 
-  ComicUpdateResult(this.updated, this.errorMessage);
+  bool get updated =>
+      errorMessage == null && status == ComicUpdateCheckStatus.updated;
+
+  ComicUpdateResult(this.status, this.errorMessage, {this.newChapterCount = 0});
 }
 
 class ComicRefreshResult extends ComicUpdateResult {
@@ -22,10 +27,11 @@ class ComicRefreshResult extends ComicUpdateResult {
   final String? updateTime;
 
   ComicRefreshResult(
-    super.updated,
+    super.status,
     super.errorMessage, {
     this.item,
     this.updateTime,
+    super.newChapterCount,
   });
 }
 
@@ -56,20 +62,24 @@ Future<ComicRefreshResult> _refreshComic(
   final type = comic is FavoriteItem
       ? comic.type
       : ComicType.fromKey(comic.sourceKey);
-  if (type == ComicType.local) return ComicRefreshResult(false, null);
+  if (type == ComicType.local) {
+    return ComicRefreshResult(ComicUpdateCheckStatus.unchanged, null);
+  }
   final source = type.comicSource;
   if (source == null) {
-    return ComicRefreshResult(false, 'Comic source not found');
+    return ComicRefreshResult(
+      ComicUpdateCheckStatus.unknown,
+      'Comic source not found',
+    );
   }
   final loader = source.loadComicInfo;
   if (loader == null) {
     return ComicRefreshResult(
-      false,
+      ComicUpdateCheckStatus.unknown,
       'Comic source does not support loading info',
     );
   }
   final generation = manager.generation;
-  final readRevision = manager.readRevision(comic.id, type);
   final folders = manager.isCurrentGeneration(generation)
       ? manager.find(comic.id, type)
       : <String>[];
@@ -79,7 +89,7 @@ Future<ComicRefreshResult> _refreshComic(
     info = (await loader(comic.id)).data;
   } catch (e, s) {
     Log.error('Check Updates', e, s);
-    return ComicRefreshResult(false, e.toString());
+    return ComicRefreshResult(ComicUpdateCheckStatus.unknown, e.toString());
   }
   final tags = <String>[];
   for (final entry in info.tags.entries) {
@@ -101,10 +111,15 @@ Future<ComicRefreshResult> _refreshComic(
     tags: tags,
   );
   final updateTime = info.findUpdateTime();
-  var updated = false;
-  if (folders.isNotEmpty && !manager.isCurrentGeneration(generation)) {
+  final snapshot = ComicUpdateSnapshot.fromChapters(
+    info.chapters?.toJson(),
+    updateTime: updateTime,
+    maxPage: info.maxPage,
+    chapterPageCounts: info.chapterPageCounts,
+  );
+  if (!manager.isCurrentGeneration(generation)) {
     return ComicRefreshResult(
-      false,
+      ComicUpdateCheckStatus.unknown,
       'Favorites changed during refresh. Refresh again.',
     );
   }
@@ -115,51 +130,47 @@ Future<ComicRefreshResult> _refreshComic(
             manager.comicExists(folder, comic.id, type),
       )
       .toList();
-  // Compare current persisted values, never the stale caller's snapshot.
-  var unread = false;
-  final wasRead = manager.readRevision(comic.id, type) != readRevision;
-  var businessChanged = false;
+
+  final currentState = manager.getUpdateState(comic.id, type);
+  final observation = currentState.observe(snapshot);
+  final status = observation.status;
+  final nowMs = DateTime.now().millisecondsSinceEpoch;
+
+  manager.saveUpdateState(
+    comic.id,
+    type,
+    observation.state,
+    checkedAt: nowMs,
+    notify: false,
+  );
+
+  var metadataChanged = false;
   for (final folder in memberships) {
-    final previous = manager.getComicWithUpdatesInfo(folder, comic.id, type);
-    unread = unread || previous.hasNewUpdate;
-    if (!wasRead &&
-        updateTime != null &&
-        previous.updateTime != null &&
-        previous.updateTime != updateTime) {
-      updated = true;
-    }
+    final previous = manager.getComic(folder, comic.id, type);
     if (previous.name != item.name ||
         previous.author != item.author ||
         previous.coverPath != item.coverPath ||
-        !listEquals(previous.tags, item.tags) ||
-        (updateTime != null && previous.updateTime != updateTime)) {
-      businessChanged = true;
+        !listEquals(previous.tags, item.tags)) {
+      metadataChanged = true;
+      break;
     }
   }
-  if (updated) businessChanged = true;
-  if (businessChanged) {
+  if (metadataChanged) {
     for (final folder in memberships) {
       manager.updateInfo(folder, item, false);
-      if (updateTime != null) {
-        manager.updateUpdateTime(
-          folder,
-          comic.id,
-          type,
-          updateTime,
-          unread: unread || updated,
-          markNew: !wasRead,
-        );
-      } else {
-        manager.updateCheckTime(folder, comic.id, type);
-      }
     }
-    if (memberships.isNotEmpty) manager.notifyChanges();
-  } else {
-    for (final folder in memberships) {
-      manager.updateCheckTime(folder, comic.id, type);
-    }
+    manager.notifyChanges();
+  } else if (observation.state != currentState) {
+    manager.notifyChanges();
   }
-  return ComicRefreshResult(updated, null, item: item, updateTime: updateTime);
+
+  return ComicRefreshResult(
+    status,
+    null,
+    item: item,
+    updateTime: updateTime,
+    newChapterCount: observation.newChapterCount,
+  );
 }
 
 Future<ComicUpdateResult> updateComic(
@@ -171,7 +182,7 @@ Future<ComicUpdateResult> updateComic(
       (!manager.existsFolder(folder) ||
           !manager.comicExists(folder, comic.id, comic.type))) {
     return ComicUpdateResult(
-      false,
+      ComicUpdateCheckStatus.unknown,
       'Favorites changed during refresh. Refresh again.',
     );
   }
@@ -183,17 +194,27 @@ class UpdateProgress {
   final int current;
   final int errors;
   final int updated;
+  final int baseline;
+  final int unknown;
+  final int newChapters;
   final FavoriteItemWithUpdateInfo? comic;
   final String? errorMessage;
+  final ComicUpdateCheckStatus? status;
 
-  UpdateProgress(
-    this.total,
-    this.current,
-    this.errors,
-    this.updated, [
+  int get unchanged => current - errors - updated - baseline - unknown;
+
+  UpdateProgress({
+    required this.total,
+    required this.current,
+    required this.errors,
+    required this.updated,
     this.comic,
     this.errorMessage,
-  ]);
+    this.baseline = 0,
+    this.unknown = 0,
+    this.newChapters = 0,
+    this.status,
+  });
 }
 
 final _activeFolderUpdates =
@@ -306,7 +327,12 @@ Future<void> _runFolderUpdate(
     var current = 0;
     var errors = 0;
     var updated = 0;
-    stream.add(UpdateProgress(pending.length, 0, 0, 0));
+    var baseline = 0;
+    var unknown = 0;
+    var newChapters = 0;
+    stream.add(
+      UpdateProgress(total: pending.length, current: 0, errors: 0, updated: 0),
+    );
     await runFollowUpdateTasks(
       pending,
       sourceKey: (comic) => comic.sourceKey,
@@ -315,20 +341,40 @@ Future<void> _runFolderUpdate(
         final result = manager.isCurrentGeneration(generation)
             ? await refreshComic(comic)
             : ComicRefreshResult(
-                false,
+                ComicUpdateCheckStatus.unknown,
                 'Favorites changed during refresh. Refresh again.',
               );
         current++;
-        if (result.updated) updated++;
-        if (result.errorMessage != null) errors++;
+        if (result.errorMessage != null) {
+          errors++;
+        } else {
+          switch (result.status) {
+            case ComicUpdateCheckStatus.updated:
+              updated++;
+              newChapters += result.newChapterCount;
+              break;
+            case ComicUpdateCheckStatus.baseline:
+              baseline++;
+              break;
+            case ComicUpdateCheckStatus.unknown:
+              unknown++;
+              break;
+            case ComicUpdateCheckStatus.unchanged:
+              break;
+          }
+        }
         stream.add(
           UpdateProgress(
-            pending.length,
-            current,
-            errors,
-            updated,
-            comic,
-            result.errorMessage,
+            total: pending.length,
+            current: current,
+            errors: errors,
+            updated: updated,
+            comic: comic,
+            errorMessage: result.errorMessage,
+            baseline: baseline,
+            unknown: unknown,
+            newChapters: newChapters,
+            status: result.status,
           ),
         );
       },
@@ -360,4 +406,87 @@ Future<String> getUpdatedComicsAsJson(String folder) async {
         )
         .toList(),
   );
+}
+
+String buildRefreshSummary({
+  required int total,
+  required int updated,
+  required int unchanged,
+  required int baseline,
+  required int unknown,
+  required int errors,
+  int newChapters = 0,
+  String? firstError,
+  String? prefixMessage,
+}) {
+  final messages = <String>[];
+  if (prefixMessage != null && prefixMessage.isNotEmpty) {
+    messages.add(prefixMessage);
+  }
+  if (total == 0) {
+    if (messages.isEmpty) {
+      messages.add("No comics to check".tl);
+    }
+    return messages.join('\n');
+  }
+
+  if (updated > 0) {
+    if (newChapters > 0) {
+      messages.add(
+        "Updated @count comics (@chapters new chapters)".tlParams({
+          'count': updated.toString(),
+          'chapters': newChapters.toString(),
+        }),
+      );
+    } else {
+      messages.add(
+        "Updated @count comics".tlParams({'count': updated.toString()}),
+      );
+    }
+  }
+
+  if (unchanged > 0) {
+    messages.add(
+      "@count comics unchanged".tlParams({'count': unchanged.toString()}),
+    );
+  }
+
+  if (baseline > 0) {
+    messages.add(
+      "Baseline established for @count comics".tlParams({
+        'count': baseline.toString(),
+      }),
+    );
+  }
+
+  if (unknown > 0) {
+    messages.add(
+      "Cannot determine updates for @count comics".tlParams({
+        'count': unknown.toString(),
+      }),
+    );
+  }
+
+  if (errors > 0) {
+    if (firstError != null && errors == 1) {
+      messages.add(
+        "Failed to refresh @count comics: @error".tlParams({
+          'count': errors.toString(),
+          'error': firstError.tl,
+        }),
+      );
+    } else {
+      messages.add(
+        "Failed to refresh @count comics".tlParams({
+          'count': errors.toString(),
+        }),
+      );
+    }
+  }
+
+  if (messages.isEmpty) {
+    messages.add("No updates found".tl);
+  }
+
+  return messages.join('\n');
 }

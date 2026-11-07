@@ -13,9 +13,9 @@ import 'package:venera_plus/features/favorites/favorite_actions.dart';
 import 'package:venera_plus/features/favorites/favorites_constants.dart';
 import 'package:venera_plus/features/favorites/favorites_display.dart';
 import 'package:venera_plus/features/favorites/favorites_manager.dart';
+import 'comic_update_state.dart';
 import 'package:venera_plus/features/follow_updates/follow_updates.dart';
 import 'package:venera_plus/foundation/app.dart';
-import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/consts.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/res.dart';
@@ -24,48 +24,10 @@ import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 import 'package:venera_plus/network/cache.dart';
 
-class _RemoteComicBaseline {
-  final String? updateTime;
-  final bool hasUpdate;
-  final int readRevision;
-
-  const _RemoteComicBaseline({
-    this.updateTime,
-    this.hasUpdate = false,
-    this.readRevision = 0,
-  });
-}
-
-String? _buildComicBadge(
-  Map<String, _RemoteComicBaseline> baselines,
-  Comic comic,
-) {
-  final localManager = LocalFavoritesManager();
-  final comicType = ComicType.fromKey(comic.sourceKey);
-  if (localManager.isExist(comic.id, comicType)) {
-    return null;
-  }
-  final baseline = baselines[comic.id];
-  if (baseline != null && baseline.hasUpdate) {
-    if (localManager.readRevision(comic.id, comicType) !=
-        baseline.readRevision) {
-      baselines[comic.id] = _RemoteComicBaseline(
-        updateTime: baseline.updateTime,
-        hasUpdate: false,
-        readRevision: localManager.readRevision(comic.id, comicType),
-      );
-      return null;
-    }
-    return "UPDATED".tl;
-  }
-  return null;
-}
-
 Future<void> _refreshFolderDetails({
   required BuildContext context,
   required List<Comic> folderComics,
   required ComicListState? listState,
-  required Map<String, _RemoteComicBaseline> baselines,
   required bool Function() isCancelled,
   required void Function() onStateChanged,
   String? paginationError,
@@ -73,7 +35,6 @@ Future<void> _refreshFolderDetails({
   if (isCancelled()) return;
   if (folderComics.isEmpty) {
     if (paginationError == null) {
-      baselines.clear();
       onStateChanged();
     }
     if (context.mounted) {
@@ -86,27 +47,17 @@ Future<void> _refreshFolderDetails({
     return;
   }
 
-  final localManager = LocalFavoritesManager();
-
   final uniqueComics = <(String, String), Comic>{};
   for (final comic in folderComics) {
     uniqueComics[(comic.sourceKey, comic.id)] = comic;
   }
 
-  final startRevisions = <(String, String), int>{};
-  for (final comic in uniqueComics.values) {
-    final comicType = ComicType.fromKey(comic.sourceKey);
-    startRevisions[(comic.sourceKey, comic.id)] = localManager.readRevision(
-      comic.id,
-      comicType,
-    );
-  }
-
   int updatedCount = 0;
   int errorCount = 0;
-  int unsupportedCount = 0;
-  int unknownTimestampCount = 0;
-  int firstBaselineCount = 0;
+  int unchangedCount = 0;
+  int baselineCount = 0;
+  int unknownCount = 0;
+  int newChaptersCount = 0;
   String? firstError;
 
   final results = <(Comic, ComicRefreshResult)>[];
@@ -124,12 +75,6 @@ Future<void> _refreshFolderDetails({
   if (isCancelled()) return;
 
   for (final (comic, res) in results) {
-    final comicType = ComicType.fromKey(comic.sourceKey);
-    final isLocal = localManager.isExist(comic.id, comicType);
-    final startRev = startRevisions[(comic.sourceKey, comic.id)] ?? 0;
-    final currentRev = localManager.readRevision(comic.id, comicType);
-    final readDuringRequest = currentRev != startRev;
-
     if (res.item != null && listState != null && !isCancelled()) {
       listState.updateComicMetadata(
         comic.id,
@@ -140,63 +85,28 @@ Future<void> _refreshFolderDetails({
         tags: res.item!.tags,
       );
     }
-
     if (res.errorMessage != null) {
-      if (res.errorMessage == 'Comic source does not support loading info') {
-        unsupportedCount++;
-      } else {
-        errorCount++;
-        firstError ??= res.errorMessage;
-      }
-      continue;
-    }
-
-    if (res.updateTime == null) {
-      unknownTimestampCount++;
-      continue;
-    }
-
-    if (isLocal) {
-      if (res.updated && !readDuringRequest) {
-        updatedCount++;
-      }
+      errorCount++;
+      firstError ??= res.errorMessage;
     } else {
-      final previous = baselines[comic.id];
-      final readSincePrevious =
-          previous != null && currentRev != previous.readRevision;
-
-      bool hasUpdate = false;
-      if (previous == null) {
-        firstBaselineCount++;
-        hasUpdate = false;
-      } else {
-        final timeChanged =
-            previous.updateTime != null &&
-            res.updateTime != previous.updateTime;
-        if (timeChanged && !readDuringRequest) {
-          hasUpdate = true;
+      switch (res.status) {
+        case ComicUpdateCheckStatus.updated:
           updatedCount++;
-        } else if (!readSincePrevious && !readDuringRequest) {
-          hasUpdate = previous.hasUpdate;
-        } else {
-          hasUpdate = false;
-        }
+          newChaptersCount += res.newChapterCount;
+          break;
+        case ComicUpdateCheckStatus.unchanged:
+          unchangedCount++;
+          break;
+        case ComicUpdateCheckStatus.baseline:
+          baselineCount++;
+          break;
+        case ComicUpdateCheckStatus.unknown:
+          unknownCount++;
+          break;
       }
-
-      baselines[comic.id] = _RemoteComicBaseline(
-        updateTime: res.updateTime,
-        hasUpdate: hasUpdate,
-        readRevision: currentRev,
-      );
     }
   }
-
   if (isCancelled()) return;
-
-  if (paginationError == null) {
-    final currentIds = uniqueComics.keys.map((k) => k.$2).toSet();
-    baselines.removeWhere((id, _) => !currentIds.contains(id));
-  }
 
   // Persist one owned snapshot after the metadata batch, not one per comic.
   listState?.storeState();
@@ -204,40 +114,18 @@ Future<void> _refreshFolderDetails({
 
   if (!context.mounted) return;
 
-  final messages = <String>[];
-  if (paginationError != null) messages.add(paginationError.tl);
-  if (updatedCount > 0) {
-    messages.add(
-      "Updated @count comics".tlParams({'count': updatedCount.toString()}),
-    );
-  }
-  if (errorCount > 0) {
-    messages.add(
-      "Failed to refresh @count comics: @error".tlParams({
-        'count': errorCount.toString(),
-        'error': (firstError ?? "Failed to refresh details").tl,
-      }),
-    );
-  }
-  if (unsupportedCount > 0) {
-    messages.add(
-      "$unsupportedCount: ${'Comic source does not support loading info'.tl}",
-    );
-  }
-  if (unknownTimestampCount > 0) {
-    messages.add(
-      "$unknownTimestampCount: ${'Source does not provide update timestamps'.tl}",
-    );
-  }
-  if (firstBaselineCount > 0) {
-    messages.add(
-      "Baseline established for @count comics".tlParams({
-        'count': firstBaselineCount.toString(),
-      }),
-    );
-  }
-  if (messages.isEmpty) messages.add("No updates found".tl);
-  context.showMessage(message: messages.join('\n'));
+  final summary = buildRefreshSummary(
+    total: uniqueComics.length,
+    updated: updatedCount,
+    unchanged: unchangedCount,
+    baseline: baselineCount,
+    unknown: unknownCount,
+    errors: errorCount,
+    newChapters: newChaptersCount,
+    firstError: firstError,
+    prefixMessage: paginationError?.tl,
+  );
+  context.showMessage(message: summary);
 }
 
 Future<bool> _deleteComic(
@@ -331,8 +219,6 @@ class _NormalFavoritePageState extends State<_NormalFavoritePage> {
   int _refreshGeneration = 0;
   Future<void>? _activeRefreshOperation;
 
-  final Map<String, _RemoteComicBaseline> _baselines = {};
-
   @override
   void initState() {
     super.initState();
@@ -345,7 +231,6 @@ class _NormalFavoritePageState extends State<_NormalFavoritePage> {
     if (!identical(oldWidget.data, widget.data)) {
       _refreshGeneration++;
       _activeRefreshOperation = null;
-      _baselines.clear();
       comicListKey.currentState?.refresh();
     }
   }
@@ -388,7 +273,6 @@ class _NormalFavoritePageState extends State<_NormalFavoritePage> {
         context: context,
         folderComics: folderComics,
         listState: listState,
-        baselines: _baselines,
         isCancelled: () => !mounted || _refreshGeneration != generation,
         onStateChanged: () {
           if (mounted && _refreshGeneration == generation) {
@@ -417,7 +301,6 @@ class _NormalFavoritePageState extends State<_NormalFavoritePage> {
       child: ComicList(
         key: comicListKey,
         hideFavoriteBadge: true,
-        badgeBuilder: (comic) => _buildComicBadge(_baselines, comic),
         leadingSliver: SliverAppbar(
           style: context.width < changePoint
               ? AppbarStyle.shadow
@@ -965,8 +848,6 @@ class _FavoriteFolderState extends State<_FavoriteFolder> {
   int _refreshGeneration = 0;
   Future<void>? _activeRefreshOperation;
 
-  final Map<String, _RemoteComicBaseline> _baselines = {};
-
   @override
   void initState() {
     super.initState();
@@ -980,7 +861,6 @@ class _FavoriteFolderState extends State<_FavoriteFolder> {
         oldWidget.folderID != widget.folderID) {
       _refreshGeneration++;
       _activeRefreshOperation = null;
-      _baselines.clear();
       comicListKey.currentState?.refresh();
     }
   }
@@ -1023,7 +903,6 @@ class _FavoriteFolderState extends State<_FavoriteFolder> {
         context: context,
         folderComics: folderComics,
         listState: listState,
-        baselines: _baselines,
         isCancelled: () => !mounted || _refreshGeneration != generation,
         onStateChanged: () {
           if (mounted && _refreshGeneration == generation) {
@@ -1052,7 +931,6 @@ class _FavoriteFolderState extends State<_FavoriteFolder> {
       child: ComicList(
         key: comicListKey,
         hideFavoriteBadge: true,
-        badgeBuilder: (comic) => _buildComicBadge(_baselines, comic),
         enablePageStorage: true,
         leadingSliver: SliverAppbar(
           title: Text(widget.title),
