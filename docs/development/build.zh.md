@@ -118,6 +118,8 @@ git diff --check
 
 CI 将静态检查与 2 个 Dart 测试分片并行运行。按路径排序的 `*_test.dart` 文件交替分配给两个分片，分别执行 `flutter test --no-pub --coverage <分片文件清单>`，使每个 runner 只加载自己的测试文件，并上传各自的覆盖率报告。`analyze` 门禁要求静态检查和全部分片成功，再按源文件与行号合并命中次数，重新计算行覆盖率，将结果写入 `coverage/lcov.info`、工作流摘要及 `dart-coverage` 产物。当前覆盖率用于建立可见基线，尚未设置统一硬阈值；涉及关键业务路径的改动仍必须增加针对性测试。
 
+阅读器 Widget 测试操作真实 SQLite 数据库时，先通过 `test/widget_test_io.dart` 中的 `runWidgetIo`（或文件内等效函数）等待 `HistoryManager.flushReadingProgress()` 完成，再操作书签或直接查询图片收藏。`pumpAndSettle()` 等待界面帧结束，后台 isolate 的数据库写入仍需单独等待。
+
 WebDAV 测试夹具的目录和文件键统一使用解码后的逻辑路径；仅在 HTTP 请求入口解码一次，生成 `PROPFIND` 响应的 `href` 时逐段编码。路径回归应覆盖空格、Unicode、字面百分号和大小写，避免上传与目录发现使用不同路径，或重复解码百分号。
 
 PR 还会运行 `依赖安全审查` 和 `PR 平台冒烟构建`。依赖审查会阻止引入高危或严重漏洞依赖；改动涉及业务代码、原生平台目录、依赖、构建脚本、工作流或原生集成测试时，平台工作流会执行 Android 与 Windows Debug 冒烟构建。CI 的具体触发规则以工作流配置为准；文档等不影响构建的改动会跳过平台任务。

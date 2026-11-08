@@ -543,8 +543,10 @@ void main() {
       );
       scaffold.openOrClose();
       await tester.pumpAndSettle();
+      await _pumpAsyncWork(tester, fixture.histories.flushReadingProgress());
       await tester.tap(find.widgetWithIcon(IconButton, Icons.favorite_border));
       await tester.pumpAndSettle();
+      await _pumpAsyncWork(tester, fixture.histories.flushReadingProgress());
       expect(
         ImageFavoriteManager().find(local.id, 'local')!.bookmarks.single.page,
         1,
