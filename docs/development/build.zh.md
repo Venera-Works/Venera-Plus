@@ -210,7 +210,7 @@ fvm flutter pub get --enforce-lockfile
 fvm flutter build apk --release
 ```
 
-Flutter 3.41.4 的 Android Release 构建不要添加 `--no-pub`：该参数还会跳过按 Release 模式重新生成插件注册代码，导致 `GeneratedPluginRegistrant.java` 可能仍引用已被发布编译排除的 `integration_test`。保留前置锁文件校验；两个 Android Release 工作流会在构建后检查 `pubspec.lock` 未变化。详见 [Flutter #163774](https://github.com/flutter/flutter/issues/163774)。
+Flutter 3.41.4 的 Android Release 构建不要添加 `--no-pub`：该参数还会跳过按 Release 模式重新生成插件注册代码，导致 `GeneratedPluginRegistrant.java` 可能仍引用已被发布编译排除的 `integration_test`。保留前置锁文件校验；共享 Android Release 构建会在构建后检查 `pubspec.lock` 未变化。详见 [Flutter #163774](https://github.com/flutter/flutter/issues/163774)。
 
 构建产物通常位于 `build/app/outputs/apk/release/`。
 
@@ -270,7 +270,13 @@ python .github/scripts/release_version.py --check --tag v1.2.3
 
 `pubspec.yaml`、发布 tag 和 `CHANGELOG.md` 版本章节必须与 `release.json` 一致。
 
-`代码分析` 工作流会运行版本与结构检查、Python 脚本测试、Dart 格式检查（`lib`、`test` 与 `tool`，覆盖子目录）、`flutter analyze`、完整 Dart 测试及覆盖率汇总。`依赖安全审查` 会检查 PR 新增或升级的依赖，`PR 平台冒烟构建` 会按改动范围验证 Android 和 Windows 的编译与原生数据库集成测试场景，也可通过手动触发验证已发布的内核。`完整构建` 负责 tag 发布的多平台构建与渐进式 Release 发布；手动平台构建复用 `.github/workflows/build.yml`，按输入选择平台。
+`代码分析` 工作流会运行版本与结构检查、Python 脚本测试、Dart 格式检查（`lib`、`test` 与 `tool`，覆盖子目录）、`flutter analyze`、完整 Dart 测试及覆盖率汇总。`依赖安全审查` 会检查 PR 新增或升级的依赖，`PR 平台冒烟构建` 会按改动范围验证 Android 和 Windows 的编译与原生数据库集成测试场景，也可通过手动触发验证已发布的内核。
+
+`构建`（`.github/workflows/build.yml`）同时提供手动平台选择和可复用构建入口，统一维护 Android、Windows、macOS、iOS、Linux x64/ARM64 的构建、产物校验与 Actions 产物上传。Android 的四种 APK 统一包含在 `apks` 产物中。普通手动构建的产物保留 7 天，缺少 Android 正式签名时生成临时签名。
+
+`完整构建`（`.github/workflows/main.yml`）负责发布元数据校验、Release 准备与收尾，通过内部参数 `release_mode: true` 调用共享构建。发布构建必须提供 Android 正式签名，缺少时失败；产物沿用仓库默认保留期。发布平台保持 Android、Windows、iOS、Linux x64/ARM64，macOS 继续通过手动构建生成。
+
+只有推送 `v*` tag 时才创建或恢复 prerelease 并上传 Release 附件。共享工作流中的每个平台上传任务仅依赖对应构建任务，完成后即可追加附件；全部所需构建与上传成功后，`完整构建` 才完成 Release，否则标记为构建未完成。手动运行 `完整构建` 仍要求合法发布 tag，且仅生成 Actions 产物。发布模式不会自动取消进行中的构建；普通手动构建继续允许新运行取消旧运行。
 
 原生平台 CI 构建任务配置了编译与依赖缓存：使用 `sccache` 缓存原生任务中的 Rust 编译及受支持的 Linux CMake 生成器路径下的 C/C++ 编译（未保留 Windows C/C++ 包装器），使用 Cargo 注册表与 Git 下载缓存，以及 Android Gradle 构建缓存。构建步骤在结束时通过 `sccache --show-stats` 打印统计信息，用于确认热缓存命中情况。最终发布包与安装包等产物始终重新构建生成，不会从缓存复用。
 

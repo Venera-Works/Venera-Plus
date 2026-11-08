@@ -4,6 +4,10 @@ run-name: 构建 ${{ github.ref_name }}
 on:
   workflow_call:
     inputs:
+      release_mode:
+        required: false
+        type: boolean
+        default: false
       build_android:
         required: false
         type: boolean
@@ -68,7 +72,7 @@ on:
 
 concurrency:
   group: build-${{ github.workflow }}-${{ github.repository }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !inputs.release_mode }}
 
 permissions:
   contents: read
@@ -77,15 +81,17 @@ jobs:
   Build_Android:
     if: ${{ inputs.build_android }}
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    timeout-minutes: ${{ inputs.release_mode && 360 || 45 }}
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
       CARGO_INCREMENTAL: "0"
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
     steps:
-      - uses: actions/checkout@v7
-      - uses: subosito/flutter-action@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: "stable"
           flutter-version-file: pubspec.yaml
@@ -108,10 +114,16 @@ jobs:
         env:
           STORE_FILE: ${{ secrets.ANDROID_KEYSTORE }}
           PROPERTY_FILE: ${{ secrets.ANDROID_KEY_PROPERTIES }}
+          RELEASE_MODE: ${{ inputs.release_mode }}
         run: |
-          if [ -n "$STORE_FILE" ] && [ -n "$PROPERTY_FILE" ]; then
-            echo "$STORE_FILE" | base64 --decode > android/keystore.jks
-            echo "$PROPERTY_FILE" > android/key.properties
+          set -euo pipefail
+          umask 077
+          if [[ -n "$STORE_FILE" && -n "$PROPERTY_FILE" ]]; then
+            printf '%s' "$STORE_FILE" | base64 --decode > android/keystore.jks
+            printf '%s\n' "$PROPERTY_FILE" > android/key.properties
+          elif [[ "$RELEASE_MODE" == "true" ]]; then
+            echo "ANDROID_KEYSTORE 或 ANDROID_KEY_PROPERTIES Secret 未配置。" >&2
+            exit 1
           else
             keytool -genkeypair -noprompt \
               -keystore android/debug.keystore \
@@ -127,7 +139,7 @@ jobs:
               'storeFile=../debug.keystore' \
               > android/key.properties
           fi
-      - uses: actions/setup-java@v6
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
         with:
           distribution: 'oracle'
           java-version: '17'
@@ -164,52 +176,70 @@ jobs:
       - run: flutter build apk --release
       - name: 校验依赖锁文件未变更
         run: git diff --exit-code -- pubspec.lock
+      - name: 清理 Android 签名文件
+        if: always()
+        run: |
+          rm -f android/keystore.jks
+          rm -f android/key.properties
+          rm -f android/debug.keystore
       - name: sccache 统计
         if: ${{ always() && steps.sccache.outcome == 'success' }}
         run: sccache --show-stats
-      - name: 上传 APK (armeabi-v7a)
-        uses: actions/upload-artifact@v7
+      - name: 上传 Android Workflow Artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: apk-armeabi-v7a
-          path: build/app/outputs/apk/release/*armeabi-v7a*.apk
+          name: apks
+          path: build/app/outputs/apk/release/*.apk
           if-no-files-found: error
-          retention-days: 7
-      - name: 上传 APK (arm64-v8a)
-        uses: actions/upload-artifact@v7
+          retention-days: ${{ !inputs.release_mode && 7 || 0 }}
+
+  Upload_Android:
+    runs-on: ubuntu-22.04
+    needs: Build_Android
+    if: inputs.release_mode && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: 下载 Android 构建产物
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: apk-arm64-v8a
-          path: build/app/outputs/apk/release/*arm64-v8a*.apk
-          if-no-files-found: error
-          retention-days: 7
-      - name: 上传 APK (x86_64)
-        uses: actions/upload-artifact@v7
-        with:
-          name: apk-x86_64
-          path: build/app/outputs/apk/release/*x86_64*.apk
-          if-no-files-found: error
-          retention-days: 7
-      - name: 上传 APK (universal)
-        uses: actions/upload-artifact@v7
-        with:
-          name: apk-universal
-          path: build/app/outputs/apk/release/*-android.apk
-          if-no-files-found: error
-          retention-days: 7
+          name: apks
+          path: outputs
+      - name: 上传 APK 到 Release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(outputs/*.apk)
+          (( ${#files[@]} > 0 )) || { echo "没有找到 Android APK。" >&2; exit 1; }
+          existing=$(gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets[].name')
+          for file in "${files[@]}"; do
+            name=$(basename "$file")
+            if grep -Fxq "$name" <<<"$existing"; then
+              echo "Release 已存在 $name，为避免覆盖已发布二进制，本次跳过。"
+            else
+              gh release upload "${GITHUB_REF_NAME}" "$file"
+            fi
+          done
 
   Build_Windows:
     if: ${{ inputs.build_windows }}
     runs-on: windows-2025
-    timeout-minutes: 45
+    timeout-minutes: ${{ inputs.release_mode && 360 || 45 }}
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
       CARGO_INCREMENTAL: "0"
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: 安装 Inno Setup
         run: choco install innosetup --version=6.7.1 --no-progress -y
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: "stable"
           flutter-version-file: pubspec.yaml
@@ -276,14 +306,49 @@ jobs:
       - name: sccache 统计
         if: ${{ always() && steps.sccache.outcome == 'success' }}
         run: sccache --show-stats
-      - uses: actions/upload-artifact@v7
+      - name: 上传 Windows Workflow Artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows_build
           path: |
             build/windows/VeneraPlus-*-windows-portable.zip
             build/windows/VeneraPlus-*-windows-installer.exe
           if-no-files-found: error
-          retention-days: 7
+          retention-days: ${{ !inputs.release_mode && 7 || 0 }}
+
+  Upload_Windows:
+    runs-on: ubuntu-22.04
+    needs: Build_Windows
+    if: inputs.release_mode && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: 下载 Windows 构建产物
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows_build
+          path: outputs
+      - name: 上传 Windows 构建产物到 Release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          zips=(outputs/VeneraPlus-*-windows-portable.zip)
+          installers=(outputs/VeneraPlus-*-windows-installer.exe)
+          (( ${#zips[@]} == 1 )) || { echo "Windows zip 数量异常：${#zips[@]}" >&2; exit 1; }
+          (( ${#installers[@]} == 1 )) || { echo "Windows installer 数量异常：${#installers[@]}" >&2; exit 1; }
+          files=("${zips[@]}" "${installers[@]}")
+          existing=$(gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets[].name')
+          for file in "${files[@]}"; do
+            name=$(basename "$file")
+            if grep -Fxq "$name" <<<"$existing"; then
+              echo "Release 已存在 $name，为避免覆盖已发布二进制，本次跳过。"
+            else
+              gh release upload "${GITHUB_REF_NAME}" "$file"
+            fi
+          done
 
   Build_MacOS:
     if: ${{ inputs.build_macos }}
@@ -369,15 +434,17 @@ jobs:
   Build_IOS:
     if: ${{ inputs.build_ios }}
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: ${{ inputs.release_mode && 360 || 45 }}
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
       CARGO_INCREMENTAL: "0"
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
     steps:
-      - uses: actions/checkout@v7
-      - uses: subosito/flutter-action@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: "stable"
           flutter-version-file: pubspec.yaml
@@ -439,7 +506,7 @@ jobs:
           # 静态框架由 AppDelegate 的 OpenlistcoreInvoke 强引用链接进 Runner。
           test -s ios/Frameworks/Openlistcore.xcframework/ios-arm64/Openlistcore.framework/Openlistcore
           test -s build/ios/iphoneos/Runner.app/Runner
-      - name: 创建 IPA
+      - name: 打包 IPA
         run: |
           mkdir -p build/ios/iphoneos/Payload
           mv build/ios/iphoneos/Runner.app build/ios/iphoneos/Payload
@@ -453,25 +520,57 @@ jobs:
       - name: sccache 统计
         if: ${{ always() && steps.sccache.outcome == 'success' }}
         run: sccache --show-stats
-      - uses: actions/upload-artifact@v7
+      - name: 上传 iOS Workflow Artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ios_build
-          path: result/
+          path: result/*.ipa
           if-no-files-found: error
-          retention-days: 7
+          retention-days: ${{ !inputs.release_mode && 7 || 0 }}
+
+  Upload_IOS:
+    runs-on: ubuntu-22.04
+    needs: Build_IOS
+    if: inputs.release_mode && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: 下载 iOS 构建产物
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ios_build
+          path: outputs
+      - name: 上传 IPA 到 Release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(outputs/*.ipa)
+          (( ${#files[@]} == 1 )) || { echo "应当恰好有一个 iOS IPA，实际 ${#files[@]} 个。" >&2; exit 1; }
+          existing=$(gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets[].name')
+          name=$(basename "${files[0]}")
+          if grep -Fxq "$name" <<<"$existing"; then
+            echo "Release 已存在 $name，为避免覆盖已发布二进制，本次跳过。"
+          else
+            gh release upload "${GITHUB_REF_NAME}" "${files[0]}"
+          fi
 
   Build_Linux_x64:
     if: ${{ inputs.build_linux_x64 }}
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.release_mode && 360 || 30 }}
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
       CARGO_INCREMENTAL: "0"
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
     steps:
-      - uses: actions/checkout@v7
-      - uses: subosito/flutter-action@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: 'stable'
           flutter-version-file: pubspec.yaml
@@ -492,48 +591,112 @@ jobs:
             cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-
       - name: 准备 Rust 工具链
         run: python3 .github/scripts/prepare_rust_toolchain.py
-      - run: flutter pub get --enforce-lockfile
-      - name: 配置 rhttp 签名预编译库
-        run: dart tool/prepare_rhttp_prebuilt.dart
-      - name: 下载 OpenList Linux x64 内核
-        run: python3 .github/scripts/fetch_openlist_core.py linux-x64
       - name: 安装 Linux 构建依赖
         run: |
+          flutter pub get --enforce-lockfile
+          dart tool/prepare_rhttp_prebuilt.dart
+          python3 .github/scripts/fetch_openlist_core.py linux-x64
           sudo apt-get update -y
           sudo apt-get install -y ninja-build libgtk-3-dev webkit2gtk-4.1
-      - run: python3 debian/build.py x64
+      - name: 构建 Debian x64 软件包
+        run: python3 debian/build.py x64
       - name: 构建 Arch 软件包
         run: python3 .github/scripts/build_arch_package.py
-      - name: 移除 Arch 调试包
-        run: rm -f build/linux/arch/*-debug-*.pkg.tar.zst
+      - name: 清理 Arch 临时文件
+        run: |
+          sudo rm -rf build/linux/arch/app.tar.gz
+          sudo rm -rf build/linux/arch/pkg
+          sudo rm -rf build/linux/arch/src
+          sudo rm -rf build/linux/arch/PKGBUILD
+          sudo rm -rf build/linux/arch/Dockerfile
+          rm -f build/linux/arch/venera-plus-debug-*.pkg.tar.zst
+      - name: 校验 Linux x64 构建产物
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          debs=(build/linux/x64/release/debian/*.deb)
+          arch_assets=(build/linux/arch/*.zst build/linux/arch/*.AppImage)
+          (( ${#debs[@]} > 0 )) || { echo "没有找到 Linux x64 DEB。" >&2; exit 1; }
+          (( ${#arch_assets[@]} > 0 )) || { echo "没有找到 Arch/AppImage 构建产物。" >&2; exit 1; }
+          for file in "${debs[@]}" "${arch_assets[@]}"; do
+            [[ -s "$file" ]] || { echo "构建产物为空：$file" >&2; exit 1; }
+          done
+          for deb in "${debs[@]}"; do
+            dpkg-deb -c "$deb" | grep 'libvenera_openlist\.so$' > /dev/null || { echo "DEB 未包含 OpenList 内核：$deb" >&2; exit 1; }
+          done
       - name: sccache 统计
         if: ${{ always() && steps.sccache.outcome == 'success' }}
         run: sccache --show-stats
-      - uses: actions/upload-artifact@v7
+      - name: 上传 Debian x64 Workflow Artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: deb_build
-          path: build/linux/x64/release/debian
+          path: build/linux/x64/release/debian/*.deb
           if-no-files-found: error
-          retention-days: 7
-      - uses: actions/upload-artifact@v7
+          retention-days: ${{ !inputs.release_mode && 7 || 0 }}
+      - name: 上传 Arch Workflow Artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: arch_build
-          path: build/linux/arch/*.pkg.tar.zst
+          path: |
+            build/linux/arch/*.zst
+            build/linux/arch/*.AppImage
           if-no-files-found: error
-          retention-days: 7
+          retention-days: ${{ !inputs.release_mode && 7 || 0 }}
+
+  Upload_Linux:
+    runs-on: ubuntu-22.04
+    needs: Build_Linux_x64
+    if: inputs.release_mode && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: 下载 Debian x64 构建产物
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: deb_build
+          path: outputs/deb
+      - name: 下载 Arch 构建产物
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: arch_build
+          path: outputs/arch
+      - name: 上传 Linux x64 构建产物到 Release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          debs=(outputs/deb/*.deb)
+          arch_assets=(outputs/arch/*.zst outputs/arch/*.AppImage)
+          (( ${#debs[@]} > 0 )) || { echo "下载后没有找到 Linux x64 DEB。" >&2; exit 1; }
+          (( ${#arch_assets[@]} > 0 )) || { echo "下载后没有找到 Arch/AppImage。" >&2; exit 1; }
+          files=("${debs[@]}" "${arch_assets[@]}")
+          existing=$(gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets[].name')
+          for file in "${files[@]}"; do
+            name=$(basename "$file")
+            if grep -Fxq "$name" <<<"$existing"; then
+              echo "Release 已存在 $name，为避免覆盖已发布二进制，本次跳过。"
+            else
+              gh release upload "${GITHUB_REF_NAME}" "$file"
+            fi
+          done
 
   Build_Linux_ARM64:
     if: ${{ inputs.build_linux_arm64 }}
     runs-on: ubuntu-22.04-arm
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.release_mode && 360 || 30 }}
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
       CARGO_INCREMENTAL: "0"
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
     steps:
-      - uses: actions/checkout@v7
-      - uses: subosito/flutter-action@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: 'master'
           flutter-version-file: pubspec.yaml
@@ -558,24 +721,67 @@ jobs:
             cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-
       - name: 准备 Rust 工具链
         run: python3 .github/scripts/prepare_rust_toolchain.py
-      - run: flutter pub get --enforce-lockfile
-      - name: 配置 rhttp 签名预编译库
-        run: dart tool/prepare_rhttp_prebuilt.dart
-      - name: 下载 OpenList Linux ARM64 内核
-        run: python3 .github/scripts/fetch_openlist_core.py linux-arm64
-      - name: 安装 Linux 构建依赖
+      - name: 安装 Linux ARM64 构建依赖
         run: |
+          flutter pub get --enforce-lockfile
+          dart tool/prepare_rhttp_prebuilt.dart
+          python3 .github/scripts/fetch_openlist_core.py linux-arm64
           sudo apt-get update -y
           sudo apt-get install -y ninja-build libgtk-3-dev webkit2gtk-4.1
       - name: 修补字体
         run: dart run patch/font.dart
-      - run: python3 debian/build.py arm64
+      - name: 构建 Debian ARM64 软件包
+        run: python3 debian/build.py arm64
+      - name: 校验 Linux ARM64 构建产物
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          debs=(build/linux/arm64/release/debian/*.deb)
+          (( ${#debs[@]} > 0 )) || { echo "没有找到 Linux ARM64 DEB。" >&2; exit 1; }
+          for file in "${debs[@]}"; do
+            [[ -s "$file" ]] || { echo "构建产物为空：$file" >&2; exit 1; }
+          done
+          for deb in "${debs[@]}"; do
+            dpkg-deb -c "$deb" | grep 'libvenera_openlist\.so$' > /dev/null || { echo "DEB 未包含 OpenList 内核：$deb" >&2; exit 1; }
+          done
       - name: sccache 统计
         if: ${{ always() && steps.sccache.outcome == 'success' }}
         run: sccache --show-stats
-      - uses: actions/upload-artifact@v7
+      - name: 上传 Debian ARM64 Workflow Artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: deb_arm64_build
-          path: build/linux/arm64/release/debian
+          path: build/linux/arm64/release/debian/*.deb
           if-no-files-found: error
-          retention-days: 7
+          retention-days: ${{ !inputs.release_mode && 7 || 0 }}
+
+  Upload_Linux_ARM64:
+    runs-on: ubuntu-22.04
+    needs: Build_Linux_ARM64
+    if: inputs.release_mode && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: 下载 Linux ARM64 构建产物
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: deb_arm64_build
+          path: outputs
+      - name: 上传 Linux ARM64 构建产物到 Release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(outputs/*.deb)
+          (( ${#files[@]} > 0 )) || { echo "下载后没有找到 Linux ARM64 DEB。" >&2; exit 1; }
+          existing=$(gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets[].name')
+          for file in "${files[@]}"; do
+            name=$(basename "$file")
+            if grep -Fxq "$name" <<<"$existing"; then
+              echo "Release 已存在 $name，为避免覆盖已发布二进制，本次跳过。"
+            else
+              gh release upload "${GITHUB_REF_NAME}" "$file"
+            fi
+          done

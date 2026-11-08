@@ -211,7 +211,7 @@ fvm flutter pub get --enforce-lockfile
 fvm flutter build apk --release
 ```
 
-Do not add `--no-pub` to Android Release builds on Flutter 3.41.4: this flag also skips regenerating plugin registration code for Release mode, which can leave `GeneratedPluginRegistrant.java` referencing `integration_test` that has already been excluded from the release compilation. Keep the preceding lockfile check; both Android Release workflows verify that `pubspec.lock` remains unchanged after building. See [Flutter #163774](https://github.com/flutter/flutter/issues/163774).
+Do not add `--no-pub` to Android Release builds on Flutter 3.41.4: this flag also skips regenerating plugin registration code for Release mode, which can leave `GeneratedPluginRegistrant.java` referencing `integration_test` that has already been excluded from the release compilation. Keep the preceding lockfile check; the shared Android Release build verifies that `pubspec.lock` remains unchanged after building. See [Flutter #163774](https://github.com/flutter/flutter/issues/163774).
 
 Artifacts are normally written to `build/app/outputs/apk/release/`.
 
@@ -271,7 +271,13 @@ python .github/scripts/release_version.py --check --tag v1.2.3
 
 `pubspec.yaml`, the release tag, and the version section in `CHANGELOG.md` must match `release.json`.
 
-The `代码分析` workflow runs version and structure checks, Python script tests, Dart formatting checks across `lib`, `test`, and `tool` (covering subdirectories), `flutter analyze`, the full Dart test suite, and coverage reporting. `依赖安全审查` checks dependencies added or upgraded by a pull request, while `PR 平台冒烟构建` verifies Android and Windows compilation as well as native database integration test scenarios when the changed files can affect platform builds; it can also be dispatched manually to validate a released core. `完整构建` handles multi-platform builds and progressive Release publishing for tags. Manual platform builds reuse `.github/workflows/build.yml`, selecting platforms through its inputs.
+The `代码分析` workflow runs version and structure checks, Python script tests, Dart formatting checks across `lib`, `test`, and `tool` (covering subdirectories), `flutter analyze`, the full Dart test suite, and coverage reporting. `依赖安全审查` checks dependencies added or upgraded by a pull request, while `PR 平台冒烟构建` verifies Android and Windows compilation as well as native database integration test scenarios when the changed files can affect platform builds; it can also be dispatched manually to validate a released core.
+
+`构建` (`.github/workflows/build.yml`) provides both manual platform selection and a reusable workflow, sharing build steps, artifact validation, and Actions artifact uploads for Android, Windows, macOS, iOS, and Linux x64/ARM64. All four Android APK variants are included in the `apks` artifact. Ordinary manual builds retain artifacts for seven days and generate a temporary Android signing key when release signing credentials are absent.
+
+`完整构建` (`.github/workflows/main.yml`) validates release metadata, prepares the Release, and handles completion, calling the shared workflow with the internal `release_mode: true` input. Release builds require Android release signing credentials and fail when they are absent; artifacts use the repository's default retention period. Release platforms remain Android, Windows, iOS, and Linux x64/ARM64; macOS remains available through manual builds.
+
+Only pushes of `v*` tags create or resume a prerelease and upload Release assets. Each platform's upload job in the shared workflow depends only on its corresponding build, allowing assets to appear as platforms finish. `完整构建` completes the Release only after every required build and upload succeeds; otherwise it marks the build as incomplete. Manual runs of `完整构建` still require a valid release tag and only produce Actions artifacts. Release mode does not automatically cancel running builds; ordinary manual builds continue to cancel superseded runs.
 
 Native CI build jobs configure compilation and dependency caching: `sccache` caches Rust on native jobs and C/C++ on supported Linux CMake generator paths (the Windows C/C++ wrapper was intentionally not retained), Cargo caches registry and Git downloads, and Android jobs reuse the Gradle build cache. Jobs print statistics via `sccache --show-stats` upon completion to verify warm-cache hits. Final release packages and installers are always rebuilt and are never reused from cache.
 
