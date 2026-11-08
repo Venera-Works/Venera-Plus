@@ -63,12 +63,25 @@ extension ComicSourceReadingCache on ComicSource {
     if (result.success) {
       final comic = result.data;
       try {
-        // Reopening details alone does not mean chapter contents changed.
-        if (cached != null &&
-            (cached.updateTime != comic.updateTime ||
-                cached.maxPage != comic.maxPage)) {
-          for (final chapter in <String?>{null, ...?comic.chapters?.ids}) {
-            await CacheManager().delete(_readingCacheKey('pages', id, chapter));
+        if (cached != null) {
+          final allPagesChanged =
+              cached.updateTime != comic.updateTime ||
+              cached.maxPage != comic.maxPage;
+          for (final chapter in <String?>{
+            null,
+            ...?cached.chapters?.ids,
+            ...?comic.chapters?.ids,
+          }) {
+            final pagesChanged =
+                chapter != null &&
+                comic.chapterPageCounts[chapter] != null &&
+                cached.chapterPageCounts[chapter] !=
+                    comic.chapterPageCounts[chapter];
+            if (allPagesChanged || pagesChanged) {
+              await CacheManager().delete(
+                _readingCacheKey('pages', id, chapter),
+              );
+            }
           }
         }
         await _writeReadingCache(_readingCacheKey('info', id), {

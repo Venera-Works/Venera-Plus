@@ -241,6 +241,65 @@ void main() {
     },
   );
 
+  for (final hasChapters in [false, true]) {
+    testWidgets(
+      'shorter loaded content cannot confirm newer pages ($hasChapters)',
+      (tester) async {
+        final catalog = hasChapters ? {'one': 'One'} : null;
+        final snapshot = ComicUpdateSnapshot.fromChapters(
+          catalog,
+          maxPage: hasChapters ? null : 2,
+          chapterPageCounts: hasChapters ? {'one': 2} : const {},
+        );
+        var updates = const ComicUpdateState.empty()
+            .observe(
+              ComicUpdateSnapshot.fromChapters(
+                catalog,
+                maxPage: hasChapters ? null : 1,
+                chapterPageCounts: hasChapters ? {'one': 1} : const {},
+              ),
+            )
+            .state
+            .observe(snapshot)
+            .state;
+        configureReaderChapterCompletedHandler((event) {
+          updates = updates.acknowledgeSnapshot(
+            event.updateSnapshot!,
+            chapterId: event.chapterKey,
+            isLastChapter: event.isLastChapter,
+          );
+        });
+        final key = GlobalKey<_MetadataReaderState>();
+        try {
+          await tester.pumpWidget(
+            MaterialApp(
+              home: _MetadataReader(
+                key: key,
+                chapters: hasChapters ? ComicChapters(catalog!) : null,
+                updateSnapshot: snapshot,
+              ),
+            ),
+          );
+          await tester.pump(const Duration(milliseconds: 300));
+          final reader = key.currentState!;
+          reader.images = ['old'];
+          reader.pageValue = 1;
+          reader.onReaderContentReady();
+          await tester.pump();
+          expect(updates.hasNewUpdate, isTrue);
+          reader.images = ['old', 'new'];
+          reader.pageValue = 2;
+          reader.notifyChapterCompletedIfNeeded();
+          await tester.pump();
+          expect(updates.hasNewUpdate, isFalse);
+        } finally {
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.pump(const Duration(seconds: 1));
+        }
+      },
+    );
+  }
+
   for (final chapters in [
     null,
     _CountingChapters({}),

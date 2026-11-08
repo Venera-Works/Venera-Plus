@@ -128,6 +128,8 @@ Home, local favorites, network favorites, and headless checks share persistent u
 
 Details may provide `chapterPageCounts: {chapterId: positiveInteger}` for chapter page counts and `maxPage` for a comic without chapters. Chapter counts must uniquely match the current catalog; unmatched counts or counts ambiguous across groups are excluded from comparison. When chapters, page counts, and a parseable date are all unavailable, the result is unknown rather than unchanged. An empty catalog or temporarily missing fields does not erase an established baseline.
 
+Favoriting from details or switching sources saves the loaded catalog, page counts, and date as the comparison baseline. Home shows a valid source update time, or unknown when none is available; favorite and check times are not substituted. Details for tracked comics share the update-check refresh flow and write the latest catalog to the reading cache. Changed chapter page counts invalidate the corresponding image-list cache, and a shorter loaded page list cannot confirm a newer content version.
+
 The first usable chapter catalog or other comparison basis establishes a baseline and preserves an existing update badge. A badge represents newly detected content awaiting confirmation, rather than every unread chapter predating the favorite. Entering the reader does not clear it. Completing a chapter confirms only that chapter's visible content version; users can also explicitly mark currently known updates as read. Reading an old chapter does not clear a new chapter, and discoveries made during reading remain pending.
 
 

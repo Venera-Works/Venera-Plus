@@ -908,6 +908,16 @@ class ReaderState extends State<Reader>
       groupId = null;
       isLast = true;
     }
+    final snapshot = _updateSnapshot;
+    if (snapshot != null) {
+      final expectedPages =
+          snapshot.chapterPageCounts[snapshot.chapterKeyFor(
+            chapterKey,
+            groupId: groupId,
+          )] ??
+          (chapters == null ? snapshot.maxPage : null);
+      if (expectedPages != null && images!.length < expectedPages) return;
+    }
     try {
       await _chapterCompletionNotifier.notify(
         isAtEnd: true,

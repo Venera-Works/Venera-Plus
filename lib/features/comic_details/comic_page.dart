@@ -23,6 +23,7 @@ import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/consts.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
+import 'package:venera_plus/features/follow_updates/follow_updates.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/foundation/image_provider/cached_image.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
@@ -343,12 +344,25 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
     if (comicSource == null) {
       return const Res.error('Comic source not found');
     }
-    isAddToLocalFav = LocalFavoritesManager().isExist(widget.id, _historyType);
+    final favorites = LocalFavoritesManager();
+    final type = ComicType.fromKey(widget.sourceKey);
+    isAddToLocalFav = favorites.isExist(widget.id, type);
     _rememberHistory(_historyManager.find(widget.id, _historyType));
-    final result = await comicSource.loadComicInfoForReading(
-      widget.id,
-      refresh: true,
-    );
+    final Res<ComicDetails> result;
+    if (widget.selectSource ||
+        (!isAddToLocalFav &&
+            favorites.getUpdateState(widget.id, type).isEmpty)) {
+      result = await comicSource.loadComicInfoForReading(
+        widget.id,
+        refresh: true,
+      );
+    } else {
+      final refreshed = await refreshComic(widget.id, type);
+      if (refreshed.errorMessage != null) {
+        return Res.error(refreshed.errorMessage!);
+      }
+      result = Res(refreshed.details!);
+    }
     if (result.error) return result;
     if (widget.selectSource) return result;
     final catalog = readingCatalogFromComicChapters(result.data.chapters);

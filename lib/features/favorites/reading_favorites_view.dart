@@ -139,7 +139,7 @@ class ReadingFavoritesView extends StatefulWidget {
 }
 
 class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
-  List<FavoriteItem> comics = [];
+  List<FavoriteItemWithUpdateInfo> comics = [];
   bool isLoading = false;
   String? loadError;
   int _loadGeneration = 0;
@@ -168,7 +168,7 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
     final folderCount = manager.folderComics(folder);
     if (folderCount < _asyncDataFetchLimit) {
       setState(() {
-        comics = manager.getFolderComics(folder);
+        comics = manager.getComicsWithUpdatesInfo(folder);
         isLoading = false;
         loadError = null;
       });
@@ -180,7 +180,7 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
       loadError = null;
     });
 
-    final future = manager.getFolderComicsAsync(folder);
+    final future = manager.getComicsWithUpdatesInfoAsync(folder);
     try {
       final value = await future;
       if (mounted &&

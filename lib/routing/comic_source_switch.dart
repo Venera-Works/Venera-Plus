@@ -45,7 +45,12 @@ Future<ComicDetails?> switchComicSource(
             for (final tag in entry.value) '${entry.key}:$tag',
         ],
       ),
-      updateTime: selected.findUpdateTime(),
+      updateSnapshot: ComicUpdateSnapshot.fromChapters(
+        selected.chapters?.toJson(),
+        updateTime: selected.findUpdateTime(),
+        maxPage: selected.maxPage,
+        chapterPageCounts: selected.chapterPageCounts,
+      ),
     );
     DataSync().onDataChanged();
     return selected;

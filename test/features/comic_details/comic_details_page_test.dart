@@ -17,7 +17,7 @@ import 'package:venera_plus/features/comic_details/chapters.dart';
 import 'package:venera_plus/features/comic_details/thumbnails.dart';
 import 'package:venera_plus/features/comic_storage/comic_storage.dart';
 import 'package:venera_plus/features/webdav_library/webdav_library.dart';
-import 'package:venera_plus/features/favorites/favorites_manager.dart';
+import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/features/history/history.dart';
@@ -39,6 +39,8 @@ import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/foundation/sync_records.dart';
+
+import '../../widget_test_io.dart';
 
 const _testRoundId = '00000000-0000-4000-8000-000000000001';
 
@@ -207,6 +209,49 @@ void main() {
       skip: !_sqliteAvailable(),
     );
   }
+
+  testWidgets(
+    'opening tracked details discovers chapters without consuming them',
+    (tester) async {
+      final fixture = await _createFixture(tester, grouped: false);
+      LocalFavoritesManager.cache = null;
+      final manager = LocalFavoritesManager();
+      addTearDown(() async {
+        await _pumpAsyncWork(tester, manager.waitForPendingReads());
+        await _pumpAsyncWork(tester, appdata.saveData(false));
+        manager.close();
+      });
+      await runWidgetIo(tester, () async {
+        await manager.init();
+        manager.createFolder('Home');
+        manager.addComic(
+          'Home',
+          FavoriteItem(
+            id: fixture.comicId,
+            name: fixture.details.title,
+            coverPath: fixture.details.cover,
+            author: '',
+            type: fixture.type,
+            tags: const [],
+          ),
+          null,
+          ComicUpdateSnapshot.fromChapters({'c1': 'Chapter One'}),
+        );
+      });
+      await tester.pumpWidget(fixture.page);
+      await _waitForText(tester, 'Read');
+      await _scrollUntilVisible(tester, find.textContaining('Chapter Two'));
+      expect(manager.hasNewUpdate(fixture.comicId, fixture.type), isTrue);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await runWidgetIo(tester, () async {
+        await manager.waitForPendingReads();
+        manager.close();
+        await manager.init();
+      });
+      expect(manager.hasNewUpdate(fixture.comicId, fixture.type), isTrue);
+    },
+    skip: !_sqliteAvailable(),
+  );
 
   for (final disposed in [false, true]) {
     testWidgets(
@@ -1522,6 +1567,7 @@ Future<_ComicDetailsFixture> _createFixture(
       // history queue after that producer has settled.
       await _pumpAsyncWork(tester, histories.flushReadingProgress());
       await _pumpAsyncWork(tester, histories.waitForAsyncWrites());
+      await _pumpAsyncWork(tester, appdata.saveData(false));
     } finally {
       ComicSourceManager().remove(effectiveSourceKey);
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
@@ -1827,7 +1873,7 @@ class _TestFavorites extends ChangeNotifier implements LocalFavoritesManager {
     String id,
     ComicType type,
     FavoriteItem replacement, {
-    String? updateTime,
+    ComicUpdateSnapshot? updateSnapshot,
   }) {
     replacements.add((id, type, replacement.id));
   }
@@ -1837,6 +1883,10 @@ class _TestFavorites extends ChangeNotifier implements LocalFavoritesManager {
 
   @override
   bool isExist(String id, ComicType type) => false;
+
+  @override
+  ComicUpdateState getUpdateState(String id, ComicType type) =>
+      const ComicUpdateState.empty();
 
   @override
   void onRead(String id, ComicType type) {}

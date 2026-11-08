@@ -21,7 +21,7 @@ class ComicFavoritePanel extends StatefulWidget {
     required this.isFavorite,
     required this.onFavorite,
     required this.favoriteItem,
-    this.updateTime,
+    this.updateSnapshot,
   });
 
   final String cid;
@@ -37,7 +37,7 @@ class ComicFavoritePanel extends StatefulWidget {
 
   final FavoriteItem favoriteItem;
 
-  final String? updateTime;
+  final ComicUpdateSnapshot? updateSnapshot;
 
   @override
   State<ComicFavoritePanel> createState() => _FavoritePanelState();
@@ -72,7 +72,7 @@ class _FavoritePanelState extends State<ComicFavoritePanel>
         isFavorite: widget.isFavorite,
         onFavorite: widget.onFavorite,
         favoriteItem: widget.favoriteItem,
-        updateTime: widget.updateTime,
+        updateSnapshot: widget.updateSnapshot,
         comicSource: comicSource,
         hasNetwork: hasNetwork,
         localFolders: localFolders,
@@ -89,7 +89,7 @@ class _FavoriteList extends StatefulWidget {
     required this.isFavorite,
     required this.onFavorite,
     required this.favoriteItem,
-    this.updateTime,
+    this.updateSnapshot,
     required this.comicSource,
     required this.hasNetwork,
     required this.localFolders,
@@ -101,7 +101,7 @@ class _FavoriteList extends StatefulWidget {
   final bool? isFavorite;
   final void Function(bool?, bool?) onFavorite;
   final FavoriteItem favoriteItem;
-  final String? updateTime;
+  final ComicUpdateSnapshot? updateSnapshot;
   final ComicSource comicSource;
   final bool hasNetwork;
   final List<String> localFolders;
@@ -120,7 +120,7 @@ class _FavoriteListState extends State<_FavoriteList> {
       cid: widget.cid,
       type: widget.type,
       favoriteItem: widget.favoriteItem,
-      updateTime: widget.updateTime,
+      updateSnapshot: widget.updateSnapshot,
       localFolders: widget.localFolders,
       added: widget.added,
       onFavorite: (local) {
@@ -470,7 +470,7 @@ class _LocalSection extends StatefulWidget {
     required this.cid,
     required this.type,
     required this.favoriteItem,
-    this.updateTime,
+    this.updateSnapshot,
     required this.localFolders,
     required this.added,
     required this.onFavorite,
@@ -479,7 +479,7 @@ class _LocalSection extends StatefulWidget {
   final String cid;
   final ComicType type;
   final FavoriteItem favoriteItem;
-  final String? updateTime;
+  final ComicUpdateSnapshot? updateSnapshot;
   final List<String> localFolders;
   final List<String> added;
   final void Function(bool) onFavorite;
@@ -554,7 +554,7 @@ class _LocalSectionState extends State<_LocalSection> {
                     folder,
                     widget.favoriteItem,
                     null,
-                    widget.updateTime,
+                    widget.updateSnapshot,
                   );
                   setState(() {
                     localAdded.add(folder);

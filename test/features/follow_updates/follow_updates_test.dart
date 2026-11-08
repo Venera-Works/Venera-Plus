@@ -10,6 +10,7 @@ import 'package:venera_plus/features/follow_updates/follow_update_queue.dart';
 import 'package:venera_plus/features/follow_updates/follow_updates.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/res.dart';
@@ -134,12 +135,12 @@ void main() {
             await _withLiveFavorites((manager) async {
               final item = _tracked(sourceKey, 'shared');
               manager.createFolder('other');
-              manager.addComic('在读', item, null, _oldTime);
-              manager.addComic('other', item, null, _oldTime);
+              manager.addComic('在读', item, null, _oldSnapshot);
+              manager.addComic('other', item, null, _oldSnapshot);
               final first = updateComic(item, '在读');
               await started.future;
               final second = updateComic(item, 'other');
-              final remote = refreshComic(item);
+              final remote = refreshComic(item.id, item.type);
               response.complete(Res(_details(sourceKey, item.id)));
               final results = await Future.wait([first, second, remote]);
               expect(calls, 1);
@@ -178,12 +179,12 @@ void main() {
             await _withLiveFavorites((manager) async {
               manager.createFolder('other');
               final item = _tracked(sourceKey, 'inside');
-              manager.addComic('在读', item, null, _oldTime);
+              manager.addComic('在读', item, null, _oldSnapshot);
               manager.addComic(
                 'other',
                 _tracked(sourceKey, 'outside'),
                 null,
-                _oldTime,
+                _oldSnapshot,
               );
               manager.addComic('在读', _tracked('local', 'local'));
               await manager.waitForPendingReads();
@@ -245,14 +246,14 @@ void main() {
                   '在读',
                   _tracked(sourceKey, 'slow-$index'),
                   null,
-                  _oldTime,
+                  _oldSnapshot,
                 );
               }
               manager.addComic(
                 '在读',
                 _tracked(otherSourceKey, 'other'),
                 null,
-                _oldTime,
+                _oldSnapshot,
               );
               final refreshing = updateFolder('在读', true).toList();
               try {
@@ -288,8 +289,8 @@ void main() {
             await _withLiveFavorites((manager) async {
               manager.createFolder('other');
               final item = _tracked(sourceKey, 'shared');
-              manager.addComic('在读', item, null, _oldTime);
-              manager.addComic('other', item, null, _oldTime);
+              manager.addComic('在读', item, null, _oldSnapshot);
+              manager.addComic('other', item, null, _oldSnapshot);
               final first = updateFolder(localAllFolderLabel, true).toList();
               final second = updateFolder(localAllFolderLabel, true).toList();
               final results = await Future.wait([first, second]);
@@ -323,13 +324,13 @@ void main() {
                 '在读',
                 _tracked(sourceKey, 'first'),
                 null,
-                _oldTime,
+                _oldSnapshot,
               );
               manager.addComic(
                 '在读',
                 _tracked(sourceKey, 'pending'),
                 null,
-                _oldTime,
+                _oldSnapshot,
               );
               final firstCompleted = Completer<void>();
               final allCompleted = Completer<void>();
@@ -382,7 +383,7 @@ void main() {
             );
             await _withLiveFavorites((manager) async {
               final item = _tracked(sourceKey, 'read-race');
-              manager.addComic('在读', item, null, _oldTime);
+              manager.addComic('在读', item, null, _oldSnapshot);
               final pending = updateComic(item, '在读');
               await started.future;
               manager.markAsRead(item.id, item.type);
@@ -399,7 +400,7 @@ void main() {
               expect(manager.hasNewUpdate(item.id, item.type), isTrue);
               manager.markAsRead(item.id, item.type);
               expect(manager.hasNewUpdate(item.id, item.type), isFalse);
-              final secondResult = await refreshComic(item);
+              final secondResult = await refreshComic(item.id, item.type);
               expect(secondResult.updated, isTrue);
               expect(secondResult.status, ComicUpdateCheckStatus.updated);
               expect(manager.hasNewUpdate(item.id, item.type), isTrue);
@@ -422,7 +423,7 @@ void main() {
             );
             await _withLiveFavorites((manager) async {
               final item = _tracked(sourceKey, 'stale');
-              manager.addComic('在读', item, null, _oldTime);
+              manager.addComic('在读', item, null, _oldSnapshot);
               final pending = updateComic(item, '在读');
               await started.future;
               if (replaceDatabase) {
@@ -458,7 +459,7 @@ void main() {
             );
             await _withLiveFavorites((manager) async {
               final item = _tracked(sourceKey, 'remote-only');
-              final result = await refreshComic(item);
+              final result = await refreshComic(item.id, item.type);
               expect(result.item?.name, 'Fresh title');
               expect(result.updateTime, _newTime);
               expect(result.status, ComicUpdateCheckStatus.baseline);
@@ -467,7 +468,7 @@ void main() {
               expect(manager.hasNewUpdate(item.id, item.type), isFalse);
               expect(manager.getUpdateCheckTime(item.id, item.type), isNotNull);
               remoteTime = _laterTime;
-              final updated = await refreshComic(item);
+              final updated = await refreshComic(item.id, item.type);
               expect(updated.status, ComicUpdateCheckStatus.updated);
               expect(manager.hasNewUpdate(item.id, item.type), isTrue);
               expect(manager.find(item.id, item.type), isEmpty);
@@ -518,7 +519,10 @@ void main() {
                 type: ComicType.fromKey(sourceKey),
                 tags: const [],
               );
-              final baselineRes = await refreshComic(baselineItem);
+              final baselineRes = await refreshComic(
+                baselineItem.id,
+                baselineItem.type,
+              );
               expect(baselineRes.status, ComicUpdateCheckStatus.baseline);
               expect(baselineRes.updated, isFalse);
 
@@ -530,13 +534,76 @@ void main() {
                 type: ComicType.fromKey(sourceKey),
                 tags: const [],
               );
-              final unknownRes = await refreshComic(unknownItem);
+              final unknownRes = await refreshComic(
+                unknownItem.id,
+                unknownItem.type,
+              );
               expect(unknownRes.status, ComicUpdateCheckStatus.unknown);
               expect(unknownRes.updated, isFalse);
 
-              final unchangedRes = await refreshComic(baselineItem);
+              final unchangedRes = await refreshComic(
+                baselineItem.id,
+                baselineItem.type,
+              );
               expect(unchangedRes.status, ComicUpdateCheckStatus.unchanged);
               expect(unchangedRes.updated, isFalse);
+            });
+          },
+        );
+
+        test(
+          'refresh keeps same-day additions visible to direct reading',
+          () async {
+            var revision = 1;
+            final source = _source(
+              sourceKey,
+              loadComicInfo: (id) async => Res(
+                ComicDetails.fromJson({
+                  ..._details(sourceKey, id).toJson(),
+                  'chapters': {'one': 'One', if (revision == 2) 'two': 'Two'},
+                  'chapterPageCounts': {'one': revision == 1 ? 15 : 25},
+                  'maxPage': 100,
+                }),
+              ),
+              loadComicPages: (id, chapter) async => Res([
+                for (var page = 1; page <= (revision == 1 ? 15 : 25); page++)
+                  '$chapter-$page.jpg',
+              ]),
+            );
+            ComicSourceManager().add(source);
+            await _withLiveFavorites((manager) async {
+              final item = _tracked(sourceKey, 'same-day');
+              final initial = (await source.loadComicInfoForReading(
+                item.id,
+              )).data;
+              manager.addComic(
+                '在读',
+                item,
+                null,
+                ComicUpdateSnapshot.fromChapters(
+                  initial.chapters!.toJson(),
+                  updateTime: initial.findUpdateTime(),
+                  maxPage: initial.maxPage,
+                  chapterPageCounts: initial.chapterPageCounts,
+                ),
+              );
+              await source.loadComicPagesForReading(item.id, 'one');
+              revision = 2;
+              final progress = await updateFolder('在读', true).toList();
+              expect(progress.last.updated, 1);
+              expect(progress.last.newChapters, 1);
+              final reopened = (await source.loadComicInfoForReading(
+                item.id,
+              )).data;
+              expect(reopened.chapters!.ids, ['one', 'two']);
+              final pages = (await source.loadComicPagesForReading(
+                item.id,
+                'one',
+              )).data;
+              expect(pages, [
+                for (var page = 1; page <= 25; page++) 'one-$page.jpg',
+              ]);
+              expect(manager.hasNewUpdate(item.id, item.type), isTrue);
             });
           },
         );
@@ -660,8 +727,16 @@ void main() {
 const _oldTime = '2026-10-01';
 const _newTime = '2026-10-02';
 const _laterTime = '2026-10-03';
+final _oldSnapshot = ComicUpdateSnapshot.fromChapters(
+  null,
+  updateTime: _oldTime,
+);
 
-ComicSource _source(String key, {LoadComicFunc? loadComicInfo}) {
+ComicSource _source(
+  String key, {
+  LoadComicFunc? loadComicInfo,
+  LoadComicPagesFunc? loadComicPages,
+}) {
   return ComicSource(
     'Test Source',
     key,
@@ -674,7 +749,7 @@ ComicSource _source(String key, {LoadComicFunc? loadComicInfo}) {
     null,
     loadComicInfo,
     null,
-    null,
+    loadComicPages,
     null,
     null,
     'test.js',
@@ -776,6 +851,7 @@ Future<void> _withLiveFavorites(
       await manager.waitForPendingReads();
       manager.close();
     }
+    await CacheManager.resetForTesting();
     LocalFavoritesManager.cache = oldManager;
     (appdata.toJson()['settings'] as Map)
       ..clear()

@@ -16,6 +16,7 @@ import 'package:venera_plus/features/favorites/favorites_manager.dart';
 import 'comic_update_state.dart';
 import 'package:venera_plus/features/follow_updates/follow_updates.dart';
 import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/consts.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/res.dart';
@@ -67,7 +68,11 @@ Future<void> _refreshFolderDetails({
     throttleEvery: 5,
     run: (comic) async {
       if (isCancelled()) return;
-      final res = await refreshComic(comic);
+      final res = await refreshComic(
+        comic.id,
+        ComicType.fromKey(comic.sourceKey),
+        fallbackAuthor: comic.subtitle,
+      );
       results.add((comic, res));
     },
   );

@@ -342,9 +342,9 @@ void main() {
               first.id.hashCode ^ first.type.value,
               second.id.hashCode ^ second.type.value,
             );
-            manager.addComic('other', first, null, 'old');
+            manager.addComic('other', first);
             expect(manager.isExist(second.id, second.type), isFalse);
-            manager.addComic('other', second, null, 'old');
+            manager.addComic('other', second);
             await manager.waitForPendingReads();
             expect(manager.totalComics, 2);
             manager.saveUpdateState(
@@ -364,6 +364,48 @@ void main() {
         },
       );
 
+      for (final date in <String?>[null, '2026-11-08']) {
+        test(
+          'favorite and replacement retain their initial catalog ($date)',
+          () async {
+            await _withManager((manager) async {
+              manager.createFolder('Main');
+              final first = _favorite('added', const ComicType(73));
+              final target = _favorite('replacement', const ComicType(74));
+              final initial = ComicUpdateSnapshot.fromChapters(
+                {'one': 'One'},
+                updateTime: date,
+                chapterPageCounts: {'one': 15},
+              );
+              final grown = ComicUpdateSnapshot.fromChapters(
+                {'one': 'One', 'two': 'Two'},
+                updateTime: date,
+                chapterPageCounts: {'one': 15},
+              );
+              manager.addComic('Main', first, null, initial);
+              manager.addComic('Main', _favorite('old'));
+              manager.replaceComic(
+                'old',
+                ComicType.local,
+                target,
+                updateSnapshot: initial,
+              );
+              await manager.waitForPendingReads();
+              manager.close();
+              await manager.init();
+              for (final item in [first, target]) {
+                final observation = manager
+                    .getUpdateState(item.id, item.type)
+                    .observe(grown);
+                expect(observation.status, ComicUpdateCheckStatus.updated);
+                expect(observation.newChapterCount, 1);
+                expect(observation.state.hasNewUpdate, isTrue);
+              }
+            });
+          },
+        );
+      }
+
       test(
         'opening an old chapter retains updates until the new chapter completes',
         () async {
@@ -371,7 +413,7 @@ void main() {
             manager.createFolder('other');
             final comic = _favorite('shared');
             for (final folder in manager.folderNames) {
-              manager.addComic(folder, comic, null, '2026-10-07');
+              manager.addComic(folder, comic);
             }
             final oldCatalog = ComicUpdateSnapshot.fromChapters({'old': 'Old'});
             final newCatalog = ComicUpdateSnapshot.fromChapters({
@@ -424,7 +466,7 @@ void main() {
             await manager.setReadingFolder('在读');
             for (final id in ['one', 'batch', 'all']) {
               final comic = _favorite(id);
-              manager.addComic('在读', comic, null, 'old');
+              manager.addComic('在读', comic);
               manager.saveUpdateState(
                 id,
                 comic.type,
@@ -459,7 +501,7 @@ void main() {
             manager.createFolder('moved');
             manager.createFolder('copied');
             final comic = _favorite('unread');
-            manager.addComic('在读', comic, null, 'old');
+            manager.addComic('在读', comic);
             manager.saveUpdateState(
               comic.id,
               comic.type,
@@ -529,8 +571,8 @@ void main() {
             manager.createFolder('Read later');
             final first = _favorite('c1');
             final second = _favorite('c2');
-            manager.addComic('Read later', first, 1, 'old');
-            manager.addComic('Read later', second, 2, 'old');
+            manager.addComic('Read later', first, 1);
+            manager.addComic('Read later', second, 2);
             manager.saveUpdateState(
               second.id,
               second.type,

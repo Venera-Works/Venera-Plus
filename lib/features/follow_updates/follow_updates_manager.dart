@@ -25,30 +25,33 @@ class ComicUpdateResult {
 class ComicRefreshResult extends ComicUpdateResult {
   final FavoriteItem? item;
   final String? updateTime;
+  final ComicDetails? details;
 
   ComicRefreshResult(
     super.status,
     super.errorMessage, {
     this.item,
     this.updateTime,
+    this.details,
     super.newChapterCount,
   });
 }
 
 final _activeComics =
-    <
-      (LocalFavoritesManager, int, String, String),
-      Future<ComicRefreshResult>
-    >{};
+    <(LocalFavoritesManager, int, int, String), Future<ComicRefreshResult>>{};
 
 /// Loads fresh details once across overlapping local, automatic and remote
 /// refreshes. Only memberships existing at request start are eligible for writes.
-Future<ComicRefreshResult> refreshComic(Comic comic) {
+Future<ComicRefreshResult> refreshComic(
+  String id,
+  ComicType type, {
+  String? fallbackAuthor,
+}) {
   final manager = LocalFavoritesManager();
-  final key = (manager, manager.generation, comic.sourceKey, comic.id);
+  final key = (manager, manager.generation, type.value, id);
   final active = _activeComics[key];
   if (active != null) return active;
-  final future = _refreshComic(comic, manager);
+  final future = _refreshComic(id, type, manager, fallbackAuthor);
   _activeComics[key] = future;
   return future.whenComplete(() {
     if (identical(_activeComics[key], future)) _activeComics.remove(key);
@@ -56,12 +59,11 @@ Future<ComicRefreshResult> refreshComic(Comic comic) {
 }
 
 Future<ComicRefreshResult> _refreshComic(
-  Comic comic,
+  String id,
+  ComicType type,
   LocalFavoritesManager manager,
+  String? fallbackAuthor,
 ) async {
-  final type = comic is FavoriteItem
-      ? comic.type
-      : ComicType.fromKey(comic.sourceKey);
   if (type == ComicType.local) {
     return ComicRefreshResult(ComicUpdateCheckStatus.unchanged, null);
   }
@@ -72,8 +74,7 @@ Future<ComicRefreshResult> _refreshComic(
       'Comic source not found',
     );
   }
-  final loader = source.loadComicInfo;
-  if (loader == null) {
+  if (source.loadComicInfo == null) {
     return ComicRefreshResult(
       ComicUpdateCheckStatus.unknown,
       'Comic source does not support loading info',
@@ -81,12 +82,17 @@ Future<ComicRefreshResult> _refreshComic(
   }
   final generation = manager.generation;
   final folders = manager.isCurrentGeneration(generation)
-      ? manager.find(comic.id, type)
+      ? manager.find(id, type)
       : <String>[];
+  final previousAuthor =
+      fallbackAuthor ??
+      (folders.isEmpty
+          ? null
+          : manager.getComic(folders.first, id, type).author);
   final ComicDetails info;
   try {
     // Source loaders already handle transient read failures.
-    info = (await loader(comic.id)).data;
+    info = (await source.loadComicInfoForReading(id, refresh: true)).data;
   } catch (e, s) {
     Log.error('Check Updates', e, s);
     return ComicRefreshResult(ComicUpdateCheckStatus.unknown, e.toString());
@@ -99,13 +105,13 @@ Future<ComicRefreshResult> _refreshComic(
     tags.addAll(entry.value.map((tag) => '${entry.key}:$tag'));
   }
   final item = FavoriteItem(
-    id: comic.id,
+    id: id,
     name: info.title,
     coverPath: info.cover,
     author:
         info.subTitle ??
         info.tags['author']?.firstOrNull ??
-        comic.subtitle ??
+        previousAuthor ??
         '',
     type: type,
     tags: tags,
@@ -127,17 +133,17 @@ Future<ComicRefreshResult> _refreshComic(
       .where(
         (folder) =>
             manager.existsFolder(folder) &&
-            manager.comicExists(folder, comic.id, type),
+            manager.comicExists(folder, id, type),
       )
       .toList();
 
-  final currentState = manager.getUpdateState(comic.id, type);
+  final currentState = manager.getUpdateState(id, type);
   final observation = currentState.observe(snapshot);
   final status = observation.status;
   final nowMs = DateTime.now().millisecondsSinceEpoch;
 
   manager.saveUpdateState(
-    comic.id,
+    id,
     type,
     observation.state,
     checkedAt: nowMs,
@@ -146,7 +152,7 @@ Future<ComicRefreshResult> _refreshComic(
 
   var metadataChanged = false;
   for (final folder in memberships) {
-    final previous = manager.getComic(folder, comic.id, type);
+    final previous = manager.getComic(folder, id, type);
     if (previous.name != item.name ||
         previous.author != item.author ||
         previous.coverPath != item.coverPath ||
@@ -169,6 +175,7 @@ Future<ComicRefreshResult> _refreshComic(
     null,
     item: item,
     updateTime: updateTime,
+    details: info,
     newChapterCount: observation.newChapterCount,
   );
 }
@@ -186,7 +193,7 @@ Future<ComicUpdateResult> updateComic(
       'Favorites changed during refresh. Refresh again.',
     );
   }
-  return refreshComic(comic);
+  return refreshComic(comic.id, comic.type, fallbackAuthor: comic.author);
 }
 
 class UpdateProgress {
@@ -339,7 +346,11 @@ Future<void> _runFolderUpdate(
       scope: scope,
       run: (comic) async {
         final result = manager.isCurrentGeneration(generation)
-            ? await refreshComic(comic)
+            ? await refreshComic(
+                comic.id,
+                comic.type,
+                fallbackAuthor: comic.author,
+              )
             : ComicRefreshResult(
                 ComicUpdateCheckStatus.unknown,
                 'Favorites changed during refresh. Refresh again.',

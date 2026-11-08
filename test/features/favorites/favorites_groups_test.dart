@@ -230,6 +230,46 @@ void main() {
     skip: skip,
   );
 
+  testWidgets('home shows source update dates independently of reading order', (
+    tester,
+  ) async {
+    final fixture = await _FavoritesFixture.create(tester);
+    await runWidgetIo(tester, () async {
+      for (final (id, date) in [
+        ('primary', '2026-10-20'),
+        ('alternate', '2026-10-25'),
+      ]) {
+        fixture.manager.saveUpdateState(
+          id,
+          ComicType.local,
+          const ComicUpdateState.empty()
+              .observe(ComicUpdateSnapshot.fromChapters(null, updateTime: date))
+              .state,
+        );
+      }
+      appdata.settings['moveFavoriteAfterRead'] = 'end';
+      fixture.manager.onRead('primary', ComicType.local);
+    });
+    await fixture.openHome(tester);
+    expect(find.textContaining('2026-10-20'), findsOneWidget);
+    expect(find.textContaining('2026-10-25'), findsOneWidget);
+    expect(
+      (_grid(tester).comics.singleWhere((comic) => comic.id == 'middle')
+              as FavoriteItemWithUpdateInfo)
+          .updateTime,
+      isNull,
+    );
+    final displayed = _grid(
+      tester,
+    ).comics.map((comic) => comic.description).toList();
+    await runWidgetIo(tester, () async {
+      final loaded = await fixture.manager.getComicsWithUpdatesInfoAsync(
+        'Main',
+      );
+      expect(loaded.map((comic) => comic.description), displayed);
+    });
+  }, skip: skip);
+
   testWidgets('tag search and selection affect only the visible source', (
     tester,
   ) async {
@@ -264,7 +304,9 @@ void main() {
           'primary',
           ComicType.local,
           replacement,
-          updateTime: '2026-10-29',
+          updateSnapshot: ComicUpdateSnapshot.fromChapters({
+            'chapter-1': 'Chapter 1',
+          }, updateTime: '2026-10-29'),
         );
         expect(fixture.manager.isExist('primary', ComicType.local), isFalse);
         expect(fixture.manager.isExist('replacement', ComicType.local), isTrue);

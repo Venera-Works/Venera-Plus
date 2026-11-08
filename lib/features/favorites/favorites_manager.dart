@@ -47,6 +47,16 @@ class FavoriteItem implements Comic {
     time = _getTimeString(t);
   }
 
+  FavoriteItem._copy(FavoriteItem item)
+    : name = item.name,
+      author = item.author,
+      type = item.type,
+      tags = item.tags,
+      id = item.id,
+      coverPath = item.coverPath {
+    time = item.time;
+  }
+
   FavoriteItem.fromRow(Row row)
     : name = row["name"],
       author = row["author"],
@@ -169,21 +179,14 @@ class FavoriteItemWithUpdateInfo extends FavoriteItem {
   bool hasNewUpdate;
 
   FavoriteItemWithUpdateInfo(
-    FavoriteItem item,
+    super.item,
     this.updateTime,
     this.hasNewUpdate,
     int? lastCheckTime,
   ) : lastCheckTime = lastCheckTime == null
           ? null
           : DateTime.fromMillisecondsSinceEpoch(lastCheckTime),
-      super(
-        id: item.id,
-        name: item.name,
-        coverPath: item.coverPath,
-        author: item.author,
-        type: item.type,
-        tags: item.tags,
-      );
+      super._copy();
 
   @override
   String get description {
@@ -194,7 +197,9 @@ class FavoriteItemWithUpdateInfo extends FavoriteItem {
         updateTime = parsed.toLocal().toString().substring(0, 19);
       }
     }
-    var sourceName = type.comicSource?.name ?? "Unknown";
+    var sourceName = type == ComicType.local
+        ? 'local'
+        : type.comicSource?.name ?? "Unknown";
     return "$updateTime | $sourceName";
   }
 
@@ -882,7 +887,7 @@ class LocalFavoritesManager with ChangeNotifier {
     String folder,
     FavoriteItem comic, [
     int? order,
-    String? updateTime,
+    ComicUpdateSnapshot? updateSnapshot,
   ]) {
     if (!existsFolder(folder)) {
       throw Exception("Folder does not exists");
@@ -931,12 +936,11 @@ class LocalFavoritesManager with ChangeNotifier {
         [...params, minValue(folder) - 1],
       );
     }
-    if (!_updateStates.containsKey((comic.id, comic.type.value)) &&
-        updateTime != null) {
+    if (updateSnapshot != null) {
       saveUpdateState(
         comic.id,
         comic.type,
-        ComicUpdateState.fromLegacy(updateTime: updateTime),
+        getUpdateState(comic.id, comic.type).observe(updateSnapshot).state,
         notify: false,
       );
     }
@@ -1456,7 +1460,7 @@ class LocalFavoritesManager with ChangeNotifier {
     String id,
     ComicType type,
     FavoriteItem replacement, {
-    String? updateTime,
+    ComicUpdateSnapshot? updateSnapshot,
   }) {
     if (id == replacement.id && type == replacement.type) return;
     final folders = find(id, type);
@@ -1511,12 +1515,14 @@ class LocalFavoritesManager with ChangeNotifier {
       _db.execute('ROLLBACK');
       rethrow;
     }
-    if (!_updateStates.containsKey((replacement.id, replacement.type.value)) &&
-        updateTime != null) {
+    if (updateSnapshot != null) {
       saveUpdateState(
         replacement.id,
         replacement.type,
-        ComicUpdateState.fromLegacy(updateTime: updateTime),
+        getUpdateState(
+          replacement.id,
+          replacement.type,
+        ).observe(updateSnapshot).state,
         notify: false,
       );
     }
@@ -1686,9 +1692,18 @@ class LocalFavoritesManager with ChangeNotifier {
   List<FavoriteItemWithUpdateInfo> getComicsWithUpdatesInfo(String folder) {
     if (!existsFolder(folder)) return [];
     return _db
-        .select('SELECT * FROM ${quoteSqlIdentifier(folder)};')
+        .select(
+          'SELECT * FROM ${quoteSqlIdentifier(folder)} ORDER BY display_order;',
+        )
         .map((row) => _withUpdateInfo(FavoriteItem.fromRow(row)))
         .toList();
+  }
+
+  Future<List<FavoriteItemWithUpdateInfo>> getComicsWithUpdatesInfoAsync(
+    String folder,
+  ) async {
+    final items = await getFolderComicsAsync(folder);
+    return items.map(_withUpdateInfo).toList();
   }
 
   void markAsRead(String id, ComicType type, {bool notify = true}) {

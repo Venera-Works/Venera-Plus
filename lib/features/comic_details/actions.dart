@@ -132,6 +132,12 @@ abstract mixin class ComicPageActions {
   }
 
   void openFavPanel() {
+    final updateSnapshot = ComicUpdateSnapshot.fromChapters(
+      comic.chapters?.toJson(),
+      updateTime: comic.findUpdateTime(),
+      maxPage: comic.maxPage,
+      chapterPageCounts: comic.chapterPageCounts,
+    );
     showSideBar(
       App.rootContext,
       ComicFavoritePanel(
@@ -141,6 +147,17 @@ abstract mixin class ComicPageActions {
         onFavorite: (local, network) {
           if (network != null) {
             isFavorite = network;
+            if (network) {
+              final manager = LocalFavoritesManager();
+              manager.saveUpdateState(
+                comic.id,
+                comic.comicType,
+                manager
+                    .getUpdateState(comic.id, comic.comicType)
+                    .observe(updateSnapshot)
+                    .state,
+              );
+            }
           }
           if (local != null) {
             isAddToLocalFav = local;
@@ -148,7 +165,7 @@ abstract mixin class ComicPageActions {
           update();
         },
         favoriteItem: _toFavoriteItem(),
-        updateTime: comic.findUpdateTime(),
+        updateSnapshot: updateSnapshot,
       ),
     );
   }
@@ -208,7 +225,12 @@ abstract mixin class ComicPageActions {
       folder,
       _toFavoriteItem(),
       null,
-      comic.findUpdateTime(),
+      ComicUpdateSnapshot.fromChapters(
+        comic.chapters?.toJson(),
+        updateTime: comic.findUpdateTime(),
+        maxPage: comic.maxPage,
+        chapterPageCounts: comic.chapterPageCounts,
+      ),
     );
     isAddToLocalFav = true;
     update();
