@@ -272,9 +272,9 @@ python .github/scripts/release_version.py --check --tag v1.2.3
 
 `代码分析` 工作流会运行版本与结构检查、Python 脚本测试、Dart 格式检查（`lib`、`test` 与 `tool`，覆盖子目录）、`flutter analyze`、完整 Dart 测试及覆盖率汇总。`依赖安全审查` 会检查 PR 新增或升级的依赖，`PR 平台冒烟构建` 会按改动范围验证 Android 和 Windows 的编译与原生数据库集成测试场景，也可通过手动触发验证已发布的内核。
 
-`构建`（`.github/workflows/build.yml`）同时提供手动平台选择和可复用构建入口，统一维护 Android、Windows、macOS、iOS、Linux x64/ARM64 的构建、产物校验与 Actions 产物上传。Android 的四种 APK 统一包含在 `apks` 产物中。普通手动构建的产物保留 7 天，缺少 Android 正式签名时生成临时签名。
+`构建`（`.github/workflows/build.yml`）同时提供手动平台选择和可复用构建入口，统一维护 Android、Windows、macOS、iOS、Linux x64/ARM64 的构建、产物校验与 Actions 产物上传。普通手动构建将 Android 四种 APK、Windows 安装版 EXE 和完整便携版 ZIP 分别原样上传，使用完整文件名作为产物名，不再额外套一层 ZIP；产物保留 7 天。缺少 Android 正式签名时生成临时签名。
 
-`完整构建`（`.github/workflows/main.yml`）负责发布元数据校验、Release 准备与收尾，通过内部参数 `release_mode: true` 调用共享构建。发布构建必须提供 Android 正式签名，缺少时失败；产物沿用仓库默认保留期。发布平台保持 Android、Windows、iOS、Linux x64/ARM64，macOS 继续通过手动构建生成。
+`完整构建`（`.github/workflows/main.yml`）负责发布元数据校验、Release 准备与收尾，通过内部参数 `release_mode: true` 调用共享构建。发布模式继续将 Android 汇总为 `apks`、Windows 汇总为 `windows_build`，供对应的 Release 附件上传任务下载。发布构建必须提供 Android 正式签名，缺少时失败；产物沿用仓库默认保留期。发布平台保持 Android、Windows、iOS、Linux x64/ARM64，macOS 继续通过手动构建生成。
 
 只有推送 `v*` tag 时才创建或恢复 prerelease 并上传 Release 附件。共享工作流中的每个平台上传任务仅依赖对应构建任务，完成后即可追加附件；全部所需构建与上传成功后，`完整构建` 才完成 Release，否则标记为构建未完成。手动运行 `完整构建` 仍要求合法发布 tag，且仅生成 Actions 产物。发布模式不会自动取消进行中的构建；普通手动构建继续允许新运行取消旧运行。
 

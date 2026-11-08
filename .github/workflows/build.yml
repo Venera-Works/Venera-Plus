@@ -185,13 +185,46 @@ jobs:
       - name: sccache 统计
         if: ${{ always() && steps.sccache.outcome == 'success' }}
         run: sccache --show-stats
-      - name: 上传 Android Workflow Artifact
+      - name: 上传 Android APK (armeabi-v7a)
+        if: ${{ !inputs.release_mode }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: build/app/outputs/apk/release/*-android-armeabi-v7a.apk
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+      - name: 上传 Android APK (arm64-v8a)
+        if: ${{ !inputs.release_mode }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: build/app/outputs/apk/release/*-android-arm64-v8a.apk
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+      - name: 上传 Android APK (x86_64)
+        if: ${{ !inputs.release_mode }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: build/app/outputs/apk/release/*-android-x86_64.apk
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+      - name: 上传 Android APK (universal)
+        if: ${{ !inputs.release_mode }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: build/app/outputs/apk/release/*-android.apk
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+      - name: 上传 Android 发布构建产物
+        if: ${{ inputs.release_mode }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: apks
           path: build/app/outputs/apk/release/*.apk
           if-no-files-found: error
-          retention-days: ${{ !inputs.release_mode && 7 || 0 }}
+          retention-days: 0
 
   Upload_Android:
     runs-on: ubuntu-22.04
@@ -306,7 +339,24 @@ jobs:
       - name: sccache 统计
         if: ${{ always() && steps.sccache.outcome == 'success' }}
         run: sccache --show-stats
-      - name: 上传 Windows Workflow Artifact
+      - name: 上传 Windows 安装版
+        if: ${{ !inputs.release_mode }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: build/windows/VeneraPlus-*-windows-installer.exe
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+      - name: 上传 Windows 便携版
+        if: ${{ !inputs.release_mode }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: build/windows/VeneraPlus-*-windows-portable.zip
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+      - name: 上传 Windows 发布构建产物
+        if: ${{ inputs.release_mode }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows_build
@@ -314,7 +364,7 @@ jobs:
             build/windows/VeneraPlus-*-windows-portable.zip
             build/windows/VeneraPlus-*-windows-installer.exe
           if-no-files-found: error
-          retention-days: ${{ !inputs.release_mode && 7 || 0 }}
+          retention-days: 0
 
   Upload_Windows:
     runs-on: ubuntu-22.04
