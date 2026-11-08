@@ -55,6 +55,20 @@ jobs:
           architecture: x64
           cache: true
       - run: flutter pub get --enforce-lockfile
+      - name: 准备 PDFium 测试原生库
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pdfium_archive="$RUNNER_TEMP/pdfium-linux-x64.tgz"
+          curl --fail --location --silent --show-error \
+            --header 'Accept: application/octet-stream' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --output "$pdfium_archive" \
+            https://api.github.com/repos/bblanchon/pdfium-binaries/releases/assets/406428505
+          echo "e76e0a37aefb843d56f04657475ce612157021b1ebc53d801f2fbfcc537ccf64  $pdfium_archive" | sha256sum --check --strict
+          pdfium_output='.dart_tool/hooks_runner/shared/pdfium_dart/build/chromium_7811/linux-x64'
+          mkdir -p "$pdfium_output"
+          tar -xzf "$pdfium_archive" -C "$pdfium_output" --strip-components=1 lib/libpdfium.so
       - name: 运行测试文件分片
         env:
           SHARD_INDEX: ${{ matrix.shard }}
