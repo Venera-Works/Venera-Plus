@@ -118,7 +118,7 @@ git diff --check
 
 CI 将静态检查与 2 个 Dart 测试分片并行运行。按路径排序的 `*_test.dart` 文件交替分配给两个分片，分别执行 `flutter test --no-pub --coverage <分片文件清单>`，使每个 runner 只加载自己的测试文件，并上传各自的覆盖率报告。`analyze` 门禁要求静态检查和全部分片成功，再按源文件与行号合并命中次数，重新计算行覆盖率，将结果写入 `coverage/lcov.info`、工作流摘要及 `dart-coverage` 产物。当前覆盖率用于建立可见基线，尚未设置统一硬阈值；涉及关键业务路径的改动仍必须增加针对性测试。
 
-Linux 测试分片在执行 Flutter 测试前，通过 GitHub Release Assets API 下载 `pdfium_dart 0.2.5` 使用的 `chromium/7811` 原生库，验证固定 SHA-256 后放入 build hook 的共享输出目录，避开发布页附件下载返回 HTTP 504 的问题。升级 `pdfium_dart` 或 Flutter hooks 时，同步核对 `.github/workflows/analyze.yml` 中的附件 ID、摘要和输出目录；下载或校验失败仍会终止任务。
+Linux 测试分片在执行 Flutter 测试前，通过 GitHub Release Assets API 下载 `pdfium_dart 0.2.5` 使用的 `chromium/7811` 原生库和 `sqlite3 3.5.2` 的原生库，验证各自固定的 SHA-256 后放入 build hook 的共享输出目录，避开发布页附件下载返回 HTTP 504 的问题。SQLite 仍使用依赖内锁定的摘要，并在 hook 中再次校验缓存。升级这些依赖或 Flutter hooks 时，同步核对 `.github/workflows/analyze.yml` 中的附件 ID、摘要和输出目录；下载或校验失败仍会终止任务。
 
 WebDAV 测试夹具的目录和文件键统一使用解码后的逻辑路径；仅在 HTTP 请求入口解码一次，生成 `PROPFIND` 响应的 `href` 时逐段编码。路径回归应覆盖空格、Unicode、字面百分号和大小写，避免上传与目录发现使用不同路径，或重复解码百分号。
 

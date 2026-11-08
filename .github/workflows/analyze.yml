@@ -55,7 +55,7 @@ jobs:
           architecture: x64
           cache: true
       - run: flutter pub get --enforce-lockfile
-      - name: 准备 PDFium 测试原生库
+      - name: 准备测试原生库
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -69,6 +69,16 @@ jobs:
           pdfium_output='.dart_tool/hooks_runner/shared/pdfium_dart/build/chromium_7811/linux-x64'
           mkdir -p "$pdfium_output"
           tar -xzf "$pdfium_archive" -C "$pdfium_output" --strip-components=1 lib/libpdfium.so
+          sqlite_library="$RUNNER_TEMP/libsqlite3.x64.linux.so"
+          curl --fail --location --silent --show-error \
+            --header 'Accept: application/octet-stream' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --output "$sqlite_library" \
+            https://api.github.com/repos/simolus3/sqlite3.dart/releases/assets/521380082
+          echo "b17729184e5a2818055ecbddd5ed6642521bfe6e56aafa472330e483c0e2e0d2  $sqlite_library" | sha256sum --check --strict
+          sqlite_output='.dart_tool/hooks_runner/shared/sqlite3/build/download-b1772918'
+          mkdir -p "$sqlite_output"
+          cp "$sqlite_library" "$sqlite_output/libsqlite3.so"
       - name: 运行测试文件分片
         env:
           SHARD_INDEX: ${{ matrix.shard }}
