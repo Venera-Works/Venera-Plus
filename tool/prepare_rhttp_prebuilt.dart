@@ -165,6 +165,16 @@ void main() {
     );
     final providerSource = provider.readAsStringSync();
     final patched = _strictProvider(providerSource);
+    final manifests = {
+      for (final name in ['Cargo.toml', 'Cargo.lock'])
+        name: File('native/prebuilts/rhttp/$name').readAsStringSync(),
+    };
+    for (final entry in manifests.entries) {
+      final file = File.fromUri(manifest.uri.resolve(entry.key));
+      if (file.readAsStringSync() != entry.value) {
+        file.writeAsStringSync(entry.value);
+      }
+    }
     final hash = _crateHash(manifest, configuration);
     final crateConfig = File.fromUri(manifest.uri.resolve('cargokit.yaml'));
     if (!crateConfig.existsSync() ||

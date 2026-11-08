@@ -57,9 +57,11 @@ See [Dependency Governance](dependencies.en.md) for Git fork provenance, pinned 
 
 ## Precompiled rhttp native libraries
 
-`Venera-Works/Venera-Native-Prebuilts` builds, signs, and releases the `rhttp` native libraries independently; its local checkout is `cache/Venera-Native-Prebuilts`. The application's `native/prebuilts/rhttp/lock.json` pins the package archive digest, bridge version, and toolchain versions. The adjacent `cargokit.yaml` pins the release URL, public key, and build arguments. Keep both files identical to the resource repository's `rhttp/` files.
+`Venera-Works/Venera-Native-Prebuilts` builds, signs, and releases the `rhttp` native libraries independently; its local checkout is `cache/Venera-Native-Prebuilts`. The application's `native/prebuilts/rhttp/lock.json` pins the package archive digest, bridge version, and toolchain versions. `cargokit.yaml` pins the release URL, public key, and build arguments; `Cargo.toml` and `Cargo.lock` pin native dependencies. Keep all four files identical to the resource repository's `rhttp/` files.
 
 After resolving Flutter dependencies, each platform CI runs `dart tool/prepare_rhttp_prebuilt.dart`. It checks `pubspec.lock`, configures the resolved `rhttp` package, and makes that package's Cargokit accept precompiled artifacts only. The subsequent build downloads artifacts by source hash and verifies their Ed25519 signatures. A missing target file or invalid signature fails the build instead of falling back to Cargo. Repeated preparation is idempotent; unexpected dependency source is rejected before modification.
+
+Both preparation scripts apply the Cargo manifest and lockfile before computing the source hash. They pin the Rust bridge runtime and macros to upstream revision [`d59f05b6b0da3606933385f80cbd9e21cc35b59c`](https://github.com/fzyzcjy/flutter_rust_bridge/commit/d59f05b6b0da3606933385f80cbd9e21cc35b59c), retaining version `2.11.1` and the existing Dart bindings while fixing the `unwrap()` crash from callbacks returning after request cancellation. Publish the complete prebuilts for the new hash before building the application; old artifacts are not reused.
 
 The preparation script resolves Pub package URIs as directories, supporting absolute or relative URIs, an omitted trailing `/`, and paths containing spaces. Apple CI creates `~/.cargo/bin` before installing the Rustup wrapper and adds that directory to subsequent steps' `PATH` so Rustup installation operations are serialized during parallel plugin builds.
 
@@ -137,6 +139,12 @@ flutter test --no-pub --reporter=expanded `
 ```
 
 The strict switches require real native libraries and fail when they are missing. Do not trigger a native build locally to run these tests; use read-only validation only when compatible DLLs and native assets already exist.
+
+The Windows PR job also runs `test/integration/rhttp_callback_smoke.dart` against the existing bundled `rhttp.dll`. A local HTTP server delays a response callback until after cancellation, verifying process survival, cancellation semantics, and a complete response to a subsequent request. Run it directly against an existing DLL without starting the application:
+
+```powershell
+fvm dart --packages=.dart_tool/package_config.json test/integration/rhttp_callback_smoke.dart build/windows/x64/runner/Debug/rhttp.dll
+```
 
 Native integration test scenarios and host drivers are consolidated under `test/`: `test/integration/platform_smoke.dart` serves as the test scenario entry, while `test/driver/platform_smoke_driver.dart` serves as the shared host-side driver. To prevent accidental discovery and coverage collection by standard `flutter test --coverage`, both entry files intentionally omit the `_test.dart` suffix. The legacy root `integration_test/` and `test_driver/` directories have been removed without compatibility shims.
 

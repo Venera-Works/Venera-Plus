@@ -56,9 +56,11 @@ Git fork 的来源、固定 commit 和升级要求见[依赖治理](dependencies
 
 ## rhttp 原生库预编译
 
-`rhttp` 原生库由 `Venera-Works/Venera-Native-Prebuilts` 独立编译和签名发布，本地资源仓库位于 `cache/Venera-Native-Prebuilts`。应用的 `native/prebuilts/rhttp/lock.json` 固定包归档摘要、桥接库与工具链版本，旁边的 `cargokit.yaml` 固定下载地址、公钥和编译参数；两份文件必须与资源仓库的 `rhttp/` 保持一致。
+`rhttp` 原生库由 `Venera-Works/Venera-Native-Prebuilts` 独立编译和签名发布，本地资源仓库位于 `cache/Venera-Native-Prebuilts`。应用的 `native/prebuilts/rhttp/lock.json` 固定包归档摘要、桥接库与工具链版本，`cargokit.yaml` 固定下载地址、公钥和编译参数；`Cargo.toml` 与 `Cargo.lock` 固定原生依赖。这四份文件必须与资源仓库的 `rhttp/` 保持一致。
 
 各平台 CI 在获取 Flutter 依赖后执行 `dart tool/prepare_rhttp_prebuilt.dart`，核对 `pubspec.lock`，配置已解析的 `rhttp` 包，并将该包的 Cargokit 改为只接受预编译产物。后续构建通过 Cargokit 按源码 hash 下载并验证 Ed25519 签名。缺少任一目标文件或签名无效时明确失败，不回退到 Cargo 编译。配置脚本重复执行不会改变结果；依赖源码与预期不符时拒绝修改。
+
+两仓库的准备脚本在计算源码 hash 前应用 Cargo 清单和锁文件，将 Rust 桥接运行库及宏固定到上游提交 [`d59f05b6b0da3606933385f80cbd9e21cc35b59c`](https://github.com/fzyzcjy/flutter_rust_bridge/commit/d59f05b6b0da3606933385f80cbd9e21cc35b59c)，保留 `2.11.1` 版本与现有 Dart 绑定，修复请求取消后迟到回调触发 `unwrap()` 崩溃的问题。新 hash 对应的完整预编译发布就绪后才能构建应用，旧产物不会被复用。
 
 配置脚本按目录解析 Pub 返回的包 URI，支持绝对或相对 URI、末尾省略 `/` 以及带空格的路径。Apple CI 在安装 Rustup 包装器前创建 `~/.cargo/bin`，并将该目录加入后续步骤的 `PATH`，使并行插件构建中的 Rustup 安装操作串行执行。
 
@@ -136,6 +138,12 @@ flutter test --no-pub --reporter=expanded `
 ```
 
 严格开关要求真实原生库，缺库时必须失败而非跳过。本机不得为了运行这些测试触发原生构建；仅可在已有兼容 DLL 和原生资源的前提下进行只读验证。
+
+Windows PR 还会使用包内现成的 `rhttp.dll` 执行 `test/integration/rhttp_callback_smoke.dart`：通过本地 HTTP 服务让响应回调在请求取消后返回，验证进程继续运行、取消语义正确且后续请求返回完整正文。可对已有 DLL 单独运行，无须启动应用：
+
+```powershell
+fvm dart --packages=.dart_tool/package_config.json test/integration/rhttp_callback_smoke.dart build/windows/x64/runner/Debug/rhttp.dll
+```
 
 原生集成测试与驱动已统一收敛至 `test/` 目录：场景入口为 `test/integration/platform_smoke.dart`，宿主端驱动为 `test/driver/platform_smoke_driver.dart`。为避免被日常 `flutter test --coverage` 默认发现与覆盖率统计收集，两个入口刻意省略了 `_test.dart` 后缀；旧根目录 `integration_test/` 与 `test_driver/` 已彻底移除，不保留兼容入口。
 

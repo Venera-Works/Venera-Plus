@@ -196,6 +196,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
               throw "QuickJS、原生 ZIP64 与原版备份恢复测试执行失败，退出码：$LASTEXITCODE"
           }
+      - name: 验证 rhttp 取消后的迟到回调
+        shell: pwsh
+        run: |
+          $library = Join-Path (Get-Location) 'build\windows\x64\runner\Debug\rhttp.dll'
+          dart --packages=.dart_tool/package_config.json test/integration/rhttp_callback_smoke.dart $library
+          if ($LASTEXITCODE -ne 0) {
+              throw "rhttp 原生取消回调验证失败，退出码：$LASTEXITCODE"
+          }
       - name: 执行 Windows 真实启动脚本验证
         shell: pwsh
         run: |
