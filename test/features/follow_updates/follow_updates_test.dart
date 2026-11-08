@@ -552,6 +552,52 @@ void main() {
         );
 
         test(
+          'refresh detects unpadded dates after the new catalog was already recorded',
+          () async {
+            final chapters = {'chapter-13': '13', 'chapter-14': '14'};
+            ComicSourceManager().add(
+              _source(
+                sourceKey,
+                loadComicInfo: (id) async => Res(
+                  ComicDetails.fromJson({
+                    ..._details(
+                      sourceKey,
+                      id,
+                      updateTime: '2026-11-4',
+                    ).toJson(),
+                    'chapters': chapters,
+                  }),
+                ),
+              ),
+            );
+            await _withLiveFavorites((manager) async {
+              final item = _tracked(sourceKey, 'unpadded-date');
+              manager.addComic(
+                '在读',
+                item,
+                null,
+                ComicUpdateSnapshot.fromChapters(
+                  chapters,
+                  updateTime: '2026-9-16',
+                ),
+              );
+
+              final progress = (await updateFolder('在读', true).toList()).last;
+              expect(progress.errors, 0);
+              expect(progress.updated, 1);
+              expect(progress.newChapters, 0);
+              final stored = manager.getComicWithUpdatesInfo(
+                '在读',
+                item.id,
+                item.type,
+              );
+              expect(stored.updateTime, '2026-11-04');
+              expect(stored.hasNewUpdate, isTrue);
+            });
+          },
+        );
+
+        test(
           'refresh keeps same-day additions visible to direct reading',
           () async {
             var revision = 1;

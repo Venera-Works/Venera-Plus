@@ -26,6 +26,19 @@ void main() {
 
       final details2 = _details(updateTime: '2026-08-15');
       expect(details2.findUpdateTime(), '2026-08-15');
+
+      for (final input in ['2026-7-1', '2026-07-1', '2026-7-01']) {
+        expect(_details(updateTime: input).findUpdateTime(), '2026-07-01');
+      }
+      expect(_details(updateTime: '2026-11-4').findUpdateTime(), '2026-11-04');
+      expect(
+        _details(
+          tags: {
+            '更新': ['2026-9-16'],
+          },
+        ).findUpdateTime(),
+        '2026-09-16',
+      );
     });
 
     test(
@@ -356,6 +369,23 @@ void main() {
         expect(obs.state.updateTime, '2026-07-01T08:00:00.000Z');
       },
     );
+
+    test('compares unpadded legacy dates in calendar order', () {
+      final baseline = ComicUpdateState.fromLegacy(updateTime: '2026-9-16');
+      for (final time in ['2026-8-20', '2026-09-16']) {
+        final observation = baseline.observe(
+          ComicUpdateSnapshot.fromChapters(null, updateTime: time),
+        );
+        expect(observation.status, ComicUpdateCheckStatus.unchanged);
+        expect(observation.state.hasNewUpdate, isFalse);
+      }
+      final observation = baseline.observe(
+        ComicUpdateSnapshot.fromChapters(null, updateTime: '2026-11-4'),
+      );
+      expect(observation.status, ComicUpdateCheckStatus.updated);
+      expect(observation.state.updateTime, '2026-11-4');
+      expect(observation.state.hasNewUpdate, isTrue);
+    });
 
     test('invalid legacy timestamp does not dominate future valid data', () {
       final legacy = ComicUpdateState.fromLegacy(

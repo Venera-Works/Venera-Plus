@@ -338,7 +338,7 @@ class ComicDetails with HistoryMixin {
       return dateTime.toIso8601String();
     }
 
-    if (RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(value)) {
+    if (RegExp(r'^\d{4}-\d{1,2}-\d{1,2}$').hasMatch(value)) {
       final parts = value.split('-');
       final y = int.tryParse(parts[0]);
       final m = int.tryParse(parts[1]);
