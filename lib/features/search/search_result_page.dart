@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/message.dart';
@@ -11,9 +13,11 @@ import 'package:venera_plus/foundation/global_state.dart';
 import 'package:venera_plus/foundation/extensions.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
+import 'package:venera_plus/foundation/search_history.dart';
 
 import 'search_filter.dart';
 import 'search_page.dart';
+import 'search_options.dart';
 
 class SearchResultPage extends StatefulWidget {
   const SearchResultPage({
@@ -22,6 +26,7 @@ class SearchResultPage extends StatefulWidget {
     required this.sourceKey,
     this.options,
     this.onComicTap,
+    this.historyEntry,
   });
 
   final String text;
@@ -30,6 +35,7 @@ class SearchResultPage extends StatefulWidget {
 
   final List<String>? options;
   final ValueChanged<Comic>? onComicTap;
+  final SearchHistoryEntry? historyEntry;
 
   @override
   State<SearchResultPage> createState() => _SearchResultPageState();
@@ -37,35 +43,81 @@ class SearchResultPage extends StatefulWidget {
 
 class _SearchResultPageState extends State<SearchResultPage> {
   late SearchBarController controller;
-
   late String sourceKey;
-
   late List<String> options;
-
   late String text;
+  late _SuggestionsController suggestionsController;
+  int _initialPage = 1;
+  int _revision = 0;
+  Timer? _historyTimer;
+  SearchHistoryEntry? _pendingHistory;
+  GlobalKey<ComicListState> _listKey = GlobalKey<ComicListState>();
 
   OverlayEntry? get suggestionOverlay => suggestionsController.entry;
 
-  late _SuggestionsController suggestionsController;
+  void _save(SearchHistoryEntry entry) {
+    unawaited(
+      appdata.recordSearchHistory(entry).catchError((Object error) {
+        if (mounted) {
+          context.showMessage(message: error.toString());
+        } else {
+          FlutterError.reportError(FlutterErrorDetails(exception: error));
+        }
+      }),
+    );
+  }
 
-  void search([String? text]) {
-    if (text != null) {
-      if (suggestionsController.entry != null) {
-        suggestionsController.remove();
-      }
-      text = _applyConfiguredLanguageFilter(text);
-      setState(() {
-        this.text = text!;
-      });
-      appdata.addSearchHistory(text);
+  void _flushHistory() {
+    _historyTimer?.cancel();
+    _historyTimer = null;
+    final pending = _pendingHistory;
+    _pendingHistory = null;
+    if (pending != null) _save(pending);
+  }
+
+  SearchHistoryEntry? _entry() {
+    if (text.trim().isEmpty) return null;
+    final source = ComicSource.find(sourceKey);
+    if (source?.searchPageData == null) return null;
+    return SearchHistoryEntry(
+      keyword: text,
+      sourceKey: sourceKey,
+      sourceName: source!.name,
+      options: options,
+      page: _initialPage,
+    );
+  }
+
+  void _remember() {
+    final entry = _entry();
+    if (entry != null) _save(entry);
+  }
+
+  void _visiblePage(SearchHistoryEntry entry, int revision, int page) {
+    if (!mounted || revision != _revision) return;
+    _initialPage = page;
+    _pendingHistory = entry.copyWith(page: page);
+    _historyTimer?.cancel();
+    _historyTimer = Timer(const Duration(milliseconds: 350), _flushHistory);
+  }
+
+  void search([String? value]) {
+    if (value == null) return;
+    _flushHistory();
+    _listKey.currentState?.cancelPendingLoads();
+    _listKey = GlobalKey<ComicListState>();
+    suggestionsController.remove();
+    setState(() {
+      text = _applyConfiguredLanguageFilter(value);
+      _initialPage = 1;
+      _revision++;
       controller.currentText = text;
-    }
+    });
+    _remember();
   }
 
   void onChanged(String s) {
-    if (!ComicSource.find(sourceKey)!.enableTagsSuggestions) {
-      return;
-    }
+    if (ComicSource.find(sourceKey)?.enableTagsSuggestions != true) return;
     suggestionsController.findSuggestions();
     if (suggestionOverlay != null) {
       if (suggestionsController.suggestions.isEmpty) {
@@ -75,17 +127,15 @@ class _SearchResultPageState extends State<SearchResultPage> {
       }
     } else if (suggestionsController.suggestions.isNotEmpty) {
       suggestionsController.entry = OverlayEntry(
-        builder: (context) {
-          return Positioned(
-            top: context.padding.top + 56,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: Material(
-              child: _Suggestions(controller: suggestionsController),
-            ),
-          );
-        },
+        builder: (context) => Positioned(
+          top: context.padding.top + 56,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: Material(
+            child: _Suggestions(controller: suggestionsController),
+          ),
+        ),
       );
       Overlay.of(context).insert(suggestionOverlay!);
     }
@@ -93,102 +143,157 @@ class _SearchResultPageState extends State<SearchResultPage> {
 
   @override
   void dispose() {
-    Future.microtask(() {
-      suggestionsController.remove();
-    });
+    _revision++;
+    _flushHistory();
+    ComicSourceManager().removeListener(_sourcesChanged);
+    Future.microtask(suggestionsController.remove);
     super.dispose();
   }
 
-  String _applyConfiguredLanguageFilter(String text) {
-    return applySearchLanguageFilter(
-      text,
-      sourceKey: sourceKey,
-      setting: appdata.settings["autoAddLanguageFilter"] ?? 'none',
-    );
+  void _sourcesChanged() {
+    if (ComicSource.find(sourceKey)?.searchPageData == null) {
+      _listKey.currentState?.cancelPendingLoads();
+    }
+    if (mounted) setState(() {});
   }
+
+  String _applyConfiguredLanguageFilter(String value) =>
+      applySearchLanguageFilter(
+        value,
+        sourceKey: sourceKey,
+        setting: appdata.settings['autoAddLanguageFilter'] ?? 'none',
+      );
 
   @override
   void initState() {
-    sourceKey = widget.sourceKey;
-    text = _applyConfiguredLanguageFilter(widget.text);
-    controller = SearchBarController(currentText: text, onSearch: search);
-    options = widget.options ?? const [];
-    validateOptions();
-    appdata.addSearchHistory(text);
-    suggestionsController = _SuggestionsController(controller, sourceKey);
     super.initState();
+    sourceKey = widget.sourceKey;
+    text = widget.historyEntry == null
+        ? _applyConfiguredLanguageFilter(widget.text)
+        : widget.historyEntry!.keyword;
+    controller = SearchBarController(currentText: text, onSearch: search);
+    options = List.of(
+      widget.historyEntry?.options ?? widget.options ?? const [],
+    );
+    _initialPage = widget.historyEntry?.page ?? 1;
+    final changed = validateOptions();
+    if (changed && widget.historyEntry != null) {
+      _initialPage = 1;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          context.showMessage(
+            message:
+                'Search options have changed. Using current defaults from page 1.'
+                    .tl,
+          );
+        }
+      });
+    }
+    suggestionsController = _SuggestionsController(controller, sourceKey);
+    ComicSourceManager().addListener(_sourcesChanged);
+    _remember();
   }
 
-  void validateOptions() {
-    var source = ComicSource.find(sourceKey);
-    if (source == null) {
-      return;
-    }
-    var searchOptions = source.searchPageData!.searchOptions;
-    if (searchOptions == null) {
-      return;
-    }
-    if (options.length != searchOptions.length) {
-      options = searchOptions.map((e) => e.defaultValue).toList();
-    }
+  bool validateOptions() {
+    final data = ComicSource.find(sourceKey)?.searchPageData;
+    if (data == null) return false;
+    final definitions = data.searchOptions ?? [];
+    final valid = validatedSearchOptions(definitions, options);
+    options = valid ?? defaultSearchOptions(definitions);
+    return valid == null;
   }
 
   @override
   Widget build(BuildContext context) {
-    var source = ComicSource.find(sourceKey);
-    return ComicList(
-      onTap: widget.onComicTap == null
-          ? null
-          : (comic, _) => widget.onComicTap!(comic),
-      key: Key(text + options.toString() + sourceKey),
-      errorLeading: AppSearchBar(controller: controller, action: buildAction()),
-      leadingSliver: SliverSearchBar(
-        controller: controller,
-        onChanged: onChanged,
-        action: buildAction(),
+    final source = ComicSource.find(sourceKey);
+    if (source?.searchPageData == null) {
+      return Scaffold(
+        appBar: AppBar(title: Text(text)),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'This search source is unavailable. Choose another source.'
+                      .tl,
+                ),
+                const SizedBox(height: 16),
+                buildAction(),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    final keyword = text;
+    final selectedOptions = List<String>.unmodifiable(options);
+    final entry = _entry();
+    final revision = _revision;
+    final data = source!.searchPageData!;
+    return Scaffold(
+      body: ComicList(
+        onTap: widget.onComicTap == null
+            ? null
+            : (comic, _) => widget.onComicTap!(comic),
+        key: _listKey,
+        initialPage: _initialPage,
+        onVisiblePageChanged: entry == null
+            ? null
+            : (page) => _visiblePage(entry, revision, page),
+        errorLeading: AppSearchBar(
+          controller: controller,
+          action: buildAction(),
+        ),
+        leadingSliver: SliverSearchBar(
+          controller: controller,
+          onChanged: onChanged,
+          action: buildAction(),
+        ),
+        loadPage: data.loadPage == null
+            ? null
+            : (page) => data.loadPage!(keyword, page, selectedOptions),
+        loadNext: data.loadNext == null
+            ? null
+            : (next) => data.loadNext!(keyword, next, selectedOptions),
       ),
-      loadPage: source!.searchPageData!.loadPage == null
-          ? null
-          : (i) {
-              return source.searchPageData!.loadPage!(text, i, options);
-            },
-      loadNext: source.searchPageData!.loadNext == null
-          ? null
-          : (i) {
-              return source.searchPageData!.loadNext!(text, i, options);
-            },
     );
   }
 
-  Widget buildAction() {
-    return Tooltip(
-      message: "Settings".tl,
-      child: IconButton(
-        icon: const Icon(Icons.tune),
-        onPressed: () async {
-          if (suggestionOverlay != null) {
-            suggestionsController.remove();
-          }
-
-          var previousOptions = List<String>.from(options);
-          var previousSourceKey = sourceKey;
-          await showDialog(
-            context: context,
-            useRootNavigator: true,
-            builder: (context) {
-              return _SearchSettingsDialog(state: this);
-            },
-          );
-          if (!previousOptions.isEqualTo(options) ||
-              previousSourceKey != sourceKey) {
-            text = _applyConfiguredLanguageFilter(controller.text);
-            controller.currentText = text;
-            setState(() {});
-          }
-        },
-      ),
-    );
-  }
+  Widget buildAction() => IconButton(
+    tooltip: 'Settings'.tl,
+    icon: const Icon(Icons.tune),
+    onPressed: () async {
+      suggestionsController.remove();
+      final previousOptions = List<String>.of(options);
+      final previousSourceKey = sourceKey;
+      await showDialog<void>(
+        context: context,
+        useRootNavigator: true,
+        builder: (context) => _SearchSettingsDialog(state: this),
+      );
+      if (!mounted) return;
+      if (!previousOptions.isEqualTo(options) ||
+          previousSourceKey != sourceKey) {
+        _listKey.currentState?.cancelPendingLoads();
+        _listKey = GlobalKey<ComicListState>();
+        _flushHistory();
+        text = _applyConfiguredLanguageFilter(
+          ComicSource.find(previousSourceKey)?.searchPageData == null
+              ? text
+              : controller.text,
+        );
+        controller.currentText = text;
+        suggestionsController = _SuggestionsController(controller, sourceKey);
+        validateOptions();
+        _initialPage = 1;
+        _revision++;
+        _remember();
+        setState(() {});
+      }
+    },
+  );
 }
 
 class _SuggestionsController {
@@ -417,7 +522,7 @@ class _SearchSettingsDialogState extends State<_SearchSettingsDialog> {
   @override
   void initState() {
     searchTarget = widget.state.sourceKey;
-    options = widget.state.options;
+    options = List.of(widget.state.options);
     super.initState();
   }
 
@@ -435,9 +540,9 @@ class _SearchSettingsDialogState extends State<_SearchSettingsDialog> {
             .where((source) => source.searchPageData != null)
             .map((source) => source.key)
             .toList();
-    sources.removeWhere((e) {
-      return !enabled.contains(e.key);
-    });
+    sources.removeWhere(
+      (e) => e.searchPageData == null || !enabled.contains(e.key),
+    );
     return ContentDialog(
       title: "Settings".tl,
       content: Column(
@@ -456,14 +561,13 @@ class _SearchSettingsDialogState extends State<_SearchSettingsDialog> {
                 onTap: () {
                   setState(() {
                     searchTarget = e.key;
-                    options.clear();
+                    options = [];
                     final searchOptions =
                         ComicSource.find(
                           searchTarget,
                         )!.searchPageData!.searchOptions ??
                         <SearchOptions>[];
-                    options = searchOptions.map((e) => e.defaultValue).toList();
-                    onChanged();
+                    options = defaultSearchOptions(searchOptions);
                   });
                 },
               );
@@ -474,6 +578,7 @@ class _SearchSettingsDialogState extends State<_SearchSettingsDialog> {
           FilledButton(
             child: Text("Confirm".tl),
             onPressed: () {
+              onChanged();
               context.pop();
             },
           ),
@@ -486,11 +591,11 @@ class _SearchSettingsDialogState extends State<_SearchSettingsDialog> {
     var children = <Widget>[];
 
     final searchOptions =
-        ComicSource.find(searchTarget)!.searchPageData!.searchOptions ??
+        ComicSource.find(searchTarget)?.searchPageData?.searchOptions ??
         <SearchOptions>[];
-    if (searchOptions.length != options.length) {
-      options = searchOptions.map((e) => e.defaultValue).toList();
-    }
+    options =
+        validatedSearchOptions(searchOptions, options) ??
+        defaultSearchOptions(searchOptions);
     if (searchOptions.isEmpty) {
       return const SizedBox();
     }

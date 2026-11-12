@@ -154,6 +154,12 @@ Set<String> getDisabledAppDataSyncFields(Map<String, dynamic> settings) {
           .where((field) => field.isNotEmpty),
     );
   }
+  for (final (words, rules) in const [
+    ('blockedWords', 'blockedWordRules'),
+    ('blockedCommentWords', 'blockedCommentWordRules'),
+  ]) {
+    if (disabled.contains(words)) disabled.add(rules);
+  }
   // Comic library configuration isn't excluded by root-level policy, even by
   // stale legacy toggles or custom field entries.
   disabled.removeAll(appdataComicLibrarySyncFields);

@@ -93,9 +93,12 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
 
   var searchResults = <FavoriteItem>[];
 
-  List<FavoriteItem> get displayedComics => filterComics(
-    searchMode ? searchResults : comics,
-  ).where((comic) => isBlocked(comic) == null).toList();
+  List<FavoriteItem> get displayedComics {
+    final filter = comicKeywordFilter();
+    return filterComics(searchMode ? searchResults : comics)
+        .where((comic) => matchComicKeyword(comic, filter: filter) == null)
+        .toList();
+  }
 
   List<FavoriteItem> get selectedMembers =>
       displayedComics.where(selectedComics.containsKey).toList();
@@ -947,17 +950,9 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
             ),
           if (blockedCount > 0)
             SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 8,
-                ),
-                child: Text(
-                  'Hidden by keyword filters: @a comics'.tlParams({
-                    'a': blockedCount,
-                  }),
-                  style: TextStyle(color: context.colorScheme.secondary),
-                ),
+              child: KeywordHiddenNotice(
+                count: blockedCount,
+                comics: () => filterComics(searchMode ? searchResults : comics),
               ),
             ),
           SliverGridComics(

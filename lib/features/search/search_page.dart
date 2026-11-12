@@ -1,10 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:sliver_tools/sliver_tools.dart';
 import 'package:venera_plus/components/appbar.dart';
-import 'package:venera_plus/components/flyout.dart';
 import 'package:venera_plus/components/gesture.dart';
 import 'package:venera_plus/components/loading.dart';
 import 'package:venera_plus/components/menu.dart';
@@ -21,11 +21,13 @@ import 'package:venera_plus/routing/settings.dart';
 import 'package:venera_plus/foundation/extensions.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
+import 'package:venera_plus/foundation/search_history.dart';
 
 import 'package:venera_plus/features/comic_details/comic_details.dart';
 import 'aggregated_search_page.dart';
 import 'search_result_page.dart';
 import 'search_shortcuts.dart';
+import 'search_options.dart';
 
 class SearchPage extends StatefulWidget {
   const SearchPage({super.key});
@@ -51,25 +53,66 @@ class _SearchPageState extends State<SearchPage> {
   var options = <String>[];
 
   void update() {
-    setState(() {});
+    if (mounted) setState(() {});
   }
 
   void search([String? text]) {
+    final keyword = text ?? controller.text;
+    if (searchSources.isEmpty) return;
     if (aggregatedSearch) {
       context
-          .to(() => AggregatedSearchPage(keyword: text ?? controller.text))
+          .to(() => AggregatedSearchPage(keyword: keyword))
           .then((_) => update());
     } else {
       context
           .to(
             () => SearchResultPage(
-              text: text ?? controller.text,
+              text: keyword,
               sourceKey: searchTarget,
               options: options,
             ),
           )
           .then((_) => update());
     }
+  }
+
+  Future<void> openHistory(SearchHistoryEntry entry) async {
+    if (entry.sourceKey == SearchHistoryEntry.aggregatedSourceKey) {
+      await context.to(() => AggregatedSearchPage(keyword: entry.keyword));
+    } else {
+      var key = entry.sourceKey;
+      final unavailable = ComicSource.find(key)?.searchPageData == null;
+      if (unavailable) {
+        final replacement = await showDialog<String>(
+          context: context,
+          builder: (context) => SimpleDialog(
+            title: Text(
+              'This search source is unavailable. Choose another source.'.tl,
+            ),
+            children: [
+              for (final source in ComicSource.all().where(
+                (source) => source.searchPageData != null,
+              ))
+                SimpleDialogOption(
+                  onPressed: () => Navigator.pop(context, source.key),
+                  child: Text(source.name),
+                ),
+            ],
+          ),
+        );
+        if (!mounted || replacement == null) return;
+        key = replacement;
+      }
+      if (!mounted) return;
+      await context.to(
+        () => SearchResultPage(
+          text: entry.keyword,
+          sourceKey: key,
+          historyEntry: unavailable ? null : entry,
+        ),
+      );
+    }
+    update();
   }
 
   var suggestions = <Pair<String, TranslationType>>[];
@@ -107,7 +150,7 @@ class _SearchPageState extends State<SearchPage> {
       }
     }
 
-    if (!ComicSource.find(searchTarget)!.enableTagsSuggestions) {
+    if (ComicSource.find(searchTarget)?.enableTagsSuggestions != true) {
       update();
       return;
     }
@@ -163,6 +206,7 @@ class _SearchPageState extends State<SearchPage> {
     }
     controller = SearchBarController(onSearch: search);
     appdata.settings.addListener(updateSearchSourcesIfNeeded);
+    ComicSourceManager().addListener(updateSearchSourcesIfNeeded);
     super.initState();
   }
 
@@ -170,6 +214,7 @@ class _SearchPageState extends State<SearchPage> {
   void dispose() {
     focusNode.dispose();
     appdata.settings.removeListener(updateSearchSourcesIfNeeded);
+    ComicSourceManager().removeListener(updateSearchSourcesIfNeeded);
     super.dispose();
   }
 
@@ -228,7 +273,16 @@ class _SearchPageState extends State<SearchPage> {
   @override
   Widget build(BuildContext context) {
     if (searchSources.isEmpty) {
-      return buildEmpty();
+      return Scaffold(
+        body: CustomScrollView(
+          slivers: [
+            SliverToBoxAdapter(
+              child: SizedBox(height: 280, child: buildEmpty()),
+            ),
+            _SearchHistory(search, openHistory),
+          ],
+        ),
+      );
     }
     return Scaffold(
       body: SmoothCustomScrollView(slivers: buildSlivers().toList()),
@@ -252,7 +306,7 @@ class _SearchPageState extends State<SearchPage> {
         child: buildSearchOptions(),
       );
       yield const SearchShortcutsSliver();
-      yield _SearchHistory(search);
+      yield _SearchHistory(search, openHistory);
     }
   }
 
@@ -311,7 +365,7 @@ class _SearchPageState extends State<SearchPage> {
 
   void useDefaultOptions() {
     final searchOptions = currentSearchPageData.searchOptions ?? [];
-    options = searchOptions.map((e) => e.defaultValue).toList();
+    options = defaultSearchOptions(searchOptions);
   }
 
   Widget buildSearchOptions() {
@@ -322,7 +376,7 @@ class _SearchPageState extends State<SearchPage> {
     var children = <Widget>[];
 
     final searchOptions = currentSearchPageData.searchOptions ?? [];
-    if (searchOptions.length != options.length) {
+    if (validatedSearchOptions(searchOptions, options) == null) {
       useDefaultOptions();
     }
     if (searchOptions.isEmpty) {
@@ -576,122 +630,198 @@ class SearchOptionWidget extends StatelessWidget {
 }
 
 class _SearchHistory extends StatefulWidget {
-  const _SearchHistory(this.search);
+  const _SearchHistory(this.search, this.openHistory);
 
   final void Function(String) search;
+  final Future<void> Function(SearchHistoryEntry) openHistory;
 
   @override
   State<_SearchHistory> createState() => _SearchHistoryState();
 }
 
 class _SearchHistoryState extends State<_SearchHistory> {
+  bool get keywordOnly =>
+      appdata.settings['searchHistoryDisplayMode'] == 'keywords';
+
+  Future<void> _clear() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Clear Search History'.tl),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text('Cancel'.tl),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text('Clear'.tl),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      if (keywordOnly) {
+        appdata.clearSearchHistory();
+        await appdata.saveData();
+      } else {
+        await appdata.clearSearchHistoryEntries();
+      }
+      if (mounted) setState(() {});
+    } catch (error) {
+      if (mounted) context.showMessage(message: error.toString());
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final details = keywordOnly
+        ? <SearchHistoryEntry>[]
+        : appdata.searchHistoryEntries;
+    final detailedWords = details.map((entry) => entry.keyword).toSet();
+    final items = <(String, SearchHistoryEntry?)>[
+      for (final entry in details) (entry.keyword, entry),
+      for (final word in appdata.searchHistory)
+        if (!detailedWords.contains(word)) (word, null),
+    ];
     return SliverList(
       delegate: SliverChildBuilderDelegate((context, index) {
         if (index == 0) {
-          return const SizedBox(height: 16);
-        }
-        if (index == 1) {
-          return ListTile(
-            leading: const Icon(Icons.history),
-            contentPadding: EdgeInsets.zero,
-            title: Text("Search History".tl),
-            trailing: Flyout(
-              flyoutBuilder: (context) {
-                return FlyoutContent(
-                  title: "Clear Search History".tl,
-                  actions: [
-                    FilledButton(
-                      child: Text("Clear".tl),
-                      onPressed: () {
-                        appdata.clearSearchHistory();
-                        context.pop();
-                        setState(() {});
-                      },
-                    ),
-                  ],
-                );
-              },
-              child: Builder(
-                builder: (context) {
-                  return Tooltip(
-                    message: "Clear".tl,
-                    child: IconButton(
-                      icon: const Icon(Icons.clear_all),
-                      onPressed: () {
-                        context.findAncestorStateOfType<FlyoutState>()!.show();
-                      },
-                    ),
-                  );
-                },
-              ),
+          return Padding(
+            padding: const EdgeInsets.only(top: 16, bottom: 8),
+            child: Row(
+              children: [
+                const Icon(Icons.history),
+                const SizedBox(width: 12),
+                Expanded(child: Text('Search History'.tl)),
+                IconButton(
+                  tooltip: keywordOnly
+                      ? 'Switch to detailed search history'.tl
+                      : 'Switch to keyword search history'.tl,
+                  icon: Icon(keywordOnly ? Icons.manage_search : Icons.subject),
+                  onPressed: () async {
+                    setState(() {
+                      appdata.settings['searchHistoryDisplayMode'] = keywordOnly
+                          ? 'detailed'
+                          : 'keywords';
+                    });
+                    await appdata.saveData();
+                  },
+                ),
+                IconButton(
+                  tooltip: 'Clear'.tl,
+                  icon: const Icon(Icons.clear_all),
+                  onPressed: _clear,
+                ),
+              ],
             ),
           );
         }
-        return buildItem(index - 2);
-      }, childCount: 2 + appdata.searchHistory.length),
+        final (word, entry) = items[index - 1];
+        return buildItem(word, entry);
+      }, childCount: items.length + 1),
     ).sliverPaddingHorizontal(16);
   }
 
-  Widget buildItem(int index) {
-    void showMenu(Offset offset) {
-      showMenuX(context, offset, [
-        MenuEntry(
-          icon: Icons.copy,
-          text: 'Copy'.tl,
-          onClick: () {
-            Clipboard.setData(
-              ClipboardData(text: appdata.searchHistory[index]),
-            );
-          },
-        ),
-        MenuEntry(
-          icon: Icons.delete,
-          text: 'Delete'.tl,
-          onClick: () {
-            appdata.removeSearchHistory(appdata.searchHistory[index]);
-            appdata.saveData();
-            setState(() {});
-          },
-        ),
-      ]);
+  Future<void> _delete(String word, SearchHistoryEntry? entry) async {
+    try {
+      if (entry == null) {
+        appdata.removeSearchHistory(word);
+        await appdata.saveData();
+      } else {
+        await appdata.removeSearchHistoryEntry(entry.identity);
+      }
+      if (mounted) setState(() {});
+    } catch (error) {
+      if (mounted) context.showMessage(message: error.toString());
+    }
+  }
+
+  Widget buildItem(String word, SearchHistoryEntry? entry) {
+    final source = entry == null ? null : ComicSource.find(entry.sourceKey);
+    final sourceName =
+        entry?.sourceKey == SearchHistoryEntry.aggregatedSourceKey
+        ? 'Aggregated Search'.tl
+        : source?.name ?? entry?.sourceName ?? entry?.sourceKey;
+    final labels = entry == null
+        ? <String>[]
+        : searchOptionLabels(
+            source?.searchPageData?.searchOptions ?? [],
+            entry.options,
+            entry.sourceKey,
+          );
+    void action(String value) {
+      if (value == 'copy') {
+        Clipboard.setData(ClipboardData(text: word));
+      } else {
+        unawaited(_delete(word, entry));
+      }
     }
 
-    return Builder(
-      builder: (context) {
-        return ClickInkWell(
-          onTap: () {
-            widget.search(appdata.searchHistory[index]);
-          },
-          onLongPress: () {
-            var renderBox = context.findRenderObject() as RenderBox;
-            var offset = renderBox.localToGlobal(Offset.zero);
-            showMenu(
-              Offset(
-                offset.dx + renderBox.size.width / 2 - 121,
-                offset.dy + renderBox.size.height - 8,
-              ),
-            );
-          },
-          onSecondaryTapUp: (details) {
-            showMenu(details.globalPosition);
-          },
-          child: Container(
-            decoration: BoxDecoration(
-              // color: context.colorScheme.surfaceContainer,
-              border: Border(
-                left: BorderSide(
-                  color: context.colorScheme.outlineVariant,
-                  width: 2,
-                ),
+    void showMenu(Offset offset) => showMenuX(context, offset, [
+      MenuEntry(
+        icon: Icons.copy,
+        text: 'Copy'.tl,
+        onClick: () => action('copy'),
+      ),
+      MenuEntry(
+        icon: Icons.delete,
+        text: 'Delete'.tl,
+        onClick: () => action('delete'),
+      ),
+    ]);
+    return ClickInkWell(
+      onTap: () => entry == null
+          ? widget.search(word)
+          : unawaited(widget.openHistory(entry)),
+      onSecondaryTapUp: (details) => showMenu(details.globalPosition),
+      child: Row(
+        children: [
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(word, style: ts.s14),
+                  if (entry != null)
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 4,
+                      children: [
+                        Chip(
+                          visualDensity: VisualDensity.compact,
+                          label: Text(sourceName!),
+                        ),
+                        ...labels.map(
+                          (label) => Text(
+                            label,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                        if (entry.sourceKey !=
+                            SearchHistoryEntry.aggregatedSourceKey)
+                          Text(
+                            'Page @page'.tlParams({'page': entry.page}),
+                            style: Theme.of(context).textTheme.labelMedium,
+                          ),
+                      ],
+                    ),
+                ],
               ),
             ),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: Text(appdata.searchHistory[index], style: ts.s14),
           ),
-        ).paddingBottom(8).paddingHorizontal(4);
-      },
-    );
+          PopupMenuButton<String>(
+            tooltip: 'More'.tl,
+            onSelected: action,
+            itemBuilder: (context) => [
+              PopupMenuItem(value: 'copy', child: Text('Copy'.tl)),
+              PopupMenuItem(value: 'delete', child: Text('Delete'.tl)),
+            ],
+          ),
+        ],
+      ),
+    ).paddingBottom(8);
   }
 }

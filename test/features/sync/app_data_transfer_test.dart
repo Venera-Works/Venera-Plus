@@ -14,6 +14,8 @@ import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/foundation/keyword_rule.dart';
+import 'package:venera_plus/foundation/search_history.dart';
 import 'package:venera_plus/network/cookie_jar.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 import 'package:webdav_client/webdav_client.dart' as dav;
@@ -472,6 +474,66 @@ void main() {
           expect(
             cookies.map((cookie) => cookie.name),
             isNot(contains('later')),
+          );
+        },
+      );
+
+      test(
+        'restores detailed search history and keyword options from a native backup',
+        () async {
+          final entry = SearchHistoryEntry(
+            keyword: 'saved search',
+            sourceKey: 'example',
+            sourceName: 'Example',
+            options: ['recent'],
+            page: 7,
+          );
+          appdata.settings['searchHistoryDisplayMode'] = 'keywords';
+          appdata.settings.setKeywordSettings(
+            'blockedWords',
+            ['bl'],
+            'blockedWordRules',
+            {
+              'bl': {'mode': 'word', 'caseSensitive': false},
+            },
+          );
+          appdata.settings.setKeywordSettings(
+            'blockedCommentWords',
+            ['spoiler'],
+            'blockedCommentWordRules',
+            {},
+          );
+          await appdata.recordSearchHistory(entry);
+          final backup = await exportAppData(false);
+
+          appdata.searchHistoryEntries.clear();
+          appdata.clearSearchHistory();
+          appdata.settings.setKeywordSettings(
+            'blockedWords',
+            [],
+            'blockedWordRules',
+            {},
+          );
+          appdata.settings['searchHistoryDisplayMode'] = 'detailed';
+          await appdata.saveData(false);
+          await importAppData(backup);
+
+          expect(appdata.searchHistoryEntries.single.toJson(), entry.toJson());
+          expect(appdata.fullSearchHistory, ['saved search']);
+          expect(appdata.settings['searchHistoryDisplayMode'], 'keywords');
+          final rule = KeywordRule.read(
+            'bl',
+            (appdata.settings['blockedWordRules'] as Map)['bl'],
+          );
+          expect(rule.mode, KeywordMatchMode.word);
+          expect(rule.caseSensitive, isFalse);
+          expect(
+            KeywordRule.read(
+              'spoiler',
+              (appdata.settings['blockedCommentWordRules'] as Map)['spoiler'],
+              comments: true,
+            ).isLegacy,
+            isTrue,
           );
         },
       );

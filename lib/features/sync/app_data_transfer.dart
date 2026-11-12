@@ -372,6 +372,17 @@ Map<String, dynamic> _decodeImportAppdata(String content) {
       throw const FormatException("Invalid appdata.json settings");
     }
     result["settings"] = Map<String, dynamic>.from(settings);
+    for (final key in const [
+      'blockedWords',
+      'blockedWordRules',
+      'blockedCommentWords',
+      'blockedCommentWordRules',
+      'searchHistoryDisplayMode',
+    ]) {
+      if (settings.containsKey(key) && appdata.isSettingSyncAllowed(key)) {
+        Settings.validateValue(key, settings[key]);
+      }
+    }
   }
   var searchHistory = result["searchHistory"];
   if (searchHistory != null) {
@@ -381,6 +392,7 @@ Map<String, dynamic> _decodeImportAppdata(String content) {
     }
     result["searchHistory"] = List<String>.from(searchHistory);
   }
+  Appdata.decodeSearchHistoryEntries(result['searchHistoryEntries']);
   return result;
 }
 

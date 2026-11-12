@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import "package:flutter/material.dart";
 import 'package:shimmer_animation/shimmer_animation.dart';
 import "package:venera_plus/components/appbar.dart";
@@ -9,6 +11,7 @@ import "package:venera_plus/foundation/context.dart";
 import "package:venera_plus/features/comic_source/comic_source.dart";
 import "package:venera_plus/foundation/translations.dart";
 import "package:venera_plus/foundation/widget_utils.dart";
+import 'package:venera_plus/foundation/search_history.dart';
 
 import "search_result_page.dart";
 
@@ -33,6 +36,23 @@ class _AggregatedSearchPageState extends State<AggregatedSearchPage> {
 
   var _keyword = "";
 
+  void _remember() {
+    if (_keyword.trim().isEmpty) return;
+    unawaited(
+      appdata
+          .recordSearchHistory(
+            SearchHistoryEntry(
+              keyword: _keyword,
+              sourceKey: SearchHistoryEntry.aggregatedSourceKey,
+              sourceName: 'Aggregated Search',
+            ),
+          )
+          .catchError((Object error) {
+            if (mounted) context.showMessage(message: error.toString());
+          }),
+    );
+  }
+
   @override
   void initState() {
     var all = ComicSource.all()
@@ -48,12 +68,14 @@ class _AggregatedSearchPageState extends State<AggregatedSearchPage> {
     }
     this.sources = sources.map((e) => ComicSource.find(e)!).toList();
     _keyword = widget.keyword;
+    _remember();
     controller = SearchBarController(
       currentText: widget.keyword,
       onSearch: (text) {
         setState(() {
           _keyword = text;
         });
+        _remember();
       },
     );
     super.initState();

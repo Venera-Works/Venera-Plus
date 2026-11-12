@@ -11,6 +11,8 @@ import 'package:venera_plus/foundation/file_system.dart';
 import 'package:venera_plus/foundation/init.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/navigation_settings.dart';
+import 'package:venera_plus/foundation/search_history.dart';
+import 'package:venera_plus/foundation/keyword_rule.dart';
 
 class Appdata with Init {
   Appdata._create();
@@ -21,6 +23,7 @@ class Appdata with Init {
   var _overflowSearchHistory = <String>[];
   final _searchHistoryOrders = <String, num>{};
   int _nextSearchHistoryOrder = -1;
+  final searchHistoryEntries = <SearchHistoryEntry>[];
 
   List<String> get fullSearchHistory => [
     ...searchHistory,
@@ -212,7 +215,60 @@ class Appdata with Init {
     return write;
   }
 
-  void addSearchHistory(String keyword) {
+  Future<void> recordSearchHistory(
+    SearchHistoryEntry entry, {
+    bool sync = true,
+  }) {
+    final index = searchHistoryEntries.indexWhere(
+      (value) => value.identity == entry.identity,
+    );
+    if (index == 0 &&
+        searchHistoryEntries.first.page == entry.page &&
+        searchHistoryEntries.first.sourceName == entry.sourceName &&
+        searchHistory.firstOrNull == entry.keyword) {
+      return Future.value();
+    }
+    if (index >= 0) searchHistoryEntries.removeAt(index);
+    searchHistoryEntries.insert(0, entry);
+    if (searchHistoryEntries.length > 50) searchHistoryEntries.removeLast();
+    if (searchHistory.firstOrNull != entry.keyword) {
+      _rememberSearchKeyword(entry.keyword);
+    }
+    return saveData(sync);
+  }
+
+  Future<void> removeSearchHistoryEntry(String identity) {
+    searchHistoryEntries.removeWhere((entry) => entry.identity == identity);
+    return saveData();
+  }
+
+  Future<void> clearSearchHistoryEntries() {
+    searchHistoryEntries.clear();
+    return saveData();
+  }
+
+  static List<SearchHistoryEntry> decodeSearchHistoryEntries(Object? value) {
+    if (value == null) return [];
+    if (value is! List) {
+      throw const FormatException('Detailed search history must be a list');
+    }
+    final entries = <SearchHistoryEntry>[];
+    final identities = <String>{};
+    for (final item in value) {
+      if (item is! Map || item.keys.any((key) => key is! String)) {
+        throw const FormatException('Invalid detailed search history entry');
+      }
+      final entry = SearchHistoryEntry.fromJson(
+        Map<String, dynamic>.from(item),
+      );
+      if (identities.add(entry.identity) && entries.length < 50) {
+        entries.add(entry);
+      }
+    }
+    return entries;
+  }
+
+  void _rememberSearchKeyword(String keyword) {
     _ensureSearchHistoryOrders();
     _searchHistoryOrders[keyword] = _nextSearchHistoryOrder--;
     _overflowSearchHistory.remove(keyword);
@@ -226,6 +282,10 @@ class Appdata with Init {
         _overflowSearchHistory.insert(0, overflow);
       }
     }
+  }
+
+  void addSearchHistory(String keyword) {
+    _rememberSearchKeyword(keyword);
     saveData();
   }
 
@@ -255,6 +315,10 @@ class Appdata with Init {
         'searchHistoryOrders': _searchHistoryOrders,
       if (_nextSearchHistoryOrder != -1)
         'nextSearchHistoryOrder': _nextSearchHistoryOrder,
+      if (searchHistoryEntries.isNotEmpty)
+        'searchHistoryEntries': [
+          for (final entry in searchHistoryEntries) entry.toJson(),
+        ],
     };
   }
 
@@ -385,8 +449,40 @@ class Appdata with Init {
 
   /// Sync data from another device and persist the accepted settings.
   Future<void> syncData(Map<String, dynamic> data) async {
+    final keywords = <String>[
+      ...List<String>.from(data['searchHistory'] ?? const <String>[]),
+      ...List<String>.from(data['overflowSearchHistory'] ?? const <String>[]),
+    ];
+    final orderState = decodeSearchHistoryOrder(data, keywords);
+    final entries = decodeSearchHistoryEntries(data['searchHistoryEntries']);
     if (data['settings'] is Map) {
       var settings = data['settings'] as Map<String, dynamic>;
+      final resetRuleKeys = <String>[];
+      for (final (wordsKey, rulesKey) in const [
+        ('blockedWords', 'blockedWordRules'),
+        ('blockedCommentWords', 'blockedCommentWordRules'),
+      ]) {
+        if (settings.containsKey(wordsKey) && isSettingSyncAllowed(wordsKey)) {
+          Settings.validateValue(wordsKey, settings[wordsKey]);
+          if (!settings.containsKey(rulesKey) &&
+              isSettingSyncAllowed(rulesKey)) {
+            resetRuleKeys.add(rulesKey);
+          }
+        }
+        if (settings.containsKey(rulesKey) && isSettingSyncAllowed(rulesKey)) {
+          Settings.validateValue(rulesKey, settings[rulesKey]);
+        }
+      }
+      if (settings.containsKey('searchHistoryDisplayMode') &&
+          isSettingSyncAllowed('searchHistoryDisplayMode')) {
+        Settings.validateValue(
+          'searchHistoryDisplayMode',
+          settings['searchHistoryDisplayMode'],
+        );
+      }
+      for (final key in resetRuleKeys) {
+        this.settings.remove(key);
+      }
 
       List<String> customDisableSync = splitField(
         this.settings["disableSyncFields"] as String,
@@ -406,6 +502,12 @@ class Appdata with Init {
             key == appdataObsoleteComicLibrarySyncSetting) {
           continue;
         }
+        if ((key == 'blockedWordRules' &&
+                !settings.containsKey('blockedWords')) ||
+            (key == 'blockedCommentWordRules' &&
+                !settings.containsKey('blockedCommentWords'))) {
+          continue;
+        }
         if (appdataArchiveSyncFields.contains(key)) {
           if (archiveSyncEnabled) {
             this.settings[key] = settings[key];
@@ -418,19 +520,16 @@ class Appdata with Init {
           }
           continue;
         }
-        if (!appdataDefaultDisabledSyncFields.contains(key) &&
-            !customDisableSync.contains(key)) {
+        if (isSettingSyncAllowed(key)) {
           this.settings[key] = settings[key];
         }
       }
     }
-    final keywords = <String>[
-      ...List<String>.from(data['searchHistory'] ?? const <String>[]),
-      ...List<String>.from(data['overflowSearchHistory'] ?? const <String>[]),
-    ];
-    final orderState = decodeSearchHistoryOrder(data, keywords);
     _nextSearchHistoryOrder = orderState.nextOrder;
     setFullSearchHistory(keywords, orders: orderState.orders);
+    searchHistoryEntries
+      ..clear()
+      ..addAll(entries);
     await saveData(false);
   }
 
@@ -508,6 +607,9 @@ class Appdata with Init {
           ...decoded.searchHistory,
           ...decoded.overflowSearchHistory,
         ], orders: decoded.searchHistoryOrders);
+        searchHistoryEntries
+          ..clear()
+          ..addAll(decoded.searchHistoryEntries);
         loadedFrom = candidate;
         break;
       } catch (error, stackTrace) {
@@ -551,6 +653,7 @@ class Appdata with Init {
     List<String> overflowSearchHistory,
     Map<String, num> searchHistoryOrders,
     int nextSearchHistoryOrder,
+    List<SearchHistoryEntry> searchHistoryEntries,
   })
   _decodeAppData(String content) {
     final decoded = jsonDecode(content);
@@ -600,6 +703,9 @@ class Appdata with Init {
       overflowSearchHistory: overflow,
       searchHistoryOrders: orderState.orders,
       nextSearchHistoryOrder: orderState.nextOrder,
+      searchHistoryEntries: decodeSearchHistoryEntries(
+        decoded['searchHistoryEntries'],
+      ),
     );
   }
 
@@ -709,6 +815,9 @@ class Settings with ChangeNotifier {
     'showUpdateStatusOnTile': true,
     'blockedWords': [],
     'blockedCommentWords': [],
+    'blockedWordRules': <String, dynamic>{},
+    'blockedCommentWordRules': <String, dynamic>{},
+    'searchHistoryDisplayMode': 'detailed',
     'defaultSearchTarget': null,
     'autoPageTurningInterval': 5, // in seconds
     'autoReadingSkipUnavailableImages': false,
@@ -823,6 +932,21 @@ class Settings with ChangeNotifier {
     if (!valid) {
       throw FormatException('Invalid value type for setting "$key"');
     }
+    if ((key == 'blockedWords' || key == 'blockedCommentWords') &&
+        (value is! List || value.any((word) => word is! String))) {
+      throw FormatException('Invalid keyword list for setting "$key"');
+    }
+    if (key == 'blockedWordRules' || key == 'blockedCommentWordRules') {
+      validateKeywordRuleOptions(
+        value,
+        comments: key == 'blockedCommentWordRules',
+      );
+    }
+    if (key == 'searchHistoryDisplayMode' &&
+        value != 'keywords' &&
+        value != 'detailed') {
+      throw const FormatException('Invalid search history display mode');
+    }
     jsonEncode(value);
   }
 
@@ -851,6 +975,21 @@ class Settings with ChangeNotifier {
         _data[entry.key] = entry.value;
       }
     }
+  }
+
+  void setKeywordSettings(
+    String wordsKey,
+    List<String> words,
+    String rulesKey,
+    Map<String, dynamic> rules,
+  ) {
+    validateValue(wordsKey, words);
+    validateValue(rulesKey, rules);
+    _data[wordsKey] = words;
+    _data[rulesKey] = rules;
+    _readDefaults.remove(wordsKey);
+    _readDefaults.remove(rulesKey);
+    notifyListeners();
   }
 
   operator []=(String key, dynamic value) {

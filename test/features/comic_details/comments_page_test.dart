@@ -68,6 +68,68 @@ void main() {
     appdata.settings['blockedCommentWords'] = <String>[];
   });
 
+  testWidgets(
+    'loaded comments restore when rule options change without reloading',
+    (tester) async {
+      final previousWords = appdata.settings['blockedCommentWords'];
+      final previousRules = appdata.settings['blockedCommentWordRules'];
+      addTearDown(
+        () => appdata.settings.setKeywordSettings(
+          'blockedCommentWords',
+          List<String>.from(previousWords as List),
+          'blockedCommentWordRules',
+          Map<String, dynamic>.from(previousRules as Map),
+        ),
+      );
+      appdata.settings.setKeywordSettings(
+        'blockedCommentWords',
+        ['BL'],
+        'blockedCommentWordRules',
+        {},
+      );
+      var loads = 0;
+      final source = _buildTestSource(
+        commentsLoader: (_, _, _, _) async {
+          loads++;
+          return Res([
+            Comment.fromJson({'userName': 'LongWord', 'content': 'black'}),
+            Comment.fromJson({'userName': 'ShortWord', 'content': '[bl]'}),
+          ], subData: 1);
+        },
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: CommentsPage(data: _buildTestComic(), source: source),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('LongWord'), findsNothing);
+      expect(find.text('ShortWord'), findsNothing);
+      appdata.settings.setKeywordSettings(
+        'blockedCommentWords',
+        ['BL'],
+        'blockedCommentWordRules',
+        {
+          'BL': {'mode': 'word', 'caseSensitive': false},
+        },
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('LongWord'), findsOneWidget);
+      expect(find.text('ShortWord'), findsNothing);
+      appdata.settings.setKeywordSettings(
+        'blockedCommentWords',
+        ['BL'],
+        'blockedCommentWordRules',
+        {
+          'BL': {'mode': 'word', 'caseSensitive': true},
+        },
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('ShortWord'), findsOneWidget);
+      expect(loads, 1);
+    },
+  );
+
   group('CommentsPage Nested Reply & replyCommentFunc Tests', () {
     testWidgets(
       'calls replyCommentFunc with correct parentId and replyId when replying to secondary comment',

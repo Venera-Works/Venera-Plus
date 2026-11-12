@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/gesture.dart';
@@ -19,6 +20,8 @@ import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 
 import 'comic_tile.dart';
+import 'keyword_comic_filter.dart';
+import 'keyword_hidden_notice.dart';
 
 class SliverGridComics extends StatefulWidget {
   const SliverGridComics({
@@ -63,7 +66,7 @@ class _SliverGridComicsState extends State<SliverGridComics> {
   List<int> heroIDs = [];
   List<Object> _identities = [];
   List<Comic> _sourceComics = [];
-  List<String> _blockedWords = [];
+  List<KeywordRule> _blockedRules = [];
   ModalRoute<dynamic>? _route;
   bool _tickerModeEnabled = true;
   bool _needsContentCheck = true;
@@ -126,16 +129,16 @@ class _SliverGridComicsState extends State<SliverGridComics> {
   void _refreshIfVisible() {
     if (!_isVisible || (!_needsContentCheck && !_presentationDirty)) return;
     if (_needsContentCheck) {
-      final words = appdata.settings['blockedWords'] as List;
+      final filter = comicKeywordFilter();
       // Comic equality only compares source/id; new objects may carry new data.
       final sourceChanged =
           _sourceComics.length != widget.comics.length ||
           _sourceComics.indexed.any(
             (entry) => !identical(entry.$2, widget.comics[entry.$1]),
           );
-      if (sourceChanged || !listEquals(_blockedWords, words)) {
+      if (sourceChanged || !listEquals(_blockedRules, filter.rules)) {
         final filtered = widget.comics
-            .where((comic) => isBlocked(comic) == null)
+            .where((comic) => matchComicKeyword(comic, filter: filter) == null)
             .toList();
         // Hero IDs follow identity and order, independently of metadata.
         final identities = filtered
@@ -147,7 +150,7 @@ class _SliverGridComicsState extends State<SliverGridComics> {
           generateHeroID();
         }
         _sourceComics = List<Comic>.of(widget.comics);
-        _blockedWords = List<String>.from(words);
+        _blockedRules = filter.rules;
       }
       _needsContentCheck = false;
     }
@@ -190,10 +193,9 @@ class _SliverGridComicsState extends State<SliverGridComics> {
                     horizontal: 16,
                     vertical: 8,
                   ),
-                  child: Text(
-                    'Hidden by keyword filters: @a comics'.tlParams({
-                      'a': hidden,
-                    }),
+                  child: KeywordHiddenNotice(
+                    count: hidden,
+                    comics: () => widget.comics,
                   ),
                 ),
               ),
@@ -295,33 +297,6 @@ class _SliverGridComics extends StatelessWidget {
   }
 }
 
-/// return the first blocked keyword, or null if not blocked
-String? isBlocked(Comic item) {
-  for (var word in appdata.settings['blockedWords']) {
-    if (item.title.contains(word)) {
-      return word;
-    }
-    if (item.subtitle?.contains(word) ?? false) {
-      return word;
-    }
-    if (item.description.contains(word)) {
-      return word;
-    }
-    for (var tag in item.tags ?? <String>[]) {
-      if (tag == word) {
-        return word;
-      }
-      if (tag.contains(':')) {
-        tag = tag.split(':')[1];
-        if (tag == word) {
-          return word;
-        }
-      }
-    }
-  }
-  return null;
-}
-
 class ComicList extends StatefulWidget {
   const ComicList({
     super.key,
@@ -339,6 +314,8 @@ class ComicList extends StatefulWidget {
     this.hideFavoriteBadge = false,
     this.badgeBuilder,
     this.onTap,
+    this.initialPage = 1,
+    this.onVisiblePageChanged,
   });
 
   final Future<Res<List<Comic>>> Function(int page)? loadPage;
@@ -367,6 +344,9 @@ class ComicList extends StatefulWidget {
   final String? Function(Comic)? badgeBuilder;
   final void Function(Comic, int heroID)? onTap;
 
+  final int initialPage;
+  final ValueChanged<int>? onVisiblePageChanged;
+
   @override
   State<ComicList> createState() => ComicListState();
 }
@@ -387,6 +367,139 @@ class ComicListState extends State<ComicList> {
   String? _nextUrl;
 
   late bool enablePageStorage = widget.enablePageStorage;
+
+  final ScrollController _pageController = ScrollController();
+  final Map<int, GlobalKey> _pageHeaders = {};
+  final Map<int, double> _pageStarts = {};
+  int _firstPage = 1;
+  int? _reportedVisiblePage;
+  int? _paintedPage;
+  int? _pendingRevealPage;
+  bool _visibilityScheduled = false;
+  bool _restoringCursor = false;
+  bool _restorePaused = false;
+  bool _loadsCancelled = false;
+
+  bool get _tracksPages =>
+      widget.onVisiblePageChanged != null || widget.initialPage > 1;
+  ScrollController? get _scrollController =>
+      widget.controller ?? (_tracksPages ? _pageController : null);
+
+  @override
+  void initState() {
+    super.initState();
+    _page = widget.initialPage < 1 ? 1 : widget.initialPage;
+    _firstPage = widget.loadPage != null ? _page : 1;
+    _restoringCursor =
+        widget.loadPage == null && widget.loadNext != null && _page > 1;
+    if (_restoringCursor) _pendingRevealPage = _page;
+  }
+
+  void _reportVisiblePage(int page) {
+    if (!mounted || _reportedVisiblePage == page) return;
+    _reportedVisiblePage = page;
+    if (appdata.settings['comicListDisplayMode'] != 'paging') _page = page;
+    widget.onVisiblePageChanged?.call(page);
+  }
+
+  void _pagePainted(int page) {
+    if (!_tracksPages || _restoringCursor || _pendingRevealPage != null) return;
+    if (_paintedPage == null || page < _paintedPage!) _paintedPage = page;
+    if (_visibilityScheduled) return;
+    _visibilityScheduled = true;
+    final generation = _generation;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _visibilityScheduled = false;
+      final visible = _paintedPage;
+      _paintedPage = null;
+      if (_isCurrent(generation) &&
+          visible != null &&
+          (ModalRoute.of(context)?.isCurrent ?? true)) {
+        _reportVisiblePage(visible);
+      }
+    });
+  }
+
+  void _schedulePageReveal() {
+    final target = _pendingRevealPage;
+    if (target == null) return;
+    final generation = _generation;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_isCurrent(generation) || _pendingRevealPage != target) return;
+      final render = _pageHeaders[target]?.currentContext?.findRenderObject();
+      final controller = _scrollController;
+      if (render != null && controller != null && controller.hasClients) {
+        final viewport = RenderAbstractViewport.maybeOf(render);
+        if (viewport != null) {
+          controller.jumpTo(
+            viewport
+                .getOffsetToReveal(render, 0)
+                .offset
+                .clamp(
+                  controller.position.minScrollExtent,
+                  controller.position.maxScrollExtent,
+                )
+                .toDouble(),
+          );
+        }
+      }
+      _pendingRevealPage = null;
+      _reportVisiblePage(target);
+    });
+  }
+
+  void _cancelRestore() {
+    _generation++;
+    _activeCursorFetch = null;
+    _activeCursorGeneration = null;
+    _loading.clear();
+    _pageLoadGenerations.clear();
+    _restoringCursor = false;
+    _pendingRevealPage = null;
+    _restorePaused = true;
+    _page = _data.isEmpty ? 1 : (_data.keys.toList()..sort()).last;
+    storeState();
+    setState(() {});
+  }
+
+  Widget _buildRestoreProgress() => SmoothCustomScrollView(
+    controller: _scrollController,
+    slivers: [
+      if (widget.errorLeading != null) widget.errorLeading!.toSliver(),
+      SliverFillRemaining(
+        hasScrollBody: false,
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (!_restorePaused) const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              Text(
+                _restorePaused
+                    ? 'Search restoration cancelled'.tl
+                    : 'Restoring search page @current / @target'.tlParams({
+                        'current': _data.length,
+                        'target': _page,
+                      }),
+              ),
+              const SizedBox(height: 16),
+              TextButton(
+                onPressed: _restorePaused
+                    ? () => setState(() {
+                        _restorePaused = false;
+                        if (_data.isNotEmpty) _pendingRevealPage = _page;
+                      })
+                    : _cancelRestore,
+                child: Text(
+                  _restorePaused ? 'Continue search'.tl : 'Cancel'.tl,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ],
+  );
 
   Map<String, dynamic> get state => {
     'maxPage': _maxPage,
@@ -455,6 +568,7 @@ class ComicListState extends State<ComicList> {
   }
 
   void refresh() {
+    _loadsCancelled = false;
     _generation++;
     _activeReload = null;
     _activeReloadGeneration = null;
@@ -466,6 +580,13 @@ class ComicListState extends State<ComicList> {
     _pageLoadGenerations.clear();
     _data.clear();
     _page = 1;
+    _firstPage = 1;
+    _restoringCursor = false;
+    _restorePaused = false;
+    _pendingRevealPage = null;
+    _reportedVisiblePage = null;
+    _pageHeaders.clear();
+    _pageStarts.clear();
     _maxPage = null;
     _error = null;
     _nextUrl = null;
@@ -483,7 +604,18 @@ class ComicListState extends State<ComicList> {
   int? _activeCursorGeneration;
   final Set<String> _seenCursors = {};
 
-  bool _isCurrent(int generation) => mounted && _generation == generation;
+  /// Invalidates in-flight work before a query or route is replaced.
+  void cancelPendingLoads() {
+    _loadsCancelled = true;
+    _generation++;
+    _activeCursorFetch = null;
+    _activeCursorGeneration = null;
+    _loading.clear();
+    _pageLoadGenerations.clear();
+  }
+
+  bool _isCurrent(int generation) =>
+      mounted && !_loadsCancelled && _generation == generation;
 
   /// Refresh only pages already loaded (or the current initial page).
   Future<void> reload({bool reset = false}) =>
@@ -579,6 +711,7 @@ class ComicListState extends State<ComicList> {
       ..addAll(cursors);
     _error = null;
     if (reset) _page = 1;
+    if (reset) _firstPage = 1;
     if (_maxPage != null && _page > _maxPage!) _page = _maxPage!;
     if (_page < 1) _page = 1;
   }
@@ -738,6 +871,7 @@ class ComicListState extends State<ComicList> {
     _activeCursorFetch = null;
     _activeCursorGeneration = null;
     super.dispose();
+    _pageController.dispose();
   }
 
   void remove(Comic c) {
@@ -900,6 +1034,7 @@ class ComicListState extends State<ComicList> {
   Future<void> _loadPage(int page) async {
     final generation = _generation;
     if (!mounted ||
+        _loadsCancelled ||
         _isReloading ||
         _data.containsKey(page) ||
         _pageLoadGenerations[page] == generation) {
@@ -943,6 +1078,18 @@ class ComicListState extends State<ComicList> {
         _pageLoadGenerations.remove(page);
       }
       if (_isCurrent(generation)) {
+        if (_restoringCursor) {
+          _restoringCursor = false;
+          _pendingRevealPage = _error == null ? _page : null;
+          if (_error != null && _data.isNotEmpty) {
+            _page = (_data.keys.toList()..sort()).last;
+            _pendingRevealPage = _page;
+          }
+        }
+        if (_tracksPages && _maxPage != null && _firstPage > _maxPage!) {
+          _firstPage = _maxPage!;
+        }
+        if (_maxPage != null) _data.removeWhere((key, _) => key > _maxPage!);
         storeState();
         setState(() {});
       }
@@ -988,21 +1135,45 @@ class ComicListState extends State<ComicList> {
       _data[page] = _applyOverlays(List<Comic>.from(result.data));
     }
     _nextUrl = next;
+    if (_restoringCursor) setState(() {});
     if (next == null) _maxPage = _data.length;
     return true;
   }
 
   @override
-  Widget build(BuildContext context) {
-    var type = appdata.settings['comicListDisplayMode'];
-    return type == 'paging' ? buildPagingMode() : buildContinuousMode();
+  Widget build(BuildContext context) => PopScope(
+    onPopInvokedWithResult: (didPop, _) {
+      if (didPop) cancelPendingLoads();
+    },
+    child: _buildContent(context),
+  );
+
+  Widget _buildContent(BuildContext context) {
+    final type = appdata.settings['comicListDisplayMode'];
+    if (_restoringCursor) {
+      _loadPage(_page);
+      return _buildRestoreProgress();
+    }
+    if (_restorePaused) return _buildRestoreProgress();
+    if (type == 'paging') {
+      _pendingRevealPage = null;
+      if (_data.containsKey(_page) && _error == null) {
+        final generation = _generation;
+        final page = _page;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_isCurrent(generation) && _page == page) _reportVisiblePage(page);
+        });
+      }
+      return buildPagingMode();
+    }
+    return buildContinuousMode();
   }
 
   Widget buildPagingMode() {
     if (_error != null) {
       return SmoothCustomScrollView(
         key: enablePageStorage ? PageStorageKey('scroll$_page') : null,
-        controller: widget.controller,
+        controller: _scrollController,
         physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
           if (widget.errorLeading != null) widget.errorLeading!.toSliver(),
@@ -1027,7 +1198,7 @@ class ComicListState extends State<ComicList> {
       _loadPage(_page);
       return SmoothCustomScrollView(
         key: enablePageStorage ? PageStorageKey('scroll$_page') : null,
-        controller: widget.controller,
+        controller: _scrollController,
         physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
           if (widget.errorLeading != null) widget.errorLeading!.toSliver(),
@@ -1040,7 +1211,7 @@ class ComicListState extends State<ComicList> {
     }
     return SmoothCustomScrollView(
       key: enablePageStorage ? PageStorageKey('scroll$_page') : null,
-      controller: widget.controller,
+      controller: _scrollController,
       physics: const AlwaysScrollableScrollPhysics(),
       slivers: [
         if (widget.leadingSliver != null) widget.leadingSliver!,
@@ -1064,7 +1235,7 @@ class ComicListState extends State<ComicList> {
     if (_error != null && _data.isEmpty) {
       return SmoothCustomScrollView(
         key: enablePageStorage ? PageStorageKey('scroll$_page') : null,
-        controller: widget.controller,
+        controller: _scrollController,
         physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
           if (widget.errorLeading != null) widget.errorLeading!.toSliver(),
@@ -1085,11 +1256,11 @@ class ComicListState extends State<ComicList> {
         ],
       );
     }
-    if (_data[1] == null) {
-      _loadPage(1);
+    if (_data[_firstPage] == null) {
+      _loadPage(_firstPage);
       return SmoothCustomScrollView(
         key: enablePageStorage ? PageStorageKey('scroll$_page') : null,
-        controller: widget.controller,
+        controller: _scrollController,
         physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
           if (widget.errorLeading != null) widget.errorLeading!.toSliver(),
@@ -1100,26 +1271,69 @@ class ComicListState extends State<ComicList> {
         ],
       );
     }
+    final pages = _data.keys.where((page) => page >= _firstPage).toList()
+      ..sort();
+    if (_tracksPages) _schedulePageReveal();
     return SmoothCustomScrollView(
       key: enablePageStorage ? PageStorageKey('scroll$_page') : null,
-      controller: widget.controller,
+      controller: _scrollController,
       physics: const AlwaysScrollableScrollPhysics(),
       slivers: [
         if (widget.leadingSliver != null) widget.leadingSliver!,
-        SliverGridComics(
-          comics: _data.values.expand((element) => element).toList(),
-          menuBuilder: widget.menuBuilder,
-          onTap: widget.onTap,
-          badgeBuilder: widget.badgeBuilder,
-          useFavoriteDisplaySettings: widget.useFavoriteDisplaySettings,
-          hideFavoriteBadge: widget.hideFavoriteBadge,
-          onLastItemBuild: () {
-            if (_error == null &&
-                (_maxPage == null || _data.length < _maxPage!)) {
-              _loadPage(_data.length + 1);
-            }
-          },
-        ),
+        if (_tracksPages)
+          for (final page in pages) ...[
+            SliverLayoutBuilder(
+              builder: (context, constraints) {
+                _pageStarts[page] = constraints.precedingScrollExtent;
+                return SliverToBoxAdapter(
+                  child: Padding(
+                    key: _pageHeaders.putIfAbsent(page, GlobalKey.new),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    child: Row(
+                      children: [
+                        const Expanded(child: Divider()),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          child: Text(
+                            'Page @page'.tlParams({'page': page}),
+                            style: Theme.of(context).textTheme.labelSmall,
+                          ),
+                        ),
+                        const Expanded(child: Divider()),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+            _VisiblePageSliver(
+              onPaint: () => _pagePainted(page),
+              sliver: SliverGridComics(
+                comics: _data[page]!,
+                menuBuilder: widget.menuBuilder,
+                onTap: widget.onTap,
+                badgeBuilder: widget.badgeBuilder,
+                useFavoriteDisplaySettings: widget.useFavoriteDisplaySettings,
+                hideFavoriteBadge: widget.hideFavoriteBadge,
+                onLastItemBuild: page == pages.last
+                    ? () => _preloadAfter(page)
+                    : null,
+              ),
+            ),
+          ]
+        else
+          SliverGridComics(
+            comics: _data.values.expand((element) => element).toList(),
+            menuBuilder: widget.menuBuilder,
+            onTap: widget.onTap,
+            badgeBuilder: widget.badgeBuilder,
+            useFavoriteDisplaySettings: widget.useFavoriteDisplaySettings,
+            hideFavoriteBadge: widget.hideFavoriteBadge,
+            onLastItemBuild: () => _preloadAfter(_data.length),
+          ),
         if (_error != null)
           SliverToBoxAdapter(
             child: Column(
@@ -1146,10 +1360,64 @@ class ComicListState extends State<ComicList> {
               ],
             ).paddingHorizontal(16).paddingVertical(8),
           )
-        else if (_maxPage == null || _data.length < _maxPage!)
+        else if (_maxPage == null ||
+            (pages.isNotEmpty && pages.last < _maxPage!))
           const SliverListLoadingIndicator(),
+        if (_tracksPages && pages.isNotEmpty)
+          SliverLayoutBuilder(
+            builder: (context, constraints) {
+              // Even a short last page can be restored below the pinned toolbar.
+              final pageExtent =
+                  constraints.precedingScrollExtent -
+                  (_pageStarts[pages.last] ?? 0);
+              final padding = (constraints.viewportMainAxisExtent - pageExtent)
+                  .clamp(0.0, constraints.viewportMainAxisExtent)
+                  .toDouble();
+              return SliverToBoxAdapter(child: SizedBox(height: padding));
+            },
+          ),
         if (widget.trailingSliver != null) widget.trailingSliver!,
       ],
     );
+  }
+
+  void _preloadAfter(int page) {
+    if (_error == null && (_maxPage == null || page < _maxPage!)) {
+      _loadPage(page + 1);
+    }
+  }
+}
+
+/// Reports painted slivers only; cache-extent layout and card preloading never
+/// change the visible result page.
+class _VisiblePageSliver extends SingleChildRenderObjectWidget {
+  const _VisiblePageSliver({required Widget sliver, required this.onPaint})
+    : super(child: sliver);
+  final VoidCallback onPaint;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderVisiblePageSliver(onPaint);
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    covariant _RenderVisiblePageSliver renderObject,
+  ) {
+    renderObject.onPaint = onPaint;
+  }
+}
+
+class _RenderVisiblePageSliver extends RenderProxySliver {
+  _RenderVisiblePageSliver(this.onPaint);
+  VoidCallback onPaint;
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    super.paint(context, offset);
+    if (geometry?.visible == true &&
+        geometry!.paintExtent > constraints.overlap.clamp(0, double.infinity)) {
+      onPaint();
+    }
   }
 }

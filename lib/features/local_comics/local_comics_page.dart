@@ -48,8 +48,12 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
 
   Map<LocalComic, bool> selectedComics = {};
 
-  List<LocalComic> get visibleComics =>
-      comics.where((comic) => isBlocked(comic) == null).toList();
+  List<LocalComic> get visibleComics {
+    final filter = comicKeywordFilter();
+    return comics
+        .where((comic) => matchComicKeyword(comic, filter: filter) == null)
+        .toList();
+  }
 
   void reconcileSelection() {
     final identities = {
@@ -149,7 +153,7 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
     bool isCurrent() =>
         mounted &&
         listEquals(selectedComics.keys.toList(), selection) &&
-        selection.every((comic) => isBlocked(comic) == null);
+        selection.every((comic) => matchComicKeyword(comic) == null);
     return MenuButton(
       entries: [
         MenuEntry(

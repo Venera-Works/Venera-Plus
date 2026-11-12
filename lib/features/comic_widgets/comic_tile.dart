@@ -15,6 +15,7 @@ import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/extensions.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
+import 'package:venera_plus/foundation/keyword_settings_store.dart';
 
 import 'rating.dart';
 
@@ -709,9 +710,14 @@ class ComicTile extends StatelessWidget {
   void block(BuildContext comicTileContext) {
     showDialog(
       context: App.rootContext,
+      animationStyle: MediaQuery.disableAnimationsOf(comicTileContext)
+          ? AnimationStyle.noAnimation
+          : null,
       builder: (context) {
         var words = <String>[];
         var all = <String>[];
+        bool saving = false;
+        bool failed = false;
         all.addAll(_splitText(comic.title));
         if (comic.subtitle != null && comic.subtitle != "") {
           all.add(comic.subtitle!);
@@ -730,13 +736,15 @@ class ComicTile extends StatelessWidget {
                     runSpacing: 8,
                     spacing: 8,
                     children: [
-                      for (var word in all)
+                      if (failed) Text('Failed to save keyword rules'.tl),
+                      for (var word in all.toSet())
                         OptionChip(
                           text: (comic.tags?.contains(word) ?? false)
                               ? word.translateTagIfNeed
                               : word,
                           isSelected: words.contains(word),
                           onTap: () {
+                            if (saving || failed) return;
                             setState(() {
                               if (!words.contains(word)) {
                                 words.add(word);
@@ -752,16 +760,48 @@ class ComicTile extends StatelessWidget {
               ),
               actions: [
                 Button.filled(
-                  onPressed: () {
-                    context.pop();
-                    for (var word in words) {
-                      appdata.settings['blockedWords'].add(word);
+                  isLoading: saving,
+                  onPressed: () async {
+                    if (saving) return;
+                    final selected = [
+                      for (final word in words)
+                        KeywordRule.suggested(
+                          word,
+                          tag: comic.tags?.contains(word) ?? false,
+                        ),
+                    ];
+                    setState(() {
+                      saving = true;
+                    });
+                    try {
+                      if (failed) {
+                        await keywordSettings.retry();
+                      } else {
+                        await keywordSettings.blockRules(
+                          BlockedKeywordList.comics,
+                          selected,
+                        );
+                      }
+                      if (comicTileContext.mounted) onBlocked?.call();
+                      if (context.mounted) {
+                        context.pop();
+                        App.rootContext.showMessage(message: 'Blocked'.tl);
+                      }
+                    } catch (_) {
+                      if (context.mounted) {
+                        setState(() {
+                          failed = true;
+                        });
+                      }
+                    } finally {
+                      if (context.mounted) {
+                        setState(() {
+                          saving = false;
+                        });
+                      }
                     }
-                    appdata.saveData();
-                    context.showMessage(message: 'Blocked'.tl);
-                    onBlocked?.call();
                   },
-                  child: Text('Block'.tl),
+                  child: Text((failed ? 'Retry' : 'Block').tl),
                 ),
               ],
             );

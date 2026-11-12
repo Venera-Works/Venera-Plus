@@ -3,6 +3,7 @@ export 'app.dart';
 export 'appearance.dart';
 export 'content_sources_page.dart';
 export 'data_sync_schedule_fields.dart';
+export 'keyword_blocking.dart';
 export 'debug.dart';
 export 'explore_settings.dart';
 export 'logs.dart';

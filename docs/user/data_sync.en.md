@@ -27,3 +27,13 @@ When choosing real-time or scheduled mode, choose an initial upload or download.
 The data-sync destination, mode, interval, pending state, local paths, and Bangumi local retry queues stay on this device. Settings listed in `disableSyncFields` are excluded. All cloud accounts and their credentials are included in settings sync, and comic-library configuration always participates; use only a trusted storage service.
 
 Local imports and cloud downloads both restore complete `.venera` snapshots and roll back replaced files on failure. Cloud downloads merge local and remote comic update state; manual local imports restore update state from the selected backup. Restored data reloads databases, comic sources, and affected runtime services. Only a manual local import becomes a new local change for later sync; a cloud download never triggers an upload. An old snapshot without the Home favorites binding clears the previous local binding.
+
+## Search history and keyword rules
+
+The history-mode button on Search switches between keywords and detailed entries. The two histories are retained separately; deleting or clearing one mode leaves the other intact. Detailed entries remember the source, filters and last page actually viewed, with separate entries for different source/filter combinations. Numbered results restore directly; cursor results advance from the start with progress and cancellation. Removed sources can be replaced, while changed filters fall back to current defaults and page one. Existing keywords are preserved without inventing their former source or page.
+
+Open **Settings → Browsing and Favorites → Keyword blocking** to add or edit comic and comment rules. Contains text suits phrases, Whole word avoids matching short abbreviations such as `BL` inside `black`, and Exact tag only checks comic tags. Each rule has a case option and a Try matching preview. Keywords are literal text, not regular expressions; whole-word matching does not segment Chinese text.
+
+Click a list's keyword-hidden count to see the first matching rule, field and mode, and edit the rule directly. Reasons cover only comics already loaded in that list and keep hidden covers concealed; they are not a library-wide count.
+
+Detailed history, the display mode and rule options are saved with app data. Existing comic words remain case-sensitive and existing comment words remain case-insensitive. Importing a backup with an old word list restores that list's original matching behavior; an omitted list is unaffected. Excluding `blockedWords` or `blockedCommentWords` also excludes its rule options. Devices sharing app data should use versions supporting these rules, since older versions cannot apply the new match modes.

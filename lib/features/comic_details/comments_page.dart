@@ -14,19 +14,15 @@ import 'package:venera_plus/foundation/image_provider/cached_image.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 import 'package:venera_plus/foundation/res.dart';
+import 'package:venera_plus/foundation/keyword_filter.dart';
 
-bool shouldBlockComment(Comment comment) {
-  var blockedWords = appdata.settings["blockedCommentWords"] as List;
-  if (blockedWords.isEmpty) return false;
+KeywordFilter _commentFilter() => KeywordFilter.fromSettings({
+  'blockedCommentWords': appdata.settings['blockedCommentWords'],
+  'blockedCommentWordRules': appdata.settings['blockedCommentWordRules'],
+}, comments: true);
 
-  var content = comment.content.toLowerCase();
-  for (var word in blockedWords) {
-    if (content.contains(word.toString().toLowerCase())) {
-      return true;
-    }
-  }
-  return false;
-}
+bool shouldBlockComment(Comment comment) =>
+    _commentFilter().blocksComment(comment.content);
 
 class CommentsPage extends StatefulWidget {
   const CommentsPage({
@@ -49,6 +45,7 @@ class CommentsPage extends StatefulWidget {
 class _CommentsPageState extends State<CommentsPage> {
   bool _loading = true;
   List<Comment>? _comments;
+  final List<Comment> _allComments = [];
   String? _error;
   int _page = 1;
   int? maxPage;
@@ -61,13 +58,26 @@ class _CommentsPageState extends State<CommentsPage> {
   void initState() {
     super.initState();
     _focusNode = FocusNode();
+    appdata.settings.addListener(_onKeywordSettingsChanged);
   }
 
   @override
   void dispose() {
+    appdata.settings.removeListener(_onKeywordSettingsChanged);
     _focusNode.dispose();
     controller.dispose();
     super.dispose();
+  }
+
+  void _onKeywordSettingsChanged() {
+    if (mounted && _comments != null) setState(_filterComments);
+  }
+
+  void _filterComments() {
+    final filter = _commentFilter();
+    _comments = _allComments
+        .where((comment) => !filter.blocksComment(comment.content))
+        .toList();
   }
 
   void firstLoad() async {
@@ -83,11 +93,11 @@ class _CommentsPageState extends State<CommentsPage> {
         _loading = false;
       });
     } else if (mounted) {
-      var filteredComments = res.data
-          .where((c) => !shouldBlockComment(c))
-          .toList();
       setState(() {
-        _comments = filteredComments;
+        _allComments
+          ..clear()
+          ..addAll(res.data);
+        _filterComments();
         _loading = false;
         maxPage = res.subData;
       });
@@ -104,11 +114,9 @@ class _CommentsPageState extends State<CommentsPage> {
     if (res.error) {
       context.showMessage(message: res.errorMessage ?? "Unknown error".tl);
     } else {
-      var filteredComments = res.data
-          .where((c) => !shouldBlockComment(c))
-          .toList();
       setState(() {
-        _comments!.addAll(filteredComments);
+        _allComments.addAll(res.data);
+        _filterComments();
         _page++;
         if (maxPage == null && res.data.isEmpty) {
           maxPage = _page;

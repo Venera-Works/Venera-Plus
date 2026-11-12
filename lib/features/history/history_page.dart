@@ -28,7 +28,7 @@ class _HistoryPageState extends State<HistoryPage> {
   ModalRoute<dynamic>? _route;
   bool _tickerModeEnabled = true;
   bool _needsRefresh = true;
-  List<String> _blockedWords = [];
+  List<KeywordRule> _blockedRules = [];
 
   bool get _isVisible =>
       widget.isActive && _tickerModeEnabled && (_route?.isCurrent ?? true);
@@ -63,7 +63,7 @@ class _HistoryPageState extends State<HistoryPage> {
   }
 
   void _onSettingsChanged() {
-    if (listEquals(_blockedWords, appdata.settings['blockedWords'] as List)) {
+    if (listEquals(_blockedRules, comicKeywordFilter().rules)) {
       return;
     }
     if (_isVisible) setState(_refreshIfVisible);
@@ -78,14 +78,16 @@ class _HistoryPageState extends State<HistoryPage> {
 
   void _refreshIfVisible() {
     if (!_isVisible) return;
-    final words = appdata.settings['blockedWords'] as List;
-    if (!_needsRefresh && listEquals(_blockedWords, words)) return;
+    final filter = comicKeywordFilter();
+    if (!_needsRefresh && listEquals(_blockedRules, filter.rules)) return;
     if (_needsRefresh) {
       comics = HistoryManager().getAll();
       _needsRefresh = false;
     }
-    _blockedWords = List<String>.from(words);
-    visibleComics = comics.where((comic) => isBlocked(comic) == null).toList();
+    _blockedRules = filter.rules;
+    visibleComics = comics
+        .where((comic) => matchComicKeyword(comic, filter: filter) == null)
+        .toList();
     if (multiSelectMode) {
       selectedComics = {
         for (final comic in visibleComics)
@@ -329,6 +331,13 @@ class _HistoryPageState extends State<HistoryPage> {
                   : Text('Reading Records'.tl),
               actions: multiSelectMode ? selectActions : normalActions,
             ),
+            if (comics.length > visibleComics.length)
+              SliverToBoxAdapter(
+                child: KeywordHiddenNotice(
+                  count: comics.length - visibleComics.length,
+                  comics: () => comics,
+                ),
+              ),
             SliverGridComics(
               comics: visibleComics,
               selections: selectedComics,

@@ -14,19 +14,12 @@ import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/image_provider/cached_image.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
+import 'package:venera_plus/foundation/keyword_filter.dart';
 
-bool _shouldBlockComment(Comment comment) {
-  var blockedWords = appdata.settings["blockedCommentWords"] as List;
-  if (blockedWords.isEmpty) return false;
-
-  var content = comment.content.toLowerCase();
-  for (var word in blockedWords) {
-    if (content.contains(word.toString().toLowerCase())) {
-      return true;
-    }
-  }
-  return false;
-}
+KeywordFilter _commentFilter() => KeywordFilter.fromSettings({
+  'blockedCommentWords': appdata.settings['blockedCommentWords'],
+  'blockedCommentWordRules': appdata.settings['blockedCommentWordRules'],
+}, comments: true);
 
 class ChapterCommentsPage extends StatefulWidget {
   const ChapterCommentsPage({
@@ -53,11 +46,36 @@ class ChapterCommentsPage extends StatefulWidget {
 class _ChapterCommentsPageState extends State<ChapterCommentsPage> {
   bool _loading = true;
   List<Comment>? _comments;
+  final List<Comment> _allComments = [];
   String? _error;
   int _page = 1;
   int? maxPage;
   var controller = TextEditingController();
   bool sending = false;
+
+  @override
+  void initState() {
+    super.initState();
+    appdata.settings.addListener(_onKeywordSettingsChanged);
+  }
+
+  @override
+  void dispose() {
+    appdata.settings.removeListener(_onKeywordSettingsChanged);
+    controller.dispose();
+    super.dispose();
+  }
+
+  void _onKeywordSettingsChanged() {
+    if (mounted && _comments != null) setState(_filterComments);
+  }
+
+  void _filterComments() {
+    final filter = _commentFilter();
+    _comments = _allComments
+        .where((comment) => !filter.blocksComment(comment.content))
+        .toList();
+  }
 
   void firstLoad() async {
     var res = await widget.source.chapterCommentsLoader!(
@@ -72,11 +90,11 @@ class _ChapterCommentsPageState extends State<ChapterCommentsPage> {
         _loading = false;
       });
     } else if (mounted) {
-      var filteredComments = res.data
-          .where((c) => !_shouldBlockComment(c))
-          .toList();
       setState(() {
-        _comments = filteredComments;
+        _allComments
+          ..clear()
+          ..addAll(res.data);
+        _filterComments();
         _loading = false;
         maxPage = res.subData;
       });
@@ -93,11 +111,9 @@ class _ChapterCommentsPageState extends State<ChapterCommentsPage> {
     if (res.error) {
       context.showMessage(message: res.errorMessage ?? "Unknown Error");
     } else {
-      var filteredComments = res.data
-          .where((c) => !_shouldBlockComment(c))
-          .toList();
       setState(() {
-        _comments!.addAll(filteredComments);
+        _allComments.addAll(res.data);
+        _filterComments();
         _page++;
         if (maxPage == null && res.data.isEmpty) {
           maxPage = _page;
@@ -632,14 +648,32 @@ class _EmbeddedChapterCommentsPageState
     extends State<EmbeddedChapterCommentsPage> {
   bool _loading = true;
   List<Comment>? _comments;
+  final List<Comment> _allComments = [];
   String? _error;
   int _page = 1;
   int? maxPage;
   var textController = TextEditingController();
   bool sending = false;
+  @override
+  void initState() {
+    super.initState();
+    appdata.settings.addListener(_onKeywordSettingsChanged);
+  }
+
+  void _onKeywordSettingsChanged() {
+    if (mounted && _comments != null) setState(_filterComments);
+  }
+
+  void _filterComments() {
+    final filter = _commentFilter();
+    _comments = _allComments
+        .where((comment) => !filter.blocksComment(comment.content))
+        .toList();
+  }
 
   @override
   void dispose() {
+    appdata.settings.removeListener(_onKeywordSettingsChanged);
     textController.dispose();
     super.dispose();
   }
@@ -659,11 +693,11 @@ class _EmbeddedChapterCommentsPageState
         });
       }
     } else if (mounted) {
-      var filteredComments = res.data
-          .where((c) => !_shouldBlockComment(c))
-          .toList();
       setState(() {
-        _comments = filteredComments;
+        _allComments
+          ..clear()
+          ..addAll(res.data);
+        _filterComments();
         _loading = false;
         maxPage = res.subData;
       });
@@ -682,11 +716,9 @@ class _EmbeddedChapterCommentsPageState
         context.showMessage(message: res.errorMessage ?? "Unknown Error");
       }
     } else if (mounted) {
-      var filteredComments = res.data
-          .where((c) => !_shouldBlockComment(c))
-          .toList();
       setState(() {
-        _comments!.addAll(filteredComments);
+        _allComments.addAll(res.data);
+        _filterComments();
         _page++;
         if (maxPage == null && res.data.isEmpty) {
           maxPage = _page;
