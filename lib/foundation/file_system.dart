@@ -116,8 +116,8 @@ extension DirectoryExtension on Directory {
     if (!existsSync()) return 0;
     int total = 0;
     for (var f in listSync(recursive: true)) {
-      if (FileSystemEntity.typeSync(f.path) == FileSystemEntityType.file) {
-        total += await File(f.path).length();
+      if (f is File) {
+        total += await f.length();
       }
     }
     return total;
@@ -303,14 +303,28 @@ Future<void> copyDirectory(
   if (!destination.existsSync()) {
     destination.createSync();
   }
-  List<FileSystemEntity> contents = source.listSync();
+  List<FileSystemEntity> contents = source.listSync(followLinks: false);
   for (FileSystemEntity content in contents) {
+    if (FileSystemEntity.typeSync(content.path, followLinks: false) ==
+        FileSystemEntityType.link) {
+      throw FileSystemException(
+        'Refusing to copy a symbolic link',
+        content.path,
+      );
+    }
+    if (content.name.isEmpty ||
+        content.name == '.' ||
+        content.name == '..' ||
+        content.name.contains('/') ||
+        content.name.contains('\\')) {
+      throw FileSystemException('Invalid directory entry name', content.path);
+    }
     String newPath = FilePath.join(destination.path, content.name);
 
     if (content is File) {
       var resultFile = File(newPath);
       final data = await readFileBytesChecked(
-        content,
+        File(content.path),
         requireNonEmpty: requireNonEmpty?.call(content) ?? false,
         // Import runs in an isolate without the SAF async worker. The native
         // sync API is safe here and was also used by the original copier.

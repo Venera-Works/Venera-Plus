@@ -9,6 +9,33 @@ String quoteSqlIdentifier(String name) {
   return '"${name.replaceAll('"', '""')}"';
 }
 
+final _asciiUppercase = RegExp(r'[A-Z]');
+
+/// SQLite folds ASCII table names, preserving non-ASCII case distinctions.
+String favoriteFolderNameKey(String name) => name.replaceAllMapped(
+  _asciiUppercase,
+  (match) => String.fromCharCode(match[0]!.codeUnitAt(0) + 32),
+);
+
+bool hasFavoriteFolderName(
+  Iterable<String> folders,
+  String name, {
+  String? excluding,
+}) {
+  final key = favoriteFolderNameKey(name);
+  return folders.any(
+    (folder) => folder != excluding && favoriteFolderNameKey(folder) == key,
+  );
+}
+
+/// Prefix-reserved names need a different base; suffixing cannot free them.
+String favoriteFolderNameBase(String name) {
+  final key = favoriteFolderNameKey(name);
+  return key.startsWith('sqlite_') || key.startsWith('__tmp_')
+      ? 'Favorite $name'
+      : name;
+}
+
 /// Internal tables in local_favorite.db that must never be treated as favorites.
 const internalFavoriteTables = <String>{
   'folder_order',
@@ -20,7 +47,8 @@ const internalFavoriteTables = <String>{
 
 /// Returns true if the table name is an internal SQLite or metadata table.
 bool isInternalFavoriteTable(String name) {
-  return name.startsWith('sqlite_') || internalFavoriteTables.contains(name);
+  final key = favoriteFolderNameKey(name);
+  return key.startsWith('sqlite_') || internalFavoriteTables.contains(key);
 }
 
 /// Metadata record for a favorite folder in SQLite.
@@ -96,12 +124,15 @@ class FavoriteSyncData {
           .select("SELECT name FROM sqlite_master WHERE type = 'table';")
           .map((row) => row['name'] as String)
           .toSet();
-      if (tables.contains('comic_update_state')) {
+      final stateTableName = tables
+          .where((name) => favoriteFolderNameKey(name) == 'comic_update_state')
+          .firstOrNull;
+      if (stateTableName != null) {
         final columns = db.select('PRAGMA table_info(comic_update_state);');
         if (!columns.any((column) => column['name'] == 'state')) {
           var renamed = 'comic_update_state (2)';
           var suffix = 3;
-          while (tables.contains(renamed)) {
+          while (hasFavoriteFolderName(tables, renamed)) {
             renamed = 'comic_update_state (${suffix++})';
           }
           db.execute(
@@ -112,15 +143,15 @@ class FavoriteSyncData {
             'folder_sync',
             'folder_metadata',
           ]) {
-            if (tables.contains(table)) {
+            if (hasFavoriteFolderName(tables, table)) {
               db.execute(
                 'UPDATE $table SET folder_name = ? WHERE folder_name = ?;',
-                [renamed, 'comic_update_state'],
+                [renamed, stateTableName],
               );
             }
           }
           tables
-            ..remove('comic_update_state')
+            ..remove(stateTableName)
             ..add(renamed);
         }
       }
@@ -252,7 +283,7 @@ class FavoriteSyncData {
     // If a table named 'folder_metadata' already exists, verify whether it is
     // our internal metadata table (has column 'folder_id') or a legacy user folder.
     final existingMetaCheck = db.select(
-      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='folder_metadata';",
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='folder_metadata' COLLATE NOCASE;",
     );
     if (existingMetaCheck.isNotEmpty) {
       final pragma = db.select('PRAGMA table_info("folder_metadata");');
@@ -262,7 +293,7 @@ class FavoriteSyncData {
         var migratedName = 'folder_metadata (2)';
         var i = 3;
         while (db.select(
-          "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?;",
+          "SELECT 1 FROM sqlite_master WHERE name = ? COLLATE NOCASE;",
           [migratedName],
         ).isNotEmpty) {
           migratedName = 'folder_metadata ($i)';
@@ -463,12 +494,12 @@ class FavoriteSyncData {
       final existing = existingPhysicalNames[folder.folderId];
       if (existing != null &&
           !isInternalFavoriteTable(existing) &&
-          !existing.startsWith('__tmp_') &&
+          !favoriteFolderNameKey(existing).startsWith('__tmp_') &&
           (existing == folder.logicalName ||
               existing.startsWith('${folder.logicalName} (')) &&
-          !usedNames.contains(existing)) {
+          !usedNames.contains(favoriteFolderNameKey(existing))) {
         result[folder.folderId] = existing;
-        usedNames.add(existing);
+        usedNames.add(favoriteFolderNameKey(existing));
       }
     }
 
@@ -476,23 +507,24 @@ class FavoriteSyncData {
     for (final folder in sortedFolders) {
       if (result.containsKey(folder.folderId)) continue;
 
-      final base = folder.logicalName.trim().isNotEmpty
-          ? folder.logicalName.trim()
-          : 'Untitled';
+      final base = favoriteFolderNameBase(
+        folder.logicalName.trim().isNotEmpty
+            ? folder.logicalName.trim()
+            : 'Untitled',
+      );
       if (!isInternalFavoriteTable(base) &&
-          !base.startsWith('__tmp_') &&
-          !usedNames.contains(base)) {
+          !usedNames.contains(favoriteFolderNameKey(base))) {
         result[folder.folderId] = base;
-        usedNames.add(base);
+        usedNames.add(favoriteFolderNameKey(base));
       } else {
         var counter = 2;
         while (isInternalFavoriteTable('$base ($counter)') ||
-            usedNames.contains('$base ($counter)')) {
+            usedNames.contains(favoriteFolderNameKey('$base ($counter)'))) {
           counter++;
         }
         final assigned = '$base ($counter)';
         result[folder.folderId] = assigned;
-        usedNames.add(assigned);
+        usedNames.add(favoriteFolderNameKey(assigned));
       }
     }
 

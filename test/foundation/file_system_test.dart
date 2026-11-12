@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:isolate';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_plus/foundation/file_interaction.dart' show overrideIO;
+import 'package:venera_plus/foundation/file_interaction.dart'
+    show copyDirectoryIsolate, overrideIO;
 import 'package:venera_plus/foundation/file_system.dart';
 
 void main() {
@@ -250,6 +252,18 @@ void main() {
 
         await overrideIO(() async {
           expect(
+            FileSystemEntity.typeSync(file.path),
+            FileSystemEntityType.file,
+          );
+          expect(
+            FileSystemEntity.typeSync(directory.path),
+            FileSystemEntityType.directory,
+          );
+          expect(
+            FileSystemEntity.typeSync(missing),
+            FileSystemEntityType.notFound,
+          );
+          expect(
             await FileSystemEntity.type(file.path),
             FileSystemEntityType.file,
           );
@@ -401,6 +415,65 @@ void main() {
         expect(File('${target.path}/chapter/2.jpg').existsSync(), isFalse);
       },
     );
+
+    test('directory size uses listed file handles', () async {
+      final directory = _ListedDirectory([_UnreliableFile([], size: 42)]);
+      expect(await directory.size, 42);
+    });
+
+    test(
+      'copy worker transfers paths rather than native handle owners',
+      () async {
+        final root = Directory.systemTemp.createTempSync('path-only-copy-');
+        addTearDown(() => root.deleteSync(recursive: true));
+        final source = Directory('${root.path}/source')..createSync();
+        final target = Directory('${root.path}/target');
+        File('${source.path}/page.jpg').writeAsBytesSync([1, 2, 3]);
+        final handleOwner = ReceivePort();
+        addTearDown(handleOwner.close);
+        await copyDirectoryIsolate(
+          _HandleDirectory(source.path, handleOwner),
+          _HandleDirectory(target.path, handleOwner),
+        );
+        expect(File('${target.path}/page.jpg').readAsBytesSync(), [1, 2, 3]);
+      },
+    );
+
+    test('directory copy propagates output errors', () async {
+      final root = Directory.systemTemp.createTempSync('failed-write-copy-');
+      addTearDown(() => root.deleteSync(recursive: true));
+      final source = Directory('${root.path}/source')..createSync();
+      final target = Directory('${root.path}/target')..createSync();
+      File('${source.path}/page.jpg').writeAsBytesSync([1]);
+      Directory('${target.path}/page.jpg').createSync();
+      await expectLater(
+        copyDirectory(source, target),
+        throwsA(isA<FileSystemException>()),
+      );
+    });
+
+    test('directory copy rejects symbolic links', () async {
+      final root = Directory.systemTemp.createTempSync('link-copy-');
+      addTearDown(() => root.deleteSync(recursive: true));
+      final source = Directory('${root.path}/source')..createSync();
+      final target = Directory('${root.path}/target');
+      final outside = File('${root.path}/outside.jpg')..writeAsBytesSync([9]);
+      try {
+        Link('${source.path}/page.jpg').createSync(outside.path);
+      } on FileSystemException catch (error) {
+        if (Platform.isWindows && error.osError?.errorCode == 1314) {
+          markTestSkipped('Creating symbolic links requires Windows privilege');
+          return;
+        }
+        rethrow;
+      }
+      await expectLater(
+        copyDirectory(source, target),
+        throwsA(isA<FileSystemException>()),
+      );
+      expect(File('${target.path}/page.jpg').existsSync(), isFalse);
+      expect(outside.readAsBytesSync(), [9]);
+    });
   });
 }
 
@@ -416,6 +489,35 @@ class _UnreliableFile implements File {
   @override
   Future<Uint8List> readAsBytes() async =>
       Uint8List.fromList(responses[(reads++).clamp(0, responses.length - 1)]);
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _ListedDirectory implements Directory {
+  _ListedDirectory(this.entries);
+
+  final List<FileSystemEntity> entries;
+
+  @override
+  bool existsSync() => true;
+
+  @override
+  List<FileSystemEntity> listSync({
+    bool recursive = false,
+    bool followLinks = true,
+  }) => entries;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _HandleDirectory implements Directory {
+  _HandleDirectory(this.path, this.handleOwner);
+
+  @override
+  final String path;
+  final ReceivePort handleOwner;
+
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

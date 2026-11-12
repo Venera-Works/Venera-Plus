@@ -431,7 +431,9 @@ class ImportComic {
       cover: coverPath,
       comicType: ComicType.local,
       downloadedChapters: chapters,
-      createdAt: createTime ?? DateTime.now(),
+      createdAt: createTime != null && createTime.millisecondsSinceEpoch > 0
+          ? createTime
+          : DateTime.now(),
     );
   }
 

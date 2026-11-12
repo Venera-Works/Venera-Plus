@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -97,6 +98,192 @@ Future<void> _withManager(
 
 void main() {
   group('Favorites Sync & Stable Folder Identity', () {
+    test(
+      'folder names use SQLite ASCII case rules across create and import',
+      () async {
+        await _withManager((manager) async {
+          manager.createFolder('Foo');
+          manager.createFolder('Foo0');
+          manager.createFolder('Foo1');
+          manager.addComic('fOO', _testComic('original'));
+          final folderId = manager.getFolderId('Foo');
+          expect(manager.getFolderId('foo'), folderId);
+          expect(manager.counts.containsKey('fOO'), isFalse);
+          expect(manager.existsFolder('fOO'), isTrue);
+          expect(() => manager.createFolder('foo'), throwsA(anything));
+          expect(validateFolderName('foo'), isNotNull);
+          expect(validateFolderName('foo', currentName: 'Foo'), isNull);
+          expect(manager.createFolder('foo', true), 'foo2');
+          expect(manager.createFolder('Ä'), 'Ä');
+          expect(manager.createFolder('ä'), 'ä');
+          final imported =
+              jsonDecode(manager.folderToJson('Foo')) as Map<String, dynamic>;
+          imported['name'] = 'foo';
+          manager.fromJson(jsonEncode(imported));
+          expect(manager.folderNames, contains('foo(0)'));
+          expect(manager.getFolderId('foo(0)'), isNot(folderId));
+          expect(manager.getFolderComics('foo(0)').single.id, 'original');
+          expect(manager.getFolderComics('Foo').single.id, 'original');
+          manager.fromJson(jsonEncode({'name': 'FOO', 'comics': []}));
+          expect(manager.folderNames, contains('FOO(1)'));
+        });
+      },
+    );
+
+    test(
+      'reserved table names are rejected or safely allocated for import',
+      () async {
+        await _withManager((manager) async {
+          for (final name in [
+            'FOLDER_ORDER',
+            'Folder_Sync',
+            'FOLDER_METADATA',
+            'Comic_Update_State',
+            'ANDROID_METADATA',
+            'SQLITE_sequence',
+          ]) {
+            expect(() => manager.createFolder(name), throwsA(anything));
+            expect(validateFolderName(name), isNotNull);
+            final allocated = manager.createFolder(name, true);
+            expect(isInternalFavoriteTable(allocated), isFalse);
+            manager.fromJson(jsonEncode({'name': name, 'comics': []}));
+          }
+          expect(manager.folderNames.any(isInternalFavoriteTable), isFalse);
+          expect(manager.folderNames, contains('Favorite SQLITE_sequence(0)'));
+        });
+      },
+    );
+
+    test(
+      'case-only rename preserves identity, content and bindings after reopening',
+      () async {
+        await _withManager((manager) async {
+          manager.createFolder('Foo');
+          manager.addComic('Foo', _testComic('keep'));
+          manager.linkFolderToNetwork('Foo', 'source', 'remote');
+          await manager.setReadingFolder('Foo');
+          appdata.settings['quickFavorite'] = 'Foo';
+          final folderId = manager.getFolderId('Foo')!;
+          manager.rename('Foo', 'foo');
+          expect(manager.folderNames, ['foo']);
+          expect(manager.getFolderId('foo'), folderId);
+          expect(manager.getFolderLogicalName('foo'), 'foo');
+          expect(manager.getFolderComics('foo').single.id, 'keep');
+          expect(manager.findLinked('foo'), ('source', 'remote'));
+          expect(manager.readingFolderId, folderId);
+          expect(appdata.settings['quickFavorite'], 'foo');
+          await manager.waitForPendingReads();
+          var notifications = 0;
+          manager.addListener(() => notifications++);
+          manager.rename('foo', 'foo');
+          expect(notifications, 0);
+          manager.close();
+          LocalFavoritesManager.cache = null;
+          final reopened = LocalFavoritesManager();
+          await reopened.init();
+          expect(reopened.folderNames, ['foo']);
+          expect(reopened.getFolderId('foo'), folderId);
+          expect(reopened.getFolderLogicalName('foo'), 'foo');
+          expect(reopened.getFolderComics('foo').single.id, 'keep');
+          expect(reopened.findLinked('foo'), ('source', 'remote'));
+          expect(reopened.readingFolder, 'foo');
+          expect(reopened.readingFolderId, folderId);
+          expect(appdata.settings['quickFavorite'], 'foo');
+        });
+      },
+    );
+
+    test(
+      'failed case-only rename rolls back table and all associations',
+      () async {
+        await _withManager((manager) async {
+          manager.createFolder('Foo');
+          manager.addComic('Foo', _testComic('keep'));
+          manager.linkFolderToNetwork('Foo', 'source', 'remote');
+          await manager.setReadingFolder('Foo');
+          appdata.settings['quickFavorite'] = 'Foo';
+          final folderId = manager.getFolderId('Foo');
+          await manager.waitForPendingReads();
+          final db = sqlite3.open('${App.dataPath}/local_favorite.db');
+          try {
+            db.execute('''
+            CREATE TRIGGER fail_folder_rename BEFORE UPDATE ON folder_metadata
+            BEGIN SELECT RAISE(ABORT, 'rename blocked'); END;
+          ''');
+            expect(() => manager.rename('Foo', 'foo'), throwsA(anything));
+            expect(manager.folderNames, ['Foo']);
+            expect(manager.getFolderId('Foo'), folderId);
+            expect(manager.getFolderLogicalName('Foo'), 'Foo');
+            expect(manager.getFolderComics('Foo').single.id, 'keep');
+            expect(manager.findLinked('Foo'), ('source', 'remote'));
+            expect(manager.readingFolder, 'Foo');
+            expect(appdata.settings['quickFavorite'], 'Foo');
+            expect(
+              db.select(
+                "SELECT name FROM sqlite_master WHERE name LIKE '__tmp_%';",
+              ),
+              isEmpty,
+            );
+            expect(
+              db
+                  .select('SELECT folder_name FROM folder_order;')
+                  .single['folder_name'],
+              'Foo',
+            );
+            expect(manager.counts.keys, ['Foo']);
+          } finally {
+            db.close();
+          }
+        });
+      },
+    );
+
+    test(
+      'sync allocates ASCII collisions and reserved names without merging Unicode',
+      () async {
+        await _withManager((manager) async {
+          final names = [
+            'Foo',
+            'foo',
+            'FOO (2)',
+            'FOLDER_METADATA',
+            'SQLITE_sequence',
+            '__TMP_reserved',
+            'Ä',
+            'ä',
+          ];
+          final records = <String, Map<String, Object?>>{
+            for (var i = 0; i < names.length; i++)
+              syncRecordKey('folder', ['id-$i']): {
+                'name': names[i],
+                'order': i,
+              },
+          };
+          manager.applySyncRecords(records);
+          expect(manager.folderNames, hasLength(names.length));
+          expect(
+            manager.folderNames.map(favoriteFolderNameKey).toSet(),
+            hasLength(names.length),
+          );
+          expect(
+            manager.folderNames,
+            containsAll(['Foo', 'foo (2)', 'FOO (2) (2)', 'Ä', 'ä']),
+          );
+          expect(manager.folderNames.any(isInternalFavoriteTable), isFalse);
+          final exported = manager.exportSyncRecords();
+          for (var i = 0; i < names.length; i++) {
+            expect(
+              exported[syncRecordKey('folder', ['id-$i'])]!['name'],
+              names[i],
+            );
+          }
+          final allocated = manager.folderNames;
+          manager.applySyncRecords(records);
+          expect(manager.folderNames, allocated);
+        });
+      },
+    );
+
     test(
       'legacy folders are deterministically seeded and preserved across re-init',
       () async {

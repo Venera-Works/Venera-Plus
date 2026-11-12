@@ -236,11 +236,13 @@ class LocalManager with ChangeNotifier {
   Directory get directory => Directory(path);
 
   void _checkNoMedia() {
-    if (App.isAndroid) {
-      var file = File(FilePath.join(path, '.nomedia'));
-      if (!file.existsSync()) {
-        file.createSync();
-      }
+    if (!App.isAndroid) return;
+    try {
+      final file = File(FilePath.join(path, '.nomedia'));
+      if (!file.existsSync()) file.createSync();
+    } on FileSystemException catch (error, stack) {
+      if (!path.startsWith('android://')) rethrow;
+      Log.error('IO', 'Failed to create .nomedia: $error', stack);
     }
   }
 
@@ -315,15 +317,24 @@ class LocalManager with ChangeNotifier {
   }
 
   Future<void> _checkPathValidation() async {
-    var testFile = File(FilePath.join(path, 'venera_test'));
     try {
+      final testFile = File(FilePath.join(path, 'venera_test'));
       testFile.createSync();
       testFile.deleteSync();
-    } catch (e) {
+    } catch (error, stack) {
       if (_relocatedRoot != null) rethrow;
+      if (path.startsWith('android://')) {
+        Log.error(
+          'IO',
+          'SAF storage unavailable; keeping configured path: $error',
+          stack,
+        );
+        return;
+      }
       Log.error(
-        "IO",
-        "Failed to create test file in local path: $e\nUsing default path instead.",
+        'IO',
+        'Failed to create test file in local path: $error\nUsing default path instead.',
+        stack,
       );
       path = await findDefaultPath();
     }
@@ -365,14 +376,14 @@ class LocalManager with ChangeNotifier {
     }
     if (File(FilePath.join(App.dataPath, 'local_path')).existsSync()) {
       path = File(FilePath.join(App.dataPath, 'local_path')).readAsStringSync();
-      if (!directory.existsSync()) {
+      if (!path.startsWith('android://') && !directory.existsSync()) {
         path = await findDefaultPath();
       }
     } else {
       path = await findDefaultPath();
     }
     try {
-      if (!directory.existsSync()) {
+      if (!path.startsWith('android://') && !directory.existsSync()) {
         await directory.create();
       }
     } catch (e, s) {
@@ -388,18 +399,55 @@ class LocalManager with ChangeNotifier {
   }
 
   String findValidId(ComicType type) {
-    final res = _db.select(
-      '''
-      SELECT id FROM comics WHERE comic_type = ?
-      ORDER BY CAST(id AS INTEGER) DESC
-      LIMIT 1;
-      ''',
-      [type.value],
-    );
-    if (res.isEmpty) {
-      return '1';
+    var highest = BigInt.zero;
+    void includeIds(ResultSet rows) {
+      for (final row in rows) {
+        final value = BigInt.tryParse(row['id'] as String, radix: 10);
+        if (value != null && value > highest) highest = value;
+      }
     }
-    return (int.parse((res.first[0])) + 1).toString();
+
+    includeIds(
+      _db.select('SELECT id FROM comics WHERE comic_type = ?', [type.value]),
+    );
+    final databasePath =
+        _db
+                .select('PRAGMA database_list;')
+                .singleWhere((row) => row['name'] == 'main')['file']
+            as String;
+    final favoritesPath = FilePath.join(
+      File(databasePath).parent.path,
+      'local_favorite.db',
+    );
+    final favoritesKind = FileSystemEntity.typeSync(favoritesPath);
+    if (favoritesKind != FileSystemEntityType.notFound) {
+      if (favoritesKind != FileSystemEntityType.file) {
+        throw FileSystemException(
+          'Favorites database is unavailable',
+          favoritesPath,
+        );
+      }
+      // Migrated favorites can outlive local.db and its UI index.
+      final favorites = sqlite3.open(favoritesPath, mode: OpenMode.readOnly);
+      try {
+        final tables = favorites.select(
+          "SELECT name FROM sqlite_master WHERE type = 'table';",
+        );
+        for (final row in tables) {
+          final table = row['name'] as String;
+          if (isInternalFavoriteTable(table)) continue;
+          includeIds(
+            favorites.select(
+              'SELECT id FROM ${quoteSqlIdentifier(table)} WHERE type = ?',
+              [type.value],
+            ),
+          );
+        }
+      } finally {
+        favorites.close();
+      }
+    }
+    return (highest + BigInt.one).toString();
   }
 
   Future<void> add(LocalComic comic, [String? id]) async {
@@ -800,8 +848,7 @@ class LocalManager with ChangeNotifier {
 
   void deleteComic(LocalComic c, [bool removeFileOnDisk = true]) {
     if (removeFileOnDisk) {
-      var dir = Directory(FilePath.join(path, c.directory));
-      dir.deleteIgnoreError(recursive: true);
+      _deleteDirectories([FilePath.join(path, c.directory)]);
     }
     // Deleting a local comic means that it's no longer available, thus both favorite and history should be deleted.
     if (c.comicType == ComicType.local) {
@@ -844,13 +891,13 @@ class LocalManager with ChangeNotifier {
         c.comicType.value,
       ]);
     }
-    var shouldRemovedDirs = <Directory>[];
+    var shouldRemovedDirs = <String>[];
     for (var chapter in chapters) {
       var dir = Directory(
         FilePath.join(c.baseDir, getChapterDirectoryName(chapter)),
       );
       if (dir.existsSync()) {
-        shouldRemovedDirs.add(dir);
+        shouldRemovedDirs.add(dir.path);
       }
     }
     if (shouldRemovedDirs.isNotEmpty) {
@@ -868,14 +915,14 @@ class LocalManager with ChangeNotifier {
       return;
     }
 
-    var shouldRemovedDirs = <Directory>[];
+    var shouldRemovedDirs = <String>[];
     _db.execute('BEGIN TRANSACTION;');
     try {
       for (var c in comics) {
         if (removeFileOnDisk) {
           var dir = Directory(FilePath.join(path, c.directory));
           if (dir.existsSync()) {
-            shouldRemovedDirs.add(dir);
+            shouldRemovedDirs.add(dir.path);
           }
         }
         _db.execute('DELETE FROM comics WHERE id = ? AND comic_type = ?;', [
@@ -904,20 +951,57 @@ class LocalManager with ChangeNotifier {
     }
   }
 
+  static bool _isSafChildPath(String root, String target) {
+    final prefix = root.endsWith('/') ? root : '$root/';
+    if (!target.startsWith(prefix)) return false;
+    return target
+        .substring(prefix.length)
+        .split('/')
+        .every(
+          (part) =>
+              part.isNotEmpty &&
+              part != '.' &&
+              part != '..' &&
+              !part.contains('\\'),
+        );
+  }
+
   /// Deletes the directories in a separate isolate to avoid blocking the UI thread.
-  static void _deleteDirectories(List<Directory> directories) {
+  static void _deleteDirectories(List<String> paths) {
+    if (paths.isEmpty) return;
+    final root = LocalManager().path;
     Isolate.run(() async {
+      final errors = <String>[];
       await SAFTaskWorker().init();
-      for (var dir in directories) {
-        try {
-          if (dir.existsSync()) {
-            await dir.delete(recursive: true);
+      await overrideIO(() async {
+        for (final path in paths) {
+          try {
+            if (root.startsWith('android://') &&
+                path.startsWith('android://') &&
+                !_isSafChildPath(root, path)) {
+              throw FileSystemException(
+                'Refusing to delete outside the SAF library',
+                path,
+              );
+            }
+            final directory = Directory(path);
+            if (directory.existsSync()) await directory.delete(recursive: true);
+          } catch (error) {
+            errors.add('Failed to delete $path: $error');
           }
-        } catch (e) {
-          continue;
         }
-      }
-    });
+      });
+      return errors;
+    }).then<void>(
+      (errors) {
+        for (final error in errors) {
+          Log.error('LocalManager', error);
+        }
+      },
+      onError: (Object error, StackTrace stack) {
+        Log.error('LocalManager', 'Directory cleanup failed: $error', stack);
+      },
+    );
   }
 
   static String getChapterDirectoryName(String name) {

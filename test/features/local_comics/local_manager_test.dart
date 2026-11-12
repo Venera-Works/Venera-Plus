@@ -145,4 +145,62 @@ void main() {
     },
     skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );
+  test(
+    'unavailable SAF storage keeps the configured library instead of switching roots',
+    () async {
+      final root = Directory.systemTemp.createTempSync('venera-local-saf-');
+      addTearDown(() {
+        LocalManager.resetForTesting();
+        root.deleteSync(recursive: true);
+      });
+      App.dataPath = App.cachePath = root.path;
+      const savedPath = 'android://primary%3AManga';
+      final pathFile = File('${root.path}/local_path')
+        ..writeAsStringSync(savedPath);
+      LocalManager.resetForTesting();
+      LocalManager.debugSkipComicSourceInit = true;
+      final manager = LocalManager();
+
+      await IOOverrides.runWithIOOverrides(manager.init, _UnavailableSafIO());
+
+      expect(manager.path, savedPath);
+      expect(pathFile.readAsStringSync(), savedPath);
+      expect(manager.directory.path, savedPath);
+    },
+    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+  );
+}
+
+final class _UnavailableSafIO extends IOOverrides {
+  @override
+  Directory createDirectory(String path) => path.startsWith('android://')
+      ? _UnavailableSafDirectory(path)
+      : super.createDirectory(path);
+
+  @override
+  File createFile(String path) => path.startsWith('android://')
+      ? _UnavailableSafFile(path)
+      : super.createFile(path);
+}
+
+class _UnavailableSafDirectory extends Fake implements Directory {
+  _UnavailableSafDirectory(this.path);
+
+  @override
+  final String path;
+
+  @override
+  bool existsSync() => false;
+}
+
+class _UnavailableSafFile extends Fake implements File {
+  _UnavailableSafFile(this.path);
+
+  @override
+  final String path;
+
+  @override
+  void createSync({bool recursive = false, bool exclusive = false}) {
+    throw FileSystemException('Provider is offline', path);
+  }
 }

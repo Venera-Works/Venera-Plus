@@ -67,8 +67,9 @@ dependencies:
   local_auth: ^3.0.2
   flutter_saf:
     git:
-      url: https://github.com/venera-app/flutter_saf
-      ref: fe182cdf40e5fa6230f451bc1d643b860f610d13
+      url: https://github.com/venera-app/venera-prime
+      path: packages/flutter_saf
+      ref: 056a419a504258e6c6352871f9c888b3fd5bc2f4
   dynamic_color: ^1.8.1
   shimmer_animation: ^2.1.0
   flutter_memory_info: ^0.0.3

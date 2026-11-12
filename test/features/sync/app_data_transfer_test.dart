@@ -866,8 +866,10 @@ class _SyncWebDav {
   final HttpServer server;
   final files = <String, Uint8List>{};
   final rootFiles = <String, Uint8List>{};
+  final comicUpdateFiles = <String, Uint8List>{};
   final requests = <String>[];
   var syncDirectoryExists = false;
+  var comicUpdateDirectoryExists = false;
 
   String get url => 'http://127.0.0.1:${server.port}/dav';
 
@@ -893,10 +895,38 @@ class _SyncWebDav {
     );
     const root = '/dav/';
     const syncDirectory = '/dav/VeneraPlus/';
-    if (path == syncDirectory || path == '/dav/VeneraPlus') {
+    const updateDirectory = '/dav/VeneraPlus/comic_updates/';
+    if (path == updateDirectory || path == '/dav/VeneraPlus/comic_updates') {
+      if (request.method == 'MKCOL') {
+        request.response.statusCode = comicUpdateDirectoryExists
+            ? HttpStatus.methodNotAllowed
+            : HttpStatus.created;
+        comicUpdateDirectoryExists = true;
+      } else if (request.method == 'PROPFIND') {
+        if (!comicUpdateDirectoryExists) {
+          request.response.statusCode = HttpStatus.notFound;
+        } else {
+          _writeDirectoryResponse(
+            request.response,
+            comicUpdateFiles,
+            updateDirectory,
+          );
+        }
+      } else {
+        request.response.statusCode = HttpStatus.ok;
+      }
+    } else if (path.startsWith(updateDirectory)) {
+      _handleFile(
+        request,
+        body.toBytes(),
+        path,
+        updateDirectory,
+        comicUpdateFiles,
+      );
+    } else if (path == syncDirectory || path == '/dav/VeneraPlus') {
       if (request.method == 'MKCOL') {
         request.response.statusCode = syncDirectoryExists
-            ? HttpStatus.forbidden
+            ? HttpStatus.methodNotAllowed
             : HttpStatus.created;
         syncDirectoryExists = true;
       } else if (request.method == 'PROPFIND') {

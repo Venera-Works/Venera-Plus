@@ -79,12 +79,12 @@
     },
     {
       "dependency": "flutter_saf",
-      "url": "https://github.com/venera-app/flutter_saf",
-      "commit": "fe182cdf40e5fa6230f451bc1d643b860f610d13",
+      "url": "https://github.com/venera-app/venera-prime",
+      "commit": "056a419a504258e6c6352871f9c888b3fd5bc2f4",
       "status": "license-review",
-      "reason": "Placeholder license; IO overrides and native storage APIs differ from pub.dev namesake.",
+      "reason": "Prime packages/flutter_saf retains the fe182cdf source plus JNI, descriptor ownership, generic DocumentsProvider, text/stat and write-error fixes; package LICENSE remains a placeholder.",
       "packages": {
-        "flutter_saf": "."
+        "flutter_saf": "packages/flutter_saf"
       }
     },
     {

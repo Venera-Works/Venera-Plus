@@ -206,33 +206,41 @@ Future<File> createEpubWithLocalComic(
   if (comic.isIncomplete) {
     throw StateError('Retry missing images before exporting this comic.'.tl);
   }
-  var chapters = <String, List<File>>{};
+  var chapters = <String, List<String>>{};
   if (comic.chapters == null) {
-    chapters[comic.title] = (await LocalManager().getImages(
+    chapters[comic.title] = await LocalManager().getImages(
       comic.id,
       comic.comicType,
       0,
-    )).map((e) => File(e)).toList();
+    );
   } else {
     for (var chapter in comic.downloadedChapters) {
-      chapters[comic.chapters![chapter]!] = (await LocalManager().getImages(
+      chapters[comic.chapters![chapter]!] = await LocalManager().getImages(
         comic.id,
         comic.comicType,
         chapter,
-      )).map((e) => File(e)).toList();
+      );
     }
   }
-  var data = EpubData(
-    title: comic.title,
-    author: comic.subtitle,
-    cover: comic.coverFile,
-    chapters: chapters,
-  );
+  // SAF files own native handles via finalizers. Transfer paths only and
+  // acquire fresh handles in the worker isolate.
+  final title = comic.title;
+  final author = comic.subtitle;
+  final coverPath = comic.coverFile.path;
 
   final cacheDir = App.cachePath;
 
   return Isolate.run(
     () => overrideIO(() async {
+      final data = EpubData(
+        title: title,
+        author: author,
+        cover: File(coverPath),
+        chapters: chapters.map(
+          (name, paths) =>
+              MapEntry(name, paths.map((path) => File(path)).toList()),
+        ),
+      );
       return createEpubComic(data, cacheDir, outFilePath);
     }),
   );

@@ -410,8 +410,22 @@ class LocalFavoritesManager with ChangeNotifier {
     FavoriteSyncData.ensureFolderMetadataTable(_db);
     _db.execute('BEGIN TRANSACTION');
     try {
+      var source = before;
+      if (favoriteFolderNameKey(before) == favoriteFolderNameKey(after)) {
+        String temporary;
+        do {
+          temporary = '__tmp_fav_${const Uuid().v4()}';
+        } while (_db.select(
+          'SELECT 1 FROM sqlite_master WHERE name = ? COLLATE NOCASE;',
+          [temporary],
+        ).isNotEmpty);
+        _db.execute(
+          'ALTER TABLE ${quoteSqlIdentifier(before)} RENAME TO ${quoteSqlIdentifier(temporary)};',
+        );
+        source = temporary;
+      }
       _db.execute(
-        'ALTER TABLE ${quoteSqlIdentifier(before)} RENAME TO ${quoteSqlIdentifier(after)};',
+        'ALTER TABLE ${quoteSqlIdentifier(source)} RENAME TO ${quoteSqlIdentifier(after)};',
       );
       _db.execute(
         'update folder_order set folder_name = ? where folder_name == ?;',
@@ -731,7 +745,7 @@ class LocalFavoritesManager with ChangeNotifier {
   }
 
   bool existsFolder(String name) {
-    return folderNames.contains(name);
+    return hasFavoriteFolderName(folderNames, name);
   }
 
   /// create a folder
@@ -741,28 +755,22 @@ class LocalFavoritesManager with ChangeNotifier {
     String? folderId,
   ]) {
     FavoriteSyncData.ensureFolderMetadataTable(_db);
-    if (name.isEmpty) {
-      if (renameWhenInvalidName) {
-        int i = 0;
-        while (existsFolder(i.toString())) {
-          i++;
-        }
-        name = i.toString();
-      } else {
-        throw "name is empty!";
-      }
+    final folders = folderNames;
+    bool unavailable(String candidate) =>
+        hasFavoriteFolderName(folders, candidate) ||
+        isInternalFavoriteTable(candidate);
+    if (name.isEmpty && !renameWhenInvalidName) {
+      throw "name is empty!";
     }
-    if (existsFolder(name) || isInternalFavoriteTable(name)) {
-      if (renameWhenInvalidName) {
-        var prevName = name;
-        int i = 0;
-        while (existsFolder(i.toString())) {
-          i++;
-        }
-        name = prevName + i.toString();
-      } else {
+    if (name.isEmpty || unavailable(name)) {
+      if (!renameWhenInvalidName) {
         throw Exception("Folder is existing");
       }
+      final base = favoriteFolderNameBase(name);
+      var i = 0;
+      do {
+        name = '$base${i++}';
+      } while (unavailable(name));
     }
     final stableId = folderId ?? const Uuid().v4();
     _db.execute("""
@@ -889,9 +897,14 @@ class LocalFavoritesManager with ChangeNotifier {
     int? order,
     ComicUpdateSnapshot? updateSnapshot,
   ]) {
-    if (!existsFolder(folder)) {
+    final key = favoriteFolderNameKey(folder);
+    final canonical = folderNames
+        .where((name) => favoriteFolderNameKey(name) == key)
+        .firstOrNull;
+    if (canonical == null) {
       throw Exception("Folder does not exists");
     }
+    folder = canonical;
     final qf = quoteSqlIdentifier(folder);
     var res = _db.select("select * from $qf where id == ? and type == ?;", [
       comic.id,
@@ -1276,9 +1289,18 @@ class LocalFavoritesManager with ChangeNotifier {
   }
 
   void rename(String before, String after) {
-    if (existsFolder(after)) {
+    if (before == after) return;
+    final folders = folderNames;
+    final sourceKey = favoriteFolderNameKey(before);
+    before = folders.firstWhere(
+      (folder) => favoriteFolderNameKey(folder) == sourceKey,
+    );
+    if (after.isEmpty ||
+        isInternalFavoriteTable(after) ||
+        hasFavoriteFolderName(folders, after, excluding: before)) {
       throw "Name already exists!";
     }
+    if (before == after) return;
     final wasReadingFolder = readingFolder == before;
     _renameTables(before, after);
     counts[after] = counts[before] ?? 0;
@@ -1557,17 +1579,19 @@ class LocalFavoritesManager with ChangeNotifier {
     }
     final rawFolderId = data["folderId"] as String?;
     var finalFolderId = rawFolderId;
-    if (existsFolder(folder)) {
+    final base = favoriteFolderNameBase(folder);
+    if (base != folder ||
+        existsFolder(folder) ||
+        isInternalFavoriteTable(folder)) {
       int i = 0;
-      while (existsFolder("$folder($i)")) {
-        i++;
-      }
-      folder = "$folder($i)";
-      if (finalFolderId != null && getFolderNameById(finalFolderId) != null) {
-        finalFolderId = const Uuid().v4();
-      }
+      do {
+        folder = '$base(${i++})';
+      } while (existsFolder(folder) || isInternalFavoriteTable(folder));
     }
-    createFolder(folder, false, finalFolderId);
+    if (finalFolderId != null && getFolderNameById(finalFolderId) != null) {
+      finalFolderId = const Uuid().v4();
+    }
+    folder = createFolder(folder, false, finalFolderId);
     for (var comic in data["comics"]) {
       try {
         addComic(folder, FavoriteItem.fromJson(comic));
@@ -1725,7 +1749,7 @@ class LocalFavoritesManager with ChangeNotifier {
     if (_isClosed) return null;
     FavoriteSyncData.ensureFolderMetadataTable(_db);
     final rows = _db.select(
-      'SELECT folder_id FROM folder_metadata WHERE folder_name = ?;',
+      'SELECT folder_id FROM folder_metadata WHERE folder_name = ? COLLATE NOCASE;',
       [folderName],
     );
     return rows.isNotEmpty ? rows.first['folder_id'] as String : null;
@@ -1745,7 +1769,7 @@ class LocalFavoritesManager with ChangeNotifier {
     if (_isClosed) return null;
     FavoriteSyncData.ensureFolderMetadataTable(_db);
     final rows = _db.select(
-      'SELECT logical_name FROM folder_metadata WHERE folder_name = ?;',
+      'SELECT logical_name FROM folder_metadata WHERE folder_name = ? COLLATE NOCASE;',
       [folderName],
     );
     return rows.isNotEmpty ? rows.first['logical_name'] as String? : null;

@@ -13,6 +13,15 @@ can be browsed, sorted, and read directly there.
 Supported comic image extensions are `jpg`, `jpeg`, `jpe`, `png`, `webp`,
 `gif`, and `avif`.
 
+Favorites restored from an older device are preserved. Importing a new comic does
+not replace or automatically associate it with those entries, even when no
+destination favorites folder is selected. If the favorites data cannot be read,
+the import fails and can be retried after the data is repaired.
+
+When an Android document provider is offline or its permission expires, the app
+keeps the configured storage location instead of switching to a new local
+directory. Restore the connection or grant access again to reuse that location.
+
 ## Restore Local Downloads
 
 If you migrated the app and kept the local download folder but lost `local.db`,

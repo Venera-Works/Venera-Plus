@@ -30,7 +30,13 @@ Future<void> copyDirectoryIsolate(
   Directory source,
   Directory destination,
 ) async {
-  await Isolate.run(() => overrideIO(() => copyDirectory(source, destination)));
+  final sourcePath = source.path;
+  final destinationPath = destination.path;
+  await Isolate.run(
+    () => overrideIO(
+      () => copyDirectory(Directory(sourcePath), Directory(destinationPath)),
+    ),
+  );
 }
 
 class DirectoryPicker {
@@ -305,9 +311,37 @@ Future<bool> saveFile({
 final class _IOOverrides extends IOOverrides {
   @override
   Future<FileSystemEntityType> fseGetType(String path, bool followLinks) {
+    if (App.isAndroid && path.startsWith('android://')) {
+      return AndroidFile.fromPath(path).then((file) async {
+        if (file == null) {
+          throw FileSystemException('Invalid SAF path', path);
+        }
+        return await file.exists()
+            ? (await file.stat()).type
+            : FileSystemEntityType.notFound;
+      });
+    }
     // Dart 3.11.1's default IO override omits the NUL terminator required
     // by the native asynchronous type lookup.
     return super.fseGetType('$path\u0000', followLinks);
+  }
+
+  @override
+  FileSystemEntityType fseGetTypeSync(String path, bool followLinks) {
+    if (App.isAndroid && path.startsWith('android://')) {
+      return _safTypeSync(path);
+    }
+    return super.fseGetTypeSync('$path\u0000', followLinks);
+  }
+
+  FileSystemEntityType _safTypeSync(String path) {
+    final file = AndroidFile.fromPathSync(path);
+    if (file == null) {
+      throw FileSystemException('Invalid SAF path', path);
+    }
+    return file.existsSync()
+        ? file.statSync().type
+        : FileSystemEntityType.notFound;
   }
 
   @override
@@ -315,6 +349,9 @@ final class _IOOverrides extends IOOverrides {
     if (App.isAndroid) {
       var dir = AndroidDirectory.fromPathSync(path);
       if (dir == null) {
+        if (path.startsWith('android://')) {
+          throw FileSystemException('Invalid SAF directory path', path);
+        }
         return super.createDirectory(path);
       }
       return dir;
@@ -331,6 +368,9 @@ final class _IOOverrides extends IOOverrides {
     if (App.isAndroid) {
       var f = AndroidFile.fromPathSync(path);
       if (f == null) {
+        if (path.startsWith('android://')) {
+          throw FileSystemException('Invalid SAF file path', path);
+        }
         return super.createFile(path);
       }
       return f;

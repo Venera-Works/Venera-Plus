@@ -7,6 +7,7 @@ import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/components/select.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/favorites/favorites_manager.dart';
+import 'package:venera_plus/features/favorites/favorite_sync_data.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
@@ -86,13 +87,14 @@ Future<String?> newFolder() {
   );
 }
 
-String? validateFolderName(String newFolderName) {
-  var folders = LocalFavoritesManager().folderNames;
+String? validateFolderName(String newFolderName, {String? currentName}) {
+  final folders = LocalFavoritesManager().folderNames;
   if (newFolderName.isEmpty) {
     return "Folder name cannot be empty".tl;
   } else if (newFolderName.length > 50) {
     return "Folder name is too long".tl;
-  } else if (folders.contains(newFolderName)) {
+  } else if (isInternalFavoriteTable(newFolderName) ||
+      hasFavoriteFolderName(folders, newFolderName, excluding: currentName)) {
     return "Folder already exists".tl;
   }
   return null;
@@ -350,6 +352,12 @@ Future<void> importNetworkFolder(
   var resultName = folder ?? comicSource.name;
   var exists = LocalFavoritesManager().existsFolder(resultName);
   if (exists) {
+    resultName = LocalFavoritesManager().folderNames.firstWhere(
+      (name) =>
+          favoriteFolderNameKey(name) == favoriteFolderNameKey(resultName),
+    );
+  }
+  if (exists) {
     if (!LocalFavoritesManager().isLinkedToNetworkFolder(
       resultName,
       source,
@@ -360,7 +368,7 @@ Future<void> importNetworkFolder(
     }
   }
   if (!exists) {
-    LocalFavoritesManager().createFolder(resultName);
+    resultName = LocalFavoritesManager().createFolder(resultName, true);
     LocalFavoritesManager().linkFolderToNetwork(
       resultName,
       source,
