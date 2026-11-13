@@ -5,7 +5,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:sqlite3/sqlite3.dart';
 import 'package:image/image.dart' as img;
 import 'package:venera_plus/components/gesture.dart';
 import 'package:venera_plus/components/button.dart';
@@ -41,6 +40,7 @@ import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/foundation/sync_records.dart';
 
 import '../../widget_test_io.dart';
+import '../../support/sqlite.dart';
 
 const _testRoundId = '00000000-0000-4000-8000-000000000001';
 
@@ -206,7 +206,7 @@ void main() {
         }
         expect(tester.takeException(), isNull);
       },
-      skip: !_sqliteAvailable(),
+      skip: !isSqliteAvailable(),
     );
   }
 
@@ -250,7 +250,7 @@ void main() {
       });
       expect(manager.hasNewUpdate(fixture.comicId, fixture.type), isTrue);
     },
-    skip: !_sqliteAvailable(),
+    skip: !isSqliteAvailable(),
   );
 
   for (final disposed in [false, true]) {
@@ -299,7 +299,7 @@ void main() {
         }
         expect(tester.takeException(), isNull);
       },
-      skip: !_sqliteAvailable(),
+      skip: !isSqliteAvailable(),
     );
   }
 
@@ -371,7 +371,7 @@ void main() {
       expect(tester.takeException(), isNull);
       await _popReader(tester, fixture);
     },
-    skip: !_sqliteAvailable(),
+    skip: !isSqliteAvailable(),
   );
 
   for (final grouped in [false, true]) {
@@ -487,7 +487,7 @@ void main() {
         expect(tester.takeException(), isNull);
         await _popReader(tester, fixture);
       },
-      skip: !_sqliteAvailable(),
+      skip: !isSqliteAvailable(),
     );
   }
 
@@ -582,7 +582,7 @@ void main() {
       expect(tester.takeException(), isNull);
       await _popReader(tester, fixture);
     },
-    skip: !_sqliteAvailable(),
+    skip: !isSqliteAvailable(),
   );
 
   for (final nested in [false, true]) {
@@ -638,7 +638,7 @@ void main() {
         expect(tester.takeException(), isNull);
         await _pumpAsyncWork(tester, fixture.histories.flushReadingProgress());
       },
-      skip: !_sqliteAvailable(),
+      skip: !isSqliteAvailable(),
     );
   }
 
@@ -735,7 +735,7 @@ void main() {
       expect(tester.takeException(), isNull);
       await _popReader(tester, fixture);
     },
-    skip: !_sqliteAvailable(),
+    skip: !isSqliteAvailable(),
   );
 
   for (final grouped in [false, true]) {
@@ -815,7 +815,7 @@ void main() {
           expect(persistedProgress.maximumPositions.single.page, 3);
         }
       },
-      skip: !_sqliteAvailable(),
+      skip: !isSqliteAvailable(),
     );
   }
   testWidgets(
@@ -858,7 +858,7 @@ void main() {
       );
       await _popReader(tester, fixture);
     },
-    skip: !_sqliteAvailable(),
+    skip: !isSqliteAvailable(),
   );
 
   testWidgets(
@@ -935,7 +935,7 @@ void main() {
       expect(fixture.requestedChapterIds.last, 'c1');
       await _popReader(tester, fixture);
     },
-    skip: !_sqliteAvailable(),
+    skip: !isSqliteAvailable(),
   );
 
   testWidgets(
@@ -964,7 +964,7 @@ void main() {
       expect(reader.images, isNull);
       await _popReader(tester, fixture);
     },
-    skip: !_sqliteAvailable(),
+    skip: !isSqliteAvailable(),
   );
 
   testWidgets(
@@ -996,7 +996,7 @@ void main() {
       expect(fixture.requestedChapterIds.last, 'duplicate-chapter');
       await _popReader(tester, fixture);
     },
-    skip: !_sqliteAvailable(),
+    skip: !isSqliteAvailable(),
   );
 
   testWidgets(
@@ -1063,7 +1063,7 @@ void main() {
       expect(_visibleReaderPage(2), findsWidgets);
       await _popReader(tester, fixture);
     },
-    skip: !_sqliteAvailable(),
+    skip: !isSqliteAvailable(),
   );
 
   testWidgets(
@@ -1120,7 +1120,7 @@ void main() {
       await _pumpAsyncWork(tester, fixture.histories.flushReadingProgress());
       await tester.pump();
     },
-    skip: !_sqliteAvailable(),
+    skip: !isSqliteAvailable(),
   );
   testWidgets(
     'Read starts at the beginning when the comic has no saved history',
@@ -1139,7 +1139,7 @@ void main() {
       expect(_visibleReaderPage(1), findsWidgets);
       await _popReader(tester, fixture);
     },
-    skip: !_sqliteAvailable(),
+    skip: !isSqliteAvailable(),
   );
 
   testWidgets(
@@ -1185,7 +1185,7 @@ void main() {
       expect(state.activeRoundId, isNull);
       await _popReader(tester, fixture);
     },
-    skip: !_sqliteAvailable(),
+    skip: !isSqliteAvailable(),
   );
 
   testWidgets(
@@ -1229,7 +1229,7 @@ void main() {
       );
       await _popReader(tester, fixture);
     },
-    skip: !_sqliteAvailable(),
+    skip: !isSqliteAvailable(),
   );
 
   testWidgets(
@@ -1261,7 +1261,7 @@ void main() {
       expect(fixture.requestedChapterIds, ['single']);
       await _popReader(tester, fixture);
     },
-    skip: !_sqliteAvailable(),
+    skip: !isSqliteAvailable(),
   );
 
   testWidgets(
@@ -1274,7 +1274,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Rescrape metadata'), findsNothing);
     },
-    skip: !_sqliteAvailable(),
+    skip: !isSqliteAvailable(),
   );
 
   testWidgets(
@@ -1383,18 +1383,8 @@ void main() {
       expect(attempts, 2);
       expect(jsonDecode(ops.metadata!)['title'], 'Scraped WebDAV Title');
     },
-    skip: !_sqliteAvailable(),
+    skip: !isSqliteAvailable(),
   );
-}
-
-bool _sqliteAvailable() {
-  try {
-    final db = sqlite3.openInMemory();
-    db.close();
-    return true;
-  } catch (_) {
-    return false;
-  }
 }
 
 Future<_ComicDetailsFixture> _createFixture(

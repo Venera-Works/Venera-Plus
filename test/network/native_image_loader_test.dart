@@ -7,12 +7,12 @@ import 'package:dio/dio.dart';
 import 'package:flutter/painting.dart';
 import 'package:flutter_qjs/flutter_qjs.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/image_provider/reader_image.dart';
 import 'package:venera_plus/network/images.dart';
 import 'package:venera_plus/network/remote_storage/remote_read_scheduler.dart';
+import '../support/sqlite.dart';
 
 class _ResponseCallback extends JSInvokable {
   _ResponseCallback(this.callback);
@@ -25,16 +25,6 @@ class _ResponseCallback extends JSInvokable {
 
   @override
   void destroy() => destroyCount++;
-}
-
-bool _sqliteAvailable() {
-  try {
-    final db = sqlite3.openInMemory();
-    db.close();
-    return true;
-  } catch (_) {
-    return false;
-  }
 }
 
 void main() {
@@ -811,6 +801,6 @@ void main() {
         },
       );
     },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );
 }

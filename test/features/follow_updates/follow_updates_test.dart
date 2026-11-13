@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/follow_updates/follow_update_queue.dart';
@@ -15,6 +14,7 @@ import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/network/request_scope.dart';
+import '../../support/sqlite.dart';
 
 void main() {
   group('Follow updates', () {
@@ -667,7 +667,7 @@ void main() {
           },
         );
       },
-      skip: _sqliteAvailable()
+      skip: isSqliteAvailable()
           ? false
           : 'sqlite3 native library is unavailable',
     );
@@ -818,16 +818,6 @@ ComicSource _source(
     null,
     null,
   );
-}
-
-bool _sqliteAvailable() {
-  try {
-    final db = sqlite3.openInMemory();
-    db.dispose();
-    return true;
-  } catch (_) {
-    return false;
-  }
 }
 
 FavoriteItemWithUpdateInfo _tracked(String key, String id) =>

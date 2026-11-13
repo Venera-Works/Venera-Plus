@@ -125,6 +125,8 @@ WebDAV fixtures store directory and file keys as decoded logical paths. Decode o
 
 Pull requests also run `依赖安全审查` and `PR 平台冒烟构建`. Dependency review blocks newly introduced high or critical vulnerabilities. Changes to application code, native platforms, dependencies, build scripts, workflows, or native integration tests trigger Android and Windows Debug smoke builds. The workflow configuration remains the source of truth for exact triggers; documentation-only changes skip platform jobs.
 
+After the Debug build, the Android PR job runs `:app:testDebugUnitTest --tests com.github.veneraworks.veneraplus.DownloadSessionStateTest`. JUnit executes `test/native/download_session_state_test.kt` to check download session generations, ownership, and progress bounds. Changes under `test/native/` also trigger platform jobs. The Windows PR job configures and compiles `windows/tests/` against the existing Debug build's Flutter engine library, then runs startup and global hotkey tests through CTest. Missing tests or test failures fail the gate.
+
 After the existing Windows Debug build, the PR job checks `flutter_qjs_plugin.dll`, `zip_flutter.dll`, and `flutter_windows.dll`, adds the runner directory to `PATH`, and runs native ZIP, source transaction and metadata probing tests, plus QuickJS WebSocket, Gzip, Comment, image script, and source callback bridge cases with `CI_REQUIRE_QUICKJS=true` and `CI_REQUIRE_NATIVE_ZIP=true`. Changes to any test file listed below also trigger platform validation:
 
 ```powershell

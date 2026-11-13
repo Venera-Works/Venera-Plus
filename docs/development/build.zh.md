@@ -124,6 +124,8 @@ WebDAV 测试夹具的目录和文件键统一使用解码后的逻辑路径；�
 
 PR 还会运行 `依赖安全审查` 和 `PR 平台冒烟构建`。依赖审查会阻止引入高危或严重漏洞依赖；改动涉及业务代码、原生平台目录、依赖、构建脚本、工作流或原生集成测试时，平台工作流会执行 Android 与 Windows Debug 冒烟构建。CI 的具体触发规则以工作流配置为准；文档等不影响构建的改动会跳过平台任务。
 
+Android PR 任务在 Debug 构建后执行 `:app:testDebugUnitTest --tests com.github.veneraworks.veneraplus.DownloadSessionStateTest`，通过 JUnit 运行 `test/native/download_session_state_test.kt`，验证下载会话的代次、所有权和进度边界。`test/native/` 的变更也会触发平台任务。Windows PR 任务使用已有 Debug 构建提供的 Flutter 引擎库，配置和编译 `windows/tests/`，再通过 CTest 执行启动与全局快捷键测试；测试为空或执行失败时门禁失败。
+
 Windows PR 任务在**已有 Debug 构建后**检查 `flutter_qjs_plugin.dll`、`zip_flutter.dll` 和 `flutter_windows.dll`，将产物目录加入 `PATH`，并以 `CI_REQUIRE_QUICKJS=true` 和 `CI_REQUIRE_NATIVE_ZIP=true` 运行原生 ZIP、源事务与元数据探测，以及 QuickJS WebSocket、Gzip、Comment、图片脚本和源回调桥接场景。下列测试文件的修改也会触发平台验证：
 
 ```powershell

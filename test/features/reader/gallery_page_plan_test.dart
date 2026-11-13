@@ -177,62 +177,121 @@ void main() {
       expect(plan[2].part, GalleryImagePart.full);
     });
 
-    test(
-      'splits wide images into two visual pages when splitDualPage is true',
-      () {
+    for (final (direction, parts) in [
+      (
+        GalleryReadingDirection.leftToRight,
+        [GalleryImagePart.left, GalleryImagePart.right],
+      ),
+      (
+        GalleryReadingDirection.rightToLeft,
+        [GalleryImagePart.right, GalleryImagePart.left],
+      ),
+      (
+        GalleryReadingDirection.topToBottom,
+        [GalleryImagePart.right, GalleryImagePart.left],
+      ),
+    ]) {
+      test('wide pages preserve source mappings in ${direction.name}', () {
         final plan = GalleryPagePlan(
           sourcePageCount: 3,
           splitDualPage: true,
-          direction: GalleryReadingDirection.leftToRight,
+          direction: direction,
           wideSourceIndices: [1],
         );
+        for (final invert in [false, true]) {
+          plan.splitDualPageInvert = invert;
+          final orderedParts = invert ? parts.reversed.toList() : parts;
+          expect(
+            [for (var i = 0; i < plan.displayPageCount; i++) plan[i]],
+            [
+              const GalleryDisplayPage(
+                sourceIndex: 0,
+                part: GalleryImagePart.full,
+              ),
+              GalleryDisplayPage(sourceIndex: 1, part: orderedParts[0]),
+              GalleryDisplayPage(sourceIndex: 1, part: orderedParts[1]),
+              const GalleryDisplayPage(
+                sourceIndex: 2,
+                part: GalleryImagePart.full,
+              ),
+            ],
+          );
+          for (final visualIndex in [1, 2]) {
+            expect(plan[visualIndex].sourcePage, 2);
+            expect(plan.visualIndexToSourcePage(visualIndex), 2);
+            expect(plan.visualIndexToSourceIndex(visualIndex), 1);
+          }
+          expect(plan.sourceIndexToFirstVisualIndex(0), 0);
+          expect(plan.sourceIndexToFirstVisualIndex(1), 1);
+          expect(plan.sourceIndexToFirstVisualIndex(2), 3);
+        }
+      });
+    }
+  });
 
+  group('Dynamic insertion stability and stableId recovery', () {
+    test(
+      'user on subsequent page does not jump when prior image becomes wide',
+      () {
+        final plan = GalleryPagePlan(
+          sourcePageCount: 4,
+          direction: GalleryReadingDirection.leftToRight,
+          splitDualPage: true,
+        );
+
+        // Initially all full: visualIndex 0 -> source 0, visualIndex 1 -> source 1, visualIndex 2 -> source 2
         expect(plan.displayPageCount, 4);
+        final currentVisualIndex = 2; // viewing source 2 ('2:full')
+        final currentStableId = plan[currentVisualIndex].stableId;
+        expect(currentStableId, '2:full');
+
+        // Now source 0 dynamically reports wide
+        final modified = plan.markWide(0, true);
+        expect(modified, isTrue);
         expect(
-          plan[0],
-          const GalleryDisplayPage(sourceIndex: 0, part: GalleryImagePart.full),
+          plan.displayPageCount,
+          5,
+        ); // 0:left, 0:right, 1:full, 2:full, 3:full
+
+        // Recover visual index for current content
+        final recoveredIndex = plan.recoverVisualIndex(
+          stableId: currentStableId,
+          fallbackVisualIndex: currentVisualIndex,
         );
-        expect(
-          plan[1],
-          const GalleryDisplayPage(sourceIndex: 1, part: GalleryImagePart.left),
-        );
-        expect(
-          plan[2],
-          const GalleryDisplayPage(
-            sourceIndex: 1,
-            part: GalleryImagePart.right,
-          ),
-        );
-        expect(
-          plan[3],
-          const GalleryDisplayPage(sourceIndex: 2, part: GalleryImagePart.full),
-        );
+        // Source 2 ('2:full') is now at visual index 3
+        expect(recoveredIndex, 3);
+        expect(plan[recoveredIndex].stableId, '2:full');
+        expect(plan[recoveredIndex].sourceIndex, 2);
       },
     );
 
-    test('两个半页映射同一 sourcePage', () {
-      final plan = GalleryPagePlan(
-        sourcePageCount: 3,
-        splitDualPage: true,
-        direction: GalleryReadingDirection.rightToLeft,
-        wideSourceIndices: [1],
-      );
+    test(
+      'user on current page stays on corresponding half when current image splits',
+      () {
+        final plan = GalleryPagePlan(
+          sourcePageCount: 3,
+          direction: GalleryReadingDirection.leftToRight,
+          splitDualPage: true,
+        );
 
-      // Visual page 1 is right half of source 1 (page 2)
-      expect(plan[1].sourceIndex, 1);
-      expect(plan[1].sourcePage, 2);
-      expect(plan.visualIndexToSourcePage(1), 2);
-      expect(plan.visualIndexToSourceIndex(1), 1);
+        // User is viewing source 1 ('1:full') at visual index 1
+        final currentStableId = plan[1].stableId;
+        expect(currentStableId, '1:full');
 
-      // Visual page 2 is left half of source 1 (page 2)
-      expect(plan[2].sourceIndex, 1);
-      expect(plan[2].sourcePage, 2);
-      expect(plan.visualIndexToSourcePage(2), 2);
-      expect(plan.visualIndexToSourceIndex(2), 1);
+        // Source 1 finishes loading and splits
+        plan.markWide(1, true);
+        expect(plan.displayPageCount, 4); // 0:full, 1:left, 1:right, 2:full
 
-      // Both map to the exact same source page number
-      expect(plan[1].sourcePage, equals(plan[2].sourcePage));
-    });
+        final recoveredIndex = plan.recoverVisualIndex(
+          stableId: currentStableId,
+          fallbackVisualIndex: 1,
+        );
+        // Recovers to first visual page of source 1 ('1:left' at index 1)
+        expect(recoveredIndex, 1);
+        expect(plan[recoveredIndex].sourceIndex, 1);
+        expect(plan[recoveredIndex].part, GalleryImagePart.left);
+      },
+    );
   });
 
   group('GalleryPagePlan idempotency and dynamic insertion', () {

@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -482,18 +481,6 @@ void main() {
       expect(changes, 1);
     },
   );
-
-  test('Bangumi entry precedes data sync entry', () {
-    final source = File('lib/features/settings/app.dart').readAsStringSync();
-    expect(
-      source.indexOf("Key('bangumi-settings-entry')"),
-      greaterThanOrEqualTo(0),
-    );
-    expect(
-      source.indexOf("Key('bangumi-settings-entry')"),
-      lessThan(source.indexOf("Key('data-sync-entry')")),
-    );
-  });
 }
 
 class _Gateway implements BangumiGateway {

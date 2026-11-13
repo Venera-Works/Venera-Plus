@@ -7,6 +7,7 @@ import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
+import '../../support/sqlite.dart';
 
 FavoriteItem _favorite(String id, [ComicType type = ComicType.local]) =>
     FavoriteItem(
@@ -17,16 +18,6 @@ FavoriteItem _favorite(String id, [ComicType type = ComicType.local]) =>
       type: type,
       tags: const ['tag'],
     );
-
-bool _sqliteAvailable() {
-  try {
-    final db = sqlite3.openInMemory();
-    db.dispose();
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
 
 void _seedFolder(Database db, String name, {bool translated = false}) {
   db.execute('''
@@ -719,6 +710,6 @@ void main() {
         },
       );
     },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );
 }

@@ -10,6 +10,7 @@ import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/foundation/sync_records.dart';
+import '../../support/sqlite.dart';
 
 History _history(String id) {
   return History.fromMap({
@@ -24,16 +25,6 @@ History _history(String id) {
     'readEpisode': ['1'],
     'max_page': 10,
   });
-}
-
-bool _sqliteAvailable() {
-  try {
-    final db = sqlite3.openInMemory();
-    db.dispose();
-    return true;
-  } catch (_) {
-    return false;
-  }
 }
 
 class _CountingCatalog extends ReadingCatalog {
@@ -675,7 +666,7 @@ void main() {
         },
       );
     },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );
 
   test('refreshHistoryInfo does not wait after final retry failure', () async {
@@ -766,7 +757,7 @@ void main() {
         expect(saved.maxPage, 10);
       }
     },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );
 
   test(
@@ -820,7 +811,7 @@ void main() {
         db.dispose();
       }
     },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );
 
   test(
@@ -901,7 +892,7 @@ void main() {
       expect(saved.activeRereadId, isNull);
       expect(saved.readingProgress!.activeRoundIds, isEmpty);
     },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );
 
   test(
@@ -996,7 +987,7 @@ void main() {
         db.dispose();
       }
     },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );
 
   test(
@@ -1069,7 +1060,7 @@ void main() {
         'comic-second',
       ]);
     },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );
   test(
     'sync capture flushes the last page without adopting a remote reread',
@@ -1153,7 +1144,7 @@ void main() {
       expect(persisted.ep, 1);
       expect(persisted.page, 8);
     },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );
 
   test(
@@ -1284,7 +1275,7 @@ void main() {
         resolved.resumePosition,
       );
     },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );
 
   test(
@@ -1364,7 +1355,7 @@ void main() {
       );
       expect(persistedProgress.resumePosition, resolved.resumePosition);
     },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );
 
   test(
@@ -1432,7 +1423,7 @@ void main() {
         db.dispose();
       }
     },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );
 }
 

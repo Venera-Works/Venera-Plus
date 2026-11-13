@@ -15,6 +15,7 @@ import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/file_system.dart';
+import '../../../support/sqlite.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -538,18 +539,8 @@ void main() {
         expect(manager.directory.listSync().whereType<Directory>(), isEmpty);
       });
     },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );
-}
-
-bool _sqliteAvailable() {
-  try {
-    final database = sqlite3.openInMemory();
-    database.dispose();
-    return true;
-  } catch (_) {
-    return false;
-  }
 }
 
 class _Document extends Fake implements PdfDocument {

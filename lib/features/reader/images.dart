@@ -545,11 +545,6 @@ class GalleryModeState extends State<_GalleryMode>
   @override
   void initState() {
     reader = context.reader;
-    _attachedChapter = reader.chapter;
-    _initPagePlan();
-    final initialPage = _computeInitialControllerIndex();
-    _currentControllerIndex = initialPage;
-    controller = PageController(initialPage: initialPage);
     reader.imageViewController = this;
     Future.microtask(() {
       context.readerScaffold.setFloatingButton(0);
@@ -558,6 +553,17 @@ class GalleryModeState extends State<_GalleryMode>
       }
     });
     super.initState();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_attachedChapter != null) return;
+    // Image decode targets depend on MediaQuery, which cannot be read in initState.
+    _initPagePlan();
+    final initialPage = _computeInitialControllerIndex();
+    _currentControllerIndex = initialPage;
+    controller = PageController(initialPage: initialPage);
   }
 
   @override

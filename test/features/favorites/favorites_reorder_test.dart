@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_reorderable_grid_view/widgets/reorderable_builder.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
@@ -15,6 +14,7 @@ import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 
 import '../../widget_test_io.dart';
+import '../../support/sqlite.dart';
 
 List<String> _comicOrder(WidgetTester tester, {Finder? within}) {
   final scope = within ?? find.byType(ReorderableBuilder<FavoriteItem>);
@@ -63,16 +63,6 @@ Future<void> _openReorder(WidgetTester tester) async {
       .onClick();
   await tester.pumpAndSettle();
   expect(find.byType(ReorderableBuilder<FavoriteItem>), findsOneWidget);
-}
-
-bool _sqliteAvailable() {
-  try {
-    final database = sqlite3.openInMemory();
-    database.dispose();
-    return true;
-  } catch (_) {
-    return false;
-  }
 }
 
 void main() {
@@ -364,7 +354,7 @@ void main() {
       );
       expect(tester.takeException(), isNull);
     },
-    skip: !_sqliteAvailable(),
+    skip: !isSqliteAvailable(),
   );
 
   for (final columns in <int?>[null, 4, 0]) {
@@ -584,7 +574,7 @@ void main() {
           await tester.pumpWidget(const SizedBox.shrink());
           await tester.pump(const Duration(milliseconds: 300));
         },
-        skip: !_sqliteAvailable(),
+        skip: !isSqliteAvailable(),
       );
     }
   }

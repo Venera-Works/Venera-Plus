@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:photo_view/photo_view.dart';
-import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/features/comic_source/models.dart';
 import 'package:venera_plus/features/favorites/favorites_manager.dart';
@@ -22,16 +21,7 @@ import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/image_provider/reader_image.dart';
-
-bool _sqliteAvailable() {
-  try {
-    final db = sqlite3.openInMemory();
-    db.dispose();
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
+import '../../support/sqlite.dart';
 
 void main() {
   for (final mode in ReaderMode.values) {
@@ -301,7 +291,7 @@ void main() {
           directory.deleteSync(recursive: true);
         }
       },
-      skip: !_sqliteAvailable(),
+      skip: !isSqliteAvailable(),
     );
   }
 }

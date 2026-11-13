@@ -21,12 +21,16 @@ void main() {
       );
       await tester.pumpWidget(host(false));
       await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 30)),
+        () => precacheImage(
+          provider,
+          tester.element(find.byType(ComicImage)),
+        ).timeout(const Duration(seconds: 5)),
       );
       await tester.pumpAndSettle();
       final size = tester.getSize(find.byType(ComicImage));
       expect(find.text('200 × 100'), findsNothing);
       final image = tester.widget<RawImage>(find.byType(RawImage)).image;
+      expect(image, isNotNull);
       await tester.pumpWidget(host(true));
       await tester.pumpAndSettle();
       expect(find.text('200 × 100'), findsOneWidget);

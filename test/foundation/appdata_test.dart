@@ -25,8 +25,9 @@ void main() {
     }
   });
 
-  test('does not configure a comic source list by default', () {
+  test('default settings leave optional features unconfigured', () {
     expect(appdata.settings['comicSourceListUrl'], isEmpty);
+    expect(appdata.settings['oneHandedMode'], isFalse);
   });
 
   test(

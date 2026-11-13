@@ -37,7 +37,7 @@ jobs:
             changed_files="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" --)"
             printf '%s\n' "$changed_files"
             if printf '%s\n' "$changed_files" | grep -Eq \
-              '^(test/integration/|test/driver/|test/features/comic_source/(source_parser_test\.dart|source_lifecycle_test\.dart|source_files_test\.dart|comic_source_save_test\.dart)$|test/features/sync/app_data_transfer_test\.dart$|test/foundation/(js_engine_test\.dart|image_processing_test\.dart)$|lib/|assets/|android/|windows/|ios/|macos/|linux/|debian/|patch/|native/openlist_core/core\.lock\.json$|native/prebuilts/|tool/prepare_rhttp_prebuilt\.dart$|\.github/workflows/|\.github/scripts/|pubspec\.yaml$|pubspec\.lock$|rust-toolchain\.toml$|analysis_options\.yaml$)'; then
+              '^(test/integration/|test/driver/|test/native/|test/features/comic_source/(source_parser_test\.dart|source_lifecycle_test\.dart|source_files_test\.dart|comic_source_save_test\.dart)$|test/features/sync/app_data_transfer_test\.dart$|test/foundation/(js_engine_test\.dart|image_processing_test\.dart)$|lib/|assets/|android/|windows/|ios/|macos/|linux/|debian/|patch/|native/openlist_core/core\.lock\.json$|native/prebuilts/|tool/prepare_rhttp_prebuilt\.dart$|\.github/workflows/|\.github/scripts/|pubspec\.yaml$|pubspec\.lock$|rust-toolchain\.toml$|analysis_options\.yaml$)'; then
               echo "platform=true" >> "$GITHUB_OUTPUT"
             else
               echo "platform=false" >> "$GITHUB_OUTPUT"
@@ -116,6 +116,9 @@ jobs:
         run: python3 .github/scripts/fetch_openlist_core.py android
       - name: 构建 Android Debug APK (arm64)
         run: flutter build apk --debug --target-platform android-arm64
+      - name: 验证下载会话的原生状态与所有权
+        working-directory: android
+        run: ./gradlew :app:testDebugUnitTest --tests com.github.veneraworks.veneraplus.DownloadSessionStateTest --no-daemon
       - name: 运行 Android 平台冒烟与数据库原生验证
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
         with:
@@ -159,6 +162,15 @@ jobs:
         run: python .github/scripts/fetch_openlist_core.py windows-x64
       - name: 构建 Windows Debug 应用
         run: flutter build windows --debug
+      - name: 执行 Windows 启动与全局快捷键原生测试
+        shell: pwsh
+        run: |
+          cmake -S windows/tests -B build/windows/native-tests -A x64
+          if ($LASTEXITCODE -ne 0) { throw 'Windows 原生测试配置失败' }
+          cmake --build build/windows/native-tests --config Debug --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'Windows 原生测试编译失败' }
+          ctest --test-dir build/windows/native-tests -C Debug --output-on-failure --no-tests=error
+          if ($LASTEXITCODE -ne 0) { throw 'Windows 原生测试执行失败' }
       - name: 校验 Windows 包含 OpenList 内核
         shell: pwsh
         run: |

@@ -34,6 +34,10 @@ void main() {
     'readerScreenPicNumberForPortrait': 2,
     'showSingleImageOnFirstPage': false,
     'language': 'en-US',
+    'oneHandedMode': false,
+    'enableTapToTurnPages': true,
+    'enableDoubleTapToZoom': false,
+    'reverseTapToTurnPages': false,
   };
 
   setUp(() {
@@ -86,6 +90,56 @@ void main() {
           .map((image) => image.page)
           .toList() ??
       [];
+
+  for (final mode in [
+    ReaderMode.galleryLeftToRight,
+    ReaderMode.galleryRightToLeft,
+    ReaderMode.galleryTopToBottom,
+  ]) {
+    testWidgets('one-handed mode advances from every edge ($mode)', (
+      tester,
+    ) async {
+      appdata.settings['oneHandedMode'] = true;
+      appdata.settings['reverseTapToTurnPages'] = true;
+      final reader = await openReader(tester, mode);
+      final bounds = tester.getRect(find.byKey(_comicKey));
+      for (final position in [
+        bounds.centerLeft + const Offset(10, 0),
+        bounds.centerRight - const Offset(10, 0),
+        bounds.topCenter + const Offset(0, 10),
+        bounds.bottomCenter - const Offset(0, 10),
+      ]) {
+        final previousCount = reader.nextSources.length;
+        await tester.tapAt(position);
+        await tester.pump();
+        expect(reader.nextSources, hasLength(previousCount + 1));
+        expect(reader.nextSources.last, ReadingNavigationSource.userForward);
+        expect(reader.previousSources, isEmpty);
+      }
+      await tester.tapAt(bounds.center);
+      await tester.pumpAndSettle();
+      expect(reader.nextSources, hasLength(4));
+      expect(
+        tester.state<ReaderScaffoldState>(find.byType(ReaderScaffold)).isOpen,
+        isTrue,
+      );
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('disabling one-handed mode restores directional taps', (
+    tester,
+  ) async {
+    final reader = await openReader(tester, ReaderMode.galleryLeftToRight);
+    final bounds = tester.getRect(find.byKey(_comicKey));
+    await tester.tapAt(bounds.centerLeft + const Offset(10, 0));
+    await tester.pump();
+    await tester.tapAt(bounds.centerRight - const Offset(10, 0));
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(reader.previousSources, [ReadingNavigationSource.userBackward]);
+    expect(reader.nextSources, [ReadingNavigationSource.userForward]);
+    expect(tester.takeException(), isNull);
+  });
 
   for (final mode in [
     ReaderMode.galleryLeftToRight,
@@ -252,6 +306,25 @@ class _Reader extends Reader {
 }
 
 class _ReaderState extends ReaderState {
+  final nextSources = <ReadingNavigationSource>[];
+  final previousSources = <ReadingNavigationSource>[];
+
+  @override
+  bool toNextPage({
+    ReadingNavigationSource source = ReadingNavigationSource.userForward,
+  }) {
+    nextSources.add(source);
+    return true;
+  }
+
+  @override
+  bool toPrevPage({
+    ReadingNavigationSource source = ReadingNavigationSource.userBackward,
+  }) {
+    previousSources.add(source);
+    return true;
+  }
+
   @override
   void initState() {
     super.initState();

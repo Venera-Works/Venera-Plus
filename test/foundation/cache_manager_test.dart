@@ -7,16 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
-
-bool _sqliteAvailable() {
-  try {
-    final db = sqlite3.openInMemory();
-    db.dispose();
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
+import '../support/sqlite.dart';
 
 void main() {
   group(
@@ -456,6 +447,6 @@ void main() {
         },
       );
     },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );
 }

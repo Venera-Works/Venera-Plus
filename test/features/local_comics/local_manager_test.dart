@@ -1,10 +1,10 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
+import '../../support/sqlite.dart';
 
 const _testComicType = ComicType(9001);
 
@@ -21,16 +21,6 @@ LocalComic _localComic(String id) {
     downloadedChapters: const [],
     createdAt: DateTime(2026, 1, 1),
   );
-}
-
-bool _sqliteAvailable() {
-  try {
-    final db = sqlite3.openInMemory();
-    db.dispose();
-    return true;
-  } catch (_) {
-    return false;
-  }
 }
 
 void main() {
@@ -86,7 +76,7 @@ void main() {
         '10.JPG',
       ]);
     },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );
 
   test(
@@ -143,7 +133,7 @@ void main() {
       expect(notifyCount, 1);
       expect(manager.find(second.id, second.comicType), isNull);
     },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );
   test(
     'unavailable SAF storage keeps the configured library instead of switching roots',
@@ -167,7 +157,7 @@ void main() {
       expect(pathFile.readAsStringSync(), savedPath);
       expect(manager.directory.path, savedPath);
     },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );
 }
 

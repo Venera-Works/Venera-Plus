@@ -4,21 +4,11 @@ import 'dart:typed_data';
 
 import 'package:flutter_qjs/flutter_qjs.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/consts.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/network/images.dart';
-
-bool _sqliteAvailable() {
-  try {
-    final db = sqlite3.openInMemory();
-    db.dispose();
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
+import '../support/sqlite.dart';
 
 class _FakeJSInvokable extends JSInvokable {
   _FakeJSInvokable(this.callback);
@@ -1013,7 +1003,7 @@ void main() {
         expect(resultB, orderedEquals(servedBytesB));
         expect(transportCalls, 2);
       },
-      skip: _sqliteAvailable()
+      skip: isSqliteAvailable()
           ? false
           : 'sqlite3 native library is unavailable',
     );
@@ -1069,7 +1059,7 @@ void main() {
 
       expect(events.single.imageBytes, orderedEquals(imageBytes));
     },
-    skip: _sqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );
 
   group('ImageDownloader header fallback and normalization', () {
@@ -1274,7 +1264,7 @@ void main() {
 
         expect(failCallback.destroyCount, 1);
       },
-      skip: _sqliteAvailable()
+      skip: isSqliteAvailable()
           ? false
           : 'sqlite3 native library is unavailable',
     );
@@ -1352,7 +1342,7 @@ void main() {
 
         expect(failCallback.destroyCount, 1);
       },
-      skip: _sqliteAvailable()
+      skip: isSqliteAvailable()
           ? false
           : 'sqlite3 native library is unavailable',
     );

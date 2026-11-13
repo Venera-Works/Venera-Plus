@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/foundation/sqlite_connection.dart';
+import '../support/sqlite.dart';
 
 void _initializeDatabase(String path) {
   final db = sqlite3.open(path);
@@ -14,18 +15,8 @@ void _initializeDatabase(String path) {
   }
 }
 
-bool _sqliteAvailable() {
-  try {
-    final db = sqlite3.openInMemory();
-    db.dispose();
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
-
 void main() {
-  final sqliteAvailable = _sqliteAvailable();
+  final sqliteAvailable = isSqliteAvailable();
 
   test(
     'openSqliteDatabase sets DELETE journal mode, NORMAL synchronous, and busy_timeout',

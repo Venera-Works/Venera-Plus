@@ -7,6 +7,7 @@ import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/foundation/sync_records.dart';
+import '../../support/sqlite.dart';
 
 Map<String, Object?> _readingProgress(int ep, int page, int? group, int time) =>
     ReadingProgress.seed(
@@ -31,15 +32,6 @@ ReadingProgress _rewoundProgress({
       newRoundId: id,
       time: time,
     );
-bool _sqliteAvailable() {
-  try {
-    final db = sqlite3.openInMemory();
-    db.dispose();
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
 
 void main() {
   group('HistorySyncData standalone pure Dart behaviors', () {
@@ -122,7 +114,7 @@ void main() {
         expect(exported, contains(syncRecordKey('history', ['comic-1', 0])));
         expect(exported, contains(syncRecordKey('history', ['comic-1', 1])));
       },
-      skip: _sqliteAvailable()
+      skip: isSqliteAvailable()
           ? false
           : 'sqlite3 native library is unavailable',
     );
@@ -173,7 +165,7 @@ void main() {
           expect(chData['cover'], 'naruto.jpg');
         }
       },
-      skip: _sqliteAvailable()
+      skip: isSqliteAvailable()
           ? false
           : 'sqlite3 native library is unavailable',
     );
@@ -235,7 +227,7 @@ void main() {
         expect(row['read_duration_ms'], 75000);
         expect((row['readEpisode'] as String).split(','), hasLength(10));
       },
-      skip: _sqliteAvailable()
+      skip: isSqliteAvailable()
           ? false
           : 'sqlite3 native library is unavailable',
     );
@@ -277,7 +269,7 @@ void main() {
         ]);
         expect(progress.activeRoundIds, isEmpty);
       },
-      skip: _sqliteAvailable()
+      skip: isSqliteAvailable()
           ? false
           : 'sqlite3 native library is unavailable',
     );
@@ -321,7 +313,7 @@ void main() {
         expect(row['cover'], 'bleach.jpg');
         expect(row['readEpisode'], '5');
       },
-      skip: _sqliteAvailable()
+      skip: isSqliteAvailable()
           ? false
           : 'sqlite3 native library is unavailable',
     );
@@ -423,7 +415,7 @@ void main() {
         expect(exported[firstKey]!['tags'], ['art', 'fullcolor']);
         expect(exported[secondKey]!.containsKey('tags'), isFalse);
       },
-      skip: _sqliteAvailable()
+      skip: isSqliteAvailable()
           ? false
           : 'sqlite3 native library is unavailable',
     );
@@ -547,7 +539,7 @@ void main() {
           isTrue,
         );
       },
-      skip: _sqliteAvailable()
+      skip: isSqliteAvailable()
           ? false
           : 'sqlite3 native library is unavailable',
     );
@@ -576,7 +568,7 @@ void main() {
         expect(db.select('SELECT count(*) FROM history;').first[0], 0);
         expect(db.select('SELECT count(*) FROM image_favorites;').first[0], 0);
       },
-      skip: _sqliteAvailable()
+      skip: isSqliteAvailable()
           ? false
           : 'sqlite3 native library is unavailable',
     );
@@ -632,7 +624,7 @@ void main() {
           expect(syncValuesEqual(entry.value, reExported[entry.key]), isTrue);
         }
       },
-      skip: _sqliteAvailable()
+      skip: isSqliteAvailable()
           ? false
           : 'sqlite3 native library is unavailable',
     );
@@ -694,7 +686,7 @@ void main() {
         expect(reExported[expectedKey]!['comicId'], specialComicId);
         expect(reExported[expectedKey]!['sourceKey'], specialSourceKey);
       },
-      skip: _sqliteAvailable()
+      skip: isSqliteAvailable()
           ? false
           : 'sqlite3 native library is unavailable',
     );
@@ -736,7 +728,7 @@ void main() {
               'Reading a new chapter must not mutate the sync record of previously read chapters',
         );
       },
-      skip: _sqliteAvailable()
+      skip: isSqliteAvailable()
           ? false
           : 'sqlite3 native library is unavailable',
     );
@@ -780,7 +772,7 @@ void main() {
         expect(row['page'], 1);
         expect(row['readEpisode'], '');
       },
-      skip: _sqliteAvailable()
+      skip: isSqliteAvailable()
           ? false
           : 'sqlite3 native library is unavailable',
     );
@@ -929,7 +921,7 @@ void main() {
         manager.applySyncRecords({}, applyHistory: false);
         expect(manager.find('async-1', ComicType.local), isNotNull);
       },
-      skip: _sqliteAvailable()
+      skip: isSqliteAvailable()
           ? false
           : 'sqlite3 native library is unavailable',
     );

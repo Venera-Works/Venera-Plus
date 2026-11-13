@@ -13,16 +13,7 @@ import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/opencc.dart';
 
 import '../../widget_test_io.dart';
-
-bool _sqliteAvailable() {
-  try {
-    final database = sqlite3.openInMemory();
-    database.dispose();
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
+import '../../support/sqlite.dart';
 
 FavoriteItem _favorite(
   String id,
@@ -193,7 +184,7 @@ SliverGridComics _grid(WidgetTester tester) =>
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(OpenCC.init);
-  final skip = !_sqliteAvailable();
+  final skip = !isSqliteAvailable();
 
   testWidgets(
     'home and favorites display original sources despite shared bindings',

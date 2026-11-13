@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:venera_plus/features/bangumi/bangumi.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/discovery/explore_page.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
@@ -156,6 +157,18 @@ void main() {
 
       expect(find.byType(SourcesAndServicesSettings), findsOneWidget);
 
+      final bangumiEntry = find.byKey(const Key('bangumi-settings-entry'));
+      expect(bangumiEntry, findsOneWidget);
+      expect(find.byKey(const Key('data-sync-entry')), findsNothing);
+      await tester.ensureVisible(bangumiEntry);
+      await tester.tap(
+        find.descendant(of: bangumiEntry, matching: find.text('Set')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(BangumiSettingsPage), findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+
       await tester.tap(find.byTooltip('Back'));
       await tester.pumpAndSettle();
 
@@ -297,6 +310,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('Cloud Storage Uses'), findsOneWidget);
+      expect(find.byKey(const Key('bangumi-settings-entry')), findsNothing);
       expect(find.text('Online Comic Libraries'), findsOneWidget);
       expect(find.textContaining('Personal Drive · /Sync/'), findsOneWidget);
       expect(find.textContaining('Personal Drive · /Backups/'), findsOneWidget);
