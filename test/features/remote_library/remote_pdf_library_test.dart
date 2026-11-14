@@ -10,8 +10,8 @@ import 'package:image/image.dart' as image;
 import 'package:pdfrx/pdfrx.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_storage/comic_storage.dart';
-import 'package:venera_plus/features/webdav_library/remote_archive_comic.dart';
-import 'package:venera_plus/features/webdav_library/webdav_library.dart';
+import 'package:venera_plus/features/remote_library/remote_archive_comic.dart';
+import 'package:venera_plus/features/remote_library/remote_library.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
@@ -33,7 +33,7 @@ void main() {
   late _PdfStore store;
   late _PdfProbe probe;
   late HttpServer server;
-  late WebDavLibraryEngine engine;
+  late RemoteLibraryEngine engine;
   late ComicSource source;
   var revision = 1;
   var archivePath = _bookId;
@@ -41,13 +41,13 @@ void main() {
   var nonRangeRequests = 0;
   final ranges = <_ByteRange>[];
   final clients = <Dio>[];
-  final otherEngines = <WebDavLibraryEngine>[];
+  final otherEngines = <RemoteLibraryEngine>[];
   final gates = <Completer<void>>[];
   Completer<void>? nextResponseGate;
   Completer<void>? responseStarted;
 
-  WebDavLibraryEngine createEngine({String id = 'pdf-library'}) =>
-      WebDavLibraryEngine(
+  RemoteLibraryEngine createEngine({String id = 'pdf-library'}) =>
+      RemoteLibraryEngine(
         library: RemoteLibrary(
           id: id,
           sourceKey: '$id-source',
@@ -118,15 +118,15 @@ void main() {
   }
 
   setUp(() async {
+    await RemoteLibrarySource.resetCacheForTesting();
     directory = Directory.systemTemp.createTempSync('remote-pdf-library-');
     App.dataPath = directory.path;
     App.cachePath = directory.path;
     CacheManager.debugDisableInitialScan = true;
-    WebDavLibrarySource.resetCacheForTesting();
-    WebDavLibrarySource.configureMetadataScraper(null);
-    WebDavLibrarySource.configureMetadataWriteGuard(null);
+    RemoteLibrarySource.configureMetadataScraper(null);
+    RemoteLibrarySource.configureMetadataWriteGuard(null);
     appdata.implicitData.clear();
-    WebDavLibrarySource.archiveSchedulerFactory = () =>
+    RemoteLibrarySource.archiveSchedulerFactory = () =>
         RemoteReadScheduler(minInterval: Duration.zero);
     ranges.clear();
     revision = 1;
@@ -202,7 +202,7 @@ void main() {
     );
     engine = createEngine();
     source = engine.create();
-    WebDavLibrarySource.archiveDioFactory = () {
+    RemoteLibrarySource.archiveDioFactory = () {
       final dio = Dio()..httpClientAdapter = IOHttpClientAdapter();
       clients.add(dio);
       return dio;
@@ -222,20 +222,20 @@ void main() {
     gates.clear();
     ImageDownloader.cancelAllLoadingImages();
     for (final other in otherEngines) {
-      other.cancel();
+      await other.cancel();
     }
     otherEngines.clear();
-    engine.cancel();
+    await engine.cancel();
     ImageDownloader.debugResetSourceImageLoading();
     await ImageDownloader.debugFlushImageCacheWrites();
     await CacheManager.resetForTesting();
     RemotePdfReader.debugOpenDocument = null;
-    WebDavLibrarySource.archiveDioFactory = null;
-    WebDavLibrarySource.archiveSchedulerFactory = null;
-    WebDavLibrarySource.configureMetadataScraper(null);
-    WebDavLibrarySource.configureMetadataWriteGuard(null);
+    RemoteLibrarySource.archiveDioFactory = null;
+    RemoteLibrarySource.archiveSchedulerFactory = null;
+    RemoteLibrarySource.configureMetadataScraper(null);
+    RemoteLibrarySource.configureMetadataWriteGuard(null);
     appdata.implicitData.clear();
-    WebDavLibrarySource.resetCacheForTesting();
+    await RemoteLibrarySource.resetCacheForTesting();
     for (final client in clients) {
       client.close(force: true);
     }
@@ -248,6 +248,7 @@ void main() {
     'PDF discovery stays lazy and native bookmarks include the first page',
     () async {
       final sync = await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       expect(sync.success, isTrue, reason: sync.errorMessage);
       final listed = await source.explorePages.single.loadPage!(1);
       expect(listed.success, isTrue, reason: listed.errorMessage);
@@ -323,8 +324,8 @@ void main() {
       final requests = ranges.length;
       final lists = store.listPaths.length;
       final stats = store.statPaths.length;
-      engine.cancel();
-      WebDavLibrarySource.resetCacheForTesting();
+      await engine.cancel();
+      await RemoteLibrarySource.resetCacheForTesting();
       engine = createEngine();
       source = engine.create();
       final reopened = await source.loadComicInfo!(_bookId);
@@ -417,7 +418,7 @@ void main() {
       store.failNextWrite = true;
       await expectLater(
         engine.writeMetadata(_bookId, binding),
-        throwsA(isA<WebDavTransientException>()),
+        throwsA(isA<RemoteLibraryTransientException>()),
       );
       final pendingStorageKey = 'webdavMetadataPending:${engine.library.id}';
       final pendingWrites = appdata.implicitData[pendingStorageKey] as Map;
@@ -426,7 +427,10 @@ void main() {
       expect(pending['libraryId'], engine.library.id);
       expect(pending['comicId'], _bookId);
       expect(pending['subjectId'], 456);
-      expect(pending['failure'], WebDavMetadataPendingFailure.transient.name);
+      expect(
+        pending['failure'],
+        RemoteLibraryMetadataPendingFailure.transient.name,
+      );
       expect(pending['attempts'], 1);
       expect(pending['metadata'], binding.toJson());
       expect(store.texts.containsKey(_sidecar), isFalse);
@@ -455,12 +459,14 @@ void main() {
     'a replaced PDF changes keys, rejects the old epoch and renders new bytes',
     () async {
       await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       final first = await source.loadComicInfo!(_bookId);
       expect(first.success, isTrue, reason: first.errorMessage);
       final oldPages = await chapterPages(first.data);
       revision = 2;
       pdf = _createPdfBytes(revision);
       final sync = await engine.synchronize(force: true);
+      await engine.waitForBackgroundTasks();
       expect(sync.success, isTrue, reason: sync.errorMessage);
       final next = await source.loadComicInfo!(_bookId);
       expect(next.success, isTrue, reason: next.errorMessage);
@@ -555,6 +561,7 @@ void main() {
       archivePath = '/library/Mixed/Book.pdf';
       store.mixed = true;
       final sync = await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       expect(sync.success, isTrue, reason: sync.errorMessage);
       final comics = await source.explorePages.single.loadPage!(1);
       expect(comics.success, isTrue, reason: comics.errorMessage);
@@ -785,7 +792,10 @@ class _PdfStore implements RemoteFileStore {
   );
 
   @override
-  Future<List<RemoteEntry>> list(String directory) async {
+  Future<List<RemoteEntry>> list(
+    String directory, {
+    bool refresh = false,
+  }) async {
     listPaths.add(directory);
     if (mixed && directory == '/library/') {
       return const [
@@ -851,14 +861,14 @@ class _PdfStore implements RemoteFileStore {
     ));
     if (failNextWrite) {
       failNextWrite = false;
-      throw WebDavTransientException(path);
+      throw RemoteLibraryTransientException(path);
     }
     final previous = texts[path];
     if (createOnly && previous != null ||
         ifMatch != null && previous?.eTag != ifMatch ||
         ifUnmodifiedSince != null &&
             previous?.modifiedAt != ifUnmodifiedSince) {
-      throw WebDavPreconditionFailedException(path);
+      throw RemoteLibraryPreconditionFailedException(path);
     }
     final eTag = '"pdf-sidecar-${textWrites.length}"';
     texts[path] = RemoteTextFile(

@@ -9,8 +9,8 @@ import 'package:dio/io.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_storage/comic_storage.dart';
-import 'package:venera_plus/features/webdav_library/remote_archive_comic.dart';
-import 'package:venera_plus/features/webdav_library/webdav_library.dart';
+import 'package:venera_plus/features/remote_library/remote_archive_comic.dart';
+import 'package:venera_plus/features/remote_library/remote_library.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
@@ -35,7 +35,7 @@ void main() {
   late _EpubPackage epub;
   late _EpubStore store;
   late HttpServer server;
-  late WebDavLibraryEngine engine;
+  late RemoteLibraryEngine engine;
   late ComicSource source;
   var revision = 1;
   var archivePath = _bookId;
@@ -45,7 +45,7 @@ void main() {
   Completer<void>? responseGate;
   Completer<void>? responseStarted;
 
-  WebDavLibraryEngine createEngine() => WebDavLibraryEngine(
+  RemoteLibraryEngine createEngine() => RemoteLibraryEngine(
     library: const RemoteLibrary(
       id: 'epub-library',
       sourceKey: 'epub-source',
@@ -91,15 +91,15 @@ void main() {
   }
 
   setUp(() async {
+    await RemoteLibrarySource.resetCacheForTesting();
     directory = Directory.systemTemp.createTempSync('remote-epub-library-');
     App.dataPath = directory.path;
     App.cachePath = directory.path;
     CacheManager.debugDisableInitialScan = true;
-    WebDavLibrarySource.resetCacheForTesting();
-    WebDavLibrarySource.configureMetadataScraper(null);
-    WebDavLibrarySource.configureMetadataWriteGuard(null);
+    RemoteLibrarySource.configureMetadataScraper(null);
+    RemoteLibrarySource.configureMetadataWriteGuard(null);
     appdata.implicitData.clear();
-    WebDavLibrarySource.archiveSchedulerFactory = () =>
+    RemoteLibrarySource.archiveSchedulerFactory = () =>
         RemoteReadScheduler(minInterval: Duration.zero);
     ranges.clear();
     revision = 1;
@@ -161,7 +161,7 @@ void main() {
     );
     engine = createEngine();
     source = engine.create();
-    WebDavLibrarySource.archiveDioFactory = () {
+    RemoteLibrarySource.archiveDioFactory = () {
       final dio = Dio()..httpClientAdapter = IOHttpClientAdapter();
       clients.add(dio);
       return dio;
@@ -177,16 +177,16 @@ void main() {
   tearDown(() async {
     responseGate?.complete();
     ImageDownloader.cancelAllLoadingImages();
-    engine.cancel();
+    await engine.cancel();
     ImageDownloader.debugResetSourceImageLoading();
     await ImageDownloader.debugFlushImageCacheWrites();
     await CacheManager.resetForTesting();
-    WebDavLibrarySource.archiveDioFactory = null;
-    WebDavLibrarySource.archiveSchedulerFactory = null;
-    WebDavLibrarySource.configureMetadataScraper(null);
-    WebDavLibrarySource.configureMetadataWriteGuard(null);
+    RemoteLibrarySource.archiveDioFactory = null;
+    RemoteLibrarySource.archiveSchedulerFactory = null;
+    RemoteLibrarySource.configureMetadataScraper(null);
+    RemoteLibrarySource.configureMetadataWriteGuard(null);
     appdata.implicitData.clear();
-    WebDavLibrarySource.resetCacheForTesting();
+    await RemoteLibrarySource.resetCacheForTesting();
     for (final client in clients) {
       client.close(force: true);
     }
@@ -199,6 +199,7 @@ void main() {
     'lazy discovery and first details read only EPUB control documents',
     () async {
       final sync = await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       expect(sync.success, isTrue, reason: sync.errorMessage);
       final listed = await source.explorePages.single.loadPage!(1);
       expect(listed.success, isTrue, reason: listed.errorMessage);
@@ -260,8 +261,8 @@ void main() {
       final requestCount = ranges.length;
       final listCount = store.listPaths.length;
       final statCount = store.statPaths.length;
-      engine.cancel();
-      WebDavLibrarySource.resetCacheForTesting();
+      await engine.cancel();
+      await RemoteLibrarySource.resetCacheForTesting();
       engine = createEngine();
       source = engine.create();
       final reopened = await source.loadComicInfo!(_bookId);
@@ -385,6 +386,7 @@ void main() {
       archivePath = '/library/Mixed/Book.epub';
       store.mixed = true;
       final sync = await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       expect(sync.success, isTrue, reason: sync.errorMessage);
       final comics = await source.explorePages.single.loadPage!(1);
       expect(comics.success, isTrue, reason: comics.errorMessage);
@@ -413,12 +415,14 @@ void main() {
     'refreshing a replaced EPUB changes page identities and reads the new bytes',
     () async {
       await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       final first = await source.loadComicInfo!(_bookId);
       expect(first.success, isTrue, reason: first.errorMessage);
       final firstPages = await chapterPages(first.data);
       revision = 2;
       epub = _createEpub(revision);
       final sync = await engine.synchronize(force: true);
+      await engine.waitForBackgroundTasks();
       expect(sync.success, isTrue, reason: sync.errorMessage);
       final next = await source.loadComicInfo!(_bookId);
       expect(next.success, isTrue, reason: next.errorMessage);
@@ -447,6 +451,7 @@ void main() {
     () async {
       epub = _createEpub(revision, textOnly: true);
       final sync = await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       expect(sync.success, isTrue, reason: sync.errorMessage);
       expect(ranges, isEmpty);
       final info = await source.loadComicInfo!(_bookId);
@@ -627,7 +632,10 @@ class _EpubStore implements RemoteFileStore {
   );
 
   @override
-  Future<List<RemoteEntry>> list(String directory) async {
+  Future<List<RemoteEntry>> list(
+    String directory, {
+    bool refresh = false,
+  }) async {
     listPaths.add(directory);
     if (mixed && directory == '/library/') {
       return const [
@@ -696,7 +704,7 @@ class _EpubStore implements RemoteFileStore {
         ifMatch != null && previous?.eTag != ifMatch ||
         ifUnmodifiedSince != null &&
             previous?.modifiedAt != ifUnmodifiedSince) {
-      throw WebDavPreconditionFailedException(path);
+      throw RemoteLibraryPreconditionFailedException(path);
     }
     final eTag = '"epub-sidecar-${textWrites.length}"';
     texts[path] = RemoteTextFile(

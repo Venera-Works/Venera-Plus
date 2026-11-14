@@ -26,7 +26,7 @@ class StructureImportsTest(unittest.TestCase):
         )
         self.assertNotIn(("features/comic_source", "features/sync"), edges)
         self.assertNotIn(
-            ("features/comic_source", "features/webdav_library"),
+            ("features/comic_source", "features/remote_library"),
             edges,
         )
         self.assertNotIn(

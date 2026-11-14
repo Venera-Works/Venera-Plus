@@ -91,47 +91,82 @@ void main() {
     });
   });
 
-  test(
-    'starts foreground before covers and preloads with FIFO within each priority',
-    () {
-      fakeAsync((async) {
-        final scheduler = _scheduler(
-          async,
-          maxConcurrent: 1,
-          minInterval: Duration.zero,
+  test('前台、封面和预加载优先于后台扫描，同一优先级保持先进先出', () {
+    fakeAsync((async) {
+      final scheduler = _scheduler(
+        async,
+        maxConcurrent: 1,
+        minInterval: Duration.zero,
+      );
+      final gate = Completer<void>();
+      scheduler.run(() => gate.future);
+      async.flushMicrotasks();
+      final started = <String>[];
+      for (final entry in [
+        ('background-1', RemoteReadPriority.background),
+        ('preload', RemoteReadPriority.preload),
+        ('foreground-1', RemoteReadPriority.foreground),
+        ('cover-1', RemoteReadPriority.cover),
+        ('background-2', RemoteReadPriority.background),
+        ('foreground-2', RemoteReadPriority.foreground),
+        ('cover-2', RemoteReadPriority.cover),
+      ]) {
+        final context = RemoteReadContext(priority: entry.$2);
+        context.run(
+          () => scheduler.run(() async {
+            expect(RemoteReadContext.current, same(context));
+            started.add(entry.$1);
+          }),
         );
-        final gate = Completer<void>();
-        scheduler.run(() => gate.future);
-        async.flushMicrotasks();
-        final started = <String>[];
-        for (final entry in [
-          ('preload', RemoteReadPriority.preload),
-          ('foreground-1', RemoteReadPriority.foreground),
-          ('cover-1', RemoteReadPriority.cover),
-          ('foreground-2', RemoteReadPriority.foreground),
-          ('cover-2', RemoteReadPriority.cover),
-        ]) {
-          final context = RemoteReadContext(priority: entry.$2);
-          context.run(
-            () => scheduler.run(() async {
-              expect(RemoteReadContext.current, same(context));
-              started.add(entry.$1);
-            }),
-          );
+      }
+      gate.complete();
+      async.flushMicrotasks();
+      expect(started, [
+        'foreground-1',
+        'foreground-2',
+        'cover-1',
+        'cover-2',
+        'preload',
+        'background-1',
+        'background-2',
+      ]);
+      expect(async.pendingTimers, isEmpty);
+    });
+  });
+
+  test('扫描逐次排队时前台读取可以在两个目录之间执行', () {
+    fakeAsync((async) {
+      final scheduler = _scheduler(
+        async,
+        maxConcurrent: 1,
+        minInterval: Duration.zero,
+      );
+      final gate = Completer<void>();
+      final started = <String>[];
+      var scanFinished = false;
+      RemoteReadContext(priority: RemoteReadPriority.background).run(() async {
+        for (final directory in ['/a/', '/b/']) {
+          await scheduler.run(() async {
+            started.add(directory);
+            if (directory == '/a/') await gate.future;
+          });
         }
-        gate.complete();
-        async.flushMicrotasks();
-        expect(started, [
-          'foreground-1',
-          'foreground-2',
-          'cover-1',
-          'cover-2',
-          'preload',
-        ]);
-        expect(async.pendingTimers, isEmpty);
+        scanFinished = true;
       });
-    },
-  );
+      async.flushMicrotasks();
+      expect(started, ['/a/']);
+
+      scheduler.run(() async => started.add('reader'));
+      async.flushMicrotasks();
+      expect(started, ['/a/']);
+      gate.complete();
+      async.flushMicrotasks();
+
+      expect(started, ['/a/', 'reader', '/b/']);
+      expect(scanFinished, isTrue);
+      expect(async.pendingTimers, isEmpty);
+    });
+  });
 
   test('uses a promoted context when the start interval expires', () {
     fakeAsync((async) {

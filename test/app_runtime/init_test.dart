@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/app_runtime/app_runtime.dart';
 import 'package:venera_plus/features/bangumi/bangumi.dart';
-import 'package:venera_plus/features/webdav_library/webdav_library.dart';
+import 'package:venera_plus/features/remote_library/remote_library.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 
@@ -60,7 +60,7 @@ void main() {
     await Future<void>.delayed(Duration.zero);
   });
 
-  group('scrapeBangumiMetadataForWebDav', () {
+  group('scrapeBangumiMetadataForRemoteLibrary', () {
     tearDown(() {
       appdata.settings['bangumiAccessToken'] = '';
       appdata.settings['bangumiUsername'] = '';
@@ -74,8 +74,8 @@ void main() {
       );
 
       await expectLater(
-        scrapeBangumiMetadataForWebDav(
-          const WebDavLibraryMetadataInput(title: 'Cat Eye'),
+        scrapeBangumiMetadataForRemoteLibrary(
+          const RemoteLibraryMetadataInput(title: 'Cat Eye'),
           service: service,
         ),
         throwsA(

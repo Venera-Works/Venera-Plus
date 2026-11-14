@@ -877,8 +877,8 @@ class _StatusTrackingStore implements RemoteFileStore {
   @override
   Future<void> test() => _run(_delegate.test);
   @override
-  Future<List<RemoteEntry>> list(String directory) =>
-      _run(() => _delegate.list(directory));
+  Future<List<RemoteEntry>> list(String directory, {bool refresh = false}) =>
+      _run(() => _delegate.list(directory, refresh: refresh));
   @override
   Future<RemoteEntry> stat(String path) => _run(() => _delegate.stat(path));
   @override

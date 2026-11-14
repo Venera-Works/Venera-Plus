@@ -246,7 +246,10 @@ class _DirectoryStore extends Fake implements RemoteFileStore {
   var cancelCount = 0;
 
   @override
-  Future<List<RemoteEntry>> list(String directory) async {
+  Future<List<RemoteEntry>> list(
+    String directory, {
+    bool refresh = false,
+  }) async {
     listed.add(directory);
     if (listingError != null) throw RemoteStorageException(listingError!);
     return directories[directory] ?? const [];

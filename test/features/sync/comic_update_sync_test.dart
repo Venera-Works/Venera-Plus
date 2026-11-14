@@ -779,7 +779,10 @@ class _InMemoryRemoteStore implements RemoteFileStore {
   }
 
   @override
-  Future<List<RemoteEntry>> list(String directory) async {
+  Future<List<RemoteEntry>> list(
+    String directory, {
+    bool refresh = false,
+  }) async {
     if (listError != null) throw listError!;
     final normalized = normalizeRemoteDirectory(directory);
     final result = <RemoteEntry>[];

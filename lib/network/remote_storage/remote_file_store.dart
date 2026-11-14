@@ -54,7 +54,9 @@ class RemoteTransferProgress {
 abstract class RemoteFileStore {
   StorageAccount get account;
   Future<void> test();
-  Future<List<RemoteEntry>> list(String directory);
+
+  /// refresh 为 true 时刷新服务端目录缓存，返回当前目录内容。
+  Future<List<RemoteEntry>> list(String directory, {bool refresh = false});
   Future<RemoteEntry> stat(String path);
   Future<RemoteLink> link(String path);
   Future<RemoteTextFile> readText(String path);

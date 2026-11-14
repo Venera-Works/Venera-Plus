@@ -21,7 +21,7 @@ import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/app_update/app_update.dart';
 import 'package:venera_plus/features/sync/sync.dart';
-import 'package:venera_plus/features/webdav_library/webdav_library.dart';
+import 'package:venera_plus/features/remote_library/remote_library.dart';
 import 'package:venera_plus/foundation/image_provider/cached_image.dart';
 import 'package:venera_plus/foundation/js_engine.dart';
 import 'package:venera_plus/foundation/log.dart';
@@ -52,7 +52,7 @@ extension _FutureInit<T> on Future<T> {
   }
 }
 
-final _remoteComicLibrarySources = <String, WebDavLibraryEngine>{};
+final _remoteComicLibrarySources = <String, RemoteLibraryEngine>{};
 String _remoteLibraryConfigurationSignature = '';
 
 String _remoteLibrarySignature() => jsonEncode([
@@ -94,44 +94,50 @@ List<ComicSource> _runtimeRemoteComicSources() {
     final current = _remoteComicLibrarySources[library.sourceKey];
     final source = current != null && current.matches(library, account)
         ? current
-        : WebDavLibraryEngine(
+        : RemoteLibraryEngine(
             library: library,
             store: RemoteStorageAccounts.instance.storeFor(library.accountId),
           );
-    if (!identical(source, current)) current?.cancel();
+    if (!identical(source, current) && current != null) {
+      unawaited(current.cancel());
+    }
     _remoteComicLibrarySources[library.sourceKey] = source;
-    WebDavLibraryEngines.replace(source);
+    RemoteLibraryEngines.replace(source);
     result.add(source.create());
   }
   for (final key in _remoteComicLibrarySources.keys.toList()) {
     if (!active.contains(key)) {
-      _remoteComicLibrarySources.remove(key)?.cancel();
-      WebDavLibraryEngines.remove(key);
+      final removed = _remoteComicLibrarySources.remove(key);
+      if (removed != null) unawaited(removed.cancel());
+      RemoteLibraryEngines.remove(key);
     }
   }
   return result;
 }
 
 Future<void> _refreshRemoteComicLibrariesAfterSettingsImport() async {
-  WebDavLibraryEngines.cancelAll();
+  await RemoteLibraryEngines.cancelAll();
   _remoteComicLibrarySources.clear();
   await ComicSourceManager().reload();
-  WebDavLibraryEngines.checkAllAutomaticSync();
+  RemoteLibraryEngines.checkAllAutomaticSync();
 }
 
 /// Runtime entry used by lifecycle callbacks; legacy static source timers are
 /// intentionally not started by the app.
 void checkRemoteComicLibrariesForAutomaticSync() =>
-    WebDavLibraryEngines.checkAllAutomaticSync();
+    RemoteLibraryEngines.checkAllAutomaticSync();
 
 /// Releases remote-library timers before dropping active remote drivers.
 Future<void> shutdownRemoteComicLibraryRuntime() async {
-  WebDavLibraryEngines.cancelAll();
-  _remoteComicLibrarySources.clear();
   try {
-    await RemoteStorageAccounts.instance.close();
-  } catch (error, stackTrace) {
-    Log.error('OpenList close', error, stackTrace);
+    await RemoteLibraryEngines.close();
+  } finally {
+    _remoteComicLibrarySources.clear();
+    try {
+      await RemoteStorageAccounts.instance.close();
+    } catch (error, stackTrace) {
+      Log.error('OpenList close', error, stackTrace);
+    }
   }
 }
 
@@ -169,12 +175,12 @@ void startBangumiAfterDataSync({
 
 @visibleForTesting
 Future<void> refreshRuntimeAfterSettingsImport({
-  required void Function() resetWebDavLibrary,
+  required FutureOr<void> Function() resetRemoteLibrary,
   required Future<void> Function() reloadComicSources,
   required Future<void> Function() initializeBangumi,
   required void Function() checkForAutomaticSync,
 }) async {
-  resetWebDavLibrary();
+  await resetRemoteLibrary();
   await reloadComicSources();
   await initializeBangumi();
   checkForAutomaticSync();
@@ -190,8 +196,8 @@ ComicMetaData _metadataFromBangumiSubject(BangumiSubject subject) =>
     );
 
 @visibleForTesting
-Future<ComicMetaData?> scrapeBangumiMetadataForWebDav(
-  WebDavLibraryMetadataInput input, {
+Future<ComicMetaData?> scrapeBangumiMetadataForRemoteLibrary(
+  RemoteLibraryMetadataInput input, {
   BangumiService? service,
 }) async {
   final bangumi = service ?? BangumiService();
@@ -236,7 +242,7 @@ Future<void> init({bool deferBackgroundTasks = false}) async {
     proxy: await getProxy(),
   );
   await StartupTiming.measure('Storage migrations', () async {
-    await RemoteComicLibraryRegistry.migrateLegacyWebDavLibrary();
+    await RemoteComicLibraryRegistry.migrateLegacyRemoteLibrary();
     await remoteStorage.migrateLegacyWebDavLocations();
   });
   await StartupTiming.measure('Cookies', () async {
@@ -247,27 +253,32 @@ Future<void> init({bool deferBackgroundTasks = false}) async {
     (sourceKey) =>
         RemoteComicLibraryRegistry.findBySourceKey(sourceKey)?.id ?? '',
   );
-  WebDavLibrarySource.configureMetadataWriteGuard((
+  RemoteLibrarySource.configureMetadataWriteGuard((
     libraryId,
     comicId,
     subjectId,
   ) {
-    final sourceKey = WebDavLibrarySource.activeSourceKey;
+    final sourceKey =
+        RemoteComicLibraryRegistry.read()
+            .where((library) => library.id == libraryId)
+            .firstOrNull
+            ?.sourceKey ??
+        RemoteLibrarySource.sourceKey;
     final binding = BangumiService().bindingFor(sourceKey, comicId);
     return binding?.scopeId == libraryId && binding?.subjectId == subjectId;
   });
   registerAppDataSettingsChangedHandler(() async {
-    await RemoteComicLibraryRegistry.migrateLegacyWebDavLibrary();
+    await RemoteComicLibraryRegistry.migrateLegacyRemoteLibrary();
     await _refreshRemoteComicLibrariesAfterSettingsImport();
     await BangumiService().initialize();
   });
-  WebDavLibrarySource.configureMetadataScraper(
-    scrapeBangumiMetadataForWebDav,
+  RemoteLibrarySource.configureMetadataScraper(
+    scrapeBangumiMetadataForRemoteLibrary,
     isEnabled: () =>
         BangumiService().isConnected &&
         appdata.settings['bangumiAutoMetadataScrapeEnabled'] == true,
   );
-  WebDavLibrarySource.configureMetadataSubjectHandler(
+  RemoteLibrarySource.configureMetadataSubjectHandler(
     BangumiService().bindFromMetadata,
   );
   configureBangumiBindingMetadataHandler(({
@@ -416,11 +427,11 @@ void startBackgroundTasks() {
     waitForDownload: dataSync.waitForDownload,
     createInitializer: () => () async {
       await BangumiService().initialize();
-      WebDavLibraryEngines.initializeAllMetadataRetry();
-      WebDavLibraryEngines.checkAllAutomaticSync();
+      RemoteLibraryEngines.initializeAllMetadataRetry();
+      RemoteLibraryEngines.checkAllAutomaticSync();
       if (BangumiService().isConnected &&
           appdata.settings['bangumiAutoMetadataScrapeEnabled'] == true) {
-        WebDavLibraryEngines.checkAllAutomaticSync();
+        RemoteLibraryEngines.checkAllAutomaticSync();
       }
       FollowUpdatesService.initChecker();
     },

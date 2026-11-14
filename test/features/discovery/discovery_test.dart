@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/components/navigation_bar.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
-import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/features/discovery/discovery.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
@@ -88,7 +87,7 @@ ComicSource _createTestSource({
 
 void main() {
   testWidgets(
-    'remote refresh replaces the list with one centered turn for fast and slow syncs',
+    'remote refresh keeps the list visible and applies changes before completion',
     (tester) async {
       final directory = Directory.systemTemp.createTempSync(
         'venera-discovery-refresh-',
@@ -166,63 +165,45 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('Library revision 0'), findsOneWidget);
-      final listCenter = tester.getCenter(find.byType(ComicList));
       final initialLoads = loadCount;
       final refreshButton = find.byKey(const Key('FAB'));
-      final rotation = find.byType(RotationTransition);
-
-      await tester.tap(refreshButton);
-      await tester.pump();
-      expect(refreshCount, 1);
-      expect(find.text('Library revision 0'), findsNothing);
-      expect(find.byType(CircularProgressIndicator), findsOneWidget);
-      expect(
-        tester.getCenter(find.byType(CircularProgressIndicator)),
-        listCenter,
-      );
-      expect(
-        find.ancestor(of: refreshButton, matching: rotation),
-        findsNothing,
-      );
-      await tester.tap(refreshButton);
-      await tester.pump();
-      expect(refreshCount, 1);
-
-      await tester.pump(const Duration(milliseconds: 400));
-      expect(
-        tester.widget<RotationTransition>(rotation).turns.value,
-        closeTo(0.5, 0.01),
-      );
-      expect(find.text('Library revision 0'), findsNothing);
-      await tester.pump(const Duration(milliseconds: 401));
-      await tester.pump();
-      expect(rotation, findsNothing);
-      expect(find.byType(CircularProgressIndicator), findsNothing);
-      expect(find.text('Library revision 0'), findsOneWidget);
-      expect(loadCount, greaterThan(initialLoads));
 
       pendingRefresh = Completer<void>();
       await tester.tap(refreshButton);
       await tester.pump();
-      expect(refreshCount, 2);
-      contentVersion.value++;
-      await tester.pump(const Duration(milliseconds: 400));
-      expect(rotation, findsOneWidget);
-      expect(find.text('Library revision 1'), findsNothing);
-      await tester.pump(const Duration(milliseconds: 401));
-      await tester.pump();
-      expect(pendingRefresh.isCompleted, isFalse);
-      expect(rotation, findsNothing);
-      expect(find.byType(CircularProgressIndicator), findsNothing);
-      expect(find.text('Library revision 1'), findsOneWidget);
-      pendingRefresh.complete();
-      await tester.pumpAndSettle();
-      expect(find.text('Library revision 1'), findsOneWidget);
-
+      expect(refreshCount, 1);
+      expect(find.text('Library revision 0'), findsOneWidget);
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
+      expect(loadCount, initialLoads);
       await tester.tap(refreshButton);
       await tester.pump();
-      expect(rotation, findsOneWidget);
+      expect(refreshCount, 1);
+
+      contentVersion.value++;
+      await tester.pump();
+      await tester.pump();
+      expect(pendingRefresh.isCompleted, isFalse);
+      expect(find.text('Library revision 1'), findsOneWidget);
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
+      expect(loadCount, greaterThan(initialLoads));
+      pendingRefresh.complete();
+      await tester.pumpAndSettle();
+      expect(find.byType(LinearProgressIndicator), findsNothing);
+
+      pendingRefresh = null;
+      await tester.tap(refreshButton);
+      await tester.pumpAndSettle();
+      expect(refreshCount, 2);
+      expect(find.byType(LinearProgressIndicator), findsNothing);
+      expect(find.text('Library revision 1'), findsOneWidget);
+
+      pendingRefresh = Completer<void>();
+      await tester.tap(refreshButton);
+      await tester.pump();
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
       await tester.pumpWidget(const SizedBox.shrink());
+      pendingRefresh.complete();
+      await tester.pump();
       expect(tester.takeException(), isNull);
     },
   );

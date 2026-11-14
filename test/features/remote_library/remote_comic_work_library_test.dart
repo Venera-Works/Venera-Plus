@@ -12,8 +12,8 @@ import 'package:venera_plus/app_runtime/app_runtime.dart';
 import 'package:venera_plus/features/bangumi/bangumi.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_storage/comic_storage.dart';
-import 'package:venera_plus/features/webdav_library/webdav_library.dart';
-import 'package:venera_plus/features/webdav_library/webdav_library_cache.dart';
+import 'package:venera_plus/features/remote_library/remote_library.dart';
+import 'package:venera_plus/features/remote_library/remote_library_repository.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
@@ -31,22 +31,22 @@ void main() {
   late _MultiFileStore store;
   late _PdfProbe probe;
   late HttpServer server;
-  late WebDavLibraryEngine engine;
+  late RemoteLibraryEngine engine;
   late ComicSource source;
   final ranges = <_TrackedRange>[];
   final clients = <Dio>[];
   var nonRangeRequests = 0;
 
   setUp(() async {
+    await RemoteLibrarySource.resetCacheForTesting();
     directory = Directory.systemTemp.createTempSync('remote-work-library-');
     App.dataPath = directory.path;
     App.cachePath = directory.path;
     CacheManager.debugDisableInitialScan = true;
-    WebDavLibrarySource.resetCacheForTesting();
-    WebDavLibrarySource.configureMetadataScraper(null);
-    WebDavLibrarySource.configureMetadataWriteGuard(null);
+    RemoteLibrarySource.configureMetadataScraper(null);
+    RemoteLibrarySource.configureMetadataWriteGuard(null);
     appdata.implicitData.clear();
-    WebDavLibrarySource.archiveSchedulerFactory = () =>
+    RemoteLibrarySource.archiveSchedulerFactory = () =>
         RemoteReadScheduler(minInterval: Duration.zero);
     ranges.clear();
     nonRangeRequests = 0;
@@ -107,7 +107,7 @@ void main() {
         headers: const {'x-cloud-auth': 'preserved'},
       ),
     );
-    engine = WebDavLibraryEngine(
+    engine = RemoteLibraryEngine(
       library: const RemoteLibrary(
         id: 'work-library',
         sourceKey: 'work-source',
@@ -119,7 +119,7 @@ void main() {
       store: store,
     );
     source = engine.create();
-    WebDavLibrarySource.archiveDioFactory = () {
+    RemoteLibrarySource.archiveDioFactory = () {
       final dio = Dio()..httpClientAdapter = IOHttpClientAdapter();
       clients.add(dio);
       return dio;
@@ -134,17 +134,17 @@ void main() {
 
   tearDown(() async {
     ImageDownloader.cancelAllLoadingImages();
-    engine.cancel();
+    await engine.cancel();
     ImageDownloader.debugResetSourceImageLoading();
     await ImageDownloader.debugFlushImageCacheWrites();
     await CacheManager.resetForTesting();
     RemotePdfReader.debugOpenDocument = null;
-    WebDavLibrarySource.archiveDioFactory = null;
-    WebDavLibrarySource.archiveSchedulerFactory = null;
-    WebDavLibrarySource.configureMetadataScraper(null);
-    WebDavLibrarySource.configureMetadataWriteGuard(null);
+    RemoteLibrarySource.archiveDioFactory = null;
+    RemoteLibrarySource.archiveSchedulerFactory = null;
+    RemoteLibrarySource.configureMetadataScraper(null);
+    RemoteLibrarySource.configureMetadataWriteGuard(null);
     appdata.implicitData.clear();
-    WebDavLibrarySource.resetCacheForTesting();
+    await RemoteLibrarySource.resetCacheForTesting();
     for (final client in clients) {
       client.close(force: true);
     }
@@ -173,6 +173,7 @@ void main() {
       );
 
       final sync = await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       expect(sync.success, isTrue, reason: sync.errorMessage);
       expect(ranges, isEmpty);
       expect(store.links, 0);
@@ -241,6 +242,7 @@ void main() {
       );
 
       final sync = await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       expect(sync.success, isTrue, reason: sync.errorMessage);
       final list = await source.explorePages.single.loadPage!(1);
       final workId = list.data.single.id;
@@ -386,6 +388,7 @@ void main() {
       );
 
       final sync = await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       expect(sync.success, isTrue, reason: sync.errorMessage);
       final list = await source.explorePages.single.loadPage!(1);
       expect(list.data, hasLength(1));
@@ -442,6 +445,7 @@ void main() {
       );
 
       final sync = await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       expect(sync.success, isTrue, reason: sync.errorMessage);
       final list = await source.explorePages.single.loadPage!(1);
       expect(list.data, hasLength(1));
@@ -497,6 +501,7 @@ void main() {
       );
 
       final sync = await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       expect(sync.success, isTrue, reason: sync.errorMessage);
       final list = await source.explorePages.single.loadPage!(1);
       expect(list.data, hasLength(3));
@@ -548,6 +553,7 @@ void main() {
       );
 
       final sync = await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       expect(sync.success, isTrue, reason: sync.errorMessage);
       final list = await source.explorePages.single.loadPage!(1);
       final workId = list.data.single.id;
@@ -560,8 +566,8 @@ void main() {
       final rangeCountBefore = ranges.length;
 
       // Reopen library: cache retention
-      engine.cancel();
-      engine = WebDavLibraryEngine(
+      await engine.cancel();
+      engine = RemoteLibraryEngine(
         library: const RemoteLibrary(
           id: 'work-library',
           sourceKey: 'work-source',
@@ -594,6 +600,7 @@ void main() {
         eTag: '"v2"',
       );
       final sync2 = await engine.synchronize(force: true);
+      await engine.waitForBackgroundTasks();
       expect(sync2.success, isTrue, reason: sync2.errorMessage);
 
       final newPages = await source.loadComicPages!(
@@ -630,6 +637,7 @@ void main() {
       store.addFile('/library/Flat Comic 02.cbz', _createZip(1), eTag: '"v1"');
 
       final sync = await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       expect(sync.success, isTrue, reason: sync.errorMessage);
       final list = await source.explorePages.single.loadPage!(1);
       expect(list.data, hasLength(2));
@@ -686,6 +694,7 @@ void main() {
       store.addFile('/library/Book A 01.cbz', bytes);
       store.addFile('/library/Book A 02.cbz', bytes);
       final firstSync = await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       expect(firstSync.success, isTrue, reason: firstSync.errorMessage);
       final firstList = await source.explorePages.single.loadPage!(1);
       final saved = firstList.data.single;
@@ -699,6 +708,7 @@ void main() {
       store.addFile('/library/Book B 01.cbz', bytes);
       store.addFile('/library/Book B 02.cbz', bytes);
       final expandedSync = await engine.synchronize(force: true);
+      await engine.waitForBackgroundTasks();
       expect(expandedSync.success, isTrue, reason: expandedSync.errorMessage);
       final expanded = await source.explorePages.single.loadPage!(1);
       expect(
@@ -716,6 +726,7 @@ void main() {
       store.files.remove('/library/Book B 01.cbz');
       store.files.remove('/library/Book B 02.cbz');
       final reducedSync = await engine.synchronize(force: true);
+      await engine.waitForBackgroundTasks();
       expect(reducedSync.success, isTrue, reason: reducedSync.errorMessage);
       final reduced = await source.explorePages.single.loadPage!(1);
       expect(reduced.data.single.id, saved.id);
@@ -859,7 +870,7 @@ void main() {
           );
         }
 
-        WebDavLibrarySource.configureMetadataScraper((_) async {
+        RemoteLibrarySource.configureMetadataScraper((_) async {
           if (duringCreate) {
             store.beforeWrite = (writtenPath, _) {
               if (writtenPath == path) {
@@ -882,8 +893,10 @@ void main() {
           volumes: [],
         ).id;
 
+        final inspected = await source.loadComicInfo!(id);
+        expect(inspected.success, isTrue, reason: inspected.errorMessage);
+        await engine.waitForBackgroundTasks();
         final info = await source.loadComicInfo!(id);
-
         expect(info.success, isTrue, reason: info.errorMessage);
         expect(info.data.title, 'Concurrent title');
         expect(info.data.tags['作者'], ['Concurrent author']);
@@ -902,6 +915,7 @@ void main() {
       store.addFile('/library/[作者][作品]卷02.cbz', _createZip(1), eTag: '"cbz-2"');
 
       final sync = await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       expect(sync.success, isTrue, reason: sync.errorMessage);
       final list = await source.explorePages.single.loadPage!(1);
       expect(list.data, hasLength(1));
@@ -956,11 +970,13 @@ void main() {
       final gateway = _MetadataGateway();
       final bangumi = BangumiService.forTesting(gatewayFactory: (_) => gateway);
       store.backend = StorageBackend.webdav;
-      WebDavLibrarySource.configureMetadataScraper(
-        (input) => scrapeBangumiMetadataForWebDav(input, service: bangumi),
+      RemoteLibrarySource.configureMetadataScraper(
+        (input) =>
+            scrapeBangumiMetadataForRemoteLibrary(input, service: bangumi),
       );
 
       final sync = await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       expect(sync.success, isTrue, reason: sync.errorMessage);
 
       final alpha =
@@ -996,13 +1012,14 @@ void main() {
 
       var scraperCalls = 0;
       final scrapedTitles = <String>[];
-      WebDavLibrarySource.configureMetadataScraper((input) async {
+      RemoteLibrarySource.configureMetadataScraper((input) async {
         scraperCalls++;
         scrapedTitles.add(input.title);
         return null;
       });
 
       final sync = await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       expect(sync.success, isTrue, reason: sync.errorMessage);
       expect(scraperCalls, 1);
       expect(scrapedTitles, ['Multi Unmatched']);
@@ -1013,7 +1030,10 @@ void main() {
       final work = list.data.single;
 
       final cacheKey = 'remote-library:${engine.library.id}';
-      final cached = WebDavLibraryCache.instance.find(cacheKey, work.id);
+      final cached = await RemoteLibraryRepository.instance.find(
+        cacheKey,
+        work.id,
+      );
       expect(cached?.snapshot?['metadataScrapeStatus'], 'noMatch');
 
       // Loading cover must not scrape or write member sidecars
@@ -1025,6 +1045,7 @@ void main() {
       final loadBytes =
           thumbConfig['loadBytes'] as Future<Uint8List> Function(CancelToken);
       expect(await loadBytes(CancelToken()), [9, 1]);
+      await engine.waitForBackgroundTasks();
       expect(scraperCalls, 1);
       expect(store.texts, isEmpty);
 
@@ -1039,23 +1060,26 @@ void main() {
         '/library/Multi Unmatched/Vol 02.cbz',
       );
       expect(vol2Pages.success, isTrue, reason: vol2Pages.errorMessage);
+      await engine.waitForBackgroundTasks();
       expect(scraperCalls, 1);
       expect(store.texts, isEmpty);
 
       // Repeated sync on validatorless files rebuilds index but must not re-scrape
       final secondSync = await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       expect(secondSync.success, isTrue, reason: secondSync.errorMessage);
       expect(scraperCalls, 1);
       expect(store.texts, isEmpty);
 
       // Reopening engine reloads persistent cache without calling scraper
-      final reopenedEngine = WebDavLibraryEngine(
+      final reopenedEngine = RemoteLibraryEngine(
         library: engine.library,
         store: store,
       );
       addTearDown(reopenedEngine.cancel);
       final reopenedSource = reopenedEngine.create();
       final reopenedSync = await reopenedEngine.synchronize();
+      await reopenedEngine.waitForBackgroundTasks();
       expect(reopenedSync.success, isTrue, reason: reopenedSync.errorMessage);
       final reopenedInfo = await reopenedSource.loadComicInfo!(work.id);
       expect(reopenedInfo.success, isTrue, reason: reopenedInfo.errorMessage);
@@ -1063,7 +1087,7 @@ void main() {
       expect(store.texts, isEmpty);
 
       // Manual retry on reopened engine bypasses noMatch and transitions to matched
-      WebDavLibrarySource.configureMetadataScraper((input) async {
+      RemoteLibrarySource.configureMetadataScraper((input) async {
         scraperCalls++;
         return const ComicMetaData(
           title: 'Multi Matched',
@@ -1075,7 +1099,7 @@ void main() {
 
       final retry = await reopenedEngine.retryMetadataScrape(work.id);
       expect(retry.success, isTrue, reason: retry.errorMessage);
-      expect(retry.data, WebDavMetadataScrapeResult.matched);
+      expect(retry.data, RemoteLibraryMetadataScrapeResult.matched);
       expect(scraperCalls, 2);
       expect(store.texts.keys, ['/library/Multi Unmatched/metadata.json']);
       final updatedDetails = await reopenedSource.loadComicInfo!(work.id);
@@ -1109,7 +1133,7 @@ void main() {
       );
 
       var scraperCalls = 0;
-      WebDavLibrarySource.configureMetadataScraper((input) async {
+      RemoteLibrarySource.configureMetadataScraper((input) async {
         scraperCalls++;
         return const ComicMetaData(
           title: 'Should Not Scrape Volume',
@@ -1119,6 +1143,7 @@ void main() {
       });
 
       final sync = await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       expect(sync.success, isTrue, reason: sync.errorMessage);
       expect(scraperCalls, 0);
 
@@ -1138,6 +1163,7 @@ void main() {
       );
       expect(p2.success, isTrue, reason: p2.errorMessage);
 
+      await engine.waitForBackgroundTasks();
       expect(scraperCalls, 0);
       expect(store.textWrites, isEmpty);
       expect(store.texts.keys, ['/library/Valid Work/metadata.json']);
@@ -1462,7 +1488,10 @@ class _MultiFileStore implements RemoteFileStore {
   );
 
   @override
-  Future<List<RemoteEntry>> list(String directory) async {
+  Future<List<RemoteEntry>> list(
+    String directory, {
+    bool refresh = false,
+  }) async {
     final normalized = directory.endsWith('/') ? directory : '$directory/';
     final entries = <RemoteEntry>[];
     final subdirs = <String>{};
@@ -1597,10 +1626,10 @@ class _MultiFileStore implements RemoteFileStore {
     beforeWrite?.call(path, textWrites.length);
     final existing = texts[path];
     if (createOnly && existing != null) {
-      throw const WebDavPreconditionFailedException('Conflict');
+      throw const RemoteLibraryPreconditionFailedException('Conflict');
     }
     if (ifMatch != null && existing?.eTag != ifMatch) {
-      throw const WebDavPreconditionFailedException('ETag mismatch');
+      throw const RemoteLibraryPreconditionFailedException('ETag mismatch');
     }
     final now = DateTime.now().millisecondsSinceEpoch;
     final text = RemoteTextFile(

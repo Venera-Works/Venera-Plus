@@ -13,7 +13,7 @@ import 'package:venera_plus/components/gesture.dart';
 import 'package:venera_plus/components/loading.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
-import 'package:venera_plus/features/webdav_library/webdav_library.dart';
+import 'package:venera_plus/features/remote_library/remote_library.dart';
 import 'package:venera_plus/features/reader/auto_reading.dart';
 import 'package:venera_plus/features/reader/chapter_comments.dart';
 import 'package:venera_plus/features/reader/chapter_loader.dart';
@@ -144,10 +144,10 @@ class ReaderImagesState extends State<ReaderImages> {
                     reader.chapter,
                     reader.widget.chapters,
                   ));
-          final isWebDav =
-              reader.type == ComicType.fromKey(WebDavLibrarySource.sourceKey);
+          final isLegacyRemoteLibrary =
+              reader.type == ComicType.fromKey(RemoteLibrarySource.sourceKey);
 
-          if ((isLocalOrDownloaded || isWebDav) && isSameChapter) {
+          if ((isLocalOrDownloaded || isLegacyRemoteLibrary) && isSameChapter) {
             try {
               await LocalManager().migrateLegacyPageOrder(history, images);
               if (!mounted) return;

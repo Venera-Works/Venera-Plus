@@ -12,7 +12,7 @@ import 'package:venera_plus/features/comic_storage/comic_storage.dart';
 import 'package:venera_plus/features/history/reading_progress.dart';
 import 'package:venera_plus/features/reader/reader.dart';
 import 'package:venera_plus/foundation/appdata.dart';
-import 'package:venera_plus/features/webdav_library/webdav_library.dart';
+import 'package:venera_plus/features/remote_library/remote_library.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/network/images.dart';
@@ -24,7 +24,7 @@ void main() {
   HttpOverrides.global = null;
   late Directory directory;
   late _ArchiveStore store;
-  late WebDavLibraryEngine engine;
+  late RemoteLibraryEngine engine;
   late ComicSource source;
   late HttpServer server;
   late Uint8List zip;
@@ -79,15 +79,15 @@ void main() {
   }
 
   setUp(() async {
+    await RemoteLibrarySource.resetCacheForTesting();
     directory = Directory.systemTemp.createTempSync('remote-zip-library-');
     App.dataPath = directory.path;
     App.cachePath = directory.path;
     CacheManager.debugDisableInitialScan = true;
-    WebDavLibrarySource.resetCacheForTesting();
-    WebDavLibrarySource.configureMetadataScraper(null);
-    WebDavLibrarySource.configureMetadataWriteGuard(null);
+    RemoteLibrarySource.configureMetadataScraper(null);
+    RemoteLibrarySource.configureMetadataWriteGuard(null);
     appdata.implicitData.clear();
-    WebDavLibrarySource.archiveSchedulerFactory = () =>
+    RemoteLibrarySource.archiveSchedulerFactory = () =>
         RemoteReadScheduler(minInterval: Duration.zero);
     ranges.clear();
     conditions.clear();
@@ -156,7 +156,7 @@ void main() {
         headers: {'x-cloud-auth': 'preserved'},
       ),
     );
-    engine = WebDavLibraryEngine(
+    engine = RemoteLibraryEngine(
       library: const RemoteLibrary(
         id: 'archive-library',
         sourceKey: 'archive-source',
@@ -168,7 +168,7 @@ void main() {
       store: store,
     );
     source = engine.create();
-    WebDavLibrarySource.archiveDioFactory = () {
+    RemoteLibrarySource.archiveDioFactory = () {
       final dio = Dio()..httpClientAdapter = IOHttpClientAdapter();
       clients.add(dio);
       return dio;
@@ -183,16 +183,16 @@ void main() {
 
   tearDown(() async {
     ImageDownloader.cancelAllLoadingImages();
-    engine.cancel();
+    await engine.cancel();
     ImageDownloader.debugResetSourceImageLoading();
     await ImageDownloader.debugFlushImageCacheWrites();
     await CacheManager.resetForTesting();
-    WebDavLibrarySource.archiveDioFactory = null;
-    WebDavLibrarySource.archiveSchedulerFactory = null;
-    WebDavLibrarySource.configureMetadataScraper(null);
-    WebDavLibrarySource.configureMetadataWriteGuard(null);
+    RemoteLibrarySource.archiveDioFactory = null;
+    RemoteLibrarySource.archiveSchedulerFactory = null;
+    RemoteLibrarySource.configureMetadataScraper(null);
+    RemoteLibrarySource.configureMetadataWriteGuard(null);
     appdata.implicitData.clear();
-    WebDavLibrarySource.resetCacheForTesting();
+    await RemoteLibrarySource.resetCacheForTesting();
     for (final client in clients) {
       client.close(force: true);
     }
@@ -205,6 +205,7 @@ void main() {
     'discovery stays lazy and a page uses only its entry ranges and cache',
     () async {
       expect((await engine.synchronize()).success, isTrue);
+      await engine.waitForBackgroundTasks();
       expect(ranges, isEmpty);
       expect(store.links, 0);
       expect(store.stats, 0);
@@ -268,8 +269,8 @@ void main() {
       await ImageDownloader.loadThumbnail(info.data.cover, source.key).last;
       expect(ranges.length, afterCover);
       final library = engine.library;
-      engine.cancel();
-      engine = WebDavLibraryEngine(library: library, store: store);
+      await engine.cancel();
+      engine = RemoteLibraryEngine(library: library, store: store);
       source = engine.create();
       final reopened = await source.loadComicPages!('/library/漫画 %.cbz', null);
       expect(reopened.data, pages.data);
@@ -417,8 +418,8 @@ void main() {
       );
       final requests = ranges.length;
       final library = engine.library;
-      engine.cancel();
-      engine = WebDavLibraryEngine(library: library, store: store);
+      await engine.cancel();
+      engine = RemoteLibraryEngine(library: library, store: store);
       source = engine.create();
       final reopened = await source.loadComicInfo!('/library/漫画 %.cbz');
       expect(reopened.data.chapterGroups, info.data.chapterGroups);
@@ -492,6 +493,7 @@ void main() {
         }),
       );
       expect((await engine.synchronize()).success, isTrue);
+      await engine.waitForBackgroundTasks();
       expect(ranges, isEmpty);
       final list = await source.explorePages.single.loadPage!(1);
       expect(list.data.single.title, 'Sidecar title');
@@ -505,6 +507,7 @@ void main() {
       final requests = ranges.length;
       store.texts.remove(sidecar);
       await engine.synchronize(force: true);
+      await engine.waitForBackgroundTasks();
       final restored = await source.loadComicInfo!('/library/漫画 %.cbz');
       expect(restored.data.title, 'Cloud book');
       expect(
@@ -527,8 +530,8 @@ void main() {
         zip = createZip(revision, includeMetadata: false);
         final original = Uint8List.fromList(zip);
         store.backend = StorageBackend.webdav;
-        final scrapedInputs = <WebDavLibraryMetadataInput>[];
-        WebDavLibrarySource.configureMetadataScraper((input) async {
+        final scrapedInputs = <RemoteLibraryMetadataInput>[];
+        RemoteLibrarySource.configureMetadataScraper((input) async {
           scrapedInputs.add(input);
           return const ComicMetaData(
             title: 'Matched title',
@@ -539,8 +542,12 @@ void main() {
           );
         });
         await engine.synchronize();
+        await engine.waitForBackgroundTasks();
         expect(scrapedInputs, isEmpty);
         expect(ranges, isEmpty);
+        final inspected = await source.loadComicInfo!(id);
+        expect(inspected.success, isTrue, reason: inspected.errorMessage);
+        await engine.waitForBackgroundTasks();
         final info = await source.loadComicInfo!(id);
         expect(info.success, isTrue, reason: info.errorMessage);
         expect(scrapedInputs.single.title, '漫画 %');
@@ -558,6 +565,7 @@ void main() {
         expect(zip, original);
         final requests = ranges.length;
         await engine.synchronize(force: true);
+        await engine.waitForBackgroundTasks();
         expect((await source.loadComicInfo!(id)).data.title, 'Matched title');
         expect(scrapedInputs, hasLength(1));
         expect(ranges, hasLength(requests));
@@ -666,13 +674,15 @@ void main() {
         const sidecar = '/library/漫画 %.cbz.metadata.json';
         store.texts[sidecar] = RemoteTextFile(content: content);
         var scraped = 0;
-        WebDavLibrarySource.configureMetadataScraper((_) async {
+        RemoteLibrarySource.configureMetadataScraper((_) async {
           scraped++;
           return null;
         });
         await engine.synchronize();
+        await engine.waitForBackgroundTasks();
         final info = await source.loadComicInfo!('/library/漫画 %.cbz');
         expect(info.success, isTrue, reason: info.errorMessage);
+        await engine.waitForBackgroundTasks();
         expect(info.data.title, 'Cloud book');
         expect(info.data.maxPage, 2);
         expect(scraped, 0);
@@ -687,18 +697,21 @@ void main() {
     () async {
       zip = createZip(revision, includeMetadata: false);
       var scraped = 0;
-      WebDavLibrarySource.configureMetadataScraper((_) async {
+      RemoteLibrarySource.configureMetadataScraper((_) async {
         scraped++;
         return null;
       });
       final first = await source.loadComicInfo!('/library/漫画 %.cbz');
       expect(first.success, isTrue, reason: first.errorMessage);
+      await engine.waitForBackgroundTasks();
       expect(scraped, 1);
       await engine.synchronize(force: true);
+      await engine.waitForBackgroundTasks();
       expect(
         (await source.loadComicInfo!('/library/漫画 %.cbz')).success,
         isTrue,
       );
+      await engine.waitForBackgroundTasks();
       expect(scraped, 1);
       expect(store.writes, 0);
     },
@@ -707,13 +720,13 @@ void main() {
   test(
     'closing a library cancels archive queries queued during cooldown',
     () async {
-      WebDavLibrarySource.archiveSchedulerFactory = () =>
+      RemoteLibrarySource.archiveSchedulerFactory = () =>
           RemoteReadScheduler(minInterval: Duration.zero)
             ..defer(retryAfter: '3600');
       final reading = source.loadComicInfo!('/library/漫画 %.cbz');
       await pumpEventQueue();
       expect(store.stats, 0);
-      engine.cancel();
+      await engine.cancel();
       final result = await reading;
       expect(result.success, isFalse);
       expect(store.stats, 0);
@@ -725,14 +738,14 @@ void main() {
     'libraries on one account share their scheduler and range cache',
     () async {
       var schedulers = 0;
-      WebDavLibrarySource.archiveSchedulerFactory = () {
+      RemoteLibrarySource.archiveSchedulerFactory = () {
         schedulers++;
         return RemoteReadScheduler(minInterval: Duration.zero);
       };
       final first = await source.loadComicInfo!('/library/漫画 %.cbz');
       expect(first.success, isTrue, reason: first.errorMessage);
       final requests = ranges.length;
-      final other = WebDavLibraryEngine(
+      final other = RemoteLibraryEngine(
         library: const RemoteLibrary(
           id: 'second-library',
           sourceKey: 'second-source',
@@ -750,7 +763,7 @@ void main() {
         expect(schedulers, 1);
         expect(ranges.length, requests);
       } finally {
-        other.cancel();
+        await other.cancel();
       }
     },
   );
@@ -759,6 +772,7 @@ void main() {
     'opening the lazy list cover resolves the ZIP index and cover entry',
     () async {
       await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       final list = await source.explorePages.single.loadPage!(1);
       final cover = await ImageDownloader.loadThumbnail(
         list.data.single.cover,
@@ -779,6 +793,7 @@ void main() {
       downloadModified = DateTime.utc(2026, 7, 5, 18, 10, 49);
       zip = createZip(revision, distantPage: true);
       expect((await engine.synchronize()).success, isTrue);
+      await engine.waitForBackgroundTasks();
       final list = await source.explorePages.single.loadPage!(1);
       final cover = await ImageDownloader.loadThumbnail(
         list.data.single.cover,
@@ -825,11 +840,13 @@ void main() {
     'refresh changes page identities and never writes metadata into a file',
     () async {
       await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       final first = await source.loadComicPages!('/library/漫画 %.cbz', null);
       expect(first.success, isTrue, reason: first.errorMessage);
       revision = 2;
       zip = createZip(revision);
       await engine.synchronize(force: true);
+      await engine.waitForBackgroundTasks();
       final next = await source.loadComicPages!('/library/漫画 %.cbz', null);
       expect(next.success, isTrue, reason: next.errorMessage);
       expect(next.data.first, isNot(first.data.first));
@@ -850,6 +867,7 @@ void main() {
     'a cancelled thumbnail does not cancel an active details waiter',
     () async {
       await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       final list = await source.explorePages.single.loadPage!(1);
       final config = await source.getThumbnailLoadingConfig!(
         list.data.single.cover,
@@ -874,6 +892,7 @@ void main() {
     'force refresh applies the new version while an old index is loading',
     () async {
       await engine.synchronize();
+      await engine.waitForBackgroundTasks();
       final gate = responseGate = Completer<void>();
       final started = responseStarted = Completer<void>();
       final oldOpen = source.loadComicInfo!('/library/漫画 %.cbz');
@@ -888,6 +907,7 @@ void main() {
       await oldOpen;
       final refreshed = await refreshing;
       expect(refreshed.success, isTrue, reason: refreshed.errorMessage);
+      await engine.waitForBackgroundTasks();
       final pages = await source.loadComicPages!('/library/漫画 %.cbz', null);
       expect(pages.success, isTrue, reason: pages.errorMessage);
       expect(
@@ -905,9 +925,9 @@ void main() {
   test(
     'classification and overlapping roots retain full archive identities',
     () async {
-      engine.cancel();
+      await engine.cancel();
       store.nested = true;
-      engine = WebDavLibraryEngine(
+      engine = RemoteLibraryEngine(
         library: const RemoteLibrary(
           id: 'nested',
           sourceKey: 'nested-source',
@@ -920,6 +940,7 @@ void main() {
       );
       source = engine.create();
       expect((await engine.synchronize()).success, isTrue);
+      await engine.waitForBackgroundTasks();
       final list = await source.explorePages.single.loadPage!(1);
       expect(list.data.map((comic) => comic.id), [
         '/library/category/漫画 %.cbz',
@@ -963,7 +984,10 @@ class _ArchiveStore implements RemoteFileStore {
     authorization: {},
   );
   @override
-  Future<List<RemoteEntry>> list(String directory) async {
+  Future<List<RemoteEntry>> list(
+    String directory, {
+    bool refresh = false,
+  }) async {
     listed?.complete();
     listed = null;
     return nested && directory == '/library/'
@@ -1042,7 +1066,7 @@ class _ArchiveStore implements RemoteFileStore {
         ifMatch != null && previous?.eTag != ifMatch ||
         ifUnmodifiedSince != null &&
             previous?.modifiedAt != ifUnmodifiedSince) {
-      throw WebDavPreconditionFailedException(path);
+      throw RemoteLibraryPreconditionFailedException(path);
     }
     final eTag = '"sidecar-$writes"';
     texts[path] = RemoteTextFile(

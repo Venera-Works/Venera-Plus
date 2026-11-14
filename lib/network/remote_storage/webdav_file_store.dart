@@ -28,8 +28,12 @@ class WebDavFileStore implements RemoteFileStore {
   Future<void> test() async => _run((token) => _webdav.readDir('/', token));
 
   @override
-  Future<List<RemoteEntry>> list(String directory) async {
+  Future<List<RemoteEntry>> list(
+    String directory, {
+    bool refresh = false,
+  }) async {
     final normalized = normalizeRemoteDirectory(directory);
+    // WebDAV 每次调用都会实时读取目录。
     final entries = await _run((token) => _webdav.readDir(normalized, token));
     return entries
         .where((item) => item.name != null)

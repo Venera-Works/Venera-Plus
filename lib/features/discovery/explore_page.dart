@@ -1357,13 +1357,11 @@ class _SingleExplorePage extends StatefulWidget {
 }
 
 class _SingleExplorePageState extends AutomaticGlobalState<_SingleExplorePage>
-    with
-        SingleTickerProviderStateMixin,
-        AutomaticKeepAliveClientMixin<_SingleExplorePage> {
+    with AutomaticKeepAliveClientMixin<_SingleExplorePage> {
   ExplorePageData? data;
   String? comicSourceKey;
 
-  late final AnimationController _refreshAnimation;
+  bool _isRefreshing = false;
   bool _wantKeepAlive = true;
   final ScrollController scrollController = ScrollController();
   VoidCallback? refreshHandler;
@@ -1401,7 +1399,7 @@ class _SingleExplorePageState extends AutomaticGlobalState<_SingleExplorePage>
       );
     }
     if (oldData != newData) {
-      _refreshAnimation.stop();
+      _isRefreshing = false;
       oldData?.changeListenable?.removeListener(onDataChanged);
       data = newData;
       comicSourceKey = source?.key;
@@ -1421,13 +1419,6 @@ class _SingleExplorePageState extends AutomaticGlobalState<_SingleExplorePage>
   @override
   void initState() {
     super.initState();
-    _refreshAnimation =
-        AnimationController(
-          vsync: this,
-          duration: const Duration(milliseconds: 800),
-        )..addStatusListener((status) {
-          if (status == AnimationStatus.completed && mounted) setState(() {});
-        });
     _bindSourceData();
     appdata.settings.addListener(onSettingsChanged);
     ComicSourceManager().addListener(_onSourcesManagerChanged);
@@ -1447,7 +1438,6 @@ class _SingleExplorePageState extends AutomaticGlobalState<_SingleExplorePage>
     appdata.settings.removeListener(onSettingsChanged);
     ComicSourceManager().removeListener(_onSourcesManagerChanged);
     data?.changeListenable?.removeListener(onDataChanged);
-    _refreshAnimation.dispose();
     scrollController.dispose();
     super.dispose();
   }
@@ -1476,6 +1466,7 @@ class _SingleExplorePageState extends AutomaticGlobalState<_SingleExplorePage>
       final statusMessage = currentData.statusMessage?.call();
       final list = ComicList(
         enablePageStorage: true,
+        preserveScrollPosition: currentData.onRefresh != null,
         loadPage: currentData.loadPage,
         loadNext: currentData.loadNext,
         key: childStorageKey,
@@ -1497,21 +1488,16 @@ class _SingleExplorePageState extends AutomaticGlobalState<_SingleExplorePage>
       );
       if (currentData.onRefresh == null) return list;
 
-      final isRefreshing = _refreshAnimation.isAnimating;
       return Stack(
         fit: StackFit.expand,
         children: [
-          Offstage(offstage: isRefreshing, child: list),
-          if (isRefreshing)
-            Center(
-              child: RotationTransition(
-                turns: _refreshAnimation,
-                child: Semantics(
-                  label: 'Loading'.tl,
-                  excludeSemantics: true,
-                  child: const CircularProgressIndicator(value: 0.75),
-                ),
-              ),
+          list,
+          if (_isRefreshing)
+            const Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: LinearProgressIndicator(),
             ),
         ],
       );
@@ -1539,13 +1525,12 @@ class _SingleExplorePageState extends AutomaticGlobalState<_SingleExplorePage>
       refreshHandler?.call();
       return;
     }
-    if (_refreshAnimation.isAnimating) return;
-    _refreshAnimation.forward(from: 0);
-    setState(() {});
-    refreshHandler?.call();
+    if (_isRefreshing) return;
+    setState(() => _isRefreshing = true);
     unawaited(
-      onRefresh().whenComplete(() {
+      Future<void>.sync(onRefresh).whenComplete(() {
         if (mounted && identical(data, currentData)) {
+          setState(() => _isRefreshing = false);
           reloadHandler?.call();
         }
       }),

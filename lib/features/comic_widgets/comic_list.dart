@@ -36,9 +36,12 @@ class SliverGridComics extends StatefulWidget {
     this.useFavoriteDisplaySettings = false,
     this.hideFavoriteBadge = false,
     this.showHiddenCount = false,
+    this.preserveScrollPosition = false,
   });
 
   final List<Comic> comics;
+
+  final bool preserveScrollPosition;
 
   final Map<Comic, bool>? selections;
 
@@ -144,6 +147,9 @@ class _SliverGridComicsState extends State<SliverGridComics> {
         final identities = filtered
             .map(comicWidgetIdentity)
             .toList(growable: false);
+        if (sourceChanged && widget.preserveScrollPosition) {
+          _preserveScrollAnchor(filtered);
+        }
         comics = filtered;
         if (!listEquals(_identities, identities)) {
           _identities = identities;
@@ -155,6 +161,40 @@ class _SliverGridComicsState extends State<SliverGridComics> {
       _needsContentCheck = false;
     }
     _presentationDirty = false;
+  }
+
+  void _preserveScrollAnchor(List<Comic> updated) {
+    if (comics.isEmpty) return;
+    final render = context.findRenderObject();
+    final position = Scrollable.maybeOf(context)?.position;
+    if (render is! RenderSliverGrid ||
+        position == null ||
+        !position.hasPixels ||
+        position.pixels <= position.minScrollExtent ||
+        render.geometry?.visible != true) {
+      return;
+    }
+    final layout = render.gridDelegate.getLayout(render.constraints);
+    final index = layout.getMinChildIndexForScrollOffset(
+      render.constraints.scrollOffset,
+    );
+    if (index >= comics.length) return;
+    final identity = comicWidgetIdentity(comics[index]);
+    final nextIndex = updated.indexWhere(
+      (comic) => comicWidgetIdentity(comic) == identity,
+    );
+    if (nextIndex < 0) return;
+    final difference =
+        layout.getGeometryForChildIndex(nextIndex).scrollOffset -
+        layout.getGeometryForChildIndex(index).scrollOffset;
+    if (difference == 0) return;
+    final target = position.pixels + difference;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !position.hasPixels) return;
+      position.jumpTo(
+        target.clamp(position.minScrollExtent, position.maxScrollExtent),
+      );
+    });
   }
 
   @override
@@ -177,6 +217,7 @@ class _SliverGridComicsState extends State<SliverGridComics> {
       onLongPressed: widget.onLongPressed,
       onBlocked: _onSettingsChanged,
       hideFavoriteBadge: widget.hideFavoriteBadge,
+      preserveIdentity: widget.preserveScrollPosition,
       favoriteDisplayMode: favoriteDisplayMode,
       galleryColumns: favoriteDisplayMode == ComicTileDisplayMode.gallery
           ? favoriteDisplayState.galleryColumns
@@ -219,6 +260,7 @@ class _SliverGridComics extends StatelessWidget {
     this.favoriteDisplayMode,
     this.galleryColumns,
     required this.hideFavoriteBadge,
+    required this.preserveIdentity,
   });
 
   final List<Comic> comics;
@@ -245,50 +287,67 @@ class _SliverGridComics extends StatelessWidget {
 
   final bool hideFavoriteBadge;
 
+  final bool preserveIdentity;
+
   @override
   Widget build(BuildContext context) {
+    final indices = preserveIdentity
+        ? {
+            for (var index = 0; index < comics.length; index++)
+              comicWidgetIdentity(comics[index]): index,
+          }
+        : null;
     return SliverGrid(
-      delegate: SliverChildBuilderDelegate((context, index) {
-        if (index == comics.length - 1) {
-          onLastItemBuild?.call();
-        }
-        var badge = badgeBuilder?.call(comics[index]);
-        var isSelected = selection == null
-            ? false
-            : selection![comics[index]] ?? false;
-        var comic = ComicTile(
-          comic: comics[index],
-          badge: badge,
-          menuOptions: menuBuilder?.call(comics[index]),
-          onTap: onTap != null
-              ? () => onTap!(comics[index], heroIDs[index])
-              : null,
-          onLongPressed: onLongPressed != null
-              ? () => onLongPressed!(comics[index], heroIDs[index])
-              : null,
-          onBlocked: onBlocked,
-          heroID: heroIDs[index],
-          displayMode: favoriteDisplayMode,
-          hideFavoriteBadge: hideFavoriteBadge,
-        );
-        if (selection == null) {
-          return comic;
-        }
-        return AnimatedContainer(
-          key: ValueKey(comicWidgetIdentity(comics[index])),
-          duration: const Duration(milliseconds: 150),
-          decoration: BoxDecoration(
-            color: isSelected
-                ? Theme.of(
-                    context,
-                  ).colorScheme.secondaryContainer.toOpacity(0.72)
+      delegate: SliverChildBuilderDelegate(
+        (context, index) {
+          if (index == comics.length - 1) {
+            onLastItemBuild?.call();
+          }
+          var badge = badgeBuilder?.call(comics[index]);
+          var isSelected = selection == null
+              ? false
+              : selection![comics[index]] ?? false;
+          var comic = ComicTile(
+            key: preserveIdentity
+                ? ValueKey(comicWidgetIdentity(comics[index]))
                 : null,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          margin: const EdgeInsets.all(4),
-          child: comic,
-        );
-      }, childCount: comics.length),
+            comic: comics[index],
+            badge: badge,
+            menuOptions: menuBuilder?.call(comics[index]),
+            onTap: onTap != null
+                ? () => onTap!(comics[index], heroIDs[index])
+                : null,
+            onLongPressed: onLongPressed != null
+                ? () => onLongPressed!(comics[index], heroIDs[index])
+                : null,
+            onBlocked: onBlocked,
+            heroID: heroIDs[index],
+            displayMode: favoriteDisplayMode,
+            hideFavoriteBadge: hideFavoriteBadge,
+          );
+          if (selection == null) {
+            return comic;
+          }
+          return AnimatedContainer(
+            key: ValueKey(comicWidgetIdentity(comics[index])),
+            duration: const Duration(milliseconds: 150),
+            decoration: BoxDecoration(
+              color: isSelected
+                  ? Theme.of(
+                      context,
+                    ).colorScheme.secondaryContainer.toOpacity(0.72)
+                  : null,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            margin: const EdgeInsets.all(4),
+            child: comic,
+          );
+        },
+        childCount: comics.length,
+        findChildIndexCallback: indices == null
+            ? null
+            : (key) => key is ValueKey ? indices[key.value] : null,
+      ),
       gridDelegate: SliverGridDelegateWithComics(
         galleryColumns: galleryColumns,
         forceDetailed: favoriteDisplayMode == ComicTileDisplayMode.detailed,
@@ -316,6 +375,7 @@ class ComicList extends StatefulWidget {
     this.onTap,
     this.initialPage = 1,
     this.onVisiblePageChanged,
+    this.preserveScrollPosition = false,
   });
 
   final Future<Res<List<Comic>>> Function(int page)? loadPage;
@@ -346,6 +406,8 @@ class ComicList extends StatefulWidget {
 
   final int initialPage;
   final ValueChanged<int>? onVisiblePageChanged;
+
+  final bool preserveScrollPosition;
 
   @override
   State<ComicList> createState() => ComicListState();
@@ -568,6 +630,7 @@ class ComicListState extends State<ComicList> {
   }
 
   void refresh() {
+    _clearPendingReload();
     _loadsCancelled = false;
     _generation++;
     _activeReload = null;
@@ -598,6 +661,9 @@ class ComicListState extends State<ComicList> {
   }
 
   Future<List<Comic>>? _activeReload;
+  Future<List<Comic>>? _pendingReload;
+  bool _pendingReloadAll = false;
+  bool _pendingReloadReset = false;
   bool _activeReloadAll = false;
   bool _activeReloadReset = false;
   Future<bool>? _activeCursorFetch;
@@ -606,6 +672,7 @@ class ComicListState extends State<ComicList> {
 
   /// Invalidates in-flight work before a query or route is replaced.
   void cancelPendingLoads() {
+    _clearPendingReload();
     _loadsCancelled = true;
     _generation++;
     _activeCursorFetch = null;
@@ -618,28 +685,58 @@ class ComicListState extends State<ComicList> {
       mounted && !_loadsCancelled && _generation == generation;
 
   /// Refresh only pages already loaded (or the current initial page).
-  Future<void> reload({bool reset = false}) =>
-      _reload(all: false, reset: reset).then<void>((_) {});
+  Future<void> reload({bool reset = false, bool queueIfLoading = false}) {
+    return _reload(
+      all: false,
+      reset: reset,
+      queueIfLoading: queueIfLoading,
+    ).then<void>((_) {});
+  }
 
   /// Explicit full-folder refresh used by network favorites, not ordinary lists.
   Future<List<Comic>> reloadAll({bool reset = false}) =>
       _reload(all: true, reset: reset);
 
-  Future<List<Comic>> _reload({required bool all, required bool reset}) {
+  void _clearPendingReload() {
+    _pendingReload = null;
+    _pendingReloadAll = false;
+    _pendingReloadReset = false;
+  }
+
+  Future<List<Comic>> _reload({
+    required bool all,
+    required bool reset,
+    bool queueIfLoading = false,
+  }) {
     if (!mounted) return Future.value(const <Comic>[]);
     final active = _activeReload;
     if (active != null && _activeReloadGeneration == _generation) {
-      if ((all && !_activeReloadAll) || (reset && !_activeReloadReset)) {
+      if (queueIfLoading ||
+          (all && !_activeReloadAll) ||
+          (reset && !_activeReloadReset)) {
+        _pendingReloadAll = _pendingReloadAll || all;
+        _pendingReloadReset = _pendingReloadReset || reset;
+        final pending = _pendingReload;
+        if (pending != null) return pending;
         final generation = _generation;
-        return active.then<List<Comic>>(
-          (_) => _isCurrent(generation)
-              ? _reload(all: all, reset: reset)
-              : const <Comic>[],
-        );
+        late Future<List<Comic>> queued;
+        queued = active.then<List<Comic>>((_) {
+          if (!_isCurrent(generation)) {
+            if (identical(_pendingReload, queued)) _clearPendingReload();
+            return const <Comic>[];
+          }
+          final nextAll = _pendingReloadAll;
+          final nextReset = _pendingReloadReset;
+          _clearPendingReload();
+          return _reload(all: nextAll, reset: nextReset);
+        });
+        _pendingReload = queued;
+        return queued;
       }
       return active;
     }
 
+    _clearPendingReload();
     final generation = ++_generation;
     _activeReloadGeneration = generation;
     _activeReloadAll = all;
@@ -859,12 +956,13 @@ class ComicListState extends State<ComicList> {
     restoreState(PageStorage.of(context).readState(context));
     widget.refreshHandlerCallback?.call(refresh);
     widget.reloadHandlerCallback?.call(() {
-      unawaited(reload());
+      unawaited(reload(queueIfLoading: true));
     });
   }
 
   @override
   void dispose() {
+    _clearPendingReload();
     _generation++;
     _activeReload = null;
     _activeReloadGeneration = null;
@@ -1218,6 +1316,7 @@ class ComicListState extends State<ComicList> {
         if (_maxPage != 1) _buildSliverPageSelector(),
         SliverGridComics(
           comics: _data[_page] ?? const [],
+          preserveScrollPosition: widget.preserveScrollPosition,
           menuBuilder: widget.menuBuilder,
           onTap: widget.onTap,
           badgeBuilder: widget.badgeBuilder,
@@ -1313,6 +1412,7 @@ class ComicListState extends State<ComicList> {
               onPaint: () => _pagePainted(page),
               sliver: SliverGridComics(
                 comics: _data[page]!,
+                preserveScrollPosition: widget.preserveScrollPosition,
                 menuBuilder: widget.menuBuilder,
                 onTap: widget.onTap,
                 badgeBuilder: widget.badgeBuilder,
@@ -1327,6 +1427,7 @@ class ComicListState extends State<ComicList> {
         else
           SliverGridComics(
             comics: _data.values.expand((element) => element).toList(),
+            preserveScrollPosition: widget.preserveScrollPosition,
             menuBuilder: widget.menuBuilder,
             onTap: widget.onTap,
             badgeBuilder: widget.badgeBuilder,

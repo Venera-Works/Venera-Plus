@@ -1,6 +1,6 @@
 import 'package:venera_plus/features/bangumi/bangumi_models.dart';
 import 'package:venera_plus/features/comic_storage/comic_storage.dart';
-import 'package:venera_plus/features/webdav_library/webdav_library.dart'
+import 'package:venera_plus/features/remote_library/remote_library.dart'
     show RemoteComicVolumeName;
 import 'package:venera_plus/foundation/opencc.dart';
 

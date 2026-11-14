@@ -25,9 +25,13 @@ class OpenListFileStore implements RemoteFileStore {
   Future<void> test() async => _operation('test', const {});
 
   @override
-  Future<List<RemoteEntry>> list(String directory) async {
+  Future<List<RemoteEntry>> list(
+    String directory, {
+    bool refresh = false,
+  }) async {
     final value = await _operation('list', {
       'path': normalizeRemoteDirectory(directory),
+      'refresh': refresh,
     });
     final entries = value['entries'] as List? ?? const [];
     return entries.whereType<Map>().map((item) => _entry(item)).toList();

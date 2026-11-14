@@ -4,7 +4,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart' as archive;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/comic_storage/comic_storage.dart';
-import 'package:venera_plus/features/webdav_library/remote_archive_comic.dart';
+import 'package:venera_plus/features/remote_library/remote_archive_comic.dart';
 
 void main() {
   test('recognizes ZIP CBZ EPUB and PDF for remote reading', () {

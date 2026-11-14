@@ -8,7 +8,7 @@
   ![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)
 </div>
 
-VeneraPlus 是一款在手机和电脑上使用的漫画阅读器，可以读本地文件、网盘漫画，也能通过漫画源扩展浏览在线内容。漫画内容和漫画源需自行准备。
+VeneraPlus 是一款在手机和电脑上使用的漫画阅读器，可以读本地文件、网盘漫画。
 
 ## 能做什么
 
@@ -62,4 +62,4 @@ VeneraPlus 是一款在手机和电脑上使用的漫画阅读器，可以读本
 
 ## 许可与致谢
 
-项目使用 [GPL-3.0](LICENSE) 许可证。感谢 [venera-app/venera](https://github.com/venera-app/venera) 、 [CyrilPeng/Venera-Next](https://github.com/CyrilPeng/Venera-Next) 、[OpenList](https://github.com/OpenListTeam/OpenList) 的开源贡献。
+项目使用 [GPL-3.0](LICENSE) 许可证。感谢 [venera-app/venera](https://github.com/venera-app/venera) 、 [CyrilPeng/Venera-Next](https://github.com/CyrilPeng/Venera-Next) 、[venera-app/venera-prime](https://github.com/venera-app/venera-prime) 、[OpenList](https://github.com/OpenListTeam/OpenList) 的开源贡献。

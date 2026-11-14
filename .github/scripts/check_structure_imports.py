@@ -77,7 +77,7 @@ FORBIDDEN_FEATURE_DEPENDENCIES = {
         "features/sync": (
             "data synchronization must be connected by app_runtime callbacks"
         ),
-        "features/webdav_library": (
+        "features/remote_library": (
             "runtime comic sources must be injected by app_runtime"
         ),
     },
@@ -917,6 +917,13 @@ FEATURE_ENTRYPOINT_TARGETS = {
         "sync.dart",
     ),
 }
+
+# 整个远程漫画库统一通过入口访问，拆出的扫描和元数据文件也遵循同一边界。
+FEATURE_ENTRYPOINT_TARGETS.update({
+    source.resolve(): _feature_path("remote_library", "remote_library.dart")
+    for source in _feature_path("remote_library").rglob("*.dart")
+    if source.name != "remote_library.dart"
+})
 
 FILE_SYSTEM_DIRECT_IMPORT_SOURCES = {
     _feature_path("comic_source", "comic_source_manager.dart"),

@@ -11,7 +11,7 @@ import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/settings/settings.dart';
 import 'package:venera_plus/features/storage/storage.dart';
 import 'package:venera_plus/features/sync/sync.dart';
-import 'package:venera_plus/features/webdav_library/webdav_library.dart';
+import 'package:venera_plus/features/remote_library/remote_library.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
@@ -124,7 +124,7 @@ void main() {
     DataSync.resetForTesting();
     try {
       try {
-        WebDavLibrarySource.resetCacheForTesting();
+        await RemoteLibrarySource.resetCacheForTesting();
       } finally {
         await CacheManager.resetForTesting();
       }
@@ -522,7 +522,8 @@ void main() {
       _setupTestView(tester, const Size(1000, 1600));
       final storage = RemoteStorageAccounts.instance;
       final manager = ComicSourceManager();
-      final engines = <String, WebDavLibraryEngine>{};
+      final engines = <String, RemoteLibraryEngine>{};
+      final closingEngines = <Future<void>>[];
       storage.configureOpenList(_LibraryPickerRpc());
       configureRuntimeComicSourcesProvider(() {
         final active = <String>{};
@@ -533,28 +534,33 @@ void main() {
           final current = engines[library.sourceKey];
           final engine = current != null && current.matches(library, account)
               ? current
-              : WebDavLibraryEngine(
+              : RemoteLibraryEngine(
                   library: library,
                   store: storage.storeFor(library.accountId),
                 );
-          if (!identical(engine, current)) current?.cancel();
+          if (!identical(engine, current) && current != null) {
+            closingEngines.add(current.cancel());
+          }
           engines[library.sourceKey] = engine;
           sources.add(engine.create());
         }
         for (final key in engines.keys.toList()) {
-          if (!active.contains(key)) engines.remove(key)?.cancel();
+          if (!active.contains(key)) {
+            closingEngines.add(engines.remove(key)!.cancel());
+          }
         }
         return sources;
       });
-      addTearDown(() {
+      addTearDown(() async {
         configureRuntimeComicSourcesProvider(null);
         for (final key in engines.keys) {
           manager.remove(key);
         }
         for (final engine in engines.values) {
-          engine.cancel();
+          await engine.cancel();
         }
-        WebDavLibraryEngines.cancelAll();
+        await Future.wait(closingEngines);
+        await RemoteLibraryEngines.cancelAll();
       });
       appdata.settings[remoteStorageAccountsSetting] = [];
       appdata.settings[remoteLibrariesSetting] = [];

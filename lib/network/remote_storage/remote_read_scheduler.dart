@@ -3,7 +3,7 @@ import 'dart:io' show HttpDate, HttpException;
 
 import 'package:dio/dio.dart';
 
-enum RemoteReadPriority { foreground, cover, preload }
+enum RemoteReadPriority { foreground, cover, preload, background }
 
 /// The mutable priority shared by requests for one image or archive operation.
 class RemoteReadContext {
@@ -51,6 +51,8 @@ class RemoteReadScheduler {
   DateTime? _nextStart;
   DateTime? _cooldownUntil;
 
+  /// 同一账号的扫描和阅读复用同一实例，在单次底层读取处排队。
+  /// 调度范围应限于底层 I/O，避免嵌套调度占满并发槽位。
   Future<T> run<T>(
     Future<T> Function() action, {
     CancelToken? cancelToken,

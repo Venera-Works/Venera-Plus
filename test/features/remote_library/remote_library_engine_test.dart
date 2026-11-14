@@ -1,29 +1,36 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:archive/archive.dart' as archive;
+import 'package:dio/dio.dart';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/bangumi/bangumi.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
-import 'package:venera_plus/features/webdav_library/webdav_library.dart';
+import 'package:venera_plus/features/remote_library/remote_library.dart';
 import 'package:venera_plus/features/comic_storage/comic_storage.dart';
-import 'package:venera_plus/features/webdav_library/webdav_library_cache.dart';
+import 'package:venera_plus/features/remote_library/remote_library_repository.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 
 void main() {
-  late _FakeWebDavLibraryOps ops;
+  late _FakeRemoteLibraryOps ops;
   late Directory dataDir;
 
-  setUp(() {
+  setUp(() async {
     dataDir = Directory.systemTemp.createTempSync('venera-webdav-library-');
     App.dataPath = dataDir.path;
-    WebDavLibrarySource.resetCacheForTesting();
-    WebDavLibrarySource.configureMetadataScraper(null);
-    WebDavLibrarySource.configureMetadataSubjectHandler(null);
-    ops = _FakeWebDavLibraryOps();
-    WebDavLibrarySource.ops = ops;
+    await RemoteLibrarySource.resetCacheForTesting();
+    RemoteLibrarySource.configureMetadataScraper(null);
+    RemoteLibrarySource.configureMetadataSubjectHandler(null);
+    RemoteLibrarySource.archiveSchedulerFactory = () =>
+        RemoteReadScheduler(minInterval: Duration.zero);
+    ops = _FakeRemoteLibraryOps();
+    RemoteLibrarySource.ops = ops;
     appdata.settings['webdavComicLibrary'] = [
       'https://example.com/dav',
       'user',
@@ -34,13 +41,14 @@ void main() {
   });
 
   tearDown(() async {
-    if (WebDavLibrarySource.syncStatus.value.isSyncing) {
-      await WebDavLibrarySource.synchronize();
+    if (RemoteLibrarySource.syncStatus.value.isSyncing) {
+      await _synchronizeAndComplete();
     }
-    WebDavLibrarySource.resetOps();
-    WebDavLibrarySource.resetCacheForTesting();
-    WebDavLibrarySource.configureMetadataScraper(null);
-    WebDavLibrarySource.configureMetadataSubjectHandler(null);
+    RemoteLibrarySource.archiveSchedulerFactory = null;
+    RemoteLibrarySource.resetOps();
+    await RemoteLibrarySource.resetCacheForTesting();
+    RemoteLibrarySource.configureMetadataScraper(null);
+    RemoteLibrarySource.configureMetadataSubjectHandler(null);
     appdata.settings['webdavComicLibrary'] = [];
     appdata.settings['webdavComicLibraryPath'] = '/venera_comics/';
     appdata.settings['webdavComicLibraryAutoSync'] = true;
@@ -48,19 +56,19 @@ void main() {
   });
 
   test('library identity excludes password but includes location and user', () {
-    final first = WebDavLibraryConfig(
+    final first = RemoteLibraryConfig(
       url: ' HTTPS://EXAMPLE.COM:443/dav/ ',
       user: ' user ',
       pass: 'old password',
       remotePath: 'manga',
     );
-    final passwordChanged = WebDavLibraryConfig(
+    final passwordChanged = RemoteLibraryConfig(
       url: 'https://example.com/dav',
       user: 'user',
       pass: 'new password',
       remotePath: '/manga/',
     );
-    final pathChanged = WebDavLibraryConfig(
+    final pathChanged = RemoteLibraryConfig(
       url: 'https://example.com/dav',
       user: 'user',
       pass: 'new password',
@@ -71,6 +79,177 @@ void main() {
     expect(pathChanged.libraryId, isNot(first.libraryId));
   });
 
+  for (final enabled in [true, false]) {
+    test('旧单库迁移保留默认页面的${enabled ? '启用' : '隐藏'}状态', () async {
+      appdata.settings[RemoteComicLibraryRegistry.settingsKey] = [];
+      appdata.settings[remoteStorageAccountsSetting] = [];
+      appdata.settings[RemoteComicLibraryRegistry.legacyMigrationKey] = false;
+      appdata.settings[RemoteComicLibraryRegistry.legacyAccountMigrationKey] =
+          false;
+      final pages = ['其他源同名页', if (enabled) 'WebDAV Library'];
+      appdata.settings['explore_pages'] = pages.toList();
+      await RemoteComicLibraryRegistry.migrateLegacyRemoteLibrary();
+      final migrated = RemoteComicLibraryRegistry.read().single;
+      expect(migrated.name, 'WebDAV Library');
+      expect(
+        (appdata.settings['explore_pages'] as List).contains(migrated.name),
+        enabled,
+      );
+      expect(appdata.settings['explore_pages'], pages);
+      await RemoteComicLibraryRegistry.save(migrated.copyWith(name: '自定义库名'));
+      await RemoteComicLibraryRegistry.migrateLegacyRemoteLibrary();
+      expect(RemoteComicLibraryRegistry.read().single.name, '自定义库名');
+    });
+  }
+
+  for (final scrapeFirst in [true, false]) {
+    test('卷索引与后台刮削交错保留最新快照，刮削先完成=$scrapeFirst', () async {
+      final zip = archive.ZipEncoder().encode(
+        archive.Archive()
+          ..addFile(archive.ArchiveFile('001.jpg', 1, [1]))
+          ..addFile(archive.ArchiveFile('002.jpg', 1, [2])),
+      );
+      final store = _FakeRemoteFileStore('snapshot-race');
+      final files = [
+        for (var i = 1; i <= 2; i++)
+          RemoteEntry(
+            name: 'Book 0$i.zip',
+            path: '/race/Book 0$i.zip',
+            isDirectory: false,
+            size: zip.length,
+            eTag: '"v1"',
+          ),
+      ];
+      store.dirs['/race/'] = files;
+      for (final file in files) {
+        store.statEntries[file.path] = file;
+        store.links[file.path] = RemoteLink(
+          url: 'https://range.example/${file.name}',
+        );
+      }
+      final rangeStarted = Completer<void>();
+      final rangeGate = Completer<void>();
+      final adapter = _SnapshotRangeAdapter(zip, rangeStarted, rangeGate);
+      final dio = Dio()..httpClientAdapter = adapter;
+      RemoteLibrarySource.archiveDioFactory = () => dio;
+      addTearDown(() {
+        RemoteLibrarySource.archiveDioFactory = null;
+        dio.close(force: true);
+      });
+      final scrapeStarted = Completer<void>();
+      final scrape = Completer<ComicMetaData?>();
+      RemoteLibrarySource.configureMetadataScraper((_) {
+        if (!scrapeStarted.isCompleted) scrapeStarted.complete();
+        return scrape.future;
+      });
+      final engine = RemoteLibraryEngine(
+        library: const RemoteLibrary(
+          id: 'snapshot-race',
+          sourceKey: 'snapshot-race',
+          accountId: 'snapshot-race',
+          directories: ['/race/'],
+          name: '竞态库',
+          autoRefresh: false,
+        ),
+        store: store,
+      );
+      addTearDown(engine.cancel);
+      await engine.synchronize();
+      await scrapeStarted.future;
+      final id = (await engine.loadComics(1)).data.single.id;
+      final reading = engine.loadComicPages(id, files.first.path);
+      await rangeStarted.future;
+      try {
+        if (scrapeFirst) {
+          scrape.complete(
+            const ComicMetaData(
+              title: '刮削书名',
+              author: '作者',
+              tags: ['标签'],
+              bangumiSubjectId: 47,
+            ),
+          );
+          await engine.waitForBackgroundTasks();
+          expect((await engine.loadComicInfo(id)).data.title, '刮削书名');
+          rangeGate.complete();
+        } else {
+          rangeGate.complete();
+          expect((await reading).success, isTrue);
+          scrape.complete(
+            const ComicMetaData(
+              title: '刮削书名',
+              author: '作者',
+              tags: ['标签'],
+              bangumiSubjectId: 47,
+            ),
+          );
+        }
+        final pages = await reading;
+        expect(pages.success, isTrue, reason: pages.errorMessage);
+        expect(pages.data, hasLength(2));
+        await engine.waitForBackgroundTasks();
+        final details = await engine.loadComicInfo(id);
+        expect(details.data.title, '刮削书名');
+        expect(details.data.tags['作者'], ['作者']);
+        expect(details.data.externalIds['bangumi'], '47');
+        final cached = (await RemoteLibraryRepository.instance.find(
+          'remote-library:snapshot-race',
+          id,
+        ))!;
+        expect(cached.title, '刮削书名');
+        final volumes = (cached.snapshot!['work'] as Map)['volumes'] as List;
+        expect((volumes.first as Map)['archive']['index'], isNotNull);
+      } finally {
+        if (!rangeGate.isCompleted) rangeGate.complete();
+        if (!scrape.isCompleted) scrape.complete(null);
+        await reading;
+        await engine.waitForBackgroundTasks();
+      }
+    });
+  }
+
+  test('按需详情触发的旧刮削在强刷后拒绝远端写回', () async {
+    ops.dirs['/manga/Book/'] = const [
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false, eTag: 'page-v1'),
+    ];
+    ops.dirs['/manga/'] = const [];
+    final started = Completer<void>();
+    final scrape = Completer<ComicMetaData?>();
+    RemoteLibrarySource.configureMetadataScraper((_) {
+      if (!started.isCompleted) started.complete();
+      return scrape.future;
+    });
+    expect((await RemoteLibrarySource.loadComicInfo('Book')).success, isTrue);
+    await started.future;
+    await RemoteLibrarySource.synchronize(force: true);
+    scrape.complete(const ComicMetaData(title: '过时书名', author: '', tags: []));
+    await RemoteLibrarySource.waitForBackgroundTasks();
+    expect(ops.writeRequests, isEmpty);
+  });
+
+  test('详情初始缓存查询期间关闭不会再排入 cooldown stat', () async {
+    RemoteLibrarySource.archiveSchedulerFactory = () =>
+        RemoteReadScheduler(minInterval: Duration.zero)
+          ..defer(retryAfter: '3600');
+    final store = _FakeRemoteFileStore('cooldown');
+    final engine = RemoteLibraryEngine(
+      library: const RemoteLibrary(
+        id: 'cooldown',
+        sourceKey: 'cooldown',
+        accountId: 'cooldown',
+        directories: ['/files/'],
+        name: '关闭库',
+        autoRefresh: false,
+      ),
+      store: store,
+    );
+    final reading = engine.loadComicInfo('/files/Book.zip');
+    await engine.cancel().timeout(const Duration(seconds: 2));
+    final result = await reading.timeout(const Duration(seconds: 2));
+    expect(result.error, isTrue);
+    expect(store.statPaths, isEmpty);
+  });
+
   test(
     'legacy snapshot migrates after its import clears the migration marker',
     () async {
@@ -78,7 +257,7 @@ void main() {
       appdata.settings[remoteStorageAccountsSetting] = const [];
       appdata.settings[RemoteComicLibraryRegistry.legacyMigrationKey] = true;
       appdata.settings['webdavComicLibrary'] = const [];
-      await RemoteComicLibraryRegistry.migrateLegacyWebDavLibrary();
+      await RemoteComicLibraryRegistry.migrateLegacyRemoteLibrary();
       expect(RemoteComicLibraryRegistry.read(), isEmpty);
 
       appdata.settings['webdavComicLibrary'] = const [
@@ -88,11 +267,11 @@ void main() {
       ];
       appdata.settings['webdavComicLibraryPath'] = '/manga/';
       appdata.settings[RemoteComicLibraryRegistry.legacyMigrationKey] = false;
-      final oldLibraryId = WebDavLibraryConfig.fromSettings().libraryId;
+      final oldLibraryId = RemoteLibraryConfig.fromSettings().libraryId;
 
-      await RemoteComicLibraryRegistry.migrateLegacyWebDavLibrary();
+      await RemoteComicLibraryRegistry.migrateLegacyRemoteLibrary();
       final library = RemoteComicLibraryRegistry.read().single;
-      expect(library.sourceKey, WebDavLibrarySource.sourceKey);
+      expect(library.sourceKey, RemoteLibrarySource.sourceKey);
       expect(library.id, oldLibraryId);
       expect(library.directories, const ['/manga/']);
     },
@@ -101,8 +280,8 @@ void main() {
   test('legacy account recovery avoids a default-name collision', () async {
     final storage = RemoteStorageAccounts.instance;
     final original = RemoteLibrary(
-      id: WebDavLibraryConfig.fromSettings().libraryId,
-      sourceKey: WebDavLibrarySource.sourceKey,
+      id: RemoteLibraryConfig.fromSettings().libraryId,
+      sourceKey: RemoteLibrarySource.sourceKey,
       accountId: 'legacy-missing',
       directories: ['/manga/'],
       name: 'Old library',
@@ -122,7 +301,7 @@ void main() {
     appdata.settings[remoteLibrariesSetting] = [original.toJson()];
     appdata.settings[RemoteComicLibraryRegistry.legacyAccountMigrationKey] =
         false;
-    await RemoteComicLibraryRegistry.migrateLegacyWebDavLibrary();
+    await RemoteComicLibraryRegistry.migrateLegacyRemoteLibrary();
     expect(storage.account(unrelated.id)?.toJson(), unrelated.toJson());
     expect(storage.account(original.accountId)?.name, 'WebDAV漫画库 (2)');
     expect(storage.libraries.single.toJson(), original.toJson());
@@ -133,10 +312,10 @@ void main() {
       'recovers an orphaned legacy library and reads old favorites, existing=$hasMatchingAccount',
       () async {
         final storage = RemoteStorageAccounts.instance;
-        final legacy = WebDavLibraryConfig.fromSettings();
+        final legacy = RemoteLibraryConfig.fromSettings();
         final original = RemoteLibrary(
           id: legacy.libraryId,
-          sourceKey: WebDavLibrarySource.sourceKey,
+          sourceKey: RemoteLibrarySource.sourceKey,
           accountId: 'legacy-missing',
           directories: ['/manga/'],
           name: 'Old library',
@@ -163,7 +342,7 @@ void main() {
           );
         }
 
-        await RemoteComicLibraryRegistry.migrateLegacyWebDavLibrary();
+        await RemoteComicLibraryRegistry.migrateLegacyRemoteLibrary();
         await appdata.loadDataForTesting(dataDir.path);
 
         final library = storage.libraries.single;
@@ -190,7 +369,7 @@ void main() {
               isDirectory: false,
             ),
           ];
-        final engine = WebDavLibraryEngine(library: library, store: store);
+        final engine = RemoteLibraryEngine(library: library, store: store);
         addTearDown(engine.cancel);
         final source = engine.create();
         final details = await source.loadComicInfo!('Old');
@@ -202,7 +381,7 @@ void main() {
 
         // Later account deletion is an explicit action and must stay deleted.
         await storage.remove(account.id);
-        await RemoteComicLibraryRegistry.migrateLegacyWebDavLibrary();
+        await RemoteComicLibraryRegistry.migrateLegacyRemoteLibrary();
         expect(storage.accounts, isEmpty);
       },
     );
@@ -215,7 +394,7 @@ void main() {
       appdata.settings[remoteLibrariesSetting] = [
         const RemoteLibrary(
           id: 'another-library',
-          sourceKey: WebDavLibrarySource.sourceKey,
+          sourceKey: RemoteLibrarySource.sourceKey,
           accountId: 'missing',
           directories: ['/elsewhere/'],
           name: 'Other',
@@ -224,7 +403,7 @@ void main() {
       appdata.settings[RemoteComicLibraryRegistry.legacyMigrationKey] = true;
       appdata.settings[RemoteComicLibraryRegistry.legacyAccountMigrationKey] =
           false;
-      await RemoteComicLibraryRegistry.migrateLegacyWebDavLibrary();
+      await RemoteComicLibraryRegistry.migrateLegacyRemoteLibrary();
       expect(RemoteStorageAccounts.instance.accounts, isEmpty);
       expect(
         RemoteStorageAccounts.instance.libraries.single.accountId,
@@ -235,43 +414,46 @@ void main() {
 
   test(
     'root memberships merge selected directories and retain removed root cache',
-    () {
-      final cache = WebDavLibraryCache.instance;
+    () async {
+      final cache = RemoteLibraryRepository.instance;
       const key = 'multi-root-library';
-      cache.replaceRootDirectoryIndex(
+      (await cache.replaceRootDirectoryIndex(
         key,
-        const WebDavLibraryRootIndex(
+        const RemoteLibraryRootIndex(
           rootPath: '/A/',
           directories: [
-            WebDavLibraryRemoteDirectory(id: '/A/Comic/', sortIndex: 0),
-            WebDavLibraryRemoteDirectory(id: '/A/Same/', sortIndex: 1),
+            RemoteLibraryRemoteDirectory(id: '/A/Comic/', sortIndex: 0),
+            RemoteLibraryRemoteDirectory(id: '/A/Same/', sortIndex: 1),
           ],
         ),
-      );
-      cache.replaceRootDirectoryIndex(
+      ));
+      (await cache.replaceRootDirectoryIndex(
         key,
-        const WebDavLibraryRootIndex(
+        const RemoteLibraryRootIndex(
           rootPath: '/B/C/',
           directories: [
-            WebDavLibraryRemoteDirectory(id: '/B/C/Same/', sortIndex: 0),
-            WebDavLibraryRemoteDirectory(id: '/A/Same/', sortIndex: 1),
+            RemoteLibraryRemoteDirectory(id: '/B/C/Same/', sortIndex: 0),
+            RemoteLibraryRemoteDirectory(id: '/A/Same/', sortIndex: 1),
           ],
         ),
-      );
+      ));
 
-      expect(cache.count(key, roots: const ['/A/', '/B/C/']), 3);
-      expect(cache.count(key, roots: const ['/B/C/']), 2);
+      expect((await cache.count(key, roots: const ['/A/', '/B/C/'])), 3);
+      expect((await cache.count(key, roots: const ['/B/C/'])), 2);
       expect(
-        cache
-            .page(key, page: 1, pageSize: 10, roots: const ['/B/C/'])
-            .map((item) => item.id),
+        (await cache.page(
+          key,
+          page: 1,
+          pageSize: 10,
+          roots: const ['/B/C/'],
+        )).map((item) => item.id),
         containsAll(const ['/B/C/Same/', '/A/Same/']),
       );
 
-      cache.removeRootsExcept(key, const {'/B/C/'});
-      expect(cache.count(key, roots: const ['/B/C/']), 2);
+      (await cache.removeRootsExcept(key, const {'/B/C/'}));
+      expect((await cache.count(key, roots: const ['/B/C/'])), 2);
       // Re-adding an unavailable root can still display its last membership.
-      expect(cache.count(key, roots: const ['/A/', '/B/C/']), 3);
+      expect((await cache.count(key, roots: const ['/A/', '/B/C/'])), 3);
     },
   );
 
@@ -300,7 +482,7 @@ void main() {
             isDirectory: false,
           ),
         ];
-      final first = WebDavLibraryEngine(
+      final first = RemoteLibraryEngine(
         library: const RemoteLibrary(
           id: 'first',
           sourceKey: 'first',
@@ -310,7 +492,7 @@ void main() {
         ),
         store: firstStore,
       );
-      final second = WebDavLibraryEngine(
+      final second = RemoteLibraryEngine(
         library: const RemoteLibrary(
           id: 'second',
           sourceKey: 'second',
@@ -330,8 +512,8 @@ void main() {
         (await second.create().explorePages.single.loadPage!(1)).data.single.id,
         '/two/Second/',
       );
-      first.cancel();
-      second.cancel();
+      await first.cancel();
+      await second.cancel();
       expect(firstStore.cancelAllCalls, 1);
       expect(secondStore.cancelAllCalls, 1);
     },
@@ -347,7 +529,7 @@ void main() {
           url: 'https://$id.example.com/cover.jpg?sign=$id',
           headers: {'Referer': 'https://$id.example.com/'},
         );
-      final engine = WebDavLibraryEngine(
+      final engine = RemoteLibraryEngine(
         library: RemoteLibrary(
           id: id,
           sourceKey: id,
@@ -399,10 +581,10 @@ void main() {
             isDirectory: false,
           ),
         ];
-      final engine = WebDavLibraryEngine(
+      final engine = RemoteLibraryEngine(
         library: const RemoteLibrary(
           id: 'legacy',
-          sourceKey: WebDavLibrarySource.sourceKey,
+          sourceKey: RemoteLibrarySource.sourceKey,
           accountId: 'legacy',
           directories: ['/manga/', '/other/'],
           name: 'Legacy',
@@ -415,7 +597,7 @@ void main() {
         1,
       )).data.map((comic) => comic.id);
       expect(ids, containsAll(['Old', '/other/New/']));
-      engine.cancel();
+      await engine.cancel();
     },
   );
 
@@ -437,7 +619,7 @@ void main() {
             isDirectory: false,
           ),
         ];
-      final engine = WebDavLibraryEngine(
+      final engine = RemoteLibraryEngine(
         library: const RemoteLibrary(
           id: 'partial',
           sourceKey: 'partial',
@@ -456,7 +638,7 @@ void main() {
         '/available/Comic/',
       );
       expect(engine.statusMessage, contains('/missing/'));
-      engine.cancel();
+      await engine.cancel();
     },
   );
 
@@ -471,10 +653,10 @@ void main() {
             isDirectory: false,
           ),
         ];
-      final engine = WebDavLibraryEngine(
+      final engine = RemoteLibraryEngine(
         library: const RemoteLibrary(
           id: 'legacy-write',
-          sourceKey: WebDavLibrarySource.sourceKey,
+          sourceKey: RemoteLibrarySource.sourceKey,
           accountId: 'legacy-write',
           directories: ['/manga/', '/other/'],
           name: 'Legacy',
@@ -487,7 +669,7 @@ void main() {
         const ComicMetaData(title: 'New', author: '', tags: []),
       );
       expect(store.writtenPaths, contains('/other/New/metadata.json'));
-      engine.cancel();
+      await engine.cancel();
     },
   );
 
@@ -499,13 +681,13 @@ void main() {
       'password',
     ];
 
-    expect(WebDavLibraryConfig.fromSettings().isValid, isFalse);
+    expect(RemoteLibraryConfig.fromSettings().isValid, isFalse);
   });
 
   test('malformed synchronized remote paths fail closed', () {
     appdata.settings['webdavComicLibraryPath'] = '../other-library';
 
-    final config = WebDavLibraryConfig.fromSettings();
+    final config = RemoteLibraryConfig.fromSettings();
 
     expect(config.isValid, isFalse);
     expect(config.remotePath, '/venera_comics/');
@@ -513,18 +695,18 @@ void main() {
 
   test('loadComics lists directories and ZIP/CBZ file placeholders', () async {
     ops.dirs['/manga/'] = const [
-      WebDavLibraryEntry(name: 'Cat Eye', isDirectory: true),
-      WebDavLibraryEntry(name: 'archive.cbz', isDirectory: false),
-      WebDavLibraryEntry(name: '.DS_Store', isDirectory: false),
+      RemoteLibraryEntry(name: 'Cat Eye', isDirectory: true),
+      RemoteLibraryEntry(name: 'archive.cbz', isDirectory: false),
+      RemoteLibraryEntry(name: '.DS_Store', isDirectory: false),
     ];
     ops.dirs['/manga/Cat Eye/'] = const [
-      WebDavLibraryEntry(name: 'cover.jpg', isDirectory: false),
-      WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: 'cover.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
 
-    await WebDavLibrarySource.loadComics(1);
-    await WebDavLibrarySource.synchronize();
-    final result = await WebDavLibrarySource.loadComics(1);
+    await RemoteLibrarySource.loadComics(1);
+    await _synchronizeAndComplete();
+    final result = await RemoteLibrarySource.loadComics(1);
 
     expect(result.success, isTrue);
     expect(
@@ -538,7 +720,7 @@ void main() {
     });
     expect(
       result.data.every(
-        (comic) => comic.sourceKey == WebDavLibrarySource.sourceKey,
+        (comic) => comic.sourceKey == RemoteLibrarySource.sourceKey,
       ),
       isTrue,
     );
@@ -549,20 +731,20 @@ void main() {
     'loadComics keeps folder title and finds chapter cover from unmodifiable lists',
     () async {
       ops.dirs['/manga/'] = List.unmodifiable([
-        const WebDavLibraryEntry(name: '猫之眼[北条司]', isDirectory: true),
+        const RemoteLibraryEntry(name: '猫之眼[北条司]', isDirectory: true),
       ]);
       ops.dirs['/manga/猫之眼[北条司]/'] = List.unmodifiable([
-        const WebDavLibraryEntry(name: '第01卷', isDirectory: true),
-        const WebDavLibraryEntry(name: '第02卷', isDirectory: true),
+        const RemoteLibraryEntry(name: '第01卷', isDirectory: true),
+        const RemoteLibraryEntry(name: '第02卷', isDirectory: true),
       ]);
       ops.dirs['/manga/猫之眼[北条司]/第01卷/'] = List.unmodifiable([
-        const WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
-        const WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        const RemoteLibraryEntry(name: '002.jpg', isDirectory: false),
+        const RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ]);
 
-      await WebDavLibrarySource.loadComics(1);
-      await WebDavLibrarySource.synchronize();
-      final result = await WebDavLibrarySource.loadComics(1);
+      await RemoteLibrarySource.loadComics(1);
+      await _synchronizeAndComplete();
+      final result = await RemoteLibrarySource.loadComics(1);
 
       expect(result.success, isTrue);
       expect(result.data.single.title, '猫之眼[北条司]');
@@ -570,51 +752,57 @@ void main() {
     },
   );
 
-  test(
-    'loadComics keeps folder title when metadata inspection fails',
-    () async {
-      ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Cat Eye', isDirectory: true),
-      ];
-      ops.errors['/manga/Cat Eye/'] = UnsupportedError(
-        'Cannot remove from an unmodifiable list',
-      );
+  test('目录确认失败时不发布未经识别的漫画摘要', () async {
+    ops.dirs['/manga/'] = const [
+      RemoteLibraryEntry(name: 'Cat Eye', isDirectory: true),
+    ];
+    ops.errors['/manga/Cat Eye/'] = UnsupportedError(
+      'Cannot remove from an unmodifiable list',
+    );
 
-      final result = await WebDavLibrarySource.loadComics(1);
+    final result = await RemoteLibrarySource.loadComics(1);
 
-      expect(result.success, isTrue);
-      expect(result.data.single.title, 'Cat Eye');
-      expect(result.data.single.cover, '');
-    },
-  );
+    expect(result.error, isTrue);
+    expect(result.errorMessage, contains('Cannot remove'));
+  });
 
-  test(
-    'initial list returns before comic metadata inspection finishes',
-    () async {
-      ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Slow Book', isDirectory: true),
-      ];
-      ops.dirs['/manga/Slow Book/'] = const [
-        WebDavLibraryEntry(name: 'cover.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-      ];
-      final blocker = Completer<void>();
-      ops.blockers['/manga/Slow Book/'] = blocker;
-
-      final initial = await WebDavLibrarySource.loadComics(1);
-
+  test('初次列表在慢 metadata.json 读取完成前返回已确认作品', () async {
+    ops.dirs['/manga/'] = const [
+      RemoteLibraryEntry(name: 'Slow Book', isDirectory: true),
+    ];
+    ops.dirs['/manga/Slow Book/'] = const [
+      RemoteLibraryEntry(name: 'cover.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
+    ];
+    const metadataPath = '/manga/Slow Book/metadata.json';
+    final blocker = Completer<void>();
+    ops.textBlockers[metadataPath] = blocker;
+    ops.textStarted[metadataPath] = Completer<void>();
+    ops.textFiles[metadataPath] = jsonEncode({
+      'title': '完整书名',
+      'author': '',
+      'tags': [],
+    });
+    try {
+      final initial = await RemoteLibrarySource.loadComics(1);
       expect(initial.success, isTrue);
       expect(initial.data.single.title, 'Slow Book');
-      expect(initial.data.single.cover, isEmpty);
-      expect(WebDavLibrarySource.syncStatus.value.isSyncing, isTrue);
-
+      expect(initial.data.single.cover, '/manga/Slow Book/cover.jpg');
+      await ops.textStarted[metadataPath]!.future;
+      expect(
+        (await RemoteLibraryRepository.instance.find(
+          RemoteLibraryConfig.fromSettings().cacheKey,
+          'Slow Book',
+        ))!.snapshot,
+        isNull,
+      );
+    } finally {
       blocker.complete();
-      await WebDavLibrarySource.synchronize();
-      final updated = await WebDavLibrarySource.loadComics(1);
-
-      expect(updated.data.single.cover, '/manga/Slow Book/cover.jpg');
-    },
-  );
+      await _synchronizeAndComplete();
+    }
+    expect((await RemoteLibrarySource.loadComics(1)).data.single.title, '完整书名');
+  });
 
   test(
     'comic covers update while other directories are still being scanned',
@@ -622,27 +810,30 @@ void main() {
       final names = ['A', 'B', 'C', 'D', 'E', 'F'];
       ops.dirs['/manga/'] = [
         for (final name in names)
-          WebDavLibraryEntry(name: name, isDirectory: true),
+          RemoteLibraryEntry(name: name, isDirectory: true),
       ];
       for (final name in names) {
         ops.dirs['/manga/$name/'] = const [
-          WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+          RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
         ];
         ops.blockers['/manga/$name/'] = Completer<void>();
         ops.readStarted['/manga/$name/'] = Completer<void>();
       }
-      final cacheKey = WebDavLibraryConfig.fromSettings().cacheKey;
+      final cacheKey = RemoteLibraryConfig.fromSettings().cacheKey;
       final coverReady = Completer<void>();
-      void onChanged() {
+      void onChanged() async {
         if (!coverReady.isCompleted &&
-            WebDavLibraryCache.instance.find(cacheKey, 'A')?.cover.isNotEmpty ==
+            (await RemoteLibraryRepository.instance.find(
+                  cacheKey,
+                  'A',
+                ))?.cover.isNotEmpty ==
                 true) {
           coverReady.complete();
         }
       }
 
-      WebDavLibrarySource.contentVersion.addListener(onChanged);
-      final sync = WebDavLibrarySource.synchronize();
+      RemoteLibrarySource.contentVersion.addListener(onChanged);
+      final sync = RemoteLibrarySource.synchronize();
       try {
         await Future.wait([
           for (final name in names.take(4))
@@ -655,18 +846,18 @@ void main() {
           const Duration(seconds: 2),
         );
         expect(ops.readStarted['/manga/F/']!.isCompleted, isFalse);
-        final comics = await WebDavLibrarySource.loadComics(1);
+        final comics = await RemoteLibrarySource.loadComics(1);
         expect(comics.data.first.cover, '/manga/A/001.jpg');
-        expect(WebDavLibrarySource.syncStatus.value.isSyncing, isTrue);
+        expect(RemoteLibrarySource.syncStatus.value.isSyncing, isTrue);
       } finally {
-        WebDavLibrarySource.contentVersion.removeListener(onChanged);
+        RemoteLibrarySource.contentVersion.removeListener(onChanged);
         for (final blocker in ops.blockers.values) {
           if (!blocker.isCompleted) blocker.complete();
         }
         await sync;
       }
       expect(
-        (await WebDavLibrarySource.loadComics(1)).data.map((comic) => comic.id),
+        (await RemoteLibrarySource.loadComics(1)).data.map((comic) => comic.id),
         names,
       );
     },
@@ -706,7 +897,7 @@ void main() {
       }
       final blocker = Completer<void>();
       store.blockers['/manga/Category/Book B/'] = blocker;
-      final engine = WebDavLibraryEngine(
+      final engine = RemoteLibraryEngine(
         library: const RemoteLibrary(
           id: 'library',
           sourceKey: 'library',
@@ -719,12 +910,12 @@ void main() {
       );
       final source = engine.create();
       final coverReady = Completer<void>();
-      void onChanged() {
+      void onChanged() async {
         if (!coverReady.isCompleted &&
-            WebDavLibraryCache.instance
-                    .find('remote-library:library', '/manga/Category/Book A/')
-                    ?.cover
-                    .isNotEmpty ==
+            (await RemoteLibraryRepository.instance.find(
+                  'remote-library:library',
+                  '/manga/Category/Book A/',
+                ))?.cover.isNotEmpty ==
                 true) {
           coverReady.complete();
         }
@@ -746,123 +937,110 @@ void main() {
         engine.contentVersion.removeListener(onChanged);
         blocker.complete();
         await sync;
-        engine.cancel();
+        await engine.cancel();
       }
     },
   );
 
   for (final rootCover in [true, false]) {
-    test(
-      'comic listing defers chapter inspection (root cover: $rootCover)',
-      () async {
-        ops.dirs['/manga/'] = const [
-          WebDavLibraryEntry(name: 'Comic', isDirectory: true),
-        ];
-        ops.dirs['/manga/Comic/'] = [
-          const WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
-          if (rootCover)
-            const WebDavLibraryEntry(name: 'cover.jpg', isDirectory: false),
-          const WebDavLibraryEntry(name: '第01卷', isDirectory: true),
-          const WebDavLibraryEntry(name: '第02卷', isDirectory: true),
-          const WebDavLibraryEntry(name: '临时目录', isDirectory: true),
-        ];
-        ops.textFiles['/manga/Comic/metadata.json'] = jsonEncode({
-          'title': 'Comic title',
-          'author': 'Author',
-          'tags': ['Tag'],
-        });
-        for (final name in ['第01卷', '第02卷']) {
-          ops.dirs['/manga/Comic/$name/'] = const [
-            WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-          ];
-        }
-        final blocker = Completer<void>();
-        final chapterStarted = Completer<void>();
-        ops.blockers['/manga/Comic/第02卷/'] = blocker;
-        ops.readStarted['/manga/Comic/第02卷/'] = chapterStarted;
-        final sync = WebDavLibrarySource.synchronize();
-        try {
-          expect(
-            (await sync.timeout(const Duration(seconds: 2))).success,
-            isTrue,
-          );
-          final comics = await WebDavLibrarySource.loadComics(1);
-          expect(comics.data.single.title, 'Comic title');
-          expect(
-            comics.data.single.cover,
-            rootCover ? '/manga/Comic/cover.jpg' : '/manga/Comic/第01卷/001.jpg',
-          );
-          expect(chapterStarted.isCompleted, isFalse);
-          // Reopen the persistent summary before loading complete reader details.
-          WebDavLibrarySource.ops = ops;
-          final firstDetails = WebDavLibrarySource.loadComicInfo('Comic');
-          final secondDetails = WebDavLibrarySource.loadComicInfo('Comic');
-          await chapterStarted.future.timeout(const Duration(seconds: 2));
-          blocker.complete();
-          final details = await Future.wait([firstDetails, secondDetails]);
-          for (final result in details) {
-            expect(result.data.chapters!.allChapters.keys, ['第01卷', '第02卷']);
-          }
-          expect(
-            ops.readPaths.where((path) => path == '/manga/Comic/第02卷/'),
-            hasLength(1),
-          );
-        } finally {
-          if (!blocker.isCompleted) blocker.complete();
-          await sync;
-        }
-      },
-    );
-  }
-
-  for (final rootCover in [true, false]) {
-    test('chapter-only comic previews its cover before discovery completes '
-        '(root cover: $rootCover)', () async {
+    test('章节后台补全不阻塞列表，阅读加入已有任务 (root cover: $rootCover)', () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Comic', isDirectory: true),
+        RemoteLibraryEntry(name: 'Comic', isDirectory: true),
       ];
       ops.dirs['/manga/Comic/'] = [
+        const RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
         if (rootCover)
-          const WebDavLibraryEntry(name: 'cover.jpg', isDirectory: false),
-        const WebDavLibraryEntry(name: '第01卷', isDirectory: true),
-        const WebDavLibraryEntry(name: '第02卷', isDirectory: true),
+          const RemoteLibraryEntry(name: 'cover.jpg', isDirectory: false),
+        const RemoteLibraryEntry(name: '第01卷', isDirectory: true),
+        const RemoteLibraryEntry(name: '第02卷', isDirectory: true),
+        const RemoteLibraryEntry(name: '临时目录', isDirectory: true),
       ];
+      ops.textFiles['/manga/Comic/metadata.json'] = jsonEncode({
+        'title': 'Comic title',
+        'author': 'Author',
+        'tags': ['Tag'],
+      });
       for (final name in ['第01卷', '第02卷']) {
         ops.dirs['/manga/Comic/$name/'] = const [
-          WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+          RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
         ];
       }
       final blocker = Completer<void>();
-      ops.blockers['/manga/Comic/${rootCover ? '第01卷' : '第02卷'}/'] = blocker;
-      final coverReady = Completer<void>();
-      final cacheKey = WebDavLibraryConfig.fromSettings().cacheKey;
-      void onChanged() {
-        if (!coverReady.isCompleted &&
-            WebDavLibraryCache.instance
-                    .find(cacheKey, 'Comic')
-                    ?.cover
-                    .isNotEmpty ==
-                true) {
-          coverReady.complete();
-        }
-      }
-
-      WebDavLibrarySource.contentVersion.addListener(onChanged);
-      final sync = WebDavLibrarySource.synchronize();
+      final chapterStarted = Completer<void>();
+      ops.blockers['/manga/Comic/第02卷/'] = blocker;
+      ops.readStarted['/manga/Comic/第02卷/'] = chapterStarted;
+      final sync = RemoteLibrarySource.synchronize();
       try {
-        await coverReady.future.timeout(const Duration(seconds: 2));
-        final comics = await WebDavLibrarySource.loadComics(1);
+        expect(
+          (await sync.timeout(const Duration(seconds: 2))).success,
+          isTrue,
+        );
+        final comics = await RemoteLibrarySource.loadComics(1);
+        expect(comics.data.single.title, 'Comic');
+        expect(
+          comics.data.single.cover,
+          rootCover ? '/manga/Comic/cover.jpg' : '',
+        );
+        final firstDetails = RemoteLibrarySource.loadComicInfo('Comic');
+        final secondDetails = RemoteLibrarySource.loadComicInfo('Comic');
+        await chapterStarted.future.timeout(const Duration(seconds: 2));
+        blocker.complete();
+        final details = await Future.wait([firstDetails, secondDetails]);
+        for (final result in details) {
+          expect(result.data.chapters!.allChapters.keys, ['第01卷', '第02卷']);
+        }
+        expect(
+          ops.readPaths.where((path) => path == '/manga/Comic/第02卷/'),
+          hasLength(1),
+        );
+      } finally {
+        if (!blocker.isCompleted) blocker.complete();
+        await sync;
+      }
+    });
+  }
+
+  for (final rootCover in [true, false]) {
+    test('章目录识别完成后才提交漫画摘要 (root cover: $rootCover)', () async {
+      ops.dirs['/manga/'] = const [
+        RemoteLibraryEntry(name: 'Comic', isDirectory: true),
+      ];
+      ops.dirs['/manga/Comic/'] = [
+        if (rootCover)
+          const RemoteLibraryEntry(name: 'cover.jpg', isDirectory: false),
+        const RemoteLibraryEntry(name: '第01卷', isDirectory: true),
+        const RemoteLibraryEntry(name: '第02卷', isDirectory: true),
+      ];
+      for (final name in ['第01卷', '第02卷']) {
+        ops.dirs['/manga/Comic/$name/'] = const [
+          RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+        ];
+      }
+      final blockedPath = '/manga/Comic/${rootCover ? '第01卷' : '第02卷'}/';
+      final blocker = Completer<void>();
+      final started = Completer<void>();
+      ops.blockers[blockedPath] = blocker;
+      ops.readStarted[blockedPath] = started;
+      final sync = RemoteLibrarySource.synchronize();
+      try {
+        await started.future;
+        expect(
+          await RemoteLibraryRepository.instance.find(
+            RemoteLibraryConfig.fromSettings().cacheKey,
+            'Comic',
+          ),
+          isNull,
+        );
+        blocker.complete();
+        expect((await sync).success, isTrue);
+        final comics = await RemoteLibrarySource.loadComics(1);
         expect(
           comics.data.single.cover,
           rootCover ? '/manga/Comic/cover.jpg' : '/manga/Comic/第01卷/001.jpg',
         );
-        expect(WebDavLibrarySource.syncStatus.value.isSyncing, isTrue);
-        blocker.complete();
-        expect((await sync).success, isTrue);
-        final details = await WebDavLibrarySource.loadComicInfo('Comic');
+        final details = await RemoteLibrarySource.loadComicInfo('Comic');
         expect(details.data.chapters!.allChapters.keys, ['第01卷', '第02卷']);
       } finally {
-        WebDavLibrarySource.contentVersion.removeListener(onChanged);
         if (!blocker.isCompleted) blocker.complete();
         await sync;
       }
@@ -872,7 +1050,7 @@ void main() {
   test('cached comic list is paged without additional WebDAV reads', () async {
     ops.dirs['/manga/'] = [
       for (var index = 1; index <= 45; index++)
-        WebDavLibraryEntry(
+        RemoteLibraryEntry(
           name: 'Book ${index.toString().padLeft(2, '0')}',
           isDirectory: true,
           eTag: 'v1',
@@ -881,16 +1059,16 @@ void main() {
     for (var index = 1; index <= 45; index++) {
       final name = 'Book ${index.toString().padLeft(2, '0')}';
       ops.dirs['/manga/$name/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
     }
 
-    await WebDavLibrarySource.synchronize();
+    await _synchronizeAndComplete();
     ops.readPaths.clear();
 
-    final first = await WebDavLibrarySource.loadComics(1);
-    final second = await WebDavLibrarySource.loadComics(2);
-    final third = await WebDavLibrarySource.loadComics(3);
+    final first = await RemoteLibrarySource.loadComics(1);
+    final second = await RemoteLibrarySource.loadComics(2);
+    final third = await RemoteLibrarySource.loadComics(3);
 
     expect(first.data, hasLength(20));
     expect(second.data, hasLength(20));
@@ -905,45 +1083,46 @@ void main() {
     'incremental sync fingerprints child entries before refreshing',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Book A', isDirectory: true, eTag: 'v1'),
-        WebDavLibraryEntry(name: 'Book B', isDirectory: true, eTag: 'v1'),
+        RemoteLibraryEntry(name: 'Book A', isDirectory: true, eTag: 'v1'),
+        RemoteLibraryEntry(name: 'Book B', isDirectory: true, eTag: 'v1'),
       ];
       ops.dirs['/manga/Book A/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false, eTag: 'a1'),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false, eTag: 'a1'),
       ];
       ops.dirs['/manga/Book B/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false, eTag: 'b1'),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false, eTag: 'b1'),
       ];
-      await WebDavLibrarySource.synchronize();
+      await _synchronizeAndComplete();
       ops.readPaths.clear();
 
-      await WebDavLibrarySource.synchronize();
+      await _synchronizeAndComplete();
       expect(ops.readPaths, ['/manga/', '/manga/Book A/', '/manga/Book B/']);
-      expect(WebDavLibrarySource.syncStatus.value.total, 0);
+      expect(RemoteLibrarySource.syncStatus.value.total, 2);
+      expect(RemoteLibrarySource.syncStatus.value.processed, 2);
 
       ops.readPaths.clear();
       ops.dirs['/manga/Book A/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false, eTag: 'a2'),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false, eTag: 'a2'),
       ];
-      await WebDavLibrarySource.synchronize();
+      await _synchronizeAndComplete();
 
       expect(ops.readPaths, ['/manga/', '/manga/Book A/', '/manga/Book B/']);
-      expect(WebDavLibrarySource.syncStatus.value.total, 1);
+      expect(RemoteLibrarySource.syncStatus.value.total, 2);
     },
   );
 
   test('failed refresh keeps the last successful cached list', () async {
     ops.dirs['/manga/'] = const [
-      WebDavLibraryEntry(name: 'Cached Book', isDirectory: true),
+      RemoteLibraryEntry(name: 'Cached Book', isDirectory: true),
     ];
     ops.dirs['/manga/Cached Book/'] = const [
-      WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
-    await WebDavLibrarySource.synchronize();
+    await _synchronizeAndComplete();
     ops.errors['/manga/'] = StateError('WebDAV unavailable');
 
-    final refresh = await WebDavLibrarySource.synchronize(force: true);
-    final cached = await WebDavLibrarySource.loadComics(1);
+    final refresh = await _synchronizeAndComplete(force: true);
+    final cached = await RemoteLibrarySource.loadComics(1);
 
     expect(refresh.error, isTrue);
     expect(cached.success, isTrue);
@@ -953,75 +1132,78 @@ void main() {
   test(
     'configuration change starts a new sync and invalidates old side effects',
     () async {
-      final previous = WebDavLibraryConfig.fromSettings();
+      final previous = RemoteLibraryConfig.fromSettings();
       final oldReadStarted = Completer<void>();
       final oldReadBlocker = Completer<void>();
       ops.readStarted['/manga/'] = oldReadStarted;
       ops.blockers['/manga/'] = oldReadBlocker;
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Book A', isDirectory: true),
+        RemoteLibraryEntry(name: 'Book A', isDirectory: true),
       ];
       ops.dirs['/manga/Book A/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/other/'] = const [
-        WebDavLibraryEntry(name: 'Book B', isDirectory: true),
+        RemoteLibraryEntry(name: 'Book B', isDirectory: true),
       ];
       ops.dirs['/other/Book B/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
-      WebDavLibrarySource.configureMetadataScraper(
+      RemoteLibrarySource.configureMetadataScraper(
         (_) async =>
             const ComicMetaData(title: 'Scraped', author: '', tags: []),
       );
 
-      final oldSync = WebDavLibrarySource.synchronize();
+      final oldSync = RemoteLibrarySource.synchronize();
       await oldReadStarted.future;
 
       appdata.settings['webdavComicLibraryPath'] = '/other/';
-      WebDavLibrarySource.onConfigurationChanged(previous);
-      WebDavLibrarySource.ops = ops;
-      final newSync = await WebDavLibrarySource.synchronize().timeout(
+      await RemoteLibrarySource.onConfigurationChanged(previous);
+      RemoteLibrarySource.ops = ops;
+      final newSync = await _synchronizeAndComplete().timeout(
         const Duration(seconds: 1),
       );
 
       expect(newSync.success, isTrue);
       expect(
-        WebDavLibraryCache.instance.count(
-          WebDavLibraryConfig.fromSettings().cacheKey,
-        ),
+        (await RemoteLibraryRepository.instance.count(
+          RemoteLibraryConfig.fromSettings().cacheKey,
+        )),
         1,
       );
       expect(ops.writtenTexts, contains('/other/Book B/metadata.json'));
-      final currentStatus = WebDavLibrarySource.syncStatus.value;
-      final currentContentVersion = WebDavLibrarySource.contentVersion.value;
+      final currentStatus = RemoteLibrarySource.syncStatus.value;
+      final currentContentVersion = RemoteLibrarySource.contentVersion.value;
 
       oldReadBlocker.complete();
       final oldResult = await oldSync;
 
       expect(oldResult.success, isTrue);
-      expect(WebDavLibraryCache.instance.count(previous.cacheKey), 0);
+      expect(
+        (await RemoteLibraryRepository.instance.count(previous.cacheKey)),
+        0,
+      );
       expect(
         ops.writtenTexts.keys.where((path) => path.startsWith('/manga/')),
         isEmpty,
       );
       expect(
-        WebDavLibrarySource.syncStatus.value.lastSuccessfulSync,
+        RemoteLibrarySource.syncStatus.value.lastSuccessfulSync,
         currentStatus.lastSuccessfulSync,
       );
-      expect(WebDavLibrarySource.syncStatus.value.isSyncing, isFalse);
-      expect(WebDavLibrarySource.contentVersion.value, currentContentVersion);
+      expect(RemoteLibrarySource.syncStatus.value.isSyncing, isFalse);
+      expect(RemoteLibrarySource.contentVersion.value, currentContentVersion);
     },
   );
 
   test('concurrent detail loads share one snapshot request', () async {
     ops.dirs['/manga/Book/'] = const [
-      WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
 
     final results = await Future.wait([
-      WebDavLibrarySource.loadComicInfo('Book'),
-      WebDavLibrarySource.loadComicInfo('Book'),
+      RemoteLibrarySource.loadComicInfo('Book'),
+      RemoteLibrarySource.loadComicInfo('Book'),
     ]);
 
     expect(results.every((result) => result.success), isTrue);
@@ -1032,20 +1214,20 @@ void main() {
     'a detail-only cache entry does not replace the full library index',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Book A', isDirectory: true),
-        WebDavLibraryEntry(name: 'Book B', isDirectory: true),
+        RemoteLibraryEntry(name: 'Book A', isDirectory: true),
+        RemoteLibraryEntry(name: 'Book B', isDirectory: true),
       ];
       ops.dirs['/manga/Book A/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/Book B/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
 
-      await WebDavLibrarySource.loadComicInfo('Book A');
-      await WebDavLibrarySource.loadComics(1);
-      await WebDavLibrarySource.synchronize();
-      final comics = await WebDavLibrarySource.loadComics(1);
+      await RemoteLibrarySource.loadComicInfo('Book A');
+      await RemoteLibrarySource.loadComics(1);
+      await _synchronizeAndComplete();
+      final comics = await RemoteLibrarySource.loadComics(1);
 
       expect(comics.data.map((comic) => comic.id), ['Book A', 'Book B']);
     },
@@ -1055,27 +1237,27 @@ void main() {
     'loadComicInfo lists every chapter directory and uses the first page as cover',
     () async {
       ops.dirs['/manga/Cat Eye/'] = const [
-        WebDavLibraryEntry(name: '第01卷', isDirectory: true),
-        WebDavLibraryEntry(name: '第02卷', isDirectory: true),
-        WebDavLibraryEntry(name: '第03卷', isDirectory: true),
-        WebDavLibraryEntry(name: '第04卷', isDirectory: true),
-        WebDavLibraryEntry(name: '第05卷', isDirectory: true),
-        WebDavLibraryEntry(name: 'book.cbz', isDirectory: false),
+        RemoteLibraryEntry(name: '第01卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第02卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第03卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第04卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第05卷', isDirectory: true),
+        RemoteLibraryEntry(name: 'book.cbz', isDirectory: false),
       ];
       ops.dirs['/manga/Cat Eye/第01卷/'] = const [
-        WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '002.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/Cat Eye/第02卷/'] = const [
-        WebDavLibraryEntry(name: '001.webp', isDirectory: false),
+        RemoteLibraryEntry(name: '001.webp', isDirectory: false),
       ];
       for (var index = 3; index <= 5; index++) {
         ops.dirs['/manga/Cat Eye/第0$index卷/'] = const [
-          WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+          RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
         ];
       }
 
-      final result = await WebDavLibrarySource.loadComicInfo('Cat Eye');
+      final result = await RemoteLibrarySource.loadComicInfo('Cat Eye');
 
       expect(result.success, isTrue);
       expect(result.data.cover, '/manga/Cat Eye/第01卷/001.jpg');
@@ -1101,26 +1283,26 @@ void main() {
     'nested metadata directory is indexed as one comic with child chapters',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: '分类', isDirectory: true),
+        RemoteLibraryEntry(name: '分类', isDirectory: true),
       ];
       ops.dirs['/manga/分类/'] = const [
-        WebDavLibraryEntry(name: '作者', isDirectory: true),
+        RemoteLibraryEntry(name: '作者', isDirectory: true),
       ];
       ops.dirs['/manga/分类/作者/'] = const [
-        WebDavLibraryEntry(name: '猫之眼', isDirectory: true),
+        RemoteLibraryEntry(name: '猫之眼', isDirectory: true),
       ];
       ops.dirs['/manga/分类/作者/猫之眼/'] = const [
-        WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
-        WebDavLibraryEntry(name: 'cover.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '第01章', isDirectory: true),
-        WebDavLibraryEntry(name: '第02章', isDirectory: true),
+        RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
+        RemoteLibraryEntry(name: 'cover.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '第01章', isDirectory: true),
+        RemoteLibraryEntry(name: '第02章', isDirectory: true),
       ];
       ops.dirs['/manga/分类/作者/猫之眼/第01章/'] = const [
-        WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '002.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/分类/作者/猫之眼/第02章/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.textFiles['/manga/分类/作者/猫之眼/metadata.json'] = jsonEncode({
         'title': '猫之眼',
@@ -1131,10 +1313,10 @@ void main() {
         ],
       });
 
-      final sync = await WebDavLibrarySource.synchronize();
-      final comics = await WebDavLibrarySource.loadComics(1);
-      final details = await WebDavLibrarySource.loadComicInfo('分类/作者/猫之眼');
-      final pages = await WebDavLibrarySource.loadComicPages(
+      final sync = await _synchronizeAndComplete();
+      final comics = await RemoteLibrarySource.loadComics(1);
+      final details = await RemoteLibrarySource.loadComicInfo('分类/作者/猫之眼');
+      final pages = await RemoteLibrarySource.loadComicPages(
         '分类/作者/猫之眼',
         '第01章',
       );
@@ -1161,16 +1343,16 @@ void main() {
     'nested metadata directories keep distinct relative ids for duplicate names',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: '分类A', isDirectory: true),
-        WebDavLibraryEntry(name: '分类B', isDirectory: true),
+        RemoteLibraryEntry(name: '分类A', isDirectory: true),
+        RemoteLibraryEntry(name: '分类B', isDirectory: true),
       ];
       for (final category in ['分类A', '分类B']) {
         ops.dirs['/manga/$category/'] = const [
-          WebDavLibraryEntry(name: '猫之眼', isDirectory: true),
+          RemoteLibraryEntry(name: '猫之眼', isDirectory: true),
         ];
         ops.dirs['/manga/$category/猫之眼/'] = const [
-          WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
-          WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+          RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
+          RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
         ];
         ops.textFiles['/manga/$category/猫之眼/metadata.json'] = jsonEncode({
           'title': category,
@@ -1180,8 +1362,8 @@ void main() {
         });
       }
 
-      final sync = await WebDavLibrarySource.synchronize();
-      final comics = await WebDavLibrarySource.loadComics(1);
+      final sync = await _synchronizeAndComplete();
+      final comics = await RemoteLibrarySource.loadComics(1);
 
       expect(sync.success, isTrue);
       expect(comics.data, hasLength(2));
@@ -1191,18 +1373,18 @@ void main() {
 
   test('metadata directory wins over nested metadata directories', () async {
     ops.dirs['/manga/'] = const [
-      WebDavLibraryEntry(name: '猫之眼', isDirectory: true),
+      RemoteLibraryEntry(name: '猫之眼', isDirectory: true),
     ];
     ops.dirs['/manga/猫之眼/'] = const [
-      WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
-      WebDavLibraryEntry(name: '第01章', isDirectory: true),
+      RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
+      RemoteLibraryEntry(name: '第01章', isDirectory: true),
     ];
     ops.dirs['/manga/猫之眼/第01章/'] = const [
-      WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
     ops.dirs['/manga/猫之眼/第01章/嵌套漫画/'] = const [
-      WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
-      WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
     ops.textFiles['/manga/猫之眼/metadata.json'] = jsonEncode({
       'title': '猫之眼',
@@ -1211,8 +1393,8 @@ void main() {
       'chapters': null,
     });
 
-    final sync = await WebDavLibrarySource.synchronize();
-    final comics = await WebDavLibrarySource.loadComics(1);
+    final sync = await _synchronizeAndComplete();
+    final comics = await RemoteLibrarySource.loadComics(1);
 
     expect(sync.success, isTrue);
     expect(comics.data, hasLength(1));
@@ -1225,14 +1407,14 @@ void main() {
     'incremental sync rebuilds snapshots from the old cache format',
     () async {
       const comicId = 'Cached Book';
-      final config = WebDavLibraryConfig.fromSettings();
-      final cache = WebDavLibraryCache.instance;
-      cache.replaceDirectoryIndex(config.cacheKey, const [
-        WebDavLibraryRemoteDirectory(id: comicId, sortIndex: 0, eTag: 'v1'),
-      ]);
-      cache.upsertSnapshot(
+      final config = RemoteLibraryConfig.fromSettings();
+      final cache = RemoteLibraryRepository.instance;
+      (await cache.replaceDirectoryIndex(config.cacheKey, const [
+        RemoteLibraryRemoteDirectory(id: comicId, sortIndex: 0, eTag: 'v1'),
+      ]));
+      (await cache.upsertSnapshot(
         config.cacheKey,
-        const WebDavLibraryCachedComic(
+        const RemoteLibraryCachedComic(
           id: comicId,
           sortIndex: 0,
           title: comicId,
@@ -1255,26 +1437,26 @@ void main() {
           remoteETag: 'v1',
           remoteModifiedAt: null,
         ),
-      );
+      ));
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: comicId, isDirectory: true, eTag: 'v1'),
+        RemoteLibraryEntry(name: comicId, isDirectory: true, eTag: 'v1'),
       ];
       ops.dirs['/manga/Cached Book/'] = const [
-        WebDavLibraryEntry(name: 'cover.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: 'Chapter 01', isDirectory: true),
-        WebDavLibraryEntry(name: 'Chapter 02', isDirectory: true),
-        WebDavLibraryEntry(name: 'Chapter 03', isDirectory: true),
-        WebDavLibraryEntry(name: 'Chapter 04', isDirectory: true),
-        WebDavLibraryEntry(name: 'Chapter 05', isDirectory: true),
+        RemoteLibraryEntry(name: 'cover.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: 'Chapter 01', isDirectory: true),
+        RemoteLibraryEntry(name: 'Chapter 02', isDirectory: true),
+        RemoteLibraryEntry(name: 'Chapter 03', isDirectory: true),
+        RemoteLibraryEntry(name: 'Chapter 04', isDirectory: true),
+        RemoteLibraryEntry(name: 'Chapter 05', isDirectory: true),
       ];
       for (var i = 1; i <= 5; i++) {
         ops.dirs['/manga/Cached Book/Chapter 0$i/'] = const [
-          WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+          RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
         ];
       }
 
-      final sync = await WebDavLibrarySource.synchronize();
-      final details = await WebDavLibrarySource.loadComicInfo(comicId);
+      final sync = await _synchronizeAndComplete();
+      final details = await RemoteLibrarySource.loadComicInfo(comicId);
 
       expect(sync.success, isTrue);
       expect(details.success, isTrue);
@@ -1295,18 +1477,18 @@ void main() {
     'loadComicInfo handles Chinese comic and chapter directories from unmodifiable lists',
     () async {
       ops.dirs['/manga/猫之眼[北条司]/'] = List.unmodifiable([
-        const WebDavLibraryEntry(name: '第01卷', isDirectory: true),
-        const WebDavLibraryEntry(name: '第02卷', isDirectory: true),
+        const RemoteLibraryEntry(name: '第01卷', isDirectory: true),
+        const RemoteLibraryEntry(name: '第02卷', isDirectory: true),
       ]);
       ops.dirs['/manga/猫之眼[北条司]/第01卷/'] = List.unmodifiable([
-        const WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
-        const WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        const RemoteLibraryEntry(name: '002.jpg', isDirectory: false),
+        const RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ]);
       ops.dirs['/manga/猫之眼[北条司]/第02卷/'] = List.unmodifiable([
-        const WebDavLibraryEntry(name: '001.webp', isDirectory: false),
+        const RemoteLibraryEntry(name: '001.webp', isDirectory: false),
       ]);
 
-      final result = await WebDavLibrarySource.loadComicInfo('猫之眼[北条司]');
+      final result = await RemoteLibrarySource.loadComicInfo('猫之眼[北条司]');
 
       expect(result.success, isTrue);
       expect(result.data.cover, '/manga/猫之眼[北条司]/第01卷/001.jpg');
@@ -1324,12 +1506,12 @@ void main() {
 
   test('loadComicInfo uses root cover and root images when present', () async {
     ops.dirs['/manga/Cat Eye/'] = const [
-      WebDavLibraryEntry(name: 'cover.jpg', isDirectory: false),
-      WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
-      WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: 'cover.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: '002.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
 
-    final result = await WebDavLibrarySource.loadComicInfo('Cat Eye');
+    final result = await RemoteLibrarySource.loadComicInfo('Cat Eye');
 
     expect(result.success, isTrue);
     expect(result.data.cover, '/manga/Cat Eye/cover.jpg');
@@ -1338,12 +1520,12 @@ void main() {
 
   test('loadComicPages returns chapter image paths in reading order', () async {
     ops.dirs['/manga/Cat Eye/第01卷/'] = const [
-      WebDavLibraryEntry(name: 'cover.jpg', isDirectory: false),
-      WebDavLibraryEntry(name: '010.jpg', isDirectory: false),
-      WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: 'cover.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: '010.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: '002.jpg', isDirectory: false),
     ];
 
-    final result = await WebDavLibrarySource.loadComicPages('Cat Eye', '第01卷');
+    final result = await RemoteLibrarySource.loadComicPages('Cat Eye', '第01卷');
 
     expect(result.success, isTrue);
     expect(result.data, [
@@ -1356,17 +1538,17 @@ void main() {
     'reopening reuses persisted chapter pages and library refresh updates them',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Book', isDirectory: true),
+        RemoteLibraryEntry(name: 'Book', isDirectory: true),
       ];
       ops.dirs['/manga/Book/'] = const [
-        WebDavLibraryEntry(name: '第01卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第01卷', isDirectory: true),
       ];
       ops.dirs['/manga/Book/第01卷/'] = const [
-        WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '002.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
-      expect((await WebDavLibrarySource.loadComicInfo('Book')).success, isTrue);
-      final initial = await WebDavLibrarySource.loadComicPages('Book', '第01卷');
+      expect((await RemoteLibrarySource.loadComicInfo('Book')).success, isTrue);
+      final initial = await RemoteLibrarySource.loadComicPages('Book', '第01卷');
       expect(initial.data, [
         '/manga/Book/第01卷/001.jpg',
         '/manga/Book/第01卷/002.jpg',
@@ -1374,23 +1556,20 @@ void main() {
       expect(ops.readPaths, ['/manga/Book/', '/manga/Book/第01卷/']);
 
       // Close the database and clear the source's memory cache, retaining files.
-      WebDavLibrarySource.resetCacheForTesting();
+      await RemoteLibrarySource.resetCacheForTesting();
       ops.readPaths.clear();
-      expect((await WebDavLibrarySource.loadComicInfo('Book')).success, isTrue);
+      expect((await RemoteLibrarySource.loadComicInfo('Book')).success, isTrue);
       expect(
-        (await WebDavLibrarySource.loadComicPages('Book', '第01卷')).data,
+        (await RemoteLibrarySource.loadComicPages('Book', '第01卷')).data,
         initial.data,
       );
       expect(ops.readPaths, isEmpty);
 
       ops.dirs['/manga/Book/第01卷/'] = const [
-        WebDavLibraryEntry(name: '003.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '003.jpg', isDirectory: false),
       ];
-      expect(
-        (await WebDavLibrarySource.synchronize(force: true)).success,
-        isTrue,
-      );
-      expect((await WebDavLibrarySource.loadComicPages('Book', '第01卷')).data, [
+      expect((await _synchronizeAndComplete(force: true)).success, isTrue);
+      expect((await RemoteLibrarySource.loadComicPages('Book', '第01卷')).data, [
         '/manga/Book/第01卷/003.jpg',
       ]);
     },
@@ -1398,11 +1577,11 @@ void main() {
 
   test('loadComicPages handles Chinese directory paths', () async {
     ops.dirs['/manga/猫之眼[北条司]/第01卷/'] = List.unmodifiable([
-      const WebDavLibraryEntry(name: '010.jpg', isDirectory: false),
-      const WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
+      const RemoteLibraryEntry(name: '010.jpg', isDirectory: false),
+      const RemoteLibraryEntry(name: '002.jpg', isDirectory: false),
     ]);
 
-    final result = await WebDavLibrarySource.loadComicPages('猫之眼[北条司]', '第01卷');
+    final result = await RemoteLibrarySource.loadComicPages('猫之眼[北条司]', '第01卷');
 
     expect(result.success, isTrue);
     expect(result.data, [
@@ -1415,16 +1594,16 @@ void main() {
     'CBZ metadata enriches list and details and maps virtual chapter pages',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: '猫之眼[北条司]', isDirectory: true),
+        RemoteLibraryEntry(name: '猫之眼[北条司]', isDirectory: true),
       ];
       ops.dirs['/manga/猫之眼[北条司]/'] = const [
-        WebDavLibraryEntry(name: 'metadata.JSON', isDirectory: false),
-        WebDavLibraryEntry(name: 'ComicInfo.xml', isDirectory: false),
-        WebDavLibraryEntry(name: 'cover.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '0004.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '0002.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '0001.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '0003.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: 'metadata.JSON', isDirectory: false),
+        RemoteLibraryEntry(name: 'ComicInfo.xml', isDirectory: false),
+        RemoteLibraryEntry(name: 'cover.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '0004.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '0002.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '0001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '0003.jpg', isDirectory: false),
       ];
       ops.textFiles['/manga/猫之眼[北条司]/metadata.JSON'] = jsonEncode({
         'title': '猫之眼',
@@ -1437,11 +1616,11 @@ void main() {
         ],
       });
 
-      await WebDavLibrarySource.loadComics(1);
-      await WebDavLibrarySource.synchronize();
-      final comics = await WebDavLibrarySource.loadComics(1);
-      final details = await WebDavLibrarySource.loadComicInfo('猫之眼[北条司]');
-      final pages = await WebDavLibrarySource.loadComicPages(
+      await RemoteLibrarySource.loadComics(1);
+      await _synchronizeAndComplete();
+      final comics = await RemoteLibrarySource.loadComics(1);
+      final details = await RemoteLibrarySource.loadComicInfo('猫之眼[北条司]');
+      final pages = await RemoteLibrarySource.loadComicPages(
         '猫之眼[北条司]',
         '__cbz_range_1',
       );
@@ -1477,9 +1656,9 @@ void main() {
     'CBZ metadata without chapters keeps root pages as one chapter',
     () async {
       ops.dirs['/manga/Flat Book/'] = const [
-        WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
-        WebDavLibraryEntry(name: '0002.webp', isDirectory: false),
-        WebDavLibraryEntry(name: '0001.webp', isDirectory: false),
+        RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
+        RemoteLibraryEntry(name: '0002.webp', isDirectory: false),
+        RemoteLibraryEntry(name: '0001.webp', isDirectory: false),
       ];
       ops.textFiles['/manga/Flat Book/metadata.json'] = jsonEncode({
         'title': 'Flat Export',
@@ -1488,8 +1667,8 @@ void main() {
         'chapters': null,
       });
 
-      final details = await WebDavLibrarySource.loadComicInfo('Flat Book');
-      final pages = await WebDavLibrarySource.loadComicPages('Flat Book', null);
+      final details = await RemoteLibrarySource.loadComicInfo('Flat Book');
+      final pages = await RemoteLibrarySource.loadComicPages('Flat Book', null);
 
       expect(details.success, isTrue);
       expect(details.data.title, 'Flat Export');
@@ -1504,15 +1683,15 @@ void main() {
 
   test('malformed CBZ metadata falls back to folder inference', () async {
     ops.dirs['/manga/Broken Book/'] = const [
-      WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
-      WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
     ops.textFiles['/manga/Broken Book/metadata.json'] = '{broken';
 
-    final details = await WebDavLibrarySource.loadComicInfo('Broken Book');
-    final pages = await WebDavLibrarySource.loadComicPages(
+    final details = await RemoteLibrarySource.loadComicInfo('Broken Book');
+    final pages = await RemoteLibrarySource.loadComicPages(
       'Broken Book',
-      WebDavLibrarySource.rootChapterId,
+      RemoteLibrarySource.rootChapterId,
     );
 
     expect(details.success, isTrue);
@@ -1538,9 +1717,9 @@ void main() {
       '${invalidCase.key} CBZ chapter ranges fall back to root pages',
       () async {
         ops.dirs['/manga/Invalid Book/'] = const [
-          WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
-          WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
-          WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+          RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
+          RemoteLibraryEntry(name: '002.jpg', isDirectory: false),
+          RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
         ];
         ops.textFiles['/manga/Invalid Book/metadata.json'] = jsonEncode({
           'title': 'Must Not Replace Folder Name',
@@ -1549,8 +1728,8 @@ void main() {
           'chapters': invalidCase.value,
         });
 
-        final details = await WebDavLibrarySource.loadComicInfo('Invalid Book');
-        final pages = await WebDavLibrarySource.loadComicPages(
+        final details = await RemoteLibrarySource.loadComicInfo('Invalid Book');
+        final pages = await RemoteLibrarySource.loadComicPages(
           'Invalid Book',
           null,
         );
@@ -1570,7 +1749,7 @@ void main() {
   test(
     'getImageLoadingConfig builds encoded URL and basic auth header',
     () async {
-      final config = await WebDavLibrarySource.getImageLoadingConfig(
+      final config = await RemoteLibrarySource.getImageLoadingConfig(
         '/manga/Cat Eye/第01卷/001.jpg',
         'Cat Eye',
         '第01卷',
@@ -1584,7 +1763,7 @@ void main() {
     },
   );
   test('legacy thumbnails retain encoded URLs and basic auth headers', () async {
-    final config = await WebDavLibrarySource.getThumbnailLoadingConfig(
+    final config = await RemoteLibrarySource.getThumbnailLoadingConfig(
       '/manga/Cat Eye/第01卷/cover.jpg',
     );
     expect(config, {
@@ -1593,7 +1772,7 @@ void main() {
       'headers': {'authorization': 'Basic dXNlcjpwYXNz'},
     });
     expect(
-      await WebDavLibrarySource.getThumbnailLoadingConfig('cover.Cat Eye'),
+      await RemoteLibrarySource.getThumbnailLoadingConfig('cover.Cat Eye'),
       {
         'headers': {'authorization': 'Basic dXNlcjpwYXNz'},
       },
@@ -1604,11 +1783,11 @@ void main() {
       'metadata id binds through ${connectedAtScan ? 'library scan' : 'cached details after connection'} and uploads progress',
       () async {
         ops.dirs['/manga/'] = const [
-          WebDavLibraryEntry(name: 'Book', isDirectory: true),
+          RemoteLibraryEntry(name: 'Book', isDirectory: true),
         ];
         ops.dirs['/manga/Book/'] = const [
-          WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
-          WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+          RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
+          RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
         ];
         final document = jsonEncode({
           'title': 'Local title',
@@ -1634,23 +1813,23 @@ void main() {
         final saved = Completer<void>();
         final service = BangumiService.forTesting(
           gatewayFactory: (_) => gateway,
-          scopeResolver: (_) => WebDavLibrarySource.currentLibraryId,
+          scopeResolver: (_) => RemoteLibrarySource.currentLibraryId,
           saveSettings: () async {
             if (!saved.isCompleted) saved.complete();
           },
         );
         addTearDown(() {
-          WebDavLibrarySource.configureMetadataSubjectHandler(null);
+          RemoteLibrarySource.configureMetadataSubjectHandler(null);
           service.dispose();
           for (final entry in previous.entries) {
             appdata.settings[entry.key] = entry.value;
           }
         });
-        WebDavLibrarySource.configureMetadataSubjectHandler(
+        RemoteLibrarySource.configureMetadataSubjectHandler(
           service.bindFromMetadata,
         );
 
-        expect((await WebDavLibrarySource.synchronize()).success, isTrue);
+        expect((await _synchronizeAndComplete()).success, isTrue);
         final reads = List<String>.from(ops.readPaths);
         if (!connectedAtScan) {
           expect(service.bindingFor('webdav_library', 'Book'), isNull);
@@ -1659,11 +1838,11 @@ void main() {
         } else {
           await saved.future;
         }
-        final details = await WebDavLibrarySource.loadComicInfo('Book');
+        final details = await RemoteLibrarySource.loadComicInfo('Book');
         await saved.future;
         final binding = service.bindingFor('webdav_library', 'Book')!;
         expect(binding.subjectId, 123);
-        expect(binding.scopeId, WebDavLibrarySource.currentLibraryId);
+        expect(binding.scopeId, RemoteLibrarySource.currentLibraryId);
         expect(binding.progressMode, BangumiProgressMode.auto);
         expect(details.data.title, 'Local title');
         expect(ops.readPaths, reads);
@@ -1683,13 +1862,13 @@ void main() {
 
   test('missing metadata is scraped and written back to WebDAV', () async {
     ops.dirs['/manga/'] = const [
-      WebDavLibraryEntry(name: 'Cat Eye[Tsukasa Hojo]', isDirectory: true),
+      RemoteLibraryEntry(name: 'Cat Eye[Tsukasa Hojo]', isDirectory: true),
     ];
     ops.dirs['/manga/Cat Eye[Tsukasa Hojo]/'] = const [
-      WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
     final scrapedTitles = <String>[];
-    WebDavLibrarySource.configureMetadataScraper((input) async {
+    RemoteLibrarySource.configureMetadataScraper((input) async {
       scrapedTitles.add(input.title);
       return const ComicMetaData(
         title: 'Cat Eye',
@@ -1700,8 +1879,8 @@ void main() {
       );
     });
 
-    final sync = await WebDavLibrarySource.synchronize();
-    final comics = await WebDavLibrarySource.loadComics(1);
+    final sync = await _synchronizeAndComplete();
+    final comics = await RemoteLibrarySource.loadComics(1);
     final written = jsonDecode(
       ops.writtenTexts['/manga/Cat Eye[Tsukasa Hojo]/metadata.json']!,
     );
@@ -1725,14 +1904,14 @@ void main() {
     'a later Bangumi connection scrapes an unchanged cached comic',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Book', isDirectory: true, eTag: 'v1'),
+        RemoteLibraryEntry(name: 'Book', isDirectory: true, eTag: 'v1'),
       ];
       ops.dirs['/manga/Book/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       var enabled = false;
       var scrapeCalls = 0;
-      WebDavLibrarySource.configureMetadataScraper((_) async {
+      RemoteLibrarySource.configureMetadataScraper((_) async {
         scrapeCalls++;
         return const ComicMetaData(
           title: 'Matched book',
@@ -1741,10 +1920,10 @@ void main() {
           bangumiSubjectId: 321,
         );
       }, isEnabled: () => enabled);
-      await WebDavLibrarySource.synchronize();
+      await _synchronizeAndComplete();
       enabled = true;
 
-      final sync = await WebDavLibrarySource.synchronize();
+      final sync = await _synchronizeAndComplete();
 
       expect(sync.success, isTrue);
       expect(scrapeCalls, 1);
@@ -1754,8 +1933,8 @@ void main() {
 
   test('existing metadata is never replaced by automatic scraping', () async {
     ops.dirs['/manga/Book/'] = const [
-      WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
-      WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
     ops.textFiles['/manga/Book/metadata.json'] = jsonEncode({
       'title': 'Existing title',
@@ -1764,7 +1943,7 @@ void main() {
       'chapters': null,
     });
     var scrapeCalls = 0;
-    WebDavLibrarySource.configureMetadataScraper((_) async {
+    RemoteLibrarySource.configureMetadataScraper((_) async {
       scrapeCalls++;
       return const ComicMetaData(
         title: 'Replacement',
@@ -1774,7 +1953,7 @@ void main() {
       );
     });
 
-    final details = await WebDavLibrarySource.loadComicInfo('Book');
+    final details = await RemoteLibrarySource.loadComicInfo('Book');
 
     expect(details.success, isTrue);
     expect(details.data.title, 'Existing title');
@@ -1784,9 +1963,9 @@ void main() {
 
   test('manual metadata writes preserve existing chapter ranges', () async {
     ops.dirs['/manga/Flat Book/'] = const [
-      WebDavLibraryEntry(name: 'metadata.JSON', isDirectory: false),
-      WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-      WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: 'metadata.JSON', isDirectory: false),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: '002.jpg', isDirectory: false),
     ];
     ops.textFiles['/manga/Flat Book/metadata.JSON'] = jsonEncode({
       'title': 'Old title',
@@ -1798,7 +1977,7 @@ void main() {
       ],
     });
 
-    await WebDavLibrarySource.writeMetadata(
+    await RemoteLibrarySource.writeMetadata(
       'Flat Book',
       const ComicMetaData(
         title: 'Bangumi title',
@@ -1821,7 +2000,7 @@ void main() {
       ],
       'bangumiSubjectId': 789,
     });
-    final details = await WebDavLibrarySource.loadComicInfo('Flat Book');
+    final details = await RemoteLibrarySource.loadComicInfo('Flat Book');
     expect(details.data.title, 'Bangumi title');
     expect(details.data.subTitle, isNull);
     expect(details.data.description, '');
@@ -1835,9 +2014,9 @@ void main() {
   test('manual metadata merge retries an ETag conflict', () async {
     const path = '/manga/Flat Book/metadata.json';
     ops.dirs['/manga/Flat Book/'] = const [
-      WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
-      WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-      WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: '002.jpg', isDirectory: false),
     ];
     ops.textFiles[path] = jsonEncode({
       'title': 'Old',
@@ -1863,7 +2042,7 @@ void main() {
       ops.textETags[path] = '"2"';
     };
 
-    await WebDavLibrarySource.writeMetadata(
+    await RemoteLibrarySource.writeMetadata(
       'Flat Book',
       const ComicMetaData(
         title: 'Selected subject',
@@ -1890,8 +2069,8 @@ void main() {
     const path = '/manga/Book/metadata.json';
     const modifiedAt = 1700000000000;
     ops.dirs['/manga/Book/'] = const [
-      WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
-      WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
     ops.textFiles[path] = jsonEncode({
       'title': 'Existing',
@@ -1902,7 +2081,7 @@ void main() {
     ops.textETags[path] = 'w/"1"';
     ops.textModifiedAt[path] = modifiedAt;
 
-    await WebDavLibrarySource.writeMetadata(
+    await RemoteLibrarySource.writeMetadata(
       'Book',
       const ComicMetaData(
         title: 'Replacement',
@@ -1921,8 +2100,8 @@ void main() {
     () async {
       const path = '/manga/Book/metadata.json';
       ops.dirs['/manga/Book/'] = const [
-        WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.textFiles[path] = jsonEncode({
         'title': 'Existing',
@@ -1933,7 +2112,7 @@ void main() {
       ops.textETags[path] = 'W/"1"';
 
       await expectLater(
-        WebDavLibrarySource.writeMetadata(
+        RemoteLibrarySource.writeMetadata(
           'Book',
           const ComicMetaData(
             title: 'Replacement',
@@ -1942,7 +2121,7 @@ void main() {
             bangumiSubjectId: 44,
           ),
         ),
-        throwsA(isA<WebDavUnsupportedException>()),
+        throwsA(isA<RemoteLibraryUnsupportedException>()),
       );
 
       expect(ops.writeRequests, isEmpty);
@@ -1952,9 +2131,9 @@ void main() {
   test('metadata merge salvages valid chapters from invalid fields', () async {
     const path = '/manga/Broken Book/metadata.json';
     ops.dirs['/manga/Broken Book/'] = const [
-      WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
-      WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-      WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: '002.jpg', isDirectory: false),
     ];
     ops.textFiles[path] = jsonEncode({
       'title': 7,
@@ -1965,7 +2144,7 @@ void main() {
       ],
     });
 
-    await WebDavLibrarySource.writeMetadata(
+    await RemoteLibrarySource.writeMetadata(
       'Broken Book',
       const ComicMetaData(
         title: 'Recovered',
@@ -1986,8 +2165,8 @@ void main() {
   test('unsafe validatorless updates are retained as pending', () async {
     const path = '/manga/Book/metadata.json';
     ops.dirs['/manga/Book/'] = const [
-      WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
-      WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
     ops.textFiles[path] = jsonEncode({
       'title': 'Existing',
@@ -1998,7 +2177,7 @@ void main() {
     ops.validatorlessPaths.add(path);
 
     await expectLater(
-      WebDavLibrarySource.writeMetadata(
+      RemoteLibrarySource.writeMetadata(
         'Book',
         const ComicMetaData(
           title: 'Replacement',
@@ -2007,14 +2186,14 @@ void main() {
           bangumiSubjectId: 44,
         ),
       ),
-      throwsA(isA<WebDavUnsupportedException>()),
+      throwsA(isA<RemoteLibraryUnsupportedException>()),
     );
 
-    final pending = WebDavLibrarySource.metadataPendingStatuses.single;
+    final pending = RemoteLibrarySource.metadataPendingStatuses.single;
     expect(pending.comicId, 'Book');
     expect(pending.subjectId, 44);
     expect(pending.attempts, 1);
-    expect(pending.failure, WebDavMetadataPendingFailure.unsupported);
+    expect(pending.failure, RemoteLibraryMetadataPendingFailure.unsupported);
     expect(ops.writtenTexts, isEmpty);
   });
 
@@ -2023,16 +2202,16 @@ void main() {
     () async {
       const path = '/manga/Book/metadata.json';
       ops.dirs['/manga/Book/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.beforeWrite = (writtenPath, writeNumber) {
         if (writtenPath == path && writeNumber == 1) {
-          throw WebDavTransientException(path);
+          throw RemoteLibraryTransientException(path);
         }
       };
 
       await expectLater(
-        WebDavLibrarySource.writeMetadata(
+        RemoteLibrarySource.writeMetadata(
           'Book',
           const ComicMetaData(
             title: 'Book',
@@ -2041,17 +2220,17 @@ void main() {
             bangumiSubjectId: 45,
           ),
         ),
-        throwsA(isA<WebDavTransientException>()),
+        throwsA(isA<RemoteLibraryTransientException>()),
       );
       expect(
-        WebDavLibrarySource.metadataPendingStatuses.single.failure,
-        WebDavMetadataPendingFailure.transient,
+        RemoteLibrarySource.metadataPendingStatuses.single.failure,
+        RemoteLibraryMetadataPendingFailure.transient,
       );
 
       ops.beforeWrite = null;
-      await WebDavLibrarySource.retryPendingMetadata(force: true);
+      await RemoteLibrarySource.retryPendingMetadata(force: true);
 
-      expect(WebDavLibrarySource.metadataPendingStatuses, isEmpty);
+      expect(RemoteLibrarySource.metadataPendingStatuses, isEmpty);
       expect(ops.writtenTexts, contains(path));
     },
   );
@@ -2060,12 +2239,12 @@ void main() {
     'metadata write guard rejects a stale binding without queuing it',
     () async {
       ops.dirs['/manga/Book/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
-      WebDavLibrarySource.configureMetadataWriteGuard((_, _, _) => false);
+      RemoteLibrarySource.configureMetadataWriteGuard((_, _, _) => false);
 
       await expectLater(
-        WebDavLibrarySource.writeMetadata(
+        RemoteLibrarySource.writeMetadata(
           'Book',
           const ComicMetaData(
             title: 'Book',
@@ -2074,10 +2253,10 @@ void main() {
             bangumiSubjectId: 46,
           ),
         ),
-        throwsA(isA<WebDavMetadataWriteRejectedException>()),
+        throwsA(isA<RemoteLibraryMetadataWriteRejectedException>()),
       );
 
-      expect(WebDavLibrarySource.metadataPendingStatuses, isEmpty);
+      expect(RemoteLibrarySource.metadataPendingStatuses, isEmpty);
       expect(ops.writeRequests, isEmpty);
     },
   );
@@ -2086,27 +2265,27 @@ void main() {
     'nested unmarked comic directories are discovered conservatively',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Category', isDirectory: true),
+        RemoteLibraryEntry(name: 'Category', isDirectory: true),
       ];
       ops.dirs['/manga/Category/'] = const [
-        WebDavLibraryEntry(name: 'Author', isDirectory: true),
+        RemoteLibraryEntry(name: 'Author', isDirectory: true),
       ];
       ops.dirs['/manga/Category/Author/'] = const [
-        WebDavLibraryEntry(name: 'Book', isDirectory: true),
+        RemoteLibraryEntry(name: 'Book', isDirectory: true),
       ];
       ops.dirs['/manga/Category/Author/Book/'] = const [
-        WebDavLibraryEntry(name: '第01卷', isDirectory: true),
-        WebDavLibraryEntry(name: '第02卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第01卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第02卷', isDirectory: true),
       ];
       ops.dirs['/manga/Category/Author/Book/第01卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/Category/Author/Book/第02卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
 
-      await WebDavLibrarySource.synchronize();
-      final comics = await WebDavLibrarySource.loadComics(1);
+      await _synchronizeAndComplete();
+      final comics = await RemoteLibrarySource.loadComics(1);
 
       expect(comics.data.map((comic) => comic.id), ['Category/Author/Book']);
     },
@@ -2116,27 +2295,27 @@ void main() {
     'chapters with non-standard or Chinese volume names are treated as chapters instead of individual comics',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: '猫之眼', isDirectory: true),
+        RemoteLibraryEntry(name: '猫之眼', isDirectory: true),
       ];
       ops.dirs['/manga/猫之眼/'] = const [
-        WebDavLibraryEntry(name: '第一卷', isDirectory: true),
-        WebDavLibraryEntry(name: '第二卷', isDirectory: true),
-        WebDavLibraryEntry(name: '番外合集', isDirectory: true),
+        RemoteLibraryEntry(name: '第一卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第二卷', isDirectory: true),
+        RemoteLibraryEntry(name: '番外合集', isDirectory: true),
       ];
       ops.dirs['/manga/猫之眼/第一卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '002.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/猫之眼/第二卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/猫之眼/番外合集/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
 
-      await WebDavLibrarySource.synchronize();
-      final comics = await WebDavLibrarySource.loadComics(1);
-      final details = await WebDavLibrarySource.loadComicInfo('猫之眼');
+      await _synchronizeAndComplete();
+      final comics = await RemoteLibrarySource.loadComics(1);
+      final details = await RemoteLibrarySource.loadComicInfo('猫之眼');
 
       expect(comics.data.map((comic) => comic.id), ['猫之眼']);
       expect(details.data.chapters!.allChapters, {
@@ -2151,35 +2330,35 @@ void main() {
     'multi-level category directory discovers child comics without classifying category as comic',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: '少年漫画', isDirectory: true),
+        RemoteLibraryEntry(name: '少年漫画', isDirectory: true),
       ];
       ops.dirs['/manga/少年漫画/'] = const [
-        WebDavLibraryEntry(name: '猫之眼', isDirectory: true),
-        WebDavLibraryEntry(name: '城市猎人', isDirectory: true),
+        RemoteLibraryEntry(name: '猫之眼', isDirectory: true),
+        RemoteLibraryEntry(name: '城市猎人', isDirectory: true),
       ];
       ops.dirs['/manga/少年漫画/猫之眼/'] = const [
-        WebDavLibraryEntry(name: '第一卷', isDirectory: true),
-        WebDavLibraryEntry(name: '第二卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第一卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第二卷', isDirectory: true),
       ];
       ops.dirs['/manga/少年漫画/猫之眼/第一卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/少年漫画/猫之眼/第二卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/少年漫画/城市猎人/'] = const [
-        WebDavLibraryEntry(name: '第一卷', isDirectory: true),
-        WebDavLibraryEntry(name: '第二卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第一卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第二卷', isDirectory: true),
       ];
       ops.dirs['/manga/少年漫画/城市猎人/第一卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/少年漫画/城市猎人/第二卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
 
-      await WebDavLibrarySource.synchronize();
-      final comics = await WebDavLibrarySource.loadComics(1);
+      await _synchronizeAndComplete();
+      final comics = await RemoteLibrarySource.loadComics(1);
       expect(comics.data.map((comic) => comic.id), ['少年漫画/城市猎人', '少年漫画/猫之眼']);
     },
   );
@@ -2188,23 +2367,23 @@ void main() {
     'empty child directories do not prevent parent comic from being discovered',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: '猫之眼', isDirectory: true),
+        RemoteLibraryEntry(name: '猫之眼', isDirectory: true),
       ];
       ops.dirs['/manga/猫之眼/'] = const [
-        WebDavLibraryEntry(name: '第一卷', isDirectory: true),
-        WebDavLibraryEntry(name: '第二卷', isDirectory: true),
-        WebDavLibraryEntry(name: '临时文件', isDirectory: true),
+        RemoteLibraryEntry(name: '第一卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第二卷', isDirectory: true),
+        RemoteLibraryEntry(name: '临时文件', isDirectory: true),
       ];
       ops.dirs['/manga/猫之眼/第一卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/猫之眼/第二卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/猫之眼/临时文件/'] = const [];
 
-      await WebDavLibrarySource.synchronize();
-      final comics = await WebDavLibrarySource.loadComics(1);
+      await _synchronizeAndComplete();
+      final comics = await RemoteLibrarySource.loadComics(1);
       expect(comics.data.map((comic) => comic.id), ['猫之眼']);
     },
   );
@@ -2213,23 +2392,23 @@ void main() {
     'flat category containing multiple leaf comic books is not merged into one comic',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: '少年漫画', isDirectory: true),
+        RemoteLibraryEntry(name: '少年漫画', isDirectory: true),
       ];
       ops.dirs['/manga/少年漫画/'] = const [
-        WebDavLibraryEntry(name: '猫之眼', isDirectory: true),
-        WebDavLibraryEntry(name: '城市猎人', isDirectory: true),
+        RemoteLibraryEntry(name: '猫之眼', isDirectory: true),
+        RemoteLibraryEntry(name: '城市猎人', isDirectory: true),
       ];
       ops.dirs['/manga/少年漫画/猫之眼/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '002.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/少年漫画/城市猎人/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '002.jpg', isDirectory: false),
       ];
 
-      await WebDavLibrarySource.synchronize();
-      final comics = await WebDavLibrarySource.loadComics(1);
+      await _synchronizeAndComplete();
+      final comics = await RemoteLibrarySource.loadComics(1);
       expect(comics.data.map((comic) => comic.id), ['少年漫画/城市猎人', '少年漫画/猫之眼']);
     },
   );
@@ -2238,23 +2417,23 @@ void main() {
     'child metadata takes precedence over chapter-like directory names',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Category', isDirectory: true),
+        RemoteLibraryEntry(name: 'Category', isDirectory: true),
       ];
       ops.dirs['/manga/Category/'] = const [
-        WebDavLibraryEntry(name: '01', isDirectory: true),
-        WebDavLibraryEntry(name: '02', isDirectory: true),
+        RemoteLibraryEntry(name: '01', isDirectory: true),
+        RemoteLibraryEntry(name: '02', isDirectory: true),
       ];
       ops.dirs['/manga/Category/01/'] = const [
-        WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/Category/02/'] = const [
-        WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
 
-      await WebDavLibrarySource.synchronize();
-      final comics = await WebDavLibrarySource.loadComics(1);
+      await _synchronizeAndComplete();
+      final comics = await RemoteLibrarySource.loadComics(1);
       expect(comics.data.map((comic) => comic.id), [
         'Category/01',
         'Category/02',
@@ -2266,23 +2445,23 @@ void main() {
     'empty child directory is excluded from chapter list and details',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: '猫之眼', isDirectory: true),
+        RemoteLibraryEntry(name: '猫之眼', isDirectory: true),
       ];
       ops.dirs['/manga/猫之眼/'] = const [
-        WebDavLibraryEntry(name: '第一卷', isDirectory: true),
-        WebDavLibraryEntry(name: '第二卷', isDirectory: true),
-        WebDavLibraryEntry(name: '临时文件', isDirectory: true),
+        RemoteLibraryEntry(name: '第一卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第二卷', isDirectory: true),
+        RemoteLibraryEntry(name: '临时文件', isDirectory: true),
       ];
       ops.dirs['/manga/猫之眼/第一卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/猫之眼/第二卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/猫之眼/临时文件/'] = const [];
 
-      await WebDavLibrarySource.synchronize();
-      final details = await WebDavLibrarySource.loadComicInfo('猫之眼');
+      await _synchronizeAndComplete();
+      final details = await RemoteLibrarySource.loadComicInfo('猫之眼');
       expect(details.data.chapters!.allChapters.keys, ['第一卷', '第二卷']);
     },
   );
@@ -2291,20 +2470,20 @@ void main() {
     'transient child directory read failure does not guess category as comic',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Category', isDirectory: true),
+        RemoteLibraryEntry(name: 'Category', isDirectory: true),
       ];
       ops.dirs['/manga/Category/'] = const [
-        WebDavLibraryEntry(name: 'Book A', isDirectory: true),
-        WebDavLibraryEntry(name: 'Book B', isDirectory: true),
+        RemoteLibraryEntry(name: 'Book A', isDirectory: true),
+        RemoteLibraryEntry(name: 'Book B', isDirectory: true),
       ];
       ops.dirs['/manga/Category/Book A/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.errors['/manga/Category/Book B/'] = StateError(
         'transient network failure',
       );
 
-      final sync = await WebDavLibrarySource.synchronize();
+      final sync = await _synchronizeAndComplete();
       expect(sync.success, isFalse);
     },
   );
@@ -2313,95 +2492,104 @@ void main() {
     'discovery depth limit fails closed without classifying ancestor as comic',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'L1', isDirectory: true),
+        RemoteLibraryEntry(name: 'L1', isDirectory: true),
       ];
       var current = '/manga/L1/';
       for (var index = 2; index <= 9; index++) {
         ops.dirs[current] = [
-          WebDavLibraryEntry(name: 'L$index', isDirectory: true),
+          RemoteLibraryEntry(name: 'L$index', isDirectory: true),
         ];
         current = '${current}L$index/';
       }
       ops.dirs[current] = const [
-        WebDavLibraryEntry(name: 'Book', isDirectory: true),
+        RemoteLibraryEntry(name: 'Book', isDirectory: true),
       ];
       ops.dirs['${current}Book/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
 
-      final sync = await WebDavLibrarySource.synchronize();
+      final sync = await _synchronizeAndComplete();
       expect(sync.success, isFalse);
 
-      final comics = await WebDavLibrarySource.loadComics(1);
-      expect(comics.data.map((c) => c.id), isNot(contains('L1')));
+      final comics = await RemoteLibrarySource.loadComics(1);
+      expect(comics.error, isTrue);
+      expect(
+        await RemoteLibraryRepository.instance.count(
+          RemoteLibraryConfig.fromSettings().cacheKey,
+        ),
+        0,
+      );
     },
   );
 
-  test(
-    'discovery directory limit fails without committing a partial index',
-    () async {
-      WebDavLibrarySource.discoveryDirectoryLimitOverride = 3;
-      addTearDown(() {
-        WebDavLibrarySource.discoveryDirectoryLimitOverride = null;
-      });
+  test('发现触及目录上限后保留已确认作品并报告失败', () async {
+    RemoteLibrarySource.discoveryDirectoryLimitOverride = 3;
+    addTearDown(() {
+      RemoteLibrarySource.discoveryDirectoryLimitOverride = null;
+    });
 
-      ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'A', isDirectory: true),
-        WebDavLibraryEntry(name: 'B', isDirectory: true),
-        WebDavLibraryEntry(name: 'C', isDirectory: true),
-        WebDavLibraryEntry(name: 'D', isDirectory: true),
-      ];
-      ops.dirs['/manga/A/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-      ];
-      ops.dirs['/manga/B/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-      ];
-      ops.dirs['/manga/C/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-      ];
-      ops.dirs['/manga/D/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-      ];
+    ops.dirs['/manga/'] = const [
+      RemoteLibraryEntry(name: 'A', isDirectory: true),
+      RemoteLibraryEntry(name: 'B', isDirectory: true),
+      RemoteLibraryEntry(name: 'C', isDirectory: true),
+      RemoteLibraryEntry(name: 'D', isDirectory: true),
+    ];
+    ops.dirs['/manga/A/'] = const [
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+    ];
+    ops.dirs['/manga/B/'] = const [
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+    ];
+    ops.dirs['/manga/C/'] = const [
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+    ];
+    ops.dirs['/manga/D/'] = const [
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+    ];
 
-      final sync = await WebDavLibrarySource.synchronize();
-      expect(sync.success, isFalse);
+    final sync = await _synchronizeAndComplete();
+    expect(sync.success, isFalse);
 
-      final comics = await WebDavLibrarySource.loadComics(1);
-      expect(comics.data, isEmpty);
-    },
-  );
+    final comics = await RemoteLibrarySource.loadComics(1);
+    expect(comics.data.map((comic) => comic.id), ['A', 'B', 'C']);
+    expect(
+      await RemoteLibraryRepository.instance.lastSuccessfulSync(
+        RemoteLibraryConfig.fromSettings().cacheKey,
+      ),
+      0,
+    );
+  });
 
   test(
     'top-level directory read failure preserves the previous successful index',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Category', isDirectory: true),
+        RemoteLibraryEntry(name: 'Category', isDirectory: true),
       ];
       ops.dirs['/manga/Category/'] = const [
-        WebDavLibraryEntry(name: 'Book A', isDirectory: true),
-        WebDavLibraryEntry(name: 'Book B', isDirectory: true),
+        RemoteLibraryEntry(name: 'Book A', isDirectory: true),
+        RemoteLibraryEntry(name: 'Book B', isDirectory: true),
       ];
       ops.dirs['/manga/Category/Book A/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/Category/Book B/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
 
-      final firstSync = await WebDavLibrarySource.synchronize();
+      final firstSync = await _synchronizeAndComplete();
       expect(firstSync.success, isTrue);
-      final firstComics = await WebDavLibrarySource.loadComics(1);
+      final firstComics = await RemoteLibrarySource.loadComics(1);
       expect(firstComics.data.map((c) => c.id), [
         'Category/Book A',
         'Category/Book B',
       ]);
 
       ops.errors['/manga/Category/'] = StateError('temporary connection error');
-      final secondSync = await WebDavLibrarySource.synchronize(force: true);
+      final secondSync = await _synchronizeAndComplete(force: true);
       expect(secondSync.success, isFalse);
 
-      final secondComics = await WebDavLibrarySource.loadComics(1);
+      final secondComics = await RemoteLibrarySource.loadComics(1);
       expect(secondComics.data.map((c) => c.id), [
         'Category/Book A',
         'Category/Book B',
@@ -2413,25 +2601,25 @@ void main() {
     'metadata comic excludes empty child directories from chapters',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Comic', isDirectory: true),
+        RemoteLibraryEntry(name: 'Comic', isDirectory: true),
       ];
       ops.dirs['/manga/Comic/'] = const [
-        WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
-        WebDavLibraryEntry(name: '第一卷', isDirectory: true),
-        WebDavLibraryEntry(name: '临时文件', isDirectory: true),
+        RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
+        RemoteLibraryEntry(name: '第一卷', isDirectory: true),
+        RemoteLibraryEntry(name: '临时文件', isDirectory: true),
       ];
       ops.dirs['/manga/Comic/第一卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/Comic/临时文件/'] = const [];
       ops.textFiles['/manga/Comic/metadata.json'] = jsonEncode({
         'title': 'Comic',
       });
 
-      final sync = await WebDavLibrarySource.synchronize();
+      final sync = await _synchronizeAndComplete();
       expect(sync.success, isTrue);
 
-      final details = await WebDavLibrarySource.loadComicInfo('Comic');
+      final details = await RemoteLibrarySource.loadComicInfo('Comic');
       expect(details.data.chapters!.allChapters.keys, ['第一卷']);
     },
   );
@@ -2440,22 +2628,22 @@ void main() {
     'root-image comic excludes empty child directories from chapters',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Comic', isDirectory: true),
+        RemoteLibraryEntry(name: 'Comic', isDirectory: true),
       ];
       ops.dirs['/manga/Comic/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: 'Chapter 1', isDirectory: true),
-        WebDavLibraryEntry(name: 'temp', isDirectory: true),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: 'Chapter 1', isDirectory: true),
+        RemoteLibraryEntry(name: 'temp', isDirectory: true),
       ];
       ops.dirs['/manga/Comic/Chapter 1/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/Comic/temp/'] = const [];
 
-      final sync = await WebDavLibrarySource.synchronize();
+      final sync = await _synchronizeAndComplete();
       expect(sync.success, isTrue);
 
-      final details = await WebDavLibrarySource.loadComicInfo('Comic');
+      final details = await RemoteLibrarySource.loadComicInfo('Comic');
       expect(details.data.chapters!.allChapters.keys, [
         'Chapter 1',
         '__root__',
@@ -2465,23 +2653,23 @@ void main() {
 
   test('empty child cover is not used as comic cover', () async {
     ops.dirs['/manga/'] = const [
-      WebDavLibraryEntry(name: 'Comic', isDirectory: true),
+      RemoteLibraryEntry(name: 'Comic', isDirectory: true),
     ];
     ops.dirs['/manga/Comic/'] = const [
-      WebDavLibraryEntry(name: '第一卷', isDirectory: true),
-      WebDavLibraryEntry(name: '临时文件', isDirectory: true),
+      RemoteLibraryEntry(name: '第一卷', isDirectory: true),
+      RemoteLibraryEntry(name: '临时文件', isDirectory: true),
     ];
     ops.dirs['/manga/Comic/第一卷/'] = const [
-      WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
     ops.dirs['/manga/Comic/临时文件/'] = const [
-      WebDavLibraryEntry(name: 'cover.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: 'cover.jpg', isDirectory: false),
     ];
 
-    final sync = await WebDavLibrarySource.synchronize();
+    final sync = await _synchronizeAndComplete();
     expect(sync.success, isTrue);
 
-    final details = await WebDavLibrarySource.loadComicInfo('Comic');
+    final details = await RemoteLibrarySource.loadComicInfo('Comic');
     expect(details.data.cover, '/manga/Comic/第一卷/001.jpg');
     expect(details.data.chapters!.allChapters.keys, ['第一卷']);
   });
@@ -2490,21 +2678,21 @@ void main() {
     'flat category scraping targets leaf comics instead of category',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Category', isDirectory: true),
+        RemoteLibraryEntry(name: 'Category', isDirectory: true),
       ];
       ops.dirs['/manga/Category/'] = const [
-        WebDavLibraryEntry(name: 'Book A', isDirectory: true),
-        WebDavLibraryEntry(name: 'Book B', isDirectory: true),
+        RemoteLibraryEntry(name: 'Book A', isDirectory: true),
+        RemoteLibraryEntry(name: 'Book B', isDirectory: true),
       ];
       ops.dirs['/manga/Category/Book A/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/Category/Book B/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
 
       final scrapedTitles = <String>[];
-      WebDavLibrarySource.configureMetadataScraper((input) async {
+      RemoteLibrarySource.configureMetadataScraper((input) async {
         scrapedTitles.add(input.title);
         return ComicMetaData(
           title: input.title,
@@ -2514,7 +2702,7 @@ void main() {
         );
       });
 
-      final sync = await WebDavLibrarySource.synchronize();
+      final sync = await _synchronizeAndComplete();
       expect(sync.success, isTrue);
       expect(scrapedTitles, ['Book A', 'Book B']);
       expect(scrapedTitles, isNot(contains('Category')));
@@ -2525,20 +2713,20 @@ void main() {
     'automatic scraping targets only comic root and does not scrape or write to chapter folders',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Cat Eye[Tsukasa Hojo]', isDirectory: true),
+        RemoteLibraryEntry(name: 'Cat Eye[Tsukasa Hojo]', isDirectory: true),
       ];
       ops.dirs['/manga/Cat Eye[Tsukasa Hojo]/'] = const [
-        WebDavLibraryEntry(name: '第一卷', isDirectory: true),
-        WebDavLibraryEntry(name: '第二卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第一卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第二卷', isDirectory: true),
       ];
       ops.dirs['/manga/Cat Eye[Tsukasa Hojo]/第一卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/Cat Eye[Tsukasa Hojo]/第二卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       final scrapedTitles = <String>[];
-      WebDavLibrarySource.configureMetadataScraper((input) async {
+      RemoteLibrarySource.configureMetadataScraper((input) async {
         scrapedTitles.add(input.title);
         return const ComicMetaData(
           title: 'Cat Eye',
@@ -2549,8 +2737,8 @@ void main() {
         );
       });
 
-      final sync = await WebDavLibrarySource.synchronize();
-      final comics = await WebDavLibrarySource.loadComics(1);
+      final sync = await _synchronizeAndComplete();
+      final comics = await RemoteLibrarySource.loadComics(1);
 
       expect(sync.success, isTrue);
       expect(scrapedTitles, ['Cat Eye[Tsukasa Hojo]']);
@@ -2564,15 +2752,15 @@ void main() {
   test(
     'synchronization evicts stale chapter comics cached by previous buggy versions',
     () async {
-      final config = WebDavLibraryConfig.fromSettings();
-      final cache = WebDavLibraryCache.instance;
-      cache.replaceDirectoryIndex(config.cacheKey, const [
-        WebDavLibraryRemoteDirectory(id: 'Cat Eye/第一卷', sortIndex: 0),
-        WebDavLibraryRemoteDirectory(id: 'Cat Eye/第二卷', sortIndex: 1),
-      ]);
-      cache.upsertSnapshot(
+      final config = RemoteLibraryConfig.fromSettings();
+      final cache = RemoteLibraryRepository.instance;
+      (await cache.replaceDirectoryIndex(config.cacheKey, const [
+        RemoteLibraryRemoteDirectory(id: 'Cat Eye/第一卷', sortIndex: 0),
+        RemoteLibraryRemoteDirectory(id: 'Cat Eye/第二卷', sortIndex: 1),
+      ]));
+      (await cache.upsertSnapshot(
         config.cacheKey,
-        const WebDavLibraryCachedComic(
+        const RemoteLibraryCachedComic(
           id: 'Cat Eye/第一卷',
           sortIndex: 0,
           title: '第一卷',
@@ -2591,29 +2779,29 @@ void main() {
           remoteETag: 'v1',
           remoteModifiedAt: null,
         ),
-      );
+      ));
 
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Cat Eye', isDirectory: true),
+        RemoteLibraryEntry(name: 'Cat Eye', isDirectory: true),
       ];
       ops.dirs['/manga/Cat Eye/'] = const [
-        WebDavLibraryEntry(name: '第一卷', isDirectory: true),
-        WebDavLibraryEntry(name: '第二卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第一卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第二卷', isDirectory: true),
       ];
       ops.dirs['/manga/Cat Eye/第一卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/Cat Eye/第二卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
 
-      final sync = await WebDavLibrarySource.synchronize();
-      final comics = await WebDavLibrarySource.loadComics(1);
+      final sync = await _synchronizeAndComplete();
+      final comics = await RemoteLibrarySource.loadComics(1);
 
       expect(sync.success, isTrue);
       expect(comics.data.map((c) => c.id), ['Cat Eye']);
-      expect(cache.find(config.cacheKey, 'Cat Eye/第一卷'), isNull);
-      expect(cache.find(config.cacheKey, 'Cat Eye/第二卷'), isNull);
+      expect((await cache.find(config.cacheKey, 'Cat Eye/第一卷')), isNull);
+      expect((await cache.find(config.cacheKey, 'Cat Eye/第二卷')), isNull);
     },
   );
 
@@ -2621,16 +2809,16 @@ void main() {
     'single volume directory such as 全1卷 is recognized as chapter instead of comic',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Cat Eye', isDirectory: true),
+        RemoteLibraryEntry(name: 'Cat Eye', isDirectory: true),
       ];
       ops.dirs['/manga/Cat Eye/'] = const [
-        WebDavLibraryEntry(name: '全1卷', isDirectory: true),
+        RemoteLibraryEntry(name: '全1卷', isDirectory: true),
       ];
       ops.dirs['/manga/Cat Eye/全1卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       final scrapedTitles = <String>[];
-      WebDavLibrarySource.configureMetadataScraper((input) async {
+      RemoteLibrarySource.configureMetadataScraper((input) async {
         scrapedTitles.add(input.title);
         return const ComicMetaData(
           title: 'Cat Eye',
@@ -2640,9 +2828,9 @@ void main() {
         );
       });
 
-      final sync = await WebDavLibrarySource.synchronize();
-      final comics = await WebDavLibrarySource.loadComics(1);
-      final details = await WebDavLibrarySource.loadComicInfo('Cat Eye');
+      final sync = await _synchronizeAndComplete();
+      final comics = await RemoteLibrarySource.loadComics(1);
+      final details = await RemoteLibrarySource.loadComicInfo('Cat Eye');
 
       expect(sync.success, isTrue);
       expect(comics.data.map((c) => c.id), ['Cat Eye']);
@@ -2662,30 +2850,30 @@ void main() {
     () async {
       const book = '猫之眼 完全珍藏版 作者：[北条司] 语言：[Chinese]';
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: book, isDirectory: true),
+        RemoteLibraryEntry(name: book, isDirectory: true),
       ];
       ops.dirs['/manga/$book/'] = const [
-        WebDavLibraryEntry(name: 'cover.png', isDirectory: false),
-        WebDavLibraryEntry(
+        RemoteLibraryEntry(name: 'cover.png', isDirectory: false),
+        RemoteLibraryEntry(
           name: '$book.zip',
           isDirectory: false,
           size: 4096,
           eTag: 'zip-v1',
         ),
-        WebDavLibraryEntry(name: '全1卷', isDirectory: true),
+        RemoteLibraryEntry(name: '全1卷', isDirectory: true),
       ];
       ops.dirs['/manga/$book/全1卷/'] = [
-        const WebDavLibraryEntry(name: 'cover.png', isDirectory: false),
+        const RemoteLibraryEntry(name: 'cover.png', isDirectory: false),
         for (var page = 158; page >= 1; page--)
-          WebDavLibraryEntry(
+          RemoteLibraryEntry(
             name: '${page.toString().padLeft(3, '0')}.jpg',
             isDirectory: false,
           ),
       ];
 
-      final sync = await WebDavLibrarySource.synchronize();
+      final sync = await _synchronizeAndComplete();
       expect(sync.success, isTrue, reason: sync.errorMessage);
-      final comics = await WebDavLibrarySource.loadComics(1);
+      final comics = await RemoteLibrarySource.loadComics(1);
       expect(comics.success, isTrue, reason: comics.errorMessage);
       expect(comics.data.map((comic) => comic.id), [book, '$book/$book.zip']);
       final directoryComic = comics.data.firstWhere(
@@ -2698,14 +2886,14 @@ void main() {
         isNot(contains('$book/全1卷')),
       );
 
-      final details = await WebDavLibrarySource.loadComicInfo(book);
+      final details = await RemoteLibrarySource.loadComicInfo(book);
       expect(details.success, isTrue, reason: details.errorMessage);
       expect(details.data.title, book);
       expect(details.data.cover, '/manga/$book/cover.png');
       expect(details.data.chapters!.allChapters, {'全1卷': '全1卷'});
       expect(details.data.maxPage, 158);
       final readsBeforePages = ops.readPaths.length;
-      final pages = await WebDavLibrarySource.loadComicPages(book, '全1卷');
+      final pages = await RemoteLibrarySource.loadComicPages(book, '全1卷');
       expect(pages.success, isTrue, reason: pages.errorMessage);
       expect(pages.data, [
         for (var page = 1; page <= 158; page++)
@@ -2713,12 +2901,10 @@ void main() {
       ]);
       expect(ops.readPaths, hasLength(readsBeforePages));
       final cachedArchive =
-          WebDavLibraryCache.instance
-                  .find(
-                    WebDavLibraryConfig.fromSettings().cacheKey,
-                    '$book/$book.zip',
-                  )!
-                  .snapshot!['archive']
+          (await RemoteLibraryRepository.instance.find(
+                RemoteLibraryConfig.fromSettings().cacheKey,
+                '$book/$book.zip',
+              ))!.snapshot!['archive']
               as Map;
       expect(cachedArchive['index'], isNull);
     },
@@ -2728,41 +2914,41 @@ void main() {
     'Chinese chapter names stay under their book beside real and ZIP-only categories',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: '猫之眼', isDirectory: true),
-        WebDavLibraryEntry(name: '少年漫画', isDirectory: true),
-        WebDavLibraryEntry(name: '压缩包分类', isDirectory: true),
+        RemoteLibraryEntry(name: '猫之眼', isDirectory: true),
+        RemoteLibraryEntry(name: '少年漫画', isDirectory: true),
+        RemoteLibraryEntry(name: '压缩包分类', isDirectory: true),
       ];
       ops.dirs['/manga/猫之眼/'] = const [
-        WebDavLibraryEntry(name: 'cover.png', isDirectory: false),
-        WebDavLibraryEntry(name: '第一卷', isDirectory: true),
-        WebDavLibraryEntry(name: '第二卷', isDirectory: true),
-        WebDavLibraryEntry(name: '番外合集', isDirectory: true),
-        WebDavLibraryEntry(name: '猫之眼.zip', isDirectory: false, size: 4096),
+        RemoteLibraryEntry(name: 'cover.png', isDirectory: false),
+        RemoteLibraryEntry(name: '第一卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第二卷', isDirectory: true),
+        RemoteLibraryEntry(name: '番外合集', isDirectory: true),
+        RemoteLibraryEntry(name: '猫之眼.zip', isDirectory: false, size: 4096),
       ];
       for (final chapter in ['第一卷', '第二卷', '番外合集']) {
         ops.dirs['/manga/猫之眼/$chapter/'] = const [
-          WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-          WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
+          RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+          RemoteLibraryEntry(name: '002.jpg', isDirectory: false),
         ];
       }
       ops.dirs['/manga/少年漫画/'] = const [
-        WebDavLibraryEntry(name: '城市猎人', isDirectory: true),
-        WebDavLibraryEntry(name: '平面漫画', isDirectory: true),
-        WebDavLibraryEntry(name: '旁边的漫画.zip', isDirectory: false, size: 4096),
+        RemoteLibraryEntry(name: '城市猎人', isDirectory: true),
+        RemoteLibraryEntry(name: '平面漫画', isDirectory: true),
+        RemoteLibraryEntry(name: '旁边的漫画.zip', isDirectory: false, size: 4096),
       ];
       for (final title in ['城市猎人', '平面漫画']) {
         ops.dirs['/manga/少年漫画/$title/'] = const [
-          WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+          RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
         ];
       }
       ops.dirs['/manga/压缩包分类/'] = const [
-        WebDavLibraryEntry(name: 'A.zip', isDirectory: false, size: 4096),
-        WebDavLibraryEntry(name: 'B.cbz', isDirectory: false, size: 4096),
+        RemoteLibraryEntry(name: 'A.zip', isDirectory: false, size: 4096),
+        RemoteLibraryEntry(name: 'B.cbz', isDirectory: false, size: 4096),
       ];
 
-      final sync = await WebDavLibrarySource.synchronize();
+      final sync = await _synchronizeAndComplete();
       expect(sync.success, isTrue, reason: sync.errorMessage);
-      final comics = await WebDavLibrarySource.loadComics(1);
+      final comics = await RemoteLibrarySource.loadComics(1);
       expect(comics.success, isTrue, reason: comics.errorMessage);
       expect(
         comics.data.map((comic) => comic.id),
@@ -2776,7 +2962,7 @@ void main() {
           '压缩包分类/B.cbz',
         ]),
       );
-      final details = await WebDavLibrarySource.loadComicInfo('猫之眼');
+      final details = await RemoteLibrarySource.loadComicInfo('猫之眼');
       expect(details.success, isTrue, reason: details.errorMessage);
       expect(details.data.chapters!.allChapters, {
         '第一卷': '第一卷',
@@ -2791,30 +2977,30 @@ void main() {
     'a ZIP inside a chapter does not promote that chapter to an independent image comic',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Book', isDirectory: true),
+        RemoteLibraryEntry(name: 'Book', isDirectory: true),
       ];
       ops.dirs['/manga/Book/'] = const [
-        WebDavLibraryEntry(name: 'cover.png', isDirectory: false),
-        WebDavLibraryEntry(name: '第一卷', isDirectory: true),
-        WebDavLibraryEntry(name: '第二卷', isDirectory: true),
+        RemoteLibraryEntry(name: 'cover.png', isDirectory: false),
+        RemoteLibraryEntry(name: '第一卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第二卷', isDirectory: true),
       ];
       ops.dirs['/manga/Book/第一卷/'] = const [
-        WebDavLibraryEntry(name: '第一卷.zip', isDirectory: false, size: 4096),
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '第一卷.zip', isDirectory: false, size: 4096),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '002.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/Book/第二卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
 
-      final sync = await WebDavLibrarySource.synchronize();
+      final sync = await _synchronizeAndComplete();
       expect(sync.success, isTrue, reason: sync.errorMessage);
-      final comics = await WebDavLibrarySource.loadComics(1);
+      final comics = await RemoteLibrarySource.loadComics(1);
       expect(comics.data.map((comic) => comic.id), [
         'Book',
         'Book/第一卷/第一卷.zip',
       ]);
-      final details = await WebDavLibrarySource.loadComicInfo('Book');
+      final details = await RemoteLibrarySource.loadComicInfo('Book');
       expect(details.success, isTrue, reason: details.errorMessage);
       expect(details.data.chapters!.allChapters, {'第一卷': '第一卷', '第二卷': '第二卷'});
       expect(details.data.maxPage, 3);
@@ -2825,24 +3011,24 @@ void main() {
     'root images and a ZIP produce independent comics without counting the archive as a page',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Book', isDirectory: true),
+        RemoteLibraryEntry(name: 'Book', isDirectory: true),
       ];
       ops.dirs['/manga/Book/'] = const [
-        WebDavLibraryEntry(name: 'cover.png', isDirectory: false),
-        WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: 'Book.zip', isDirectory: false, size: 4096),
+        RemoteLibraryEntry(name: 'cover.png', isDirectory: false),
+        RemoteLibraryEntry(name: '002.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: 'Book.zip', isDirectory: false, size: 4096),
       ];
 
-      final sync = await WebDavLibrarySource.synchronize();
+      final sync = await _synchronizeAndComplete();
       expect(sync.success, isTrue, reason: sync.errorMessage);
-      final comics = await WebDavLibrarySource.loadComics(1);
+      final comics = await RemoteLibrarySource.loadComics(1);
       expect(comics.data.map((comic) => comic.id), ['Book', 'Book/Book.zip']);
-      final details = await WebDavLibrarySource.loadComicInfo('Book');
+      final details = await RemoteLibrarySource.loadComicInfo('Book');
       expect(details.success, isTrue, reason: details.errorMessage);
       expect(details.data.chapters, isNull);
       expect(details.data.maxPage, 2);
-      final pages = await WebDavLibrarySource.loadComicPages('Book', null);
+      final pages = await RemoteLibrarySource.loadComicPages('Book', null);
       expect(pages.data, ['/manga/Book/001.jpg', '/manga/Book/002.jpg']);
     },
   );
@@ -2851,51 +3037,53 @@ void main() {
     'page totals include root images and scanned chapters once after lazy inspection',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Book', isDirectory: true),
+        RemoteLibraryEntry(name: 'Book', isDirectory: true),
       ];
       ops.dirs['/manga/Book/'] = const [
-        WebDavLibraryEntry(name: 'cover.png', isDirectory: false),
-        WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '第一卷', isDirectory: true),
-        WebDavLibraryEntry(name: '第二卷', isDirectory: true),
-        WebDavLibraryEntry(name: '临时目录', isDirectory: true),
+        RemoteLibraryEntry(name: 'cover.png', isDirectory: false),
+        RemoteLibraryEntry(name: '002.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '第一卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第二卷', isDirectory: true),
+        RemoteLibraryEntry(name: '临时目录', isDirectory: true),
       ];
       ops.dirs['/manga/Book/第一卷/'] = const [
-        WebDavLibraryEntry(name: 'cover.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '003.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: 'cover.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '002.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '003.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/Book/第二卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '002.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '002.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/Book/临时目录/'] = const [
-        WebDavLibraryEntry(name: 'cover.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: 'cover.jpg', isDirectory: false),
       ];
 
-      final sync = await WebDavLibrarySource.synchronize();
+      final sync = await _synchronizeAndComplete();
       expect(sync.success, isTrue, reason: sync.errorMessage);
-      final summary = WebDavLibraryCache.instance
-          .find(WebDavLibraryConfig.fromSettings().cacheKey, 'Book')!
-          .snapshot!;
-      expect(summary['chaptersInspected'], isFalse);
-      expect(summary['chapterImages'], isEmpty);
-      expect(ops.readPaths, isNot(contains('/manga/Book/第一卷/')));
-      final details = await WebDavLibrarySource.loadComicInfo('Book');
+      final summary = (await RemoteLibraryRepository.instance.find(
+        RemoteLibraryConfig.fromSettings().cacheKey,
+        'Book',
+      ))!.snapshot!;
+      expect(summary['chaptersInspected'], isTrue);
+      expect((summary['chapterImages'] as Map).keys, ['第一卷', '第二卷']);
+      expect(ops.readPaths, contains('/manga/Book/第一卷/'));
+      final details = await RemoteLibrarySource.loadComicInfo('Book');
       expect(details.success, isTrue, reason: details.errorMessage);
       expect(details.data.chapters!.allChapters, {
         '第一卷': '第一卷',
         '第二卷': '第二卷',
-        WebDavLibrarySource.rootChapterId: WebDavLibrarySource.rootChapterTitle,
+        RemoteLibrarySource.rootChapterId: RemoteLibrarySource.rootChapterTitle,
       });
       expect(details.data.maxPage, 7);
-      final rootPages = await WebDavLibrarySource.loadComicPages('Book', null);
+      final rootPages = await RemoteLibrarySource.loadComicPages('Book', null);
       expect(rootPages.data, ['/manga/Book/001.jpg', '/manga/Book/002.jpg']);
-      final cached = WebDavLibraryCache.instance
-          .find(WebDavLibraryConfig.fromSettings().cacheKey, 'Book')!
-          .snapshot!;
+      final cached = (await RemoteLibraryRepository.instance.find(
+        RemoteLibraryConfig.fromSettings().cacheKey,
+        'Book',
+      ))!.snapshot!;
       final chapterImages = cached['chapterImages'] as Map;
       expect(chapterImages.keys, ['第一卷', '第二卷']);
       expect(chapterImages['第一卷'], hasLength(3));
@@ -2907,15 +3095,15 @@ void main() {
     'metadata comic excludes empty chapter-named directory from chapters',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Comic', isDirectory: true),
+        RemoteLibraryEntry(name: 'Comic', isDirectory: true),
       ];
       ops.dirs['/manga/Comic/'] = const [
-        WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
-        WebDavLibraryEntry(name: '第01卷', isDirectory: true),
-        WebDavLibraryEntry(name: '第02卷', isDirectory: true),
+        RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
+        RemoteLibraryEntry(name: '第01卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第02卷', isDirectory: true),
       ];
       ops.dirs['/manga/Comic/第01卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/Comic/第02卷/'] = const [];
       ops.textFiles['/manga/Comic/metadata.json'] = jsonEncode({
@@ -2923,10 +3111,10 @@ void main() {
         'author': '',
       });
 
-      final sync = await WebDavLibrarySource.synchronize();
+      final sync = await _synchronizeAndComplete();
       expect(sync.success, isTrue);
 
-      final details = await WebDavLibrarySource.loadComicInfo('Comic');
+      final details = await RemoteLibrarySource.loadComicInfo('Comic');
       expect(details.data.chapters!.allChapters.keys, ['第01卷']);
     },
   );
@@ -2935,23 +3123,23 @@ void main() {
     'chapter with only named cover is excluded from chapters and comic cover',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Comic', isDirectory: true),
+        RemoteLibraryEntry(name: 'Comic', isDirectory: true),
       ];
       ops.dirs['/manga/Comic/'] = const [
-        WebDavLibraryEntry(name: '第01卷', isDirectory: true),
-        WebDavLibraryEntry(name: '第02卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第01卷', isDirectory: true),
+        RemoteLibraryEntry(name: '第02卷', isDirectory: true),
       ];
       ops.dirs['/manga/Comic/第01卷/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/Comic/第02卷/'] = const [
-        WebDavLibraryEntry(name: 'cover.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: 'cover.jpg', isDirectory: false),
       ];
 
-      final sync = await WebDavLibrarySource.synchronize();
+      final sync = await _synchronizeAndComplete();
       expect(sync.success, isTrue);
 
-      final details = await WebDavLibrarySource.loadComicInfo('Comic');
+      final details = await RemoteLibrarySource.loadComicInfo('Comic');
       expect(details.data.chapters!.allChapters.keys, ['第01卷']);
       expect(details.data.cover, '/manga/Comic/第01卷/001.jpg');
     },
@@ -2961,22 +3149,22 @@ void main() {
     'noMatch negative scrape cache is preserved across forced sync',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Unmatched Book', isDirectory: true),
+        RemoteLibraryEntry(name: 'Unmatched Book', isDirectory: true),
       ];
       ops.dirs['/manga/Unmatched Book/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       var scraperCalls = 0;
-      WebDavLibrarySource.configureMetadataScraper((_) async {
+      RemoteLibrarySource.configureMetadataScraper((_) async {
         scraperCalls++;
         return null;
       });
 
-      final firstSync = await WebDavLibrarySource.synchronize();
+      final firstSync = await _synchronizeAndComplete();
       expect(firstSync.success, isTrue);
       expect(scraperCalls, 1);
 
-      final secondSync = await WebDavLibrarySource.synchronize(force: true);
+      final secondSync = await _synchronizeAndComplete(force: true);
       expect(secondSync.success, isTrue);
       expect(scraperCalls, 1);
     },
@@ -2986,26 +3174,26 @@ void main() {
     'noMatch negative scrape cache is preserved when comic pages change',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Unmatched Book', isDirectory: true),
+        RemoteLibraryEntry(name: 'Unmatched Book', isDirectory: true),
       ];
       ops.dirs['/manga/Unmatched Book/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false, eTag: 'p1'),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false, eTag: 'p1'),
       ];
       var scraperCalls = 0;
-      WebDavLibrarySource.configureMetadataScraper((_) async {
+      RemoteLibrarySource.configureMetadataScraper((_) async {
         scraperCalls++;
         return null;
       });
 
-      await WebDavLibrarySource.synchronize();
+      await _synchronizeAndComplete();
       expect(scraperCalls, 1);
 
       ops.dirs['/manga/Unmatched Book/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false, eTag: 'p1'),
-        WebDavLibraryEntry(name: '002.jpg', isDirectory: false, eTag: 'p2'),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false, eTag: 'p1'),
+        RemoteLibraryEntry(name: '002.jpg', isDirectory: false, eTag: 'p2'),
       ];
 
-      await WebDavLibrarySource.synchronize();
+      await _synchronizeAndComplete();
       expect(scraperCalls, 1);
     },
   );
@@ -3014,47 +3202,47 @@ void main() {
     'validatorless WebDAV comic does not loop scraper queries on subsequent syncs',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Unmatched Book', isDirectory: true),
+        RemoteLibraryEntry(name: 'Unmatched Book', isDirectory: true),
       ];
       ops.dirs['/manga/Unmatched Book/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       var scraperCalls = 0;
-      WebDavLibrarySource.configureMetadataScraper((_) async {
+      RemoteLibrarySource.configureMetadataScraper((_) async {
         scraperCalls++;
         return null;
       });
 
-      await WebDavLibrarySource.synchronize();
+      await _synchronizeAndComplete();
       expect(scraperCalls, 1);
 
-      await WebDavLibrarySource.synchronize();
+      await _synchronizeAndComplete();
       expect(scraperCalls, 1);
     },
   );
 
   test('scraperVersion change retries an existing noMatch comic', () async {
     ops.dirs['/manga/'] = const [
-      WebDavLibraryEntry(name: 'Unmatched Book', isDirectory: true),
+      RemoteLibraryEntry(name: 'Unmatched Book', isDirectory: true),
     ];
     ops.dirs['/manga/Unmatched Book/'] = const [
-      WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
     var scraperCalls = 0;
-    WebDavLibrarySource.configureMetadataScraper((_) async {
+    RemoteLibrarySource.configureMetadataScraper((_) async {
       scraperCalls++;
       return null;
     }, scraperVersion: '1');
 
-    await WebDavLibrarySource.synchronize();
+    await _synchronizeAndComplete();
     expect(scraperCalls, 1);
 
-    WebDavLibrarySource.configureMetadataScraper((_) async {
+    RemoteLibrarySource.configureMetadataScraper((_) async {
       scraperCalls++;
       return null;
     }, scraperVersion: '2');
 
-    await WebDavLibrarySource.synchronize();
+    await _synchronizeAndComplete();
     expect(scraperCalls, 2);
   });
 
@@ -3062,13 +3250,13 @@ void main() {
     'automatic scraping is skipped when scraper is disabled in settings',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Cat Eye[Tsukasa Hojo]', isDirectory: true),
+        RemoteLibraryEntry(name: 'Cat Eye[Tsukasa Hojo]', isDirectory: true),
       ];
       ops.dirs['/manga/Cat Eye[Tsukasa Hojo]/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       var scraperCalls = 0;
-      WebDavLibrarySource.configureMetadataScraper((_) async {
+      RemoteLibrarySource.configureMetadataScraper((_) async {
         scraperCalls++;
         return const ComicMetaData(
           title: 'Cat Eye',
@@ -3078,7 +3266,7 @@ void main() {
         );
       }, isEnabled: () => false);
 
-      final sync = await WebDavLibrarySource.synchronize();
+      final sync = await _synchronizeAndComplete();
       expect(sync.success, isTrue);
       expect(scraperCalls, 0);
       expect(ops.writtenTexts, isEmpty);
@@ -3089,23 +3277,23 @@ void main() {
     'disconnected scraper records failed status instead of noMatch',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Cat Eye[Tsukasa Hojo]', isDirectory: true),
+        RemoteLibraryEntry(name: 'Cat Eye[Tsukasa Hojo]', isDirectory: true),
       ];
       ops.dirs['/manga/Cat Eye[Tsukasa Hojo]/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
-      WebDavLibrarySource.configureMetadataScraper((_) async {
+      RemoteLibrarySource.configureMetadataScraper((_) async {
         throw StateError('Bangumi is not connected');
       });
 
-      final sync = await WebDavLibrarySource.synchronize();
+      final sync = await _synchronizeAndComplete();
       expect(sync.success, isTrue);
 
-      final config = WebDavLibraryConfig.fromSettings();
-      final cached = WebDavLibraryCache.instance.find(
+      final config = RemoteLibraryConfig.fromSettings();
+      final cached = (await RemoteLibraryRepository.instance.find(
         config.cacheKey,
         'Cat Eye[Tsukasa Hojo]',
-      );
+      ));
       expect(cached, isNotNull);
       final snapshot = cached!.snapshot!;
       expect(snapshot['metadataScrapeStatus'], 'failed');
@@ -3119,23 +3307,23 @@ void main() {
 
   test('normal unmatching scraper records noMatch without retryAt', () async {
     ops.dirs['/manga/'] = const [
-      WebDavLibraryEntry(name: 'Cat Eye[Tsukasa Hojo]', isDirectory: true),
+      RemoteLibraryEntry(name: 'Cat Eye[Tsukasa Hojo]', isDirectory: true),
     ];
     ops.dirs['/manga/Cat Eye[Tsukasa Hojo]/'] = const [
-      WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
-    WebDavLibrarySource.configureMetadataScraper((_) async {
+    RemoteLibrarySource.configureMetadataScraper((_) async {
       return null;
     });
 
-    final sync = await WebDavLibrarySource.synchronize();
+    final sync = await _synchronizeAndComplete();
     expect(sync.success, isTrue);
 
-    final config = WebDavLibraryConfig.fromSettings();
-    final cached = WebDavLibraryCache.instance.find(
+    final config = RemoteLibraryConfig.fromSettings();
+    final cached = (await RemoteLibraryRepository.instance.find(
       config.cacheKey,
       'Cat Eye[Tsukasa Hojo]',
-    );
+    ));
     expect(cached, isNotNull);
     final snapshot = cached!.snapshot!;
     expect(snapshot['metadataScrapeStatus'], 'noMatch');
@@ -3147,14 +3335,14 @@ void main() {
     'secondary gate skips scraper and sets pending if disabled before execution',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Cat Eye[Tsukasa Hojo]', isDirectory: true),
+        RemoteLibraryEntry(name: 'Cat Eye[Tsukasa Hojo]', isDirectory: true),
       ];
       ops.dirs['/manga/Cat Eye[Tsukasa Hojo]/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       var calls = 0;
       var enabled = true;
-      WebDavLibrarySource.configureMetadataScraper(
+      RemoteLibrarySource.configureMetadataScraper(
         (_) async {
           calls++;
           return null;
@@ -3166,15 +3354,15 @@ void main() {
         },
       );
 
-      final sync = await WebDavLibrarySource.synchronize();
+      final sync = await _synchronizeAndComplete();
       expect(sync.success, isTrue);
       expect(calls, 0);
 
-      final config = WebDavLibraryConfig.fromSettings();
-      final cached = WebDavLibraryCache.instance.find(
+      final config = RemoteLibraryConfig.fromSettings();
+      final cached = (await RemoteLibraryRepository.instance.find(
         config.cacheKey,
         'Cat Eye[Tsukasa Hojo]',
-      );
+      ));
       expect(cached, isNotNull);
       expect(cached!.snapshot!['metadataScrapeStatus'], 'pending');
     },
@@ -3182,56 +3370,56 @@ void main() {
 
   test('failed scraper does not retry before retryAt arrives', () async {
     var simulatedTime = 1000000000000;
-    WebDavLibrarySource.metadataNowProvider = () => simulatedTime;
+    RemoteLibrarySource.metadataNowProvider = () => simulatedTime;
 
     ops.dirs['/manga/'] = const [
-      WebDavLibraryEntry(name: 'Cat Eye[Tsukasa Hojo]', isDirectory: true),
+      RemoteLibraryEntry(name: 'Cat Eye[Tsukasa Hojo]', isDirectory: true),
     ];
     ops.dirs['/manga/Cat Eye[Tsukasa Hojo]/'] = const [
-      WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
     var scraperCalls = 0;
-    WebDavLibrarySource.configureMetadataScraper((_) async {
+    RemoteLibrarySource.configureMetadataScraper((_) async {
       scraperCalls++;
       throw StateError('Bangumi is not connected');
     });
 
-    final firstSync = await WebDavLibrarySource.synchronize();
+    final firstSync = await _synchronizeAndComplete();
     expect(firstSync.success, isTrue);
     expect(scraperCalls, 1);
 
     // Advance time by 14 minutes (< 15 minutes retryAt)
     simulatedTime += const Duration(minutes: 14).inMilliseconds;
 
-    final secondSync = await WebDavLibrarySource.synchronize();
+    final secondSync = await _synchronizeAndComplete();
     expect(secondSync.success, isTrue);
     expect(scraperCalls, 1);
   });
 
   test('failed scraper retries after retryAt has elapsed', () async {
     var simulatedTime = 1000000000000;
-    WebDavLibrarySource.metadataNowProvider = () => simulatedTime;
+    RemoteLibrarySource.metadataNowProvider = () => simulatedTime;
 
     ops.dirs['/manga/'] = const [
-      WebDavLibraryEntry(name: 'Cat Eye[Tsukasa Hojo]', isDirectory: true),
+      RemoteLibraryEntry(name: 'Cat Eye[Tsukasa Hojo]', isDirectory: true),
     ];
     ops.dirs['/manga/Cat Eye[Tsukasa Hojo]/'] = const [
-      WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
     var scraperCalls = 0;
-    WebDavLibrarySource.configureMetadataScraper((_) async {
+    RemoteLibrarySource.configureMetadataScraper((_) async {
       scraperCalls++;
       throw StateError('Bangumi is not connected');
     });
 
-    final firstSync = await WebDavLibrarySource.synchronize();
+    final firstSync = await _synchronizeAndComplete();
     expect(firstSync.success, isTrue);
     expect(scraperCalls, 1);
 
     // Advance time by 15 minutes (>= 15 minutes retryAt)
     simulatedTime += const Duration(minutes: 15).inMilliseconds;
 
-    final secondSync = await WebDavLibrarySource.synchronize();
+    final secondSync = await _synchronizeAndComplete();
     expect(secondSync.success, isTrue);
     expect(scraperCalls, 2);
   });
@@ -3241,15 +3429,15 @@ void main() {
     () async {
       const path = '/manga/Book/metadata.json';
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Book', isDirectory: true, eTag: 'parent'),
+        RemoteLibraryEntry(name: 'Book', isDirectory: true, eTag: 'parent'),
       ];
       ops.dirs['/manga/Book/'] = const [
-        WebDavLibraryEntry(
+        RemoteLibraryEntry(
           name: 'metadata.json',
           isDirectory: false,
           eTag: 'metadata-1',
         ),
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false, eTag: 'page-1'),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false, eTag: 'page-1'),
       ];
       ops.textFiles[path] = jsonEncode({
         'title': 'Before',
@@ -3257,15 +3445,15 @@ void main() {
         'tags': <String>[],
         'chapters': null,
       });
-      await WebDavLibrarySource.synchronize();
+      await _synchronizeAndComplete();
 
       ops.dirs['/manga/Book/'] = const [
-        WebDavLibraryEntry(
+        RemoteLibraryEntry(
           name: 'metadata.json',
           isDirectory: false,
           eTag: 'metadata-2',
         ),
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false, eTag: 'page-1'),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false, eTag: 'page-1'),
       ];
       ops.textFiles[path] = jsonEncode({
         'title': 'After',
@@ -3273,8 +3461,8 @@ void main() {
         'tags': <String>[],
         'chapters': null,
       });
-      await WebDavLibrarySource.synchronize();
-      final comics = await WebDavLibrarySource.loadComics(1);
+      await _synchronizeAndComplete();
+      final comics = await RemoteLibrarySource.loadComics(1);
 
       expect(comics.data.single.title, 'After');
     },
@@ -3283,15 +3471,15 @@ void main() {
   test('a child without validators keeps its snapshot refreshable', () async {
     const path = '/manga/Book/metadata.json';
     ops.dirs['/manga/'] = const [
-      WebDavLibraryEntry(name: 'Book', isDirectory: true, eTag: 'parent'),
+      RemoteLibraryEntry(name: 'Book', isDirectory: true, eTag: 'parent'),
     ];
     ops.dirs['/manga/Book/'] = const [
-      WebDavLibraryEntry(
+      RemoteLibraryEntry(
         name: 'metadata.json',
         isDirectory: false,
         eTag: 'metadata',
       ),
-      WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
     ];
     ops.textFiles[path] = jsonEncode({
       'title': 'Book',
@@ -3299,36 +3487,37 @@ void main() {
       'tags': <String>[],
       'chapters': null,
     });
-    await WebDavLibrarySource.synchronize();
+    await _synchronizeAndComplete();
 
-    await WebDavLibrarySource.synchronize();
+    await _synchronizeAndComplete();
 
-    expect(WebDavLibrarySource.syncStatus.value.total, 1);
+    expect(RemoteLibrarySource.syncStatus.value.total, 1);
   });
 
   test(
     'structured scrape state retries only after scraper version changes',
     () async {
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Book', isDirectory: true),
+        RemoteLibraryEntry(name: 'Book', isDirectory: true),
       ];
       ops.dirs['/manga/Book/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false, eTag: 'page-1'),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false, eTag: 'page-1'),
       ];
       var calls = 0;
-      WebDavLibrarySource.configureMetadataScraper((_) async {
+      RemoteLibrarySource.configureMetadataScraper((_) async {
         calls++;
         return null;
       }, scraperVersion: '1');
-      await WebDavLibrarySource.synchronize();
-      final config = WebDavLibraryConfig.fromSettings();
-      final firstSnapshot = WebDavLibraryCache.instance
-          .find(config.cacheKey, 'Book')!
-          .snapshot!;
+      await _synchronizeAndComplete();
+      final config = RemoteLibraryConfig.fromSettings();
+      final firstSnapshot = (await RemoteLibraryRepository.instance.find(
+        config.cacheKey,
+        'Book',
+      ))!.snapshot!;
       expect(firstSnapshot['metadataScrapeStatus'], 'noMatch');
       expect(firstSnapshot['metadataScraperVersion'], '1');
 
-      WebDavLibrarySource.configureMetadataScraper((_) async {
+      RemoteLibrarySource.configureMetadataScraper((_) async {
         calls++;
         return const ComicMetaData(
           title: 'Matched',
@@ -3337,10 +3526,10 @@ void main() {
           bangumiSubjectId: 47,
         );
       }, scraperVersion: '1');
-      await WebDavLibrarySource.synchronize();
+      await _synchronizeAndComplete();
       expect(calls, 1);
 
-      WebDavLibrarySource.configureMetadataScraper((_) async {
+      RemoteLibrarySource.configureMetadataScraper((_) async {
         calls++;
         return const ComicMetaData(
           title: 'Matched',
@@ -3349,86 +3538,84 @@ void main() {
           bangumiSubjectId: 47,
         );
       }, scraperVersion: '2');
-      await WebDavLibrarySource.synchronize();
+      await _synchronizeAndComplete();
 
       expect(calls, 2);
       expect(ops.writtenTexts, contains('/manga/Book/metadata.json'));
     },
   );
 
-  test(
-    'lazy directory inspection retains pending scraping until chapter evidence exists',
-    () async {
-      ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Complex Comic', isDirectory: true),
-      ];
-      ops.dirs['/manga/Complex Comic/'] = const [
-        WebDavLibraryEntry(name: 'cover.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '000.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: '第01话', isDirectory: true),
-        WebDavLibraryEntry(name: '第02话', isDirectory: true),
-      ];
-      ops.dirs['/manga/Complex Comic/第01话/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-      ];
-      ops.dirs['/manga/Complex Comic/第02话/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-      ];
+  test('后台章节补全后刮削保留完整章节与文件证据', () async {
+    ops.dirs['/manga/'] = const [
+      RemoteLibraryEntry(name: 'Complex Comic', isDirectory: true),
+    ];
+    ops.dirs['/manga/Complex Comic/'] = const [
+      RemoteLibraryEntry(name: 'cover.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: '000.jpg', isDirectory: false),
+      RemoteLibraryEntry(name: '第01话', isDirectory: true),
+      RemoteLibraryEntry(name: '第02话', isDirectory: true),
+    ];
+    ops.dirs['/manga/Complex Comic/第01话/'] = const [
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+    ];
+    ops.dirs['/manga/Complex Comic/第02话/'] = const [
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+    ];
 
-      final inputs = <WebDavLibraryMetadataInput>[];
-      WebDavLibrarySource.configureMetadataScraper((input) async {
-        inputs.add(input);
-        return null;
-      });
+    final inputs = <RemoteLibraryMetadataInput>[];
+    RemoteLibrarySource.configureMetadataScraper((input) async {
+      inputs.add(input);
+      return null;
+    });
 
-      final sync = await WebDavLibrarySource.synchronize();
-      expect(sync.success, isTrue);
+    final sync = await _synchronizeAndComplete();
+    expect(sync.success, isTrue);
 
-      expect(ops.readPaths.any((p) => p.contains('/第01话')), isFalse);
-      expect(inputs, isEmpty);
+    expect(ops.readPaths.any((p) => p.contains('/第01话')), isTrue);
+    expect(inputs, hasLength(1));
 
-      final config = WebDavLibraryConfig.fromSettings();
-      final cached = WebDavLibraryCache.instance.find(
-        config.cacheKey,
-        'Complex Comic',
-      );
-      expect(cached, isNotNull);
-      expect(cached!.snapshot!['metadataScrapeStatus'], 'pending');
+    final config = RemoteLibraryConfig.fromSettings();
+    final cached = (await RemoteLibraryRepository.instance.find(
+      config.cacheKey,
+      'Complex Comic',
+    ));
+    expect(cached, isNotNull);
+    expect(cached!.snapshot!['metadataScrapeStatus'], 'noMatch');
 
-      final info = await WebDavLibrarySource.loadComicInfo('Complex Comic');
-      expect(info.success, isTrue);
-      expect(inputs, hasLength(1));
-      final input = inputs.single;
-      expect(input.title, 'Complex Comic');
-      expect(input.directoryTitle, 'Complex Comic');
-      expect(input.fileNames, containsAll(['第01话', '第02话', '001.jpg']));
+    final info = await RemoteLibrarySource.loadComicInfo('Complex Comic');
+    expect(info.success, isTrue);
+    expect(inputs, hasLength(1));
+    final input = inputs.single;
+    expect(input.title, 'Complex Comic');
+    expect(input.directoryTitle, 'Complex Comic');
+    expect(input.fileNames, containsAll(['第01话', '第02话', '001.jpg']));
 
-      final afterInfo = WebDavLibraryCache.instance.find(
-        config.cacheKey,
-        'Complex Comic',
-      );
-      expect(afterInfo!.snapshot!['metadataScrapeStatus'], 'noMatch');
-    },
-  );
+    final afterInfo = (await RemoteLibraryRepository.instance.find(
+      config.cacheKey,
+      'Complex Comic',
+    ));
+    expect(afterInfo!.snapshot!['metadataScrapeStatus'], 'noMatch');
+  });
 
   test('failed scrape stores attempt, retry, version, and error', () async {
     ops.dirs['/manga/'] = const [
-      WebDavLibraryEntry(name: 'Book', isDirectory: true),
+      RemoteLibraryEntry(name: 'Book', isDirectory: true),
     ];
     ops.dirs['/manga/Book/'] = const [
-      WebDavLibraryEntry(name: '001.jpg', isDirectory: false, eTag: 'page-1'),
+      RemoteLibraryEntry(name: '001.jpg', isDirectory: false, eTag: 'page-1'),
     ];
-    WebDavLibrarySource.configureMetadataScraper(
+    RemoteLibrarySource.configureMetadataScraper(
       (_) => throw StateError('scraper unavailable'),
       scraperVersion: 'rules-2',
     );
 
-    await WebDavLibrarySource.synchronize();
+    await _synchronizeAndComplete();
 
-    final config = WebDavLibraryConfig.fromSettings();
-    final snapshot = WebDavLibraryCache.instance
-        .find(config.cacheKey, 'Book')!
-        .snapshot!;
+    final config = RemoteLibraryConfig.fromSettings();
+    final snapshot = (await RemoteLibraryRepository.instance.find(
+      config.cacheKey,
+      'Book',
+    ))!.snapshot!;
     final attemptedAt = snapshot['metadataScrapeAttemptedAt'];
     final retryAt = snapshot['metadataScrapeRetryAt'];
     expect(snapshot['metadataScrapeStatus'], 'failed');
@@ -3444,18 +3631,18 @@ void main() {
     'manual scraping retries only the selected unmatched comic and updates details',
     () async {
       ops.dirs['/manga/Comic A/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/Comic B/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Comic A', isDirectory: true),
-        WebDavLibraryEntry(name: 'Comic B', isDirectory: true),
+        RemoteLibraryEntry(name: 'Comic A', isDirectory: true),
+        RemoteLibraryEntry(name: 'Comic B', isDirectory: true),
       ];
 
       final boundSubjects = <({String comicId, int subjectId})>[];
-      WebDavLibrarySource.configureMetadataSubjectHandler(({
+      RemoteLibrarySource.configureMetadataSubjectHandler(({
         required scopeId,
         required sourceKey,
         required comicId,
@@ -3465,31 +3652,33 @@ void main() {
       });
 
       var scraperCalls = 0;
-      WebDavLibrarySource.configureMetadataScraper((input) async {
+      RemoteLibrarySource.configureMetadataScraper((input) async {
         scraperCalls++;
         return null;
       }, scraperVersion: 'v1');
 
-      final initialSync = await WebDavLibrarySource.synchronize();
+      final initialSync = await _synchronizeAndComplete();
       expect(initialSync.success, isTrue);
       expect(scraperCalls, 2);
 
-      final config = WebDavLibraryConfig.fromSettings();
+      final config = RemoteLibraryConfig.fromSettings();
       expect(
-        WebDavLibraryCache.instance
-            .find(config.cacheKey, 'Comic A')!
-            .snapshot!['metadataScrapeStatus'],
+        (await RemoteLibraryRepository.instance.find(
+          config.cacheKey,
+          'Comic A',
+        ))!.snapshot!['metadataScrapeStatus'],
         'noMatch',
       );
       expect(
-        WebDavLibraryCache.instance
-            .find(config.cacheKey, 'Comic B')!
-            .snapshot!['metadataScrapeStatus'],
+        (await RemoteLibraryRepository.instance.find(
+          config.cacheKey,
+          'Comic B',
+        ))!.snapshot!['metadataScrapeStatus'],
         'noMatch',
       );
 
       // Scraper now returns a match for Comic A, but still null for Comic B
-      WebDavLibrarySource.configureMetadataScraper((input) async {
+      RemoteLibrarySource.configureMetadataScraper((input) async {
         scraperCalls++;
         if (input.title.contains('Comic A')) {
           return const ComicMetaData(
@@ -3503,19 +3692,19 @@ void main() {
       }, scraperVersion: 'v1');
 
       // Forced sync must NOT retry because both are cached as noMatch for v1
-      final forcedSync = await WebDavLibrarySource.synchronize(force: true);
+      final forcedSync = await _synchronizeAndComplete(force: true);
       expect(forcedSync.success, isTrue);
       expect(scraperCalls, 2);
 
       // Manual retry on Comic A bypasses noMatch
-      final result = await WebDavLibrarySource.retryMetadataScrape('Comic A');
+      final result = await RemoteLibrarySource.retryMetadataScrape('Comic A');
       expect(result.success, isTrue, reason: result.errorMessage);
-      expect(result.data, WebDavMetadataScrapeResult.matched);
+      expect(result.data, RemoteLibraryMetadataScrapeResult.matched);
       expect(scraperCalls, 3);
       expect(boundSubjects, [(comicId: 'Comic A', subjectId: 101)]);
 
       // Details and file for Comic A are updated
-      final detailsA = await WebDavLibrarySource.loadComicInfo('Comic A');
+      final detailsA = await RemoteLibrarySource.loadComicInfo('Comic A');
       expect(detailsA.success, isTrue);
       expect(detailsA.data.title, 'Comic A Matched');
       expect(detailsA.data.tags['作者'], ['Author A']);
@@ -3528,9 +3717,10 @@ void main() {
       expect(writtenA['bangumiSubjectId'], 101);
 
       // Comic B remains completely isolated and unchanged
-      final snapshotB = WebDavLibraryCache.instance
-          .find(config.cacheKey, 'Comic B')!
-          .snapshot!;
+      final snapshotB = (await RemoteLibraryRepository.instance.find(
+        config.cacheKey,
+        'Comic B',
+      ))!.snapshot!;
       expect(snapshotB['metadataScrapeStatus'], 'noMatch');
       expect(
         ops.writtenTexts.containsKey('/manga/Comic B/metadata.json'),
@@ -3543,14 +3733,14 @@ void main() {
     'retryMetadataScrape succeeds when automatic scraping is disabled, while network error records failed instead of noMatch',
     () async {
       ops.dirs['/manga/Manual Book/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
       ops.dirs['/manga/'] = const [
-        WebDavLibraryEntry(name: 'Manual Book', isDirectory: true),
+        RemoteLibraryEntry(name: 'Manual Book', isDirectory: true),
       ];
 
       var scraperCalls = 0;
-      WebDavLibrarySource.configureMetadataScraper((input) async {
+      RemoteLibrarySource.configureMetadataScraper((input) async {
         scraperCalls++;
         return const ComicMetaData(
           title: 'Manual Matched',
@@ -3559,7 +3749,7 @@ void main() {
         );
       }, isEnabled: () => false);
 
-      final sync = await WebDavLibrarySource.synchronize();
+      final sync = await _synchronizeAndComplete();
       expect(sync.success, isTrue);
       expect(scraperCalls, 0);
       expect(
@@ -3568,11 +3758,11 @@ void main() {
       );
 
       // Manual retry succeeds even though auto scraping is disabled
-      final manualResult = await WebDavLibrarySource.retryMetadataScrape(
+      final manualResult = await RemoteLibrarySource.retryMetadataScrape(
         'Manual Book',
       );
       expect(manualResult.success, isTrue, reason: manualResult.errorMessage);
-      expect(manualResult.data, WebDavMetadataScrapeResult.matched);
+      expect(manualResult.data, RemoteLibraryMetadataScrapeResult.matched);
       expect(scraperCalls, 1);
       expect(
         ops.writtenTexts.containsKey('/manga/Manual Book/metadata.json'),
@@ -3581,21 +3771,22 @@ void main() {
 
       // Network error during retry records failed status instead of noMatch
       ops.dirs['/manga/Net Fail Book/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
       ];
-      WebDavLibrarySource.configureMetadataScraper(
+      RemoteLibrarySource.configureMetadataScraper(
         (input) async => throw const SocketException('Connection timed out'),
       );
 
-      final failResult = await WebDavLibrarySource.retryMetadataScrape(
+      final failResult = await RemoteLibrarySource.retryMetadataScrape(
         'Net Fail Book',
       );
       expect(failResult.success, isFalse);
 
-      final config = WebDavLibraryConfig.fromSettings();
-      final snapshotFail = WebDavLibraryCache.instance
-          .find(config.cacheKey, 'Net Fail Book')!
-          .snapshot!;
+      final config = RemoteLibraryConfig.fromSettings();
+      final snapshotFail = (await RemoteLibraryRepository.instance.find(
+        config.cacheKey,
+        'Net Fail Book',
+      ))!.snapshot!;
       expect(snapshotFail['metadataScrapeStatus'], 'failed');
       expect(
         snapshotFail['metadataScrapeError'],
@@ -3608,8 +3799,8 @@ void main() {
     'retryMetadataScrape returns notNeeded and never overwrites existing metadata',
     () async {
       ops.dirs['/manga/Existing Book/'] = const [
-        WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
-        WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
       ];
       ops.textFiles['/manga/Existing Book/metadata.json'] = jsonEncode({
         'title': 'Original Title',
@@ -3619,7 +3810,7 @@ void main() {
       });
 
       var scraperCalls = 0;
-      WebDavLibrarySource.configureMetadataScraper((input) async {
+      RemoteLibrarySource.configureMetadataScraper((input) async {
         scraperCalls++;
         return const ComicMetaData(
           title: 'Replacement Title',
@@ -3629,11 +3820,11 @@ void main() {
         );
       });
 
-      final result = await WebDavLibrarySource.retryMetadataScrape(
+      final result = await RemoteLibrarySource.retryMetadataScrape(
         'Existing Book',
       );
       expect(result.success, isTrue, reason: result.errorMessage);
-      expect(result.data, WebDavMetadataScrapeResult.notNeeded);
+      expect(result.data, RemoteLibraryMetadataScrapeResult.notNeeded);
       expect(scraperCalls, 0);
       expect(ops.writeRequests, isEmpty);
       expect(
@@ -3643,7 +3834,7 @@ void main() {
         'Original Title',
       );
 
-      final details = await WebDavLibrarySource.loadComicInfo('Existing Book');
+      final details = await RemoteLibrarySource.loadComicInfo('Existing Book');
       expect(details.success, isTrue);
       expect(details.data.title, 'Original Title');
       expect(details.data.tags['作者'], ['Original Author']);
@@ -3701,8 +3892,13 @@ class _FakeRemoteFileStore implements RemoteFileStore {
 
   final StorageAccount _account;
   final dirs = <String, List<RemoteEntry>>{};
+  final listRequests = <({String path, bool refresh})>[];
+  Future<List<RemoteEntry>> Function(String path, bool refresh)? onList;
   final errors = <String, Object>{};
   final writtenPaths = <String>[];
+  final texts = <String, String>{};
+  final statEntries = <String, RemoteEntry>{};
+  final statPaths = <String>[];
   final links = <String, RemoteLink>{};
   final linkedPaths = <String>[];
   final blockers = <String, Completer<void>>{};
@@ -3736,7 +3932,12 @@ class _FakeRemoteFileStore implements RemoteFileStore {
   }
 
   @override
-  Future<List<RemoteEntry>> list(String directory) async {
+  Future<List<RemoteEntry>> list(
+    String directory, {
+    bool refresh = false,
+  }) async {
+    listRequests.add((path: directory, refresh: refresh));
+    if (onList != null) return onList!(directory, refresh);
     await blockers[directory]?.future;
     final error = errors[directory];
     if (error != null) throw error;
@@ -3747,11 +3948,19 @@ class _FakeRemoteFileStore implements RemoteFileStore {
   Future<void> mkdir(String path) async {}
 
   @override
-  Future<RemoteTextFile> readText(String path) =>
-      Future.error(StateError('Missing text file: $path'));
+  Future<RemoteTextFile> readText(String path) async {
+    final content = texts[path];
+    if (content == null) throw StateError('Missing text file: $path');
+    return RemoteTextFile(content: content, eTag: '"metadata-v1"');
+  }
 
   @override
-  Future<RemoteEntry> stat(String path) => Future.error(StateError(path));
+  Future<RemoteEntry> stat(String path) async {
+    statPaths.add(path);
+    final entry = statEntries[path];
+    if (entry == null) throw StateError(path);
+    return entry;
+  }
 
   @override
   Future<void> test() async {}
@@ -3772,18 +3981,72 @@ class _FakeRemoteFileStore implements RemoteFileStore {
     int? ifUnmodifiedSince,
   }) async {
     writtenPaths.add(path);
+    texts[path] = content;
+    final slash = path.lastIndexOf('/');
+    final parent = path.substring(0, slash + 1);
+    final name = path.substring(slash + 1);
+    final entries = List<RemoteEntry>.from(dirs[parent] ?? const []);
+    if (!entries.any((entry) => entry.name == name)) {
+      entries.add(
+        RemoteEntry(
+          name: name,
+          path: path,
+          isDirectory: false,
+          eTag: '"metadata-v1"',
+        ),
+      );
+      dirs[parent] = entries;
+    }
     return const RemoteWriteResult();
   }
 }
 
-class _FakeWebDavLibraryOps implements WebDavLibraryOps {
-  final dirs = <String, List<WebDavLibraryEntry>>{};
+class _SnapshotRangeAdapter implements HttpClientAdapter {
+  _SnapshotRangeAdapter(this.bytes, this.started, this.gate);
+
+  final List<int> bytes;
+  final Completer<void> started;
+  final Completer<void> gate;
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    if (!started.isCompleted) started.complete();
+    await gate.future;
+    final range = RegExp(
+      r'^bytes=(\d+)-(\d+)$',
+    ).firstMatch(options.headers['Range'] as String)!;
+    final start = int.parse(range.group(1)!);
+    final end = int.parse(range.group(2)!);
+    return ResponseBody.fromBytes(
+      bytes.sublist(start, end + 1),
+      206,
+      headers: {
+        'content-range': ['bytes $start-$end/${bytes.length}'],
+        'content-length': ['${end - start + 1}'],
+        'etag': ['"v1"'],
+      },
+    );
+  }
+
+  @override
+  void close({bool force = false}) {}
+}
+
+class _FakeRemoteLibraryOps implements RemoteLibraryOps {
+  final dirs = <String, List<RemoteLibraryEntry>>{};
   final errors = <String, Object>{};
   final textFiles = <String, String>{};
   final textETags = <String, String>{};
   final textModifiedAt = <String, int>{};
   final validatorlessPaths = <String>{};
   final readPaths = <String>[];
+  final directoryRequests = <({String path, bool refresh})>[];
+  final textBlockers = <String, Completer<void>>{};
+  final textStarted = <String, Completer<void>>{};
   final textReadPaths = <String>[];
   final writtenTexts = <String, String>{};
   final writeRequests =
@@ -3800,10 +4063,12 @@ class _FakeWebDavLibraryOps implements WebDavLibraryOps {
   final readStarted = <String, Completer<void>>{};
 
   @override
-  Future<List<WebDavLibraryEntry>> readDir(
-    WebDavLibraryConfig config,
-    String remotePath,
-  ) async {
+  Future<List<RemoteLibraryEntry>> readDir(
+    RemoteLibraryConfig config,
+    String remotePath, {
+    bool refresh = false,
+  }) async {
+    directoryRequests.add((path: remotePath, refresh: refresh));
     readPaths.add(remotePath);
     final started = readStarted[remotePath];
     if (started != null && !started.isCompleted) started.complete();
@@ -3814,14 +4079,17 @@ class _FakeWebDavLibraryOps implements WebDavLibraryOps {
   }
 
   @override
-  Future<WebDavTextFile> readText(
-    WebDavLibraryConfig config,
+  Future<RemoteLibraryTextFile> readText(
+    RemoteLibraryConfig config,
     String remotePath,
   ) async {
     textReadPaths.add(remotePath);
+    final started = textStarted[remotePath];
+    if (started != null && !started.isCompleted) started.complete();
+    await textBlockers[remotePath]?.future;
     final value = textFiles[remotePath];
     if (value == null) throw StateError('Missing text file: $remotePath');
-    return WebDavTextFile(
+    return RemoteLibraryTextFile(
       content: value,
       eTag: validatorlessPaths.contains(remotePath)
           ? null
@@ -3833,8 +4101,8 @@ class _FakeWebDavLibraryOps implements WebDavLibraryOps {
   }
 
   @override
-  Future<WebDavWriteResult> writeText(
-    WebDavLibraryConfig config,
+  Future<RemoteLibraryWriteResult> writeText(
+    RemoteLibraryConfig config,
     String remotePath,
     String content, {
     bool createOnly = false,
@@ -3849,14 +4117,14 @@ class _FakeWebDavLibraryOps implements WebDavLibraryOps {
     ));
     beforeWrite?.call(remotePath, writeRequests.length);
     if (createOnly && textFiles.containsKey(remotePath)) {
-      throw WebDavPreconditionFailedException(remotePath);
+      throw RemoteLibraryPreconditionFailedException(remotePath);
     }
     if (ifMatch != null && ifMatch != (textETags[remotePath] ?? '"1"')) {
-      throw WebDavPreconditionFailedException(remotePath);
+      throw RemoteLibraryPreconditionFailedException(remotePath);
     }
     if (ifUnmodifiedSince != null &&
         ifUnmodifiedSince != textModifiedAt[remotePath]) {
-      throw WebDavPreconditionFailedException(remotePath);
+      throw RemoteLibraryPreconditionFailedException(remotePath);
     }
     writtenTexts[remotePath] = content;
     textFiles[remotePath] = content;
@@ -3867,7 +4135,7 @@ class _FakeWebDavLibraryOps implements WebDavLibraryOps {
     final separator = remotePath.lastIndexOf('/');
     final directoryPath = remotePath.substring(0, separator + 1);
     final fileName = remotePath.substring(separator + 1);
-    final entries = List<WebDavLibraryEntry>.from(
+    final entries = List<RemoteLibraryEntry>.from(
       dirs[directoryPath] ?? const [],
     );
     if (!entries.any(
@@ -3876,13 +4144,19 @@ class _FakeWebDavLibraryOps implements WebDavLibraryOps {
           entry.name.toLowerCase() == fileName.toLowerCase(),
     )) {
       entries.add(
-        WebDavLibraryEntry(name: fileName, isDirectory: false, eTag: nextTag),
+        RemoteLibraryEntry(name: fileName, isDirectory: false, eTag: nextTag),
       );
       dirs[directoryPath] = entries;
     }
-    return WebDavWriteResult(eTag: nextTag);
+    return RemoteLibraryWriteResult(eTag: nextTag);
   }
 
   @override
-  Future<void> test(WebDavLibraryConfig config) async {}
+  Future<void> test(RemoteLibraryConfig config) async {}
+}
+
+Future<Res<bool>> _synchronizeAndComplete({bool force = false}) async {
+  final result = await RemoteLibrarySource.synchronize(force: force);
+  await RemoteLibrarySource.waitForBackgroundTasks();
+  return result;
 }

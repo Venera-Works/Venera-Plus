@@ -16,7 +16,7 @@ import 'package:venera_plus/features/settings/data_sync_schedule_fields.dart';
 import 'package:venera_plus/features/settings/setting_components.dart';
 import 'package:venera_plus/features/storage/storage.dart';
 import 'package:venera_plus/features/sync/sync.dart';
-import 'package:venera_plus/features/webdav_library/webdav_library.dart';
+import 'package:venera_plus/features/remote_library/remote_library.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
@@ -77,7 +77,7 @@ class _SourcesAndServicesSettingsState
               BangumiSettingsPage(
                 onConnectionChanged: () {
                   if (BangumiService().isConnected) {
-                    unawaited(WebDavLibraryEngines.refreshAll());
+                    unawaited(RemoteLibraryEngines.refreshAll());
                   }
                   if (mounted) setState(() {});
                 },

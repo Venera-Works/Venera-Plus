@@ -34,7 +34,7 @@ This document is the English companion for the repository structure rules. The C
 - `search/`: search page, result page, aggregate search, and search query filters.
 - `settings/`: settings pages, reader settings, reusable setting controls, and structured setting destinations (grouped by Reading & Browsing, Sources & Data, and System; personal content moved to Library, obsolete standalone setting classes cleaned up).
 - `sync/`: WebDAV data sync, top-bar `SyncActionButton`, app data import/export, and local comic backup/restore. Comic update discoveries and confirmations merge through per-device state files; other data retains full-snapshot restore behavior.
-- `webdav_library/`: WebDAV comic library online reading source for remote directory image structures.
+- `remote_library/` provides online comic libraries for cloud accounts and WebDAV, including directory discovery, work aggregation, metadata, on-demand reading, and local indexes.
 
 New domains should generally follow this shape:
 
@@ -62,7 +62,16 @@ External modules should prefer stable feature entry files instead of importing i
 - `features/settings/settings.dart` for `SettingsPage` and structured setting section widgets (including `ReadingSettings`, `AppearanceSettings`, `BrowsingAndFavoritesSettings`, `SourcesAndServicesSettings`, `StorageAndSyncSettings`, `PrivacyAndSecuritySettings`, etc.).
 - `features/sync/sync.dart` for `SyncActionButton` and data synchronization.
 - `features/comic_storage/comic_storage.dart` for archive metadata and file rules.
-- `features/webdav_library/webdav_library.dart` for the WebDAV online comic library source.
+- `features/remote_library/remote_library.dart` for remote online comic sources, work types, and library settings.
+
+### Remote Library Boundaries
+
+- `remote_library.dart` is the public feature entry for business types prefixed with `RemoteLibrary`. Engine, repository, discovery, and metadata implementations stay inside the domain, with tests under `test/features/remote_library/`.
+- `remote_library_engine.dart` adapts the comic source and coordinates tasks. Directory discovery and metadata processing have separate responsibilities and reuse file and archive rules from `comic_storage/`.
+- `remote_library_repository.dart` exposes asynchronous storage operations. A persistent isolate owns the SQLite connection and database operations, including migration from the legacy database to `remote_library.db`.
+- Discovery publishes work summaries first. Metadata is completed in the background, while chapters and volumes are inspected on demand. List notifications are coalesced, and changes received during a list reload trigger another reload after the current one completes.
+- Manual refresh passes `list(refresh: true)` through `network/remote_storage/` to remote directory requests, including the refresh capability of the bundled OpenList core.
+- Renaming the domain and business types preserves compatibility with legacy `sourceKey` values and persisted setting keys, retaining library, favorite, history, and sync associations.
 
 ## App Shell And Runtime
 
@@ -84,7 +93,7 @@ Feature domains must not depend on `app_shell/`.
 
 Feature domains must not depend on `app_runtime/`.
 
-`app_runtime/` also owns runtime connections between feature domains. Comic-source data synchronization is registered through a callback, the WebDAV comic source is registered through a runtime source provider, and reader chapter-completion events are connected to one-way Bangumi progress uploads through a callback. The `comic_source/` and `reader/` domains must not depend directly on `sync/`, `webdav_library/`, or `bangumi/` for those integrations.
+`app_runtime/` also owns runtime connections between feature domains. Comic-source data synchronization is registered through a callback, the remote comic source is registered through a runtime source provider, and reader chapter-completion events are connected to one-way Bangumi progress uploads through a callback. The `comic_source/` and `reader/` domains must not depend directly on `sync/`, `remote_library/`, or `bangumi/` for those integrations.
 
 Cross-domain comic display widgets declare only the state and provider interfaces needed for rendering. Favorite state, history state, local comic covers, and favorite display preferences are injected by `app_runtime/`; `comic_widgets/` must not import those feature implementations directly.
 
@@ -130,10 +139,11 @@ Run `python .github/scripts/check_structure_imports.py --print-feature-dependenc
 - `features/`, `routing/`, `foundation/`, `network/`, `utils/`, and `components/` must not depend on `app_shell/`.
 - `app_shell/`, `features/`, `routing/`, `foundation/`, `network/`, `utils/`, and `components/` must not depend on `app_runtime/`.
 - `foundation/`, `network/`, `utils/`, and `components/` must not depend on `features/` or `pages/`.
-- `features/comic_source/` must not depend directly on `features/history/`, `features/sync/`, or `features/webdav_library/`; shared history metadata contracts belong in `foundation/history_contract.dart`, while synchronization and runtime sources are injected by `app_runtime/`.
+- `features/comic_source/` must not depend directly on `features/history/`, `features/sync/`, or `features/remote_library/`. Shared history metadata contracts belong in `foundation/history_contract.dart`, while synchronization and runtime sources are injected by `app_runtime/`.
 - `features/comic_widgets/` must not depend directly on `features/favorites/`, `features/history/`, or `features/local_comics/`; tile state, cover providers, favorite display preferences, and state listeners are injected by `app_runtime/`.
 - `foundation/app.dart` must remain the `App` singleton entry and must not re-export UI extension buckets.
 - Feature domains with stable entries must not be bypassed by external implementation imports.
+- Every implementation file under `remote_library/` is covered by the entry check. External `lib/` code imports `features/remote_library/remote_library.dart`.
 - Retired `part` libraries in reader, settings, history, favorites, comic details, comic source, and image favorites must not be reintroduced.
 
 For the full and authoritative checklist, use [project_structure.zh.md](project_structure.zh.md).

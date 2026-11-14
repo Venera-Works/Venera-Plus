@@ -15,7 +15,7 @@ import 'package:venera_plus/features/comic_details/comic_details.dart';
 import 'package:venera_plus/features/comic_details/chapters.dart';
 import 'package:venera_plus/features/comic_details/thumbnails.dart';
 import 'package:venera_plus/features/comic_storage/comic_storage.dart';
-import 'package:venera_plus/features/webdav_library/webdav_library.dart';
+import 'package:venera_plus/features/remote_library/remote_library.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
@@ -1287,9 +1287,9 @@ void main() {
       fixture = await _createFixture(
         tester,
         grouped: false,
-        sourceKey: WebDavLibrarySource.sourceKey,
+        sourceKey: RemoteLibrarySource.sourceKey,
         loadComicDetails: (id) async {
-          final result = await WebDavLibrarySource.loadComicInfo(id);
+          final result = await RemoteLibrarySource.loadComicInfo(id);
           if (result.error) return result;
           return Res(
             ComicDetails.fromJson({
@@ -1300,8 +1300,8 @@ void main() {
         },
       );
       final ops = _MetadataRetryOps();
-      WebDavLibrarySource.resetCacheForTesting();
-      WebDavLibrarySource.ops = ops;
+      await runWidgetIo(tester, RemoteLibrarySource.resetCacheForTesting);
+      RemoteLibrarySource.ops = ops;
       appdata.settings['webdavComicLibrary'] = [
         'https://example.com/dav',
         'user',
@@ -1309,14 +1309,14 @@ void main() {
       ];
       appdata.settings['webdavComicLibraryPath'] = '/manga/';
       var attempts = 0;
-      WebDavLibrarySource.configureMetadataScraper((_) async {
+      RemoteLibrarySource.configureMetadataScraper((_) async {
         attempts++;
         return null;
       }, isEnabled: () => false);
-      addTearDown(() {
-        WebDavLibrarySource.configureMetadataScraper(null);
-        WebDavLibrarySource.resetOps();
-        WebDavLibrarySource.resetCacheForTesting();
+      addTearDown(() async {
+        RemoteLibrarySource.configureMetadataScraper(null);
+        RemoteLibrarySource.resetOps();
+        await runWidgetIo(tester, RemoteLibrarySource.resetCacheForTesting);
       });
 
       // 1. Bangumi not connected -> warns user
@@ -1352,14 +1352,12 @@ void main() {
       await tester.pumpAndSettle();
 
       await tester.tap(find.text('Rescrape metadata'));
-      await tester.pumpAndSettle();
-
-      expect(find.text('No match found'), findsOneWidget);
+      await _waitForText(tester, 'No match found');
       expect(attempts, 1);
       expect(ops.metadata, isNull);
 
       // 3. Matched -> details refresh
-      WebDavLibrarySource.configureMetadataScraper((_) async {
+      RemoteLibrarySource.configureMetadataScraper((_) async {
         attempts++;
         return const ComicMetaData(
           title: 'Scraped WebDAV Title',
@@ -1373,7 +1371,7 @@ void main() {
       await tester.pumpAndSettle();
 
       await tester.tap(find.text('Rescrape metadata'));
-      await tester.pumpAndSettle();
+      await _waitForText(tester, 'Scraped Bangumi description');
 
       expect(
         find.widgetWithText(SelectableText, 'Scraped WebDAV Title'),
@@ -1382,6 +1380,7 @@ void main() {
       expect(find.text('Scraped Bangumi description'), findsOneWidget);
       expect(attempts, 2);
       expect(jsonDecode(ops.metadata!)['title'], 'Scraped WebDAV Title');
+      await _pumpAsyncWork(tester, RemoteLibrarySource.resetCacheForTesting());
     },
     skip: !isSqliteAvailable(),
   );
@@ -1887,31 +1886,32 @@ class _TestFavorites extends ChangeNotifier implements LocalFavoritesManager {
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
-class _MetadataRetryOps implements WebDavLibraryOps {
+class _MetadataRetryOps implements RemoteLibraryOps {
   String? metadata;
 
   @override
-  Future<void> test(WebDavLibraryConfig config) async {}
+  Future<void> test(RemoteLibraryConfig config) async {}
 
   @override
-  Future<List<WebDavLibraryEntry>> readDir(
-    WebDavLibraryConfig config,
-    String remotePath,
-  ) async => [
-    const WebDavLibraryEntry(name: '001.jpg', isDirectory: false),
+  Future<List<RemoteLibraryEntry>> readDir(
+    RemoteLibraryConfig config,
+    String remotePath, {
+    bool refresh = false,
+  }) async => [
+    const RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
     if (metadata != null)
-      const WebDavLibraryEntry(name: 'metadata.json', isDirectory: false),
+      const RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
   ];
 
   @override
-  Future<WebDavTextFile> readText(
-    WebDavLibraryConfig config,
+  Future<RemoteLibraryTextFile> readText(
+    RemoteLibraryConfig config,
     String remotePath,
-  ) async => WebDavTextFile(content: metadata!, eTag: '"metadata-v1"');
+  ) async => RemoteLibraryTextFile(content: metadata!, eTag: '"metadata-v1"');
 
   @override
-  Future<WebDavWriteResult> writeText(
-    WebDavLibraryConfig config,
+  Future<RemoteLibraryWriteResult> writeText(
+    RemoteLibraryConfig config,
     String remotePath,
     String content, {
     bool createOnly = false,
@@ -1919,9 +1919,9 @@ class _MetadataRetryOps implements WebDavLibraryOps {
     int? ifUnmodifiedSince,
   }) async {
     if (createOnly && metadata != null) {
-      throw WebDavPreconditionFailedException(remotePath);
+      throw RemoteLibraryPreconditionFailedException(remotePath);
     }
     metadata = content;
-    return const WebDavWriteResult(eTag: '"metadata-v1"');
+    return const RemoteLibraryWriteResult(eTag: '"metadata-v1"');
   }
 }

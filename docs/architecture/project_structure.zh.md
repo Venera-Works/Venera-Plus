@@ -39,7 +39,7 @@
 - `search/`：搜索首页、搜索结果页、聚合搜索页面和搜索查询过滤规则。
 - `settings/`：设置页面、阅读设置、设置页共享控件和九大结构化设置页面（按“阅读与浏览”、“来源与数据”、“系统”分组，个人内容移入书库，废弃独立设置类已清理）。
 - `sync/`：WebDAV 数据同步、顶栏 `SyncActionButton`、应用数据导入导出和本地漫画备份恢复；追更状态通过各设备独立的状态文件合并发现与确认记录，其他数据继续沿用完整快照恢复。
-- `webdav_library/`：WebDAV 漫画库在线阅读源，负责远端目录图片结构的列表、详情和图片加载配置。
+- `remote_library/` 负责网盘与 WebDAV 在线漫画库的远端目录发现、作品聚合、元数据、按需阅读及本地索引。
 
 新增功能域时，优先采用以下形态：
 
@@ -68,10 +68,19 @@ test/features/<domain>/
 - 设置功能通过 `features/settings/settings.dart` 暴露 `SettingsPage` 与结构化设置组件（包括 `ReadingSettings`、`AppearanceSettings`、`BrowsingAndFavoritesSettings`、`SourcesAndServicesSettings`、`StorageAndSyncSettings`、`PrivacyAndSecuritySettings` 等）。
 - 同步功能通过 `features/sync/sync.dart` 暴露数据同步、顶栏 `SyncActionButton`、数据迁移、漫画备份和漫画归档页面。
 - 本地漫画通过 `features/local_comics/local_comics.dart` 暴露本地库、下载任务、本地漫画页面和下载队列弹窗，通过 `features/local_comics/import_export/import_export.dart` 暴露导入导出工具。
-- WebDAV 漫画库通过 `features/webdav_library/webdav_library.dart` 暴露在线目录图片阅读源。
+- 远程漫画库通过 `features/remote_library/remote_library.dart` 暴露在线阅读源、作品类型和设置页面。
 外部页面、路由和测试不应绕过这些入口直接 import 内部实现文件。
 
 漫画归档元数据和跨存储介质复用的文件规则统一通过 `features/comic_storage/comic_storage.dart` 暴露；本地漫画、CBZ 和 WebDAV 不应分别复制这些规则，也不应绕过入口直接引用其实现文件。
+
+### 远程漫画库边界
+
+- `remote_library.dart` 是功能域对外入口，外部模块通过该入口访问 `RemoteLibrary` 前缀的业务类型。引擎、仓储、扫描与元数据实现保留在域内，测试对应 `test/features/remote_library/`。
+- `remote_library_engine.dart` 负责漫画源适配与任务编排，目录发现和元数据处理按职责拆分，复用 `comic_storage/` 的文件与归档规则。
+- `remote_library_repository.dart` 提供异步仓储接口，由常驻 isolate 持有 SQLite 连接并执行数据库操作，负责旧库迁移至 `remote_library.db`。
+- 目录发现先发布作品摘要，元数据在后台补全，章节和分卷内容按需读取。列表变更通知合并发送，列表重载期间收到的新变更应在当前重载完成后补刷。
+- 手动刷新通过 `network/remote_storage/` 的 `list(refresh: true)` 贯通到远端目录请求，包括内置 OpenList 的刷新能力。
+- 目录与业务类型更名时，旧 `sourceKey` 和持久化设置键继续兼容，保留已有漫画库、收藏、历史及同步配置的关联。
 
 ## `lib/app_shell`
 
@@ -96,7 +105,7 @@ test/features/<domain>/
 运行时组装层可以依赖功能域、基础设施和路由入口；业务功能域不应反向依赖运行时组装。
 `app_runtime.dart` 是运行时组装对外入口，`main.dart` 等应用入口代码应通过它引用启动和无头模式能力；`app_shell/`、`features/`、`routing/`、`foundation/`、`network/`、`utils/` 和 `components/` 不应依赖 `app_runtime/`。
 
-跨功能域的运行时连接也归 `app_runtime/` 负责。漫画源保存后的数据同步通过回调注入，WebDAV 漫画源通过附加源 provider 注入，阅读器的章节完成事件通过回调连接 Bangumi 单向进度上传；`comic_source/` 和 `reader/` 不应为了这些运行时能力反向依赖 `sync/`、`webdav_library/` 或 `bangumi/`。
+跨功能域的运行时连接也归 `app_runtime/` 负责。漫画源保存后的数据同步通过回调注入，远程漫画源通过附加源 provider 注入，阅读器的章节完成事件通过回调连接 Bangumi 单向进度上传；`comic_source/` 和 `reader/` 不应为了这些运行时能力反向依赖 `sync/`、`remote_library/` 或 `bangumi/`。
 
 跨功能域复用的漫画展示组件只声明展示所需的状态与 provider 接口。收藏、历史、本地漫画封面和收藏页显示偏好由 `app_runtime/` 注入，`comic_widgets/` 不应直接依赖这些业务域的管理器或实现文件。
 
@@ -154,7 +163,7 @@ test/features/<domain>/
 - `features/`、`routing/`、`foundation/`、`network/`、`utils/`、`components/` 反向依赖 `app_shell/`。
 - `app_shell/`、`features/`、`routing/`、`foundation/`、`network/`、`utils/`、`components/` 反向依赖 `app_runtime/`。
 - `foundation/`、`network/`、`utils/`、`components/` 依赖 `features/` 或 `pages/`。
-- `features/comic_source/` 不得直接依赖 `features/history/`、`features/sync/` 或 `features/webdav_library/`；共享阅读历史元数据契约应放在 `foundation/history_contract.dart`，同步和附加源由 `app_runtime/` 注入。
+- `features/comic_source/` 不得直接依赖 `features/history/`、`features/sync/` 或 `features/remote_library/`；共享阅读历史元数据契约应放在 `foundation/history_contract.dart`，同步和附加源由 `app_runtime/` 注入。
 - `features/comic_widgets/` 不得直接依赖 `features/favorites/`、`features/history/` 或 `features/local_comics/`；卡片状态、封面 provider、收藏页显示偏好和状态监听由 `app_runtime/` 注入。
 - `foundation/app.dart` 重新 export `foundation/context.dart` 或 `foundation/widget_utils.dart`。
 - `components/` 中未使用 `App` 单例的文件通过 `foundation/app.dart` 间接引用 UI 扩展；应直接引用 `foundation/context.dart` 或 `foundation/widget_utils.dart`。
@@ -173,6 +182,7 @@ test/features/<domain>/
 - 外部 `lib/` 代码绕过 `app_runtime/app_runtime.dart` 直接依赖运行时组装内部文件。
 - `foundation/` 和已收窄的纯文件系统调用点通过 `utils/io.dart` 间接引用文件系统基础能力；应直接使用 `foundation/file_system.dart`。
 - 已建立稳定入口的功能域，外部 `lib/` 代码绕过入口直接依赖其内部实现文件。
+- `remote_library/` 的全部内部实现文件均受入口检查约束，外部 `lib/` 代码统一引用 `features/remote_library/remote_library.dart`。
 - `foundation/extensions.dart` 重新承载实现、import 或 part，或外部代码绕过该入口直接依赖 `foundation/extensions/` 下的分类实现文件。
 - 历史功能中图片收藏模型或管理实现绕过 `features/history/history.dart` 稳定入口，或重新作为 `history_manager.dart` 的 part。
 - 设置功能中的共享设置控件绕过 `features/settings/settings.dart` 稳定入口，或重新作为 `settings_page.dart` 的 part。

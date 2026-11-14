@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_plus/features/webdav_library/webdav_library.dart';
+import 'package:venera_plus/features/remote_library/remote_library.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
@@ -21,6 +21,30 @@ void main() {
   tearDown(() async {
     storage.dispose();
     await dataDir.delete(recursive: true);
+  });
+
+  test('账号存储手动刷新缓存目录后返回新增文件并更新后续列表', () async {
+    final rpc = _CachedDirectoryRpc();
+    storage.configureOpenList(rpc);
+    appdata.settings[remoteStorageAccountsSetting] = [_account.toJson()];
+    final store = storage.storeFor(_account.id);
+    addTearDown(() => storage.release(store));
+
+    final initial = await store.list('/Comics');
+    expect(initial.map((entry) => entry.name), ['已有.cbz']);
+
+    rpc.files.add('新增.cbz');
+    final cached = await store.list('/Comics/');
+    expect(cached.map((entry) => entry.name), ['已有.cbz']);
+
+    final refreshed = await store.list('/Comics', refresh: true);
+    expect(refreshed.map((entry) => entry.path), [
+      '/Comics/已有.cbz',
+      '/Comics/新增.cbz',
+    ]);
+    expect(refreshed.every((entry) => !entry.isDirectory), isTrue);
+    final afterRefresh = await store.list('/Comics/');
+    expect(afterRefresh.map((entry) => entry.name), ['已有.cbz', '新增.cbz']);
   });
 
   test('saves the first library when no library setting exists', () async {
@@ -304,7 +328,7 @@ void main() {
           sharedCredentials ? 'library-password' : 'sync-password',
         ];
 
-        await RemoteComicLibraryRegistry.migrateLegacyWebDavLibrary();
+        await RemoteComicLibraryRegistry.migrateLegacyRemoteLibrary();
         await storage.migrateLegacyWebDavLocations();
 
         final library = storage.libraries.single;
@@ -318,7 +342,7 @@ void main() {
         expect(library.directories, ['/漫画/']);
         expect(sync.directory, '/VeneraPlus/');
         final before = storage.accounts.map((a) => a.toJson()).toList();
-        await RemoteComicLibraryRegistry.migrateLegacyWebDavLibrary();
+        await RemoteComicLibraryRegistry.migrateLegacyRemoteLibrary();
         await storage.migrateLegacyWebDavLocations();
         await appdata.loadDataForTesting(dataDir.path);
         expect(storage.accounts.map((a) => a.toJson()).toList(), before);
@@ -439,6 +463,29 @@ const _account = StorageAccount(
   name: 'Drive',
   authorization: {'refresh_token': 'refresh'},
 );
+
+class _CachedDirectoryRpc implements OpenListRpcClient {
+  final files = ['已有.cbz'];
+  final _cache = <String, List<Map<String, dynamic>>>{};
+
+  @override
+  Future<Map<String, dynamic>> invoke(
+    String method,
+    Map<String, dynamic> request,
+  ) async {
+    if (method != 'list') return const {'data': {}};
+    final directory = request['path'] as String;
+    if (request['refresh'] == true || !_cache.containsKey(directory)) {
+      _cache[directory] = [
+        for (final name in files)
+          {'name': name, 'path': '$directory$name', 'isDirectory': false},
+      ];
+    }
+    return {
+      'data': {'entries': _cache[directory]},
+    };
+  }
+}
 
 class _MergeRpc implements OpenListRpcClient {
   final values = <String, Map<String, dynamic>>{};
