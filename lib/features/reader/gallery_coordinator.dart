@@ -244,20 +244,18 @@ class VisualMoveDecision {
 
 /// Pure policy deciding visual page navigation.
 ///
-/// During ongoing page animation, returns `consumed: true, canMove: false` to consume
-/// the input without initiating re-entrant animations or triggering fallbacks.
+/// Repeated input advances from the pending animation destination. At a boundary,
+/// an ongoing animation consumes the request until the visible page settles.
 VisualMoveDecision decideVisualMove({
   required bool isAnimating,
   required int currentIndex,
+  int? pendingTargetIndex,
   required int delta,
   required int totalVisualPages,
 }) {
-  if (isAnimating) {
-    return const VisualMoveDecision(consumed: true, canMove: false);
-  }
-  final target = currentIndex + delta;
+  final target = (pendingTargetIndex ?? currentIndex) + delta;
   if (target < 1 || target > totalVisualPages) {
-    return const VisualMoveDecision(consumed: false, canMove: false);
+    return VisualMoveDecision(consumed: isAnimating, canMove: false);
   }
   return VisualMoveDecision(consumed: true, canMove: true, targetIndex: target);
 }

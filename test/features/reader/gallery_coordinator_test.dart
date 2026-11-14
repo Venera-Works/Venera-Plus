@@ -219,20 +219,46 @@ void main() {
   });
 
   group('Visual page navigation policy and animation re-entrancy', () {
-    test(
-      'ongoing animation consumes input and prevents re-entrant navigation or fallback',
-      () {
+    test('ongoing animation advances from its pending destination', () {
+      final decision = decideVisualMove(
+        isAnimating: true,
+        currentIndex: 2,
+        pendingTargetIndex: 3,
+        delta: 1,
+        totalVisualPages: 4,
+      );
+      expect(decision.consumed, isTrue);
+      expect(decision.canMove, isTrue);
+      expect(decision.targetIndex, 4);
+    });
+
+    test('reverse input retreats from the pending destination', () {
+      final decision = decideVisualMove(
+        isAnimating: true,
+        currentIndex: 2,
+        pendingTargetIndex: 4,
+        delta: -1,
+        totalVisualPages: 5,
+      );
+      expect(decision.consumed, isTrue);
+      expect(decision.canMove, isTrue);
+      expect(decision.targetIndex, 3);
+    });
+
+    for (final delta in [-1, 1]) {
+      test('pending boundary consumes input until settled (delta=$delta)', () {
         final decision = decideVisualMove(
           isAnimating: true,
           currentIndex: 2,
-          delta: 1,
+          pendingTargetIndex: delta < 0 ? 1 : 4,
+          delta: delta,
           totalVisualPages: 4,
         );
         expect(decision.consumed, isTrue);
         expect(decision.canMove, isFalse);
         expect(decision.targetIndex, isNull);
-      },
-    );
+      });
+    }
 
     test('in-bounds move request is consumed and proceeds to target', () {
       final decision = decideVisualMove(

@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
+import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
@@ -578,9 +579,22 @@ void main() {
         addTearDown(localDb.close);
         FavoriteSyncData.ensureComicUpdateSchema(localDb);
 
+        final history = HistoryManager();
+        await history.init();
+        final favorites = LocalFavoritesManager();
+        await favorites.init();
+        addTearDown(() {
+          history.close();
+          HistoryManager.cache = null;
+          favorites.close();
+          LocalFavoritesManager.cache = null;
+        });
+
         // Remote snapshot is equal version 5 (100-5.venera)
         store.directories.add('/sync/');
         store.files['/sync/100-5.venera'] = utf8.encode('dummy archive');
+        configureAppDataArchiveExtractorForTesting((archive, destination) {});
+        addTearDown(() => configureAppDataArchiveExtractorForTesting(null));
 
         // Remote also has comic_updates sidecar from peer
         final peerDoc = encodeComicUpdateStatesDocument(
@@ -602,7 +616,7 @@ void main() {
 
         final result = await DataSync().downloadData();
 
-        expect(result.success, isTrue);
+        expect(result.success, isTrue, reason: result.errorMessage);
 
         // Sidecar was merged even though snapshot version was equal!
         final updatedStates = FavoriteSyncData.readComicUpdateStates(localDb);
@@ -711,6 +725,8 @@ class _StoreRpc implements OpenListRpcClient {
     Map<String, dynamic> request,
   ) async {
     switch (method) {
+      case 'accounts':
+        return const {'data': {}};
       case 'list':
         final entries = await store.list(request['path'] as String);
         return {

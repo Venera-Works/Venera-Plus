@@ -112,9 +112,11 @@ class ImageFavoriteManager with ChangeNotifier {
         ],
       );
     }
+    final changed = _db.updatedRows > 0;
     if (notify) {
       notifyListeners();
     }
+    if (changed) notifyHistoryDataChanged();
   }
 
   bool has(String id, String sourceKey, String eid, int page, int ep) {

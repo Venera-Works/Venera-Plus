@@ -85,7 +85,11 @@ Future<File> exportAppData([bool sync = true]) async {
   return cacheFile;
 }
 
-Future<void> importAppData(File file, {bool checkVersion = false}) async {
+Future<void> importAppData(
+  File file, {
+  bool checkVersion = false,
+  bool allowSameOrOlderVersion = false,
+}) async {
   var cacheDirPath = FilePath.join(App.cachePath, 'temp_data');
   var cacheDir = Directory(cacheDirPath);
   var backupDir = Directory(
@@ -129,7 +133,7 @@ Future<void> importAppData(File file, {bool checkVersion = false}) async {
     if (appdataFile.existsSync()) {
       importedAppdata = _decodeImportAppdata(await appdataFile.readAsString());
     }
-    if (checkVersion && importedAppdata != null) {
+    if (checkVersion && !allowSameOrOlderVersion && importedAppdata != null) {
       var importedSettings = importedAppdata["settings"];
       var version = importedSettings is Map
           ? importedSettings["dataVersion"]

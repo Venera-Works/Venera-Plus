@@ -24,7 +24,6 @@ import 'package:venera_plus/features/reader/reading_session.dart';
 import 'package:venera_plus/features/reader/remote_progress.dart';
 import 'package:venera_plus/features/reader/scaffold.dart';
 import 'package:venera_plus/features/reader/volume.dart';
-import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
@@ -677,7 +676,6 @@ class ReaderState extends State<Reader>
       () async {
         await _readingSession.dispose();
         await HistoryManager().flushReadingProgress(id: cid, type: type);
-        DataSync().onDataChanged();
       }().catchError((Object error, StackTrace stackTrace) {
         Log.error('Reader', 'Failed to finish reading: $error', stackTrace);
       }),
@@ -734,7 +732,6 @@ class ReaderState extends State<Reader>
         unawaited(() async {
           await _readingSession.pause();
           await HistoryManager().flushReadingProgress(id: cid, type: type);
-          DataSync().onDataChanged();
         }());
     }
   }
@@ -1450,6 +1447,13 @@ abstract mixin class ReaderLocation {
   int? get pendingNavigationPage => _pendingNavigation?.page;
 
   int? get pendingNavigationChapter => _pendingNavigation?.chapter;
+
+  void setPendingNavigationPage(int page) {
+    final pending = _pendingNavigation;
+    if (pending != null) {
+      _pendingNavigation = pending.withPage(page);
+    }
+  }
 
   ReadingProgress? captureObservedProgressForNavigation() => null;
 

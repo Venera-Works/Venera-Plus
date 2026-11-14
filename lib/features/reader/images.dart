@@ -303,8 +303,10 @@ class GalleryModeState extends State<_GalleryMode>
   final _preloader = ReaderImagePreloader();
   bool _preloadScheduled = false;
   String? _lastVisibleStableIdentity;
-  bool _isAnimatingVisualPage = false;
+  int? _targetControllerIndex;
+  int _visualAnimationGeneration = 0;
   int? _visualAnimationToken;
+  bool get _isAnimatingVisualPage => _visualAnimationToken != null;
 
   String _controllerKeyForIndex(int index) {
     return resolveControllerKey(
@@ -576,10 +578,7 @@ class GalleryModeState extends State<_GalleryMode>
     _coalescer.reset();
     _preloader.dispose();
     controller.dispose();
-    if (_isAnimatingVisualPage) {
-      _isAnimatingVisualPage = false;
-      reader.endPageAnimation(_visualAnimationToken);
-    }
+    _endVisualPageAnimation();
     _pool.disposeAll();
     super.dispose();
   }
@@ -885,6 +884,10 @@ class GalleryModeState extends State<_GalleryMode>
           if (notification is ScrollStartNotification) {
             _preloader.setPaused(true);
             if (notification.dragDetails != null) {
+              if (_isAnimatingVisualPage) {
+                _endVisualPageAnimation();
+                reader.resetPageAnimation();
+              }
               _isUserPaging = true;
               _userPagingCommandId ??= reader.createNavigationCommandId(
                 retainObservedProgress: true,
@@ -1229,27 +1232,54 @@ class GalleryModeState extends State<_GalleryMode>
     final decision = decideVisualMove(
       isAnimating: reader.isPageAnimating || _isAnimatingVisualPage,
       currentIndex: current,
+      pendingTargetIndex: _targetControllerIndex,
       delta: delta,
       totalVisualPages: totalVisualPages,
     );
     if (!decision.consumed) {
       return false;
     }
-    if (!decision.canMove || decision.targetIndex == null) {
+    final target = decision.targetIndex ?? _targetControllerIndex;
+    if (target != null) {
+      reader.setPendingNavigationPage(controllerIndexToSourcePage(target));
+    }
+    if (!decision.canMove || target == null) {
       return true;
     }
-    final target = decision.targetIndex!;
+    reader.resetPageAnimation();
     if (reader.enablePageAnimation(reader.cid, reader.type)) {
       animateToControllerPage(target);
     } else {
+      _endVisualPageAnimation();
       controller.jumpToPage(target);
+      _completeVisualPageNavigation(target);
     }
     return true;
   }
 
+  void _endVisualPageAnimation() {
+    _visualAnimationGeneration++;
+    _targetControllerIndex = null;
+    final token = _visualAnimationToken;
+    _visualAnimationToken = null;
+    if (token != null) reader.endPageAnimation(token);
+  }
+
+  void _completeVisualPageNavigation(int target) {
+    if (mounted &&
+        controller.hasClients &&
+        controller.page == target.toDouble() &&
+        reader.pendingNavigationSource != null) {
+      // Reversing before the first animation frame can return to the same page
+      // without a PageView.onPageChanged callback.
+      reader.setPage(controllerIndexToSourcePage(target));
+    }
+  }
+
   Future<void> animateToControllerPage(int target) async {
-    if (_isAnimatingVisualPage) return;
-    _isAnimatingVisualPage = true;
+    _endVisualPageAnimation();
+    _targetControllerIndex = target;
+    final generation = _visualAnimationGeneration;
     final token = reader.startPageAnimation();
     _visualAnimationToken = token;
     try {
@@ -1264,10 +1294,12 @@ class GalleryModeState extends State<_GalleryMode>
         duration: const Duration(milliseconds: 200),
         curve: Curves.ease,
       );
+      if (generation == _visualAnimationGeneration) {
+        _completeVisualPageNavigation(target);
+      }
     } finally {
-      if (_isAnimatingVisualPage) {
-        _isAnimatingVisualPage = false;
-        reader.endPageAnimation(token);
+      if (generation == _visualAnimationGeneration) {
+        _endVisualPageAnimation();
       }
     }
   }
@@ -1286,12 +1318,15 @@ class GalleryModeState extends State<_GalleryMode>
     if (page < reader.maxPage) {
       reader.targetLastVisualPage = false;
     }
+    _endVisualPageAnimation();
     final target = _sourcePageToControllerIndex(page);
     controller.jumpToPage(target);
+    _completeVisualPageNavigation(target);
   }
 
   @override
   void toVisualEnd() {
+    _endVisualPageAnimation();
     final result = resolveVisualEndTarget(
       isSplitEnabled: isSplitEnabled,
       plan: _pagePlan,
@@ -1575,14 +1610,17 @@ const Set<PointerDeviceKind> _kTouchLikeDeviceTypes = <PointerDeviceKind>{
 
 const double _kChangeChapterOffset = 160;
 
-class _ContinuousMode extends StatefulWidget {
-  const _ContinuousMode({super.key, this.crossChapter = false});
+@visibleForTesting
+class ContinuousMode extends StatefulWidget {
+  const ContinuousMode({super.key, this.crossChapter = false});
 
   final bool crossChapter;
 
   @override
-  State<_ContinuousMode> createState() => ContinuousModeState();
+  State<ContinuousMode> createState() => ContinuousModeState();
 }
+
+typedef _ContinuousMode = ContinuousMode;
 
 class ContinuousModeState extends State<_ContinuousMode>
     implements
@@ -1626,14 +1664,17 @@ class ContinuousModeState extends State<_ContinuousMode>
   /// The gesture detector has a delay to detect tap event.
   /// To handle the tap event, we need to know if the user was scrolling before the delay.
   bool delayedIsScrolling = false;
+  final _delayedScrollingTimers = <Timer>{};
 
   var imageStates = <State<ComicImage>>{};
 
   void delayedSetIsScrolling(bool value) {
-    Future.delayed(
-      const Duration(milliseconds: 300),
-      () => delayedIsScrolling = value,
-    );
+    late final Timer timer;
+    timer = Timer(const Duration(milliseconds: 300), () {
+      _delayedScrollingTimers.remove(timer);
+      delayedIsScrolling = value;
+    });
+    _delayedScrollingTimers.add(timer);
   }
 
   void _beginUserScroll({bool endWhenIdle = false}) {
@@ -1981,6 +2022,10 @@ class ContinuousModeState extends State<_ContinuousMode>
     }
     itemPositionsListener.itemPositions.removeListener(onPositionChanged);
     _endUserScroll();
+    for (final timer in _delayedScrollingTimers) {
+      timer.cancel();
+    }
+    _delayedScrollingTimers.clear();
     _preloader.dispose();
     super.dispose();
   }
@@ -2052,13 +2097,19 @@ class ContinuousModeState extends State<_ContinuousMode>
           _isNavigatingWaterfallLocation) {
         return;
       }
+      final chapterChanged = reader.chapter != imageRef.chapter;
+      final pageChanged = reader.page != imageRef.page;
       _setReaderLocation(
         imageRef,
         source: source,
         commandId: commandId,
         navigationCompleted: navigationCompleted,
       );
-      context.readerScaffold.update();
+      if (chapterChanged) {
+        context.readerScaffold.update();
+      } else if (pageChanged || navigationCompleted) {
+        context.readerScaffold.updatePage();
+      }
     } else if (page != reader.page || navigationCompleted) {
       reader.setPage(
         page,

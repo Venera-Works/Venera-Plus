@@ -686,7 +686,10 @@ void main() {
           );
           expect(server.requests, contains('PROPFIND /dav/VeneraPlus/'));
           final firstName = server.snapshotNames.single;
-          expect(firstName, matches(RegExp(r'^\d+-1\.venera$')));
+          expect(
+            firstName,
+            matches(RegExp(r'^\d+-1-\d{20}-[0-9a-f]{32}\.venera$')),
+          );
           final extracted = await _extractServerSnapshot(
             server,
             firstName,
@@ -708,7 +711,10 @@ void main() {
 
           expect((await sync.uploadData()).success, isTrue);
           expect(server.snapshotNames, hasLength(1));
-          expect(server.snapshotNames.single, endsWith('-2.venera'));
+          expect(
+            server.snapshotNames.single,
+            matches(RegExp(r'^\d+-2-\d{20}-[0-9a-f]{32}\.venera$')),
+          );
           expect(
             server.requests.where(
               (request) => request == 'MKCOL /dav/VeneraPlus/',
@@ -739,7 +745,7 @@ void main() {
       );
 
       test(
-        'WebDAV skips equal snapshots and downloads newer snapshots without upload loop',
+        'WebDAV automatically skips older snapshots and downloads newer snapshots without upload loop',
         () async {
           final server = await _SyncWebDav.start();
           addTearDown(server.close);
@@ -759,12 +765,12 @@ void main() {
           appdata.settings['dataVersion'] = 7;
           await appdata.saveData(false);
           server.syncDirectoryExists = true;
-          server.files['999-7.venera'] = Uint8List(1);
+          server.files['999-6.venera'] = Uint8List(1);
           server.rootFiles['999999-999.venera'] = Uint8List(1);
 
           final sync = DataSync();
           appdata.implicitData['webdavSyncMode'] = DataSyncMode.realtime.name;
-          expect((await sync.downloadData()).success, isTrue);
+          expect((await sync.downloadData(force: false)).success, isTrue);
           expect(
             server.requests.where((request) => request.startsWith('GET ')),
             isEmpty,

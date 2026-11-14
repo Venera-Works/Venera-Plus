@@ -411,6 +411,7 @@ void startBackgroundTasks() {
   }
   final dataSync = DataSync();
   configureComicSourceDataSavedHandler(() async => dataSync.onDataChanged());
+  configureHistoryDataChangedHandler(dataSync.onDataChanged);
   startBangumiAfterDataSync(
     waitForDownload: dataSync.waitForDownload,
     createInitializer: () => () async {

@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:uuid/uuid.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/window_frame.dart';
 import 'package:venera_plus/features/sync/app_data_transfer.dart';
@@ -169,7 +172,7 @@ class DataSync with ChangeNotifier {
       }
     }
     // Do not download over local edits waiting for their next scheduled upload.
-    unawaited(hasPendingChanges ? uploadData() : downloadData());
+    unawaited(hasPendingChanges ? uploadData() : downloadData(force: false));
   }
 
   /// Save a draft only after its initial transfer succeeds. Automatic work is
@@ -203,6 +206,7 @@ class DataSync with ChangeNotifier {
       'webdavSyncIntervalMinutes',
       'webdavSyncLastAttempt',
       'webdavSyncPending',
+      'webdavLastBackup',
     ];
     final previous = {for (final key in keys) key: appdata.implicitData[key]};
     final previousGeneration = _changeGeneration;
@@ -472,11 +476,14 @@ class DataSync with ChangeNotifier {
     return _startTask(_DataSyncTask.upload, _uploadDataNow);
   }
 
-  Future<Res<bool>> downloadData() async {
+  /// Explicit downloads restore the latest remote snapshot, including an older
+  /// or already restored backup. Automatic checks pass [force] as false.
+  Future<Res<bool>> downloadData({bool force = true}) async {
+    Future<Res<bool>> run() => _downloadDataNow(force: force);
     if (_activeTask != null) {
-      return _schedulePendingTask(_DataSyncTask.download, _downloadDataNow);
+      return _schedulePendingTask(_DataSyncTask.download, run);
     }
-    return _startTask(_DataSyncTask.download, _downloadDataNow);
+    return _startTask(_DataSyncTask.download, run);
   }
 
   Future<Res<bool>> _schedulePendingTask(
@@ -602,16 +609,10 @@ class DataSync with ChangeNotifier {
         config.createClient(logRequests: true);
 
     File? data;
+    final previousVersion = appdata.settings['dataVersion'] as int;
+    int? uploadingVersion;
+    var uploaded = false;
     try {
-      appdata.settings['dataVersion']++;
-      await appdata.saveData(false);
-      data = await _exportSnapshot();
-      if (!_isTaskCurrent(epoch)) return const Res(true);
-      var time = (DateTime.now().millisecondsSinceEpoch ~/ 86400000).toString();
-      var filename = time;
-      filename += '-';
-      filename += appdata.settings['dataVersion'].toString();
-      filename += '.venera';
       late List<dav.File> files;
       try {
         files = await client.readDir(_remoteDirectory);
@@ -631,6 +632,15 @@ class DataSync with ChangeNotifier {
               .toList()
             ..sort((a, b) => _compareSnapshotNames(a.name!, b.name!));
       if (!_isTaskCurrent(epoch)) return const Res(true);
+      uploadingVersion = _nextSnapshotVersion(
+        previousVersion,
+        files.map((file) => file.name!),
+      );
+      appdata.settings['dataVersion'] = uploadingVersion;
+      await appdata.saveData(false);
+      data = await _exportSnapshot();
+      if (!_isTaskCurrent(epoch)) return const Res(true);
+      final filename = _snapshotName(uploadingVersion);
       final remotePath = '$_remoteDirectory$filename';
       final options = await client.c.wdOptions(client, remotePath);
       if (options.statusCode == null || options.statusCode! >= 400) {
@@ -664,30 +674,23 @@ class DataSync with ChangeNotifier {
           error: response.statusMessage,
         );
       }
+      uploaded = true;
       if (!_isTaskCurrent(epoch)) return const Res(true);
-      files =
-          (await client.readDir(_remoteDirectory))
-              .where(
-                (e) =>
-                    e.name != null &&
-                    e.isDir != true &&
-                    _snapshotVersion(e.name!) != null,
-              )
-              .toList()
-            ..sort((a, b) => _compareSnapshotNames(a.name!, b.name!));
-      final old = files
-          .where((e) => e.name!.startsWith("$time-") && e.name != filename)
-          .toList();
-      for (final file in old) {
-        if (!_isTaskCurrent(epoch)) return const Res(true);
-        await client.remove('$_remoteDirectory${file.name!}');
-      }
-      final retained = files.where((file) => !old.contains(file)).toList();
-      while (retained.length > 10) {
-        if (!_isTaskCurrent(epoch)) return const Res(true);
-        final oldest = retained.firstWhere((file) => file.name != filename);
-        await client.remove('$_remoteDirectory${oldest.name!}');
-        retained.remove(oldest);
+      await _rememberSnapshot(
+        _webDavTarget(config),
+        filename,
+        _snapshotIdentity(filename),
+      );
+      try {
+        final names = (await client.readDir(_remoteDirectory))
+            .where((file) => file.isDir != true && file.name != null)
+            .map((file) => file.name!);
+        for (final name in _snapshotsToPrune(names, filename)) {
+          if (!_isTaskCurrent(epoch)) return const Res(true);
+          await client.remove('$_remoteDirectory$name');
+        }
+      } catch (error, stack) {
+        Log.error('Upload Data', 'Failed to prune old backups: $error', stack);
       }
       if (!_isTaskCurrent(epoch)) return const Res(true);
       await syncComicUpdatesWithWebDav(
@@ -706,18 +709,26 @@ class DataSync with ChangeNotifier {
       _lastError = e.toString();
       return Res.error(e.toString());
     } finally {
+      if (!uploaded &&
+          uploadingVersion != null &&
+          appdata.settings['dataVersion'] == uploadingVersion) {
+        appdata.settings['dataVersion'] = previousVersion;
+        await appdata.saveData(false);
+      }
       if (data != null) await data.deleteIgnoreError();
     }
   }
 
-  Future<Res<bool>> _downloadDataNow() async {
+  Future<Res<bool>> _downloadDataNow({required bool force}) async {
     var debugDownload = debugDownloadOverride;
     if (debugDownload != null) {
       return debugDownload();
     }
     final epoch = _taskEpoch;
     final location = _remoteLocation;
-    if (location != null) return _downloadFromStore(location, epoch);
+    if (location != null) {
+      return _downloadFromStore(location, epoch, force: force);
+    }
     var config = _validateConfig();
     if (config == null) {
       _lastError = 'Invalid WebDAV configuration';
@@ -730,6 +741,7 @@ class DataSync with ChangeNotifier {
         debugClientFactory?.call(config) ??
         config.createClient(logRequests: true);
 
+    File? localFile;
     try {
       var files = await client.readDir(_remoteDirectory);
       if (!_isTaskCurrent(epoch)) return const Res(true);
@@ -754,29 +766,42 @@ class DataSync with ChangeNotifier {
         );
         throw 'No data file found';
       }
-      var version = file.name!.split('-').elementAtOrNull(1)?.split('.').first;
-      if (version != null && int.tryParse(version) != null) {
-        var currentVersion = appdata.settings['dataVersion'];
-        if (currentVersion != null && int.parse(version) <= currentVersion) {
-          Log.info("Data Sync", 'No new data to download');
-          if (!_isTaskCurrent(epoch)) return const Res(true);
-          await syncComicUpdatesWithWebDav(
-            client,
-            remoteBaseDirectory: _remoteDirectory,
-            uploadSelf: false,
-            isCurrent: () => _isTaskCurrent(epoch),
-          );
-          return const Res(true);
-        }
+      final target = _webDavTarget(config);
+      final identity = _snapshotIdentity(
+        file.name!,
+        eTag: file.eTag,
+        modifiedAt: file.mTime?.millisecondsSinceEpoch,
+        size: file.size,
+      );
+      if (!force &&
+          _shouldSkipSnapshot(
+            target,
+            file.name!,
+            identity,
+            hasMetadata: file.eTag?.isNotEmpty == true || file.mTime != null,
+          )) {
+        Log.info("Data Sync", 'No new data to download');
+        if (!_isTaskCurrent(epoch)) return const Res(true);
+        await syncComicUpdatesWithWebDav(
+          client,
+          remoteBaseDirectory: _remoteDirectory,
+          uploadSelf: false,
+          isCurrent: () => _isTaskCurrent(epoch),
+        );
+        return const Res(true);
       }
       Log.info("Data Sync", "Downloading data from WebDAV server");
-      var localFile = File(FilePath.join(App.cachePath, file.name!));
+      localFile = File(FilePath.join(App.cachePath, file.name!));
       await client.read2File('$_remoteDirectory${file.name!}', localFile.path);
       if (!_isTaskCurrent(epoch)) return const Res(true);
-      await importAppData(localFile, checkVersion: true);
+      await importAppData(
+        localFile,
+        checkVersion: true,
+        allowSameOrOlderVersion: true,
+      );
       _downloadApplied = true;
-      await localFile.delete();
       if (!_isTaskCurrent(epoch)) return const Res(true);
+      await _rememberSnapshot(target, file.name!, identity);
       await syncComicUpdatesWithWebDav(
         client,
         remoteBaseDirectory: _remoteDirectory,
@@ -794,6 +819,8 @@ class DataSync with ChangeNotifier {
       Log.error("Data Sync", e, s);
       _lastError = e.toString();
       return Res.error(e.toString());
+    } finally {
+      if (localFile != null) await localFile.deleteIgnoreError();
     }
   }
 
@@ -801,50 +828,56 @@ class DataSync with ChangeNotifier {
     RemoteFileStore? store;
     File? data;
     final directory = location.directory;
+    final previousVersion = appdata.settings['dataVersion'] as int;
+    int? uploadingVersion;
+    var uploaded = false;
     try {
       store = RemoteStorageAccounts.instance.storeFor(location.accountId);
       _activeStore = store;
-      appdata.settings['dataVersion']++;
-      await appdata.saveData(false);
-      data = await _exportSnapshot();
-      if (!_isTaskCurrent(epoch)) return const Res(true);
-      final day = (DateTime.now().millisecondsSinceEpoch ~/ 86400000)
-          .toString();
-      final filename = '$day-${appdata.settings['dataVersion']}.venera';
+      late List<RemoteEntry> files;
       try {
-        await store.list(directory);
+        files = await store.list(directory);
       } on RemoteStorageException catch (error) {
         if (error.code != 'not_found') rethrow;
         await store.mkdir(directory);
-        await store.list(directory);
+        files = await store.list(directory);
       }
+      if (!_isTaskCurrent(epoch)) return const Res(true);
+      uploadingVersion = _nextSnapshotVersion(
+        previousVersion,
+        files.where((file) => !file.isDirectory).map((file) => file.name),
+      );
+      appdata.settings['dataVersion'] = uploadingVersion;
+      await appdata.saveData(false);
+      data = await _exportSnapshot();
+      if (!_isTaskCurrent(epoch)) return const Res(true);
+      final filename = _snapshotName(uploadingVersion);
       final path = '${normalizeRemoteDirectory(directory)}$filename';
       if (!_isTaskCurrent(epoch)) return const Res(true);
       await store.upload(data.path, path);
+      uploaded = true;
       if (!_isTaskCurrent(epoch)) return const Res(true);
-      final snapshots =
-          (await store.list(directory))
-              .where(
-                (file) =>
-                    !file.isDirectory && _snapshotVersion(file.name) != null,
-              )
-              .toList()
-            ..sort((a, b) => _compareSnapshotNames(a.name, b.name));
-      final oldSameDay = snapshots
-          .where((file) => file.name.startsWith('$day-') && file.path != path)
-          .toList();
-      for (final file in oldSameDay) {
-        if (!_isTaskCurrent(epoch)) return const Res(true);
-        await store.delete(file.path);
-      }
-      final retained = snapshots
-          .where((file) => !oldSameDay.contains(file))
-          .toList();
-      while (retained.length > 10) {
-        if (!_isTaskCurrent(epoch)) return const Res(true);
-        final oldest = retained.firstWhere((file) => file.path != path);
-        await store.delete(oldest.path);
-        retained.remove(oldest);
+      await _rememberSnapshot(
+        _storeTarget(location),
+        filename,
+        _snapshotIdentity(filename),
+      );
+      try {
+        final snapshots = (await store.list(
+          directory,
+        )).where((file) => !file.isDirectory).toList();
+        final obsolete = _snapshotsToPrune(
+          snapshots.map((file) => file.name),
+          filename,
+        );
+        for (final file in snapshots.where(
+          (file) => obsolete.contains(file.name),
+        )) {
+          if (!_isTaskCurrent(epoch)) return const Res(true);
+          await store.delete(file.path);
+        }
+      } catch (error, stack) {
+        Log.error('Upload Data', 'Failed to prune old backups: $error', stack);
       }
       if (!_isTaskCurrent(epoch)) return const Res(true);
       await syncComicUpdatesWithStore(
@@ -861,6 +894,12 @@ class DataSync with ChangeNotifier {
       Log.error('Upload Data', error, stack);
       return Res.error(error.toString());
     } finally {
+      if (!uploaded &&
+          uploadingVersion != null &&
+          appdata.settings['dataVersion'] == uploadingVersion) {
+        appdata.settings['dataVersion'] = previousVersion;
+        await appdata.saveData(false);
+      }
       if (data != null) await data.deleteIgnoreError();
       if (identical(_activeStore, store)) _activeStore = null;
       if (store != null) RemoteStorageAccounts.instance.release(store);
@@ -869,8 +908,9 @@ class DataSync with ChangeNotifier {
 
   Future<Res<bool>> _downloadFromStore(
     RemoteLocation location,
-    int epoch,
-  ) async {
+    int epoch, {
+    required bool force,
+  }) async {
     RemoteFileStore? store;
     File? localFile;
     try {
@@ -897,26 +937,41 @@ class DataSync with ChangeNotifier {
         );
         return const Res.error('No data file found');
       }
-      final version = file.name.split('-').elementAtOrNull(1)?.split('.').first;
-      if (version != null && int.tryParse(version) != null) {
-        final current = appdata.settings['dataVersion'];
-        if (current is int && int.parse(version) <= current) {
-          if (!_isTaskCurrent(epoch)) return const Res(true);
-          await syncComicUpdatesWithStore(
-            store,
-            remoteBaseDirectory: location.directory,
-            uploadSelf: false,
-            isCurrent: () => _isTaskCurrent(epoch),
-          );
-          return const Res(true);
-        }
+      final target = _storeTarget(location);
+      final identity = _snapshotIdentity(
+        file.name,
+        eTag: file.eTag,
+        modifiedAt: file.modifiedAt,
+        size: file.size,
+      );
+      if (!force &&
+          _shouldSkipSnapshot(
+            target,
+            file.name,
+            identity,
+            hasMetadata:
+                file.eTag?.isNotEmpty == true || file.modifiedAt != null,
+          )) {
+        if (!_isTaskCurrent(epoch)) return const Res(true);
+        await syncComicUpdatesWithStore(
+          store,
+          remoteBaseDirectory: location.directory,
+          uploadSelf: false,
+          isCurrent: () => _isTaskCurrent(epoch),
+        );
+        return const Res(true);
       }
       localFile = File(FilePath.join(App.cachePath, file.name));
       await store.download(file.path, localFile.path);
       if (!_isTaskCurrent(epoch)) return const Res(true);
-      await importAppData(localFile, checkVersion: true);
+      await importAppData(
+        localFile,
+        checkVersion: true,
+        allowSameOrOlderVersion: true,
+      );
       _downloadApplied = true;
       if (!_isTaskCurrent(epoch)) return const Res(true);
+      await _rememberSnapshot(target, file.name, identity);
       await syncComicUpdatesWithStore(
         store,
         remoteBaseDirectory: location.directory,
@@ -940,15 +995,116 @@ class DataSync with ChangeNotifier {
   }
 
   static (int, int)? _snapshotVersion(String name) {
-    final match = RegExp(r'^(\d+)-(\d+)\.venera$').firstMatch(name);
+    final match = RegExp(r'^(\d+)-(\d+)(?:-(.+))?\.venera$').firstMatch(name);
     if (match == null) return null;
-    return (int.parse(match.group(1)!), int.parse(match.group(2)!));
+    final day = int.tryParse(match.group(1)!);
+    final version = int.tryParse(match.group(2)!);
+    return day == null || version == null ? null : (day, version);
   }
 
   static int _compareSnapshotNames(String left, String right) {
     final a = _snapshotVersion(left)!;
     final b = _snapshotVersion(right)!;
+    final version = a.$2.compareTo(b.$2);
+    if (version != 0) return version;
     final day = a.$1.compareTo(b.$1);
-    return day != 0 ? day : a.$2.compareTo(b.$2);
+    return day != 0 ? day : left.compareTo(right);
+  }
+
+  String _snapshotName(int version) {
+    final now = _now;
+    final day = now.millisecondsSinceEpoch ~/ 86400000;
+    final time = now.microsecondsSinceEpoch.toString().padLeft(20, '0');
+    final id = const Uuid().v4().replaceAll('-', '');
+    return '$day-$version-$time-$id.venera';
+  }
+
+  static int _nextSnapshotVersion(int current, Iterable<String> names) {
+    for (final name in names) {
+      final version = _snapshotVersion(name)?.$2;
+      if (version != null && version > current) current = version;
+    }
+    return current + 1;
+  }
+
+  static List<String> _snapshotsToPrune(
+    Iterable<String> names,
+    String uploaded,
+  ) {
+    final current = _snapshotVersion(uploaded)!;
+    final snapshots =
+        names.where((name) => _snapshotVersion(name) != null).toSet()
+          ..add(uploaded);
+    final obsolete = snapshots.where((name) {
+      final version = _snapshotVersion(name)!;
+      return version.$1 == current.$1 && version.$2 < current.$2;
+    }).toList();
+    final remaining =
+        snapshots.where((name) => !obsolete.contains(name)).toList()
+          ..sort(_compareSnapshotNames);
+    // Concurrent writers can share a counter. Keep all such snapshots, even
+    // when that temporarily exceeds the normal ten-backup retention limit.
+    final older = remaining.where(
+      (name) => _snapshotVersion(name)!.$2 < current.$2,
+    );
+    final excess = remaining.length - 10;
+    if (excess > 0) obsolete.addAll(older.take(excess));
+    return obsolete;
+  }
+
+  static bool _hasUniqueSnapshotName(String name) =>
+      RegExp(r'^\d+-\d+-\d{20}-[0-9a-f]{32}\.venera$').hasMatch(name);
+
+  static String _snapshotIdentity(
+    String name, {
+    String? eTag,
+    int? modifiedAt,
+    int? size,
+  }) => jsonEncode([
+    name,
+    if (!_hasUniqueSnapshotName(name)) ...[eTag, modifiedAt, size],
+  ]);
+
+  static String _webDavTarget(WebDavEndpoint endpoint) => sha256
+      .convert(
+        utf8.encode(
+          jsonEncode(['webdav', endpoint.url, endpoint.user, _remoteDirectory]),
+        ),
+      )
+      .toString();
+
+  static String _storeTarget(RemoteLocation location) => sha256
+      .convert(
+        utf8.encode(jsonEncode(['store', location.normalized().toJson()])),
+      )
+      .toString();
+
+  bool _shouldSkipSnapshot(
+    String target,
+    String name,
+    String identity, {
+    required bool hasMetadata,
+  }) {
+    final version = _snapshotVersion(name)!.$2;
+    final current = appdata.settings['dataVersion'] as int;
+    if (version < current) return true;
+    final previous = appdata.implicitData['webdavLastBackup'];
+    return previous is Map &&
+        previous['target'] == target &&
+        (_hasUniqueSnapshotName(name) || hasMetadata) &&
+        previous['identity'] == identity;
+  }
+
+  Future<void> _rememberSnapshot(
+    String target,
+    String name,
+    String identity,
+  ) async {
+    appdata.implicitData['webdavLastBackup'] = {
+      'target': target,
+      'name': name,
+      'identity': identity,
+    };
+    await appdata.writeImplicitData();
   }
 }

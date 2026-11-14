@@ -276,6 +276,15 @@ void configureHistoryReadingProgressCatalogResolver(
   _historyReadingProgressCatalogResolver = resolver;
 }
 
+VoidCallback? _historyDataChangedHandler;
+
+/// Covers durable history, reading-time and image-favorite changes in history.db.
+void configureHistoryDataChangedHandler(VoidCallback? handler) {
+  _historyDataChangedHandler = handler;
+}
+
+void notifyHistoryDataChanged() => _historyDataChangedHandler?.call();
+
 typedef _HistoryWriteResult = ({History history, bool matchesInputCatalog});
 
 class HistoryManager with ChangeNotifier {
@@ -642,8 +651,10 @@ class HistoryManager with ChangeNotifier {
         'DELETE FROM history WHERE id = ? AND type = ?$cutoffClause;',
         beforeTime == null ? [id, typeValue] : [id, typeValue, beforeTime],
       );
+      final changed = _db.updatedRows > 0;
       updateCache();
       notifyListeners();
+      if (changed) notifyHistoryDataChanged();
     });
   }
 
@@ -718,6 +729,7 @@ class HistoryManager with ChangeNotifier {
       }
       _cacheHistory(actual, compareCatalogs: false);
       notifyListeners();
+      notifyHistoryDataChanged();
       return;
     }
   }
@@ -1052,6 +1064,7 @@ class HistoryManager with ChangeNotifier {
           if (actual != null) {
             _cacheHistory(actual);
             notifyListeners();
+            notifyHistoryDataChanged();
           }
         }
       } finally {
@@ -1106,6 +1119,7 @@ class HistoryManager with ChangeNotifier {
     }
     _cacheHistory(actual);
     notifyListeners();
+    notifyHistoryDataChanged();
   }
 
   Set<String> _knownHistoryKeys() {
@@ -1132,12 +1146,14 @@ class HistoryManager with ChangeNotifier {
     final keys = _knownHistoryKeys();
     final revisions = {for (final key in keys) key: _invalidateHistory(key)};
     _db.execute('DELETE FROM history;');
+    final changed = _db.updatedRows > 0;
     if (keys.isNotEmpty) _historyCacheEpoch++;
     updateCache();
     notifyListeners();
     for (final entry in revisions.entries) {
       _queueDelete(entry.key, entry.value);
     }
+    if (changed) notifyHistoryDataChanged();
   }
 
   void clearExpiredHistory(int retentionDays) {
@@ -1173,12 +1189,14 @@ class HistoryManager with ChangeNotifier {
     final revisions = {
       for (final key in keysToDelete) key: _invalidateHistory(key),
     };
+    var changed = false;
     for (final entry in revisions.entries) {
       final (id, typeValue) = _historyIdentity(entry.key);
       _db.execute(
         'DELETE FROM history WHERE id = ? AND type = ? AND time < ?;',
         [id, typeValue, cutoff],
       );
+      changed |= _db.updatedRows > 0;
     }
     if (keysToDelete.isNotEmpty) _historyCacheEpoch++;
     updateCache();
@@ -1186,6 +1204,7 @@ class HistoryManager with ChangeNotifier {
     for (final entry in revisions.entries) {
       _queueDelete(entry.key, entry.value, beforeTime: cutoff);
     }
+    if (changed) notifyHistoryDataChanged();
   }
 
   void clearUnfavoritedHistory() {
@@ -1207,6 +1226,7 @@ class HistoryManager with ChangeNotifier {
     final revisions = {
       for (final key in keysToDelete) key: _invalidateHistory(key),
     };
+    var changed = false;
     _db.execute('BEGIN TRANSACTION;');
     try {
       for (final key in keysToDelete) {
@@ -1215,6 +1235,7 @@ class HistoryManager with ChangeNotifier {
           id,
           typeValue,
         ]);
+        changed |= _db.updatedRows > 0;
       }
       _db.execute('COMMIT;');
     } catch (_) {
@@ -1227,6 +1248,7 @@ class HistoryManager with ChangeNotifier {
     for (final entry in revisions.entries) {
       _queueDelete(entry.key, entry.value);
     }
+    if (changed) notifyHistoryDataChanged();
   }
 
   void remove(String id, ComicType type) async {
@@ -1236,10 +1258,12 @@ class HistoryManager with ChangeNotifier {
       id,
       type.value,
     ]);
+    final changed = _db.updatedRows > 0;
     _historyCacheEpoch++;
     updateCache();
     notifyListeners();
     _queueDelete(key, revision);
+    if (changed) notifyHistoryDataChanged();
   }
 
   void updateCache() {
@@ -1397,6 +1421,7 @@ class HistoryManager with ChangeNotifier {
     for (final item in pending) {
       _writeHistory(_db, item);
     }
+    if (pending.isNotEmpty) notifyHistoryDataChanged();
     isInitialized = false;
     _historyCacheEpoch++;
     _db.dispose();
@@ -1415,6 +1440,7 @@ class HistoryManager with ChangeNotifier {
         .map((history) => _historyKey(history.id, history.type))
         .toSet();
     final revisions = {for (final key in keys) key: _invalidateHistory(key)};
+    var changed = false;
     _db.execute('BEGIN TRANSACTION;');
     try {
       for (final history in histories) {
@@ -1422,6 +1448,7 @@ class HistoryManager with ChangeNotifier {
           history.id,
           history.type.value,
         ]);
+        changed |= _db.updatedRows > 0;
       }
       _db.execute('COMMIT;');
     } catch (_) {
@@ -1434,6 +1461,7 @@ class HistoryManager with ChangeNotifier {
     for (final entry in revisions.entries) {
       _queueDelete(entry.key, entry.value);
     }
+    if (changed) notifyHistoryDataChanged();
   }
 
   /// Refresh history info from comic source.

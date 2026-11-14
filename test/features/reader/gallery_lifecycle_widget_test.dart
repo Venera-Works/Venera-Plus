@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as image;
 import 'package:photo_view/photo_view.dart';
@@ -51,7 +52,7 @@ Completer<void> _watchDisposal(PhotoViewControllerBase controller) {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  group('Production gallery widget', () {
+  group('Production reader navigation and lifecycle', () {
     late Directory directory;
     late Database database;
     late Map<String, dynamic> previousSettings;
@@ -76,6 +77,7 @@ void main() {
       final settings = <String, dynamic>{
         'comicSpecificSettings': <String, dynamic>{},
         'deviceSpecificSettings': <String, dynamic>{},
+        'autoReaderMode': false,
         'readerMode': 'galleryLeftToRight',
         'readerScreenPicNumberForLandscape': 1,
         'readerScreenPicNumberForPortrait': 1,
@@ -84,11 +86,14 @@ void main() {
         'splitDualPageInvert': false,
         'showChapterComments': false,
         'showChapterCommentsAtEnd': false,
+        'enablePageAnimation': true,
         'enableTurnPageByVolumeKey': false,
         'enableClockAndBatteryInfoInReader': false,
         'showPageNumberInReader': false,
         'showSystemStatusBar': true,
         'enableCustomImageProcessing': false,
+        'limitImageWidth': false,
+        'eInkMode': false,
         'preloadImageCount': 1,
         'language': 'en-US',
       };
@@ -136,6 +141,231 @@ void main() {
       );
       return reader;
     }
+
+    for (final keyboard in [false, true]) {
+      testWidgets(
+        'rapid ${keyboard ? 'keyboard' : 'volume'} input accumulates and reverses during animation',
+        (tester) async {
+          final reader = await openReader(tester);
+          final gallery = reader.imageViewController as GalleryModeState;
+          void next() {
+            if (keyboard) {
+              gallery.handleKeyEvent(
+                const KeyDownEvent(
+                  physicalKey: PhysicalKeyboardKey.arrowRight,
+                  logicalKey: LogicalKeyboardKey.arrowRight,
+                  timeStamp: Duration.zero,
+                ),
+              );
+            } else {
+              reader.onDown();
+            }
+          }
+
+          void previous() {
+            if (keyboard) {
+              gallery.handleKeyEvent(
+                const KeyDownEvent(
+                  physicalKey: PhysicalKeyboardKey.arrowLeft,
+                  logicalKey: LogicalKeyboardKey.arrowLeft,
+                  timeStamp: Duration.zero,
+                ),
+              );
+            } else {
+              reader.onUp();
+            }
+          }
+
+          reader.navigationEvents.clear();
+          next();
+          next();
+          expect(reader.pendingNavigationPage, 3);
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 100));
+          expect(gallery.controller.page, inExclusiveRange(2.5, 3));
+          next();
+          expect(reader.pendingNavigationPage, 4);
+          previous();
+          expect(reader.pendingNavigationPage, 3);
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 20));
+          expect(reader.isPageAnimating, isTrue);
+          await tester.pumpAndSettle();
+          await _waitFor(
+            tester,
+            () => PaintingBinding.instance.imageCache.pendingImageCount == 0,
+          );
+          expect(gallery.controller.page, 3);
+          expect(reader.page, 3);
+          expect(reader.isPageAnimating, isFalse);
+          expect(reader.pendingNavigationSource, isNull);
+          final committed = reader.navigationEvents
+              .where((event) => event.recordProgress && event.commandId != null)
+              .toList();
+          expect(committed, isNotEmpty);
+          expect(committed.every((event) => event.page == 3), isTrue);
+          expect(committed.last.source, ReadingNavigationSource.userBackward);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+
+    testWidgets('reversing before the first frame completes the command', (
+      tester,
+    ) async {
+      final reader = await openReader(tester);
+      reader.onDown();
+      reader.onUp();
+      await tester.pumpAndSettle();
+      expect(reader.page, 1);
+      expect(reader.isPageAnimating, isFalse);
+      expect(reader.pendingNavigationSource, isNull);
+      expect(reader.navigationEvents.last.page, 1);
+      expect(
+        reader.navigationEvents.last.source,
+        ReadingNavigationSource.userBackward,
+      );
+      expect(reader.navigationEvents.last.commandId, isNotNull);
+    });
+
+    testWidgets('seeks and volume input replace unfinished destinations', (
+      tester,
+    ) async {
+      final reader = await openReader(tester);
+      final gallery = reader.imageViewController as GalleryModeState;
+      reader.toPage(5);
+      reader.onUp();
+      await tester.pumpAndSettle();
+      expect(gallery.controller.page, 4);
+      expect(reader.page, 4);
+      expect(reader.isPageAnimating, isFalse);
+      expect(reader.pendingNavigationSource, isNull);
+
+      reader.onDown();
+      reader.toPage(2, animated: false);
+      await tester.pumpAndSettle();
+      expect(gallery.controller.page, 2);
+      expect(reader.page, 2);
+      expect(reader.isPageAnimating, isFalse);
+      reader.onDown();
+      reader.onDown();
+      await tester.pumpAndSettle();
+      expect(gallery.controller.page, 4);
+      expect(reader.page, 4);
+      expect(reader.pendingNavigationSource, isNull);
+      await _waitFor(
+        tester,
+        () => PaintingBinding.instance.imageCache.pendingImageCount == 0,
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets(
+      'rapid input preserves split halves and the comments boundary',
+      (tester) async {
+        appdata.settings['splitDualPage'] = true;
+        appdata.settings['showChapterComments'] = true;
+        appdata.settings['showChapterCommentsAtEnd'] = true;
+        final reader = await openReader(tester);
+        final gallery = reader.imageViewController as GalleryModeState;
+        reader.toPage(5, animated: false);
+        await _waitFor(tester, () => gallery.totalVisualImagePages == 6);
+        expect(gallery.controller.page, 5);
+        reader.onDown();
+        reader.onDown();
+        reader.onDown();
+        await tester.pumpAndSettle();
+        expect(gallery.controller.page, 7);
+        expect(reader.isOnChapterCommentsPage, isTrue);
+        expect(reader.chapter, 1);
+        expect(reader.pendingNavigationSource, isNull);
+        reader.onUp();
+        reader.onUp();
+        await tester.pumpAndSettle();
+        expect(gallery.controller.page, 5);
+        expect(reader.page, 5);
+        expect(reader.isOnChapterCommentsPage, isFalse);
+        reader.toPage(1, animated: false);
+        expect(reader.toPrevPage(), isFalse);
+        expect(reader.chapter, 1);
+        await _waitFor(
+          tester,
+          () => PaintingBinding.instance.imageCache.pendingImageCount == 0,
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets('waterfall scrolling only notifies changed reader locations', (
+      tester,
+    ) async {
+      appdata.settings['readerMode'] = 'waterfallTopToBottom';
+      final reader = await openReader(tester);
+      final flow = reader.imageViewController as ContinuousModeState;
+      final scaffold = tester.state<_ScaffoldState>(find.byType(_Scaffold));
+      expect(reader.page, 1);
+      scaffold.fullUpdates = 0;
+      scaffold.pageUpdates = 0;
+
+      flow.scrollController.jumpTo(40);
+      await tester.pumpAndSettle();
+      expect(reader.page, 1);
+      expect(scaffold.fullUpdates, 0);
+      expect(scaffold.pageUpdates, 0);
+
+      flow.itemScrollController.jumpTo(index: 2);
+      await tester.pumpAndSettle();
+      expect(reader.page, 2);
+      expect(scaffold.fullUpdates, 0);
+      expect(scaffold.pageUpdates, greaterThan(0));
+
+      flow.scrollController.jumpTo(
+        flow.scrollController.position.maxScrollExtent,
+      );
+      await tester.pumpAndSettle();
+      expect(reader.page, 5);
+      scaffold.fullUpdates = 0;
+      scaffold.pageUpdates = 0;
+      reader.beginNavigationCommand(
+        ReadingNavigationSource.userSeek,
+        chapter: reader.chapter,
+        page: 5,
+      );
+      flow.onPositionChanged();
+      await tester.pump();
+      expect(reader.pendingNavigationSource, isNull);
+      expect(scaffold.fullUpdates, 0);
+      expect(scaffold.pageUpdates, 1);
+      await _waitFor(
+        tester,
+        () => PaintingBinding.instance.imageCache.pendingImageCount == 0,
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('scroll state delays retain event order and cancel on exit', (
+      tester,
+    ) async {
+      appdata.settings['readerMode'] = 'waterfallTopToBottom';
+      final reader = await openReader(tester);
+      final flow = reader.imageViewController as ContinuousModeState;
+      flow.delayedSetIsScrolling(true);
+      await tester.pump(const Duration(milliseconds: 200));
+      flow.delayedSetIsScrolling(false);
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(flow.delayedIsScrolling, isTrue);
+      await tester.pump(const Duration(milliseconds: 199));
+      expect(flow.delayedIsScrolling, isTrue);
+      await tester.pump(const Duration(milliseconds: 1));
+      expect(flow.delayedIsScrolling, isFalse);
+
+      flow.delayedSetIsScrolling(true);
+      flow.delayedSetIsScrolling(false);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(flow.mounted, isFalse);
+      expect(reader.imageViewController, isNull);
+      expect(tester.takeException(), isNull);
+    });
 
     testWidgets(
       'turning pages prunes controllers and reader exit disposes the retained controller',
@@ -231,6 +461,16 @@ class _Reader extends Reader {
 }
 
 class _ReaderState extends ReaderState {
+  final navigationEvents =
+      <
+        ({
+          int page,
+          ReadingNavigationSource source,
+          String? commandId,
+          bool recordProgress,
+        })
+      >[];
+
   @override
   void initState() {
     super.initState();
@@ -248,10 +488,45 @@ class _ReaderState extends ReaderState {
     ReadingNavigationSource source = ReadingNavigationSource.passive,
     String? commandId,
     bool recordProgress = true,
-  }) {}
+  }) {
+    navigationEvents.add((
+      page: page,
+      source: source,
+      commandId: commandId,
+      recordProgress: recordProgress,
+    ));
+  }
+
   @override
-  Widget build(BuildContext context) =>
-      const ReaderScaffold(child: GalleryMode());
+  Widget build(BuildContext context) => _Scaffold(
+    child: mode.isGallery
+        ? const GalleryMode()
+        : const ContinuousMode(crossChapter: true),
+  );
+}
+
+class _Scaffold extends ReaderScaffold {
+  const _Scaffold({required super.child});
+
+  @override
+  State<ReaderScaffold> createState() => _ScaffoldState();
+}
+
+class _ScaffoldState extends ReaderScaffoldState {
+  int fullUpdates = 0;
+  int pageUpdates = 0;
+
+  @override
+  void update() {
+    fullUpdates++;
+    super.update();
+  }
+
+  @override
+  void updatePage() {
+    pageUpdates++;
+    super.updatePage();
+  }
 }
 
 class _Source extends Fake implements ComicSource {
