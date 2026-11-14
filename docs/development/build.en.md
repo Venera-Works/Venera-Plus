@@ -63,15 +63,24 @@ After resolving Flutter dependencies, each platform CI runs `dart tool/prepare_r
 
 Both preparation scripts apply the Cargo manifest and lockfile before computing the source hash. They pin the Rust bridge runtime and macros to upstream revision [`d59f05b6b0da3606933385f80cbd9e21cc35b59c`](https://github.com/fzyzcjy/flutter_rust_bridge/commit/d59f05b6b0da3606933385f80cbd9e21cc35b59c), retaining version `2.11.1` and the existing Dart bindings while fixing the `unwrap()` crash from callbacks returning after request cancellation. Publish the complete prebuilts for the new hash before building the application; old artifacts are not reused.
 
+The current lockfile uses `quinn-proto 0.11.19` and `quinn-udp 0.5.16`, matching the published release [`precompiled_b42566ca820f81fe4492745317a6b164`](https://github.com/Venera-Works/Venera-Native-Prebuilts/releases/tag/precompiled_b42566ca820f81fe4492745317a6b164). Compilation succeeded on all supported platforms, and all 13 binaries, 13 signatures, and two licenses for the 12 targets were verified. The released Windows DLL passed cancellation callback and real HTTP/3 request checks. Device runtime checks on other platforms and application build acceptance remain separate work. See [Dependency Governance](dependencies.en.md#critical-native-and-platform-dependency-boundaries) for the fixes included.
+
 The preparation script resolves Pub package URIs as directories, supporting absolute or relative URIs, an omitted trailing `/`, and paths containing spaces. Apple CI creates `~/.cargo/bin` before installing the Rustup wrapper and adds that directory to subsequent steps' `PATH` so Rustup installation operations are serialized during parallel plugin builds.
 
-For local builds using prebuilts, use a project-specific Pub cache in the PowerShell process used for the build so other projects' shared packages are not modified:
+To prepare native dependencies locally, enter a PowerShell 7 subprocess through `fvm exec` before setting the project Pub cache and official package source. This preserves the shared package cache and prevents the `PUB_CACHE` change from affecting FVM's own startup:
 
 ```powershell
-$env:PUB_CACHE = Join-Path $PWD '.pub-cache'
-fvm flutter pub get --enforce-lockfile
-fvm dart tool/prepare_rhttp_prebuilt.dart
+fvm exec pwsh -NoProfile -Command '
+  $env:PUB_CACHE = Join-Path (Get-Location) ".pub-cache"
+  $env:PUB_HOSTED_URL = "https://pub.dev"
+  flutter pub get --enforce-lockfile
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  dart tool/prepare_rhttp_prebuilt.dart
+  exit $LASTEXITCODE
+'
 ```
+
+The environment changes apply only to that subprocess. Use the same cache settings for later commands that may resolve dependencies again. Preparation output should contain the current release tag and `local Rust compilation is disabled`. Successful preparation establishes the package configuration and source hash; Cargokit performs the actual download and signature verification later. Preparation itself does not build the application.
 
 Complete the matching prebuild release in the resource repository before building the application. Artifacts cover four Android ABIs (including x86 for Debug), Windows x64, Linux x64/ARM64, both macOS architectures, and iOS devices/simulators. On upgrade, synchronize both repositories' lock and configuration files, review the Cargokit source digests, and verify native bindings and networking. Application build permission requirements still apply.
 
@@ -105,15 +114,15 @@ Use CI artifacts for device comparisons. Local application builds and runs still
 
 ## Quality Checks
 
-Run at least the following before submitting code:
+Choose local checks for the affected scope and reuse valid results. For documentation changes, check links, examples, and `git diff --check`. The commands below show common entry points; replace the example test path with the affected tests. Limit analysis to application source, tests, and tools to avoid scanning independent reference repositories under `cache/`:
 
 ```bash
 python .github/scripts/check_structure_imports.py
 fvm dart tool/check_git_dependencies.dart
 fvm dart format .
 fvm dart format --output=none --set-exit-if-changed .
-fvm flutter analyze --no-pub
-fvm flutter test --no-pub
+fvm flutter analyze --no-pub lib test tool
+fvm flutter test --no-pub test/network/rhttp_adapter_test.dart
 git diff --check
 ```
 
@@ -122,6 +131,19 @@ CI runs static checks and two Dart test shards in parallel. Test files matching 
 Reader widget tests that use real SQLite should await `HistoryManager.flushReadingProgress()` through `runWidgetIo` in `test/widget_test_io.dart` (or an equivalent local helper) before bookmark operations or direct image-favorite queries. `pumpAndSettle()` settles Flutter frames; background isolate database writes must be awaited separately.
 
 WebDAV fixtures store directory and file keys as decoded logical paths. Decode once at HTTP ingress, and encode each segment when generating `PROPFIND` response `href` values. Path regressions should cover spaces, Unicode, literal percent signs, and case preservation to catch mismatched upload/listing paths and repeated percent decoding.
+
+Use the following regression entry points by passing the test paths to `fvm flutter test --no-pub`:
+
+| Module | Behavior to preserve | Tests |
+|---|---|---|
+| Application data sync | Unique snapshot filenames, numeric version ordering, distinct snapshots with the same version, and version rollback after upload failure | [data_sync_transfer_test.dart](../../test/features/sync/data_sync_transfer_test.dart), [app_data_transfer_test.dart](../../test/features/sync/app_data_transfer_test.dart), [comic_update_sync_test.dart](../../test/features/sync/comic_update_sync_test.dart) |
+| History and image favorites | Notify sync after persistence; importing a snapshot does not trigger another upload | [history_sync_notifications_test.dart](../../test/features/history/history_sync_notifications_test.dart), [data_sync_transfer_test.dart](../../test/features/sync/data_sync_transfer_test.dart) |
+| Reader | Accumulate rapid and reverse navigation targets, preserve split-page and comment boundaries, reduce waterfall refreshes, and cancel delayed callbacks on exit | [gallery_coordinator_test.dart](../../test/features/reader/gallery_coordinator_test.dart), [gallery_lifecycle_widget_test.dart](../../test/features/reader/gallery_lifecycle_widget_test.dart) |
+| Local favorite filters | Reuse All-list results without history queries and retain only visible selections after filter changes | [local_favorites_filter_test.dart](../../test/features/favorites/local_favorites_filter_test.dart) |
+| WebView and Cloudflare | Keep Windows proxy environments and cookies aligned, wait for valid page content, coalesce asynchronous checks, and leave replacement pages untouched after closure | [windows_webview_environment_test.dart](../../test/routing/windows_webview_environment_test.dart), [webview_lifecycle_test.dart](../../test/routing/webview_lifecycle_test.dart) |
+| Cover transitions | Retain the Hero controller across navigation rebuilds and remove overlays after cancelled back gestures or navigator replacement | [navigation_hero_lifecycle_test.dart](../../test/components/navigation_hero_lifecycle_test.dart) |
+
+Sync still reads legacy snapshots, but every device sharing a directory must upgrade to recognize the new filenames; see [App Data Synchronization](../user/data_sync.en.md). WebView unit and widget tests use platform interface substitutes and do not replace Windows WebView2 checks with real proxy, login, and cookie behavior.
 
 Pull requests also run `依赖安全审查` and `PR 平台冒烟构建`. Dependency review blocks newly introduced high or critical vulnerabilities. Changes to application code, native platforms, dependencies, build scripts, workflows, or native integration tests trigger Android and Windows Debug smoke builds. The workflow configuration remains the source of truth for exact triggers; documentation-only changes skip platform jobs.
 

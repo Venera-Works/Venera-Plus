@@ -62,15 +62,24 @@ Git fork 的来源、固定 commit 和升级要求见[依赖治理](dependencies
 
 两仓库的准备脚本在计算源码 hash 前应用 Cargo 清单和锁文件，将 Rust 桥接运行库及宏固定到上游提交 [`d59f05b6b0da3606933385f80cbd9e21cc35b59c`](https://github.com/fzyzcjy/flutter_rust_bridge/commit/d59f05b6b0da3606933385f80cbd9e21cc35b59c)，保留 `2.11.1` 版本与现有 Dart 绑定，修复请求取消后迟到回调触发 `unwrap()` 崩溃的问题。新 hash 对应的完整预编译发布就绪后才能构建应用，旧产物不会被复用。
 
+当前锁文件使用 `quinn-proto 0.11.19` 和 `quinn-udp 0.5.16`，对应已发布的 [`precompiled_b42566ca820f81fe4492745317a6b164`](https://github.com/Venera-Works/Venera-Native-Prebuilts/releases/tag/precompiled_b42566ca820f81fe4492745317a6b164)。该版本已完成全平台编译，12 个目标的 13 份二进制、13 份签名和两份许可证均已核验；Windows 发布 DLL 已通过取消回调及真实 HTTP/3 请求验证。其他平台的设备运行验证与应用构建验收仍需分别完成。修补范围见[依赖治理](dependencies.zh.md#关键原生与平台依赖边界)。
+
 配置脚本按目录解析 Pub 返回的包 URI，支持绝对或相对 URI、末尾省略 `/` 以及带空格的路径。Apple CI 在安装 Rustup 包装器前创建 `~/.cargo/bin`，并将该目录加入后续步骤的 `PATH`，使并行插件构建中的 Rustup 安装操作串行执行。
 
-本地使用预编译库时，在用于构建的 PowerShell 进程内使用项目专用 Pub 缓存，避免改动其他项目共用的包：
+本地准备预编译依赖时，先通过 `fvm exec` 进入使用项目 SDK 的 PowerShell 7 子进程，再设置项目专用 Pub 缓存和官方包源。这样既不会修改共享包缓存，也不会让 `PUB_CACHE` 的切换影响 FVM 自身的启动：
 
 ```powershell
-$env:PUB_CACHE = Join-Path $PWD '.pub-cache'
-fvm flutter pub get --enforce-lockfile
-fvm dart tool/prepare_rhttp_prebuilt.dart
+fvm exec pwsh -NoProfile -Command '
+  $env:PUB_CACHE = Join-Path (Get-Location) ".pub-cache"
+  $env:PUB_HOSTED_URL = "https://pub.dev"
+  flutter pub get --enforce-lockfile
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  dart tool/prepare_rhttp_prebuilt.dart
+  exit $LASTEXITCODE
+'
 ```
+
+环境变量仅作用于该子进程；之后执行可能重新解析依赖的命令时，继续使用相同的缓存设置。准备脚本的输出应包含当前发布标签及 `local Rust compilation is disabled`。准备成功表示包配置与源码 hash 已确定；实际下载和验签由后续 Cargokit 执行，准备步骤本身不构建应用。
 
 先在资源仓库完成对应版本的完整预编译发布，再运行应用构建。产物覆盖 Android 四个 ABI（含 Debug 所需的 x86）、Windows x64、Linux x64/ARM64、macOS 双架构和 iOS 真机／模拟器。升级时同步更新资源仓库与应用中的锁定文件、配置及 Cargokit 源码校验，再验证原生绑定与联网功能。应用构建权限要求仍适用。
 
@@ -104,15 +113,15 @@ version: "2.11.1"
 
 ## 质量检查
 
-提交代码前至少运行：
+本地根据修改范围选择检查，已有有效结果无需重复执行；仅修改文档时检查链接、示例和 `git diff --check`。下列命令列出常用入口，测试文件应按受影响模块替换；分析显式限定应用源码、测试和工具，避免扫描 `cache/` 中的独立参考仓库：
 
 ```bash
 python .github/scripts/check_structure_imports.py
 fvm dart tool/check_git_dependencies.dart
 fvm dart format .
 fvm dart format --output=none --set-exit-if-changed .
-fvm flutter analyze --no-pub
-fvm flutter test --no-pub
+fvm flutter analyze --no-pub lib test tool
+fvm flutter test --no-pub test/network/rhttp_adapter_test.dart
 git diff --check
 ```
 
@@ -121,6 +130,19 @@ CI 将静态检查与 2 个 Dart 测试分片并行运行。按路径排序的 `
 阅读器 Widget 测试操作真实 SQLite 数据库时，先通过 `test/widget_test_io.dart` 中的 `runWidgetIo`（或文件内等效函数）等待 `HistoryManager.flushReadingProgress()` 完成，再操作书签或直接查询图片收藏。`pumpAndSettle()` 等待界面帧结束，后台 isolate 的数据库写入仍需单独等待。
 
 WebDAV 测试夹具的目录和文件键统一使用解码后的逻辑路径；仅在 HTTP 请求入口解码一次，生成 `PROPFIND` 响应的 `href` 时逐段编码。路径回归应覆盖空格、Unicode、字面百分号和大小写，避免上传与目录发现使用不同路径，或重复解码百分号。
+
+相关模块的回归入口如下，可将表中的测试路径传给 `fvm flutter test --no-pub`：
+
+| 模块 | 需保持的行为 | 测试入口 |
+|---|---|---|
+| 应用数据同步 | 唯一快照文件名、按数值版本排序、同版本快照识别、上传失败还原版本 | [data_sync_transfer_test.dart](../../test/features/sync/data_sync_transfer_test.dart)、[app_data_transfer_test.dart](../../test/features/sync/app_data_transfer_test.dart)、[comic_update_sync_test.dart](../../test/features/sync/comic_update_sync_test.dart) |
+| 历史与图片收藏 | 数据持久化后通知同步，导入快照不触发重复上传 | [history_sync_notifications_test.dart](../../test/features/history/history_sync_notifications_test.dart)、[data_sync_transfer_test.dart](../../test/features/sync/data_sync_transfer_test.dart) |
+| 阅读器 | 连续／反向输入累计目标，跨页与评论边界正确，瀑布流减少刷新并在退出时取消延迟回调 | [gallery_coordinator_test.dart](../../test/features/reader/gallery_coordinator_test.dart)、[gallery_lifecycle_widget_test.dart](../../test/features/reader/gallery_lifecycle_widget_test.dart) |
+| 本地收藏筛选 | 全部列表跳过历史查询并复用结果，筛选条件变化后维护可见选择 | [local_favorites_filter_test.dart](../../test/features/favorites/local_favorites_filter_test.dart) |
+| WebView 与 Cloudflare | Windows 代理环境和 Cookie 一致，空页面继续等待，异步检查不重叠且关闭后不操作新页面 | [windows_webview_environment_test.dart](../../test/routing/windows_webview_environment_test.dart)、[webview_lifecycle_test.dart](../../test/routing/webview_lifecycle_test.dart) |
+| 封面转场 | 导航重建保持 Hero 控制器，取消返回或替换导航器后清理悬浮层 | [navigation_hero_lifecycle_test.dart](../../test/components/navigation_hero_lifecycle_test.dart) |
+
+同步协议继续读取旧快照，但共享目录内的设备需一并升级以识别新文件名，详见[应用数据同步](../user/data_sync.zh.md)。WebView 的单元与 Widget 测试使用平台接口替身，不能代替 Windows WebView2 的实际代理、登录和 Cookie 验收。
 
 PR 还会运行 `依赖安全审查` 和 `PR 平台冒烟构建`。依赖审查会阻止引入高危或严重漏洞依赖；改动涉及业务代码、原生平台目录、依赖、构建脚本、工作流或原生集成测试时，平台工作流会执行 Android 与 Windows Debug 冒烟构建。CI 的具体触发规则以工作流配置为准；文档等不影响构建的改动会跳过平台任务。
 
