@@ -661,6 +661,81 @@ void main() {
     },
   );
 
+  for (final hasPrimary in [true, false]) {
+    test(
+      hasPrimary ? '所有配置副本失效时中止加载并保留原文件' : '主配置缺失且仅剩无效备份时中止加载并保留备份',
+      () async {
+        final dataDir = Directory.systemTemp.createTempSync(
+          'venera-appdata-invalid-',
+        );
+        addTearDown(() => dataDir.deleteSync(recursive: true));
+        final contents = {
+          if (hasPrimary) 'appdata.json': '{invalid primary',
+          'appdata.json.bak': jsonEncode({
+            'settings': {'comicTileScale': 'invalid'},
+          }),
+          if (hasPrimary) 'syncdata.json': jsonEncode({'settings': []}),
+        };
+        for (final entry in contents.entries) {
+          File(p.join(dataDir.path, entry.key)).writeAsStringSync(entry.value);
+        }
+
+        await expectLater(
+          appdata.loadDataForTesting(dataDir.path),
+          throwsA(isA<FileSystemException>()),
+        );
+
+        expect(
+          dataDir.listSync().map((file) => p.basename(file.path)),
+          unorderedEquals(contents.keys),
+        );
+        for (final entry in contents.entries) {
+          expect(
+            await File(p.join(dataDir.path, entry.key)).readAsBytes(),
+            orderedEquals(utf8.encode(entry.value)),
+          );
+        }
+      },
+    );
+  }
+
+  test('首次启动没有配置文件时正常初始化并保存设备标识', () async {
+    final dataDir = Directory.systemTemp.createTempSync(
+      'venera-appdata-first-start-',
+    );
+    final previousSettings =
+        jsonDecode(jsonEncode(appdata.toJson()['settings']))
+            as Map<String, dynamic>;
+    final previousDataPath = App.dataPath;
+    addTearDown(() {
+      appdata.settings.replaceAll(previousSettings);
+      App.dataPath = previousDataPath;
+      dataDir.deleteSync(recursive: true);
+    });
+    appdata.settings.replaceAll({});
+    App.dataPath = dataDir.path;
+
+    await appdata.init();
+
+    final saved =
+        jsonDecode(
+              await File(p.join(dataDir.path, 'appdata.json')).readAsString(),
+            )
+            as Map<String, dynamic>;
+    final deviceId = saved['settings']['deviceId'];
+    expect(
+      deviceId,
+      isA<String>().having((value) => value.isEmpty, '为空', false),
+    );
+    expect(appdata.settings['deviceId'], deviceId);
+    final syncData =
+        jsonDecode(
+              await File(p.join(dataDir.path, 'syncdata.json')).readAsString(),
+            )
+            as Map<String, dynamic>;
+    expect(syncData['settings'].containsKey('deviceId'), isFalse);
+  });
+
   test(
     'drops obsolete settings on load and sync without persisting them',
     () async {

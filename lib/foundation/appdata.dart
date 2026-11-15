@@ -592,11 +592,13 @@ class Appdata with Init {
     ];
     File? loadedFrom;
     var primaryInvalid = false;
+    var hasExistingData = false;
 
     for (final candidate in candidates) {
       if (!await candidate.exists()) {
         continue;
       }
+      hasExistingData = true;
       try {
         final decoded = _decodeAppData(await candidate.readAsString());
         // Persisted absence is a setting tombstone. Defaults are read-only
@@ -625,8 +627,12 @@ class Appdata with Init {
     }
 
     if (loadedFrom == null) {
-      if (primaryInvalid) {
-        await _preserveCorruptFile(primary);
+      if (hasExistingData) {
+        // 保留全部失败副本，阻止后续初始化用默认设置覆盖原配置。
+        throw FileSystemException(
+          '现有应用配置及备份均无法加载，已停止启动以避免覆盖数据。请保留原文件并查看日志。',
+          dataPath,
+        );
       }
       _lastSyncDataSnapshot = _captureSyncDataSnapshot();
       return;
@@ -836,7 +842,7 @@ class Settings with ChangeNotifier {
     'oneHandedMode': false,
     'enablePageAnimation': true,
     'readerBrightnessEnabled': false,
-    'readerBrightness': 50, // 20 - 100
+    'readerBrightness': 50.0, // 20 - 100，兼容旧整数和当前小数亮度。
     'eInkRefreshEnabled': false,
     'eInkRefreshDuration': 100, // milliseconds
     'eInkRefreshInterval': 1, // page changes

@@ -329,6 +329,12 @@ Never put Secrets, signing files, or real passwords in code, logs, or documentat
 
 ## Troubleshooting
 
+### Startup reports that configuration and backups cannot be loaded
+
+Startup tries `appdata.json`, `appdata.json.bak`, and `syncdata.json` in the application data directory. A valid copy still restores configuration. If existing copies all fail to load or validate, the app shows the startup failure page and preserves the files instead of continuing and saving defaults. A first installation without any of these files initializes normally.
+
+Keep existing files and inspect the failed field in the logs, then restore a verified backup before retrying. Retain any `appdata.json.corrupt-*` files incorrectly marked by an earlier version for inspection; the fix does not automatically overwrite current settings with historical files. Brightness accepts both legacy integer and current fractional values.
+
 ### The Build Succeeds but the App Has No Network Access
 
 First confirm that `flutter_rust_bridge` is still `2.11.1` and that dependencies were resolved from the current repository `pubspec.lock`. Do not blindly upgrade dependencies to address initialization failures.
