@@ -10,7 +10,7 @@ Source scripts run within the QuickJS engine, supporting standard ES2020 JavaScr
 
 ## Network
 
-All network functions return Promises. Transport errors throw exceptions. HTTP 4xx and 5xx responses resolve to standard response objects; extensions must inspect `status` directly.
+The HTTP request methods in the table return Promises. Transport errors throw exceptions. HTTP 4xx and 5xx responses normally resolve to response objects; extensions must inspect `status` directly. Cookie operations use separate synchronous bridge calls.
 
 | Method | Returns | Description |
 |---|---|---|
@@ -108,6 +108,8 @@ All `Convert` functions execute synchronously and operate on `ArrayBuffer` for b
 
 `comic.onImageLoad` and `comic.onThumbnailLoad` return configuration objects:
 
+`onImageLoad(url, comicId, epId, target)` may return asynchronously; `onThumbnailLoad(url)` must return synchronously. Reader preloading uses the effective layout `target` too. Operations without viewport constraints, such as saving, copying, or sharing originals, may receive `null`.
+
 | Field | Type | Description |
 |---|---|---|
 | `url` | `string?` | Image URL; defaults to image key |
@@ -151,8 +153,8 @@ All `Convert` functions execute synchronously and operate on `ArrayBuffer` for b
 
 ### Instance Methods
 
-- `this.loadData(key)`: Reads persisted string data for this source.
-- `this.saveData(key, value)`: Persists data for this source.
+- `this.loadData(key)`: Synchronously reads a stored value for this source, including strings, numbers, booleans, arrays, and plain objects; missing values are null. Values are not restricted to strings.
+- `this.saveData(key, value)`: Updates source data and schedules application persistence. Values must be JSON-serializable, without functions, native `Map`/`Set`, or runtime handles.
 - `this.deleteData(key)`: Deletes a stored item.
 - `this.loadSetting(key)`: Reads a source setting value.
 - `this.isLogged`: Boolean indicating login status.
@@ -160,7 +162,7 @@ All `Convert` functions execute synchronously and operate on `ArrayBuffer` for b
 
 ### APP Global Information & Clipboard
 
-- `APP.version`: Application version string (e.g. `"2.2.1"`).
+- `APP.version`: Application version string (e.g. `"3.2.1"`).
 - `APP.locale`: Current locale string (e.g. `"zh_CN"`, `"en_US"`).
 - `APP.platform`: Operating system (`"android"`, `"ios"`, `"windows"`, `"macos"`, `"linux"`).
 - `setClipboard(text)`: Writes string to system clipboard.
@@ -177,6 +179,8 @@ All `Convert` functions execute synchronously and operate on `ArrayBuffer` for b
 | `UI.cancelLoading(id)` | Dismisses a loading overlay |
 | `UI.showInputDialog(title, validator?, image?)` | Prompts for text input; returns `Promise<string|null>` |
 | `UI.showSelectDialog(title, options, initialIndex?)` | Displays a selection dialog; returns `Promise<number|null>` |
+
+The input `validator(text)` is synchronous: an error string prevents confirmation, while `null` or `undefined` accepts the value. `image` accepts a URL or `ArrayBuffer`. Selection `options` is a string array, and cancellation returns `null`.
 
 ## Logging, Timers, and Background Computation
 

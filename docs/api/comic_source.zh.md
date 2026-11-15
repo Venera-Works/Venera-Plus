@@ -255,11 +255,13 @@ category = {
 |---|---|
 | `login(account, password)` | 异步登录；失败必须抛出错误 |
 | `logout()` | 清理源登录数据和 Cookie |
-| `loginWithWebview` | `{url, checkStatus(url, title), onLoginSuccess?}` |
+| `loginWithWebview` | `{url, checkStatus(url, title), onLoginSuccess?}`；`checkStatus` 同步返回布尔值，`onLoginSuccess` 为同步回调 |
 | `loginWithCookies` | `{fields: string[], validate(values)}` |
 | `registerWebsite` | 可选注册页 URL |
 
 数据通过 `this.loadData(key)`、`this.saveData(key, value)` 持久化。不要将真实账号或 Cookie 硬编码在脚本中。
+
+保存值可以是 JSON 兼容的字符串、数字、布尔值、数组和普通对象，读取接口不限于字符串。账号密码登录和 Cookie 校验可以异步执行；网页登录的状态检查不能返回 Promise。
 
 ### 网络收藏
 
@@ -284,7 +286,7 @@ category = {
 | `loadChapterComments(comicId, epId, page, replyTo)` | 阅读器内章节评论加载 |
 | `sendChapterComment(comicId, epId, content, replyTo)` | 提交章节评论或回复 |
 | `replyComment(comicId, subId, content, parentId, replyId)` | 嵌套评论回复接口 |
-| `updateReadProgress(comicId, epId, page)` | **单向远端阅读进度同步 hook**；阅读器在页码稳定变动后防抖调用此函数，返回 `Res<bool>` |
+| `updateReadProgress(comicId, epId, page)` | **单向远端阅读进度同步 hook**；阅读器在页码稳定变动后防抖调用并等待完成，失败应抛出错误；JS 返回值不用于判断成功 |
 | `likeComic(id, isLike)`、`likeComment(comicId, subId, commentId, isLike)` | 点赞 / 取消点赞 |
 | `voteComment(id, subId, commentId, isUp, isCancel)` | 评论投票，返回最新分值数值 |
 | `starRating(id, rating)` | 漫画评分，接收 0～10 分值 |
@@ -292,6 +294,8 @@ category = {
 | `archive.getDownloadUrl(comicId, archiveId)` | 返回非空归档下载 URL 字符串 |
 
 `Comment` 模型包含 `userName`、`content`，可选 `avatar`、`time`、`id`、`replyToId`、`replyToUserName`、`replyCount`、`score`、`isLiked`、`voteStatus`。
+
+扩展返回 JavaScript 数据或 Promise。`Res<T>` 是宿主 Dart 层的结果类型，不是源脚本需要创建的对象；进度回调正常完成即成功，返回 `false` 不会被宿主解释为失败。
 
 ## 6. 设置与翻译
 

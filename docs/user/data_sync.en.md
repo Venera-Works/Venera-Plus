@@ -4,6 +4,8 @@ Chinese: [data_sync.zh.md](data_sync.zh.md)
 
 Open **Settings → Storage and Sync → App Data Sync** and choose a connected cloud or WebDAV account and a remote directory. You can also add an account from the selector and continue configuring sync. Directory letter case must match the server. When sync is not configured, the top-bar button opens this page; once configured, it lets you choose Upload or Download. Expand advanced field exclusions only when needed.
 
+## Snapshots and restore
+
 Synchronization uses complete snapshots named `<day>-<dataVersion>-<timestamp>-<uniqueId>.venera` in the selected remote directory, defaulting to `/VeneraPlus/`. Migrating existing WebDAV settings to shared accounts preserves the `VeneraPlus/` directory below the original URL. The first upload creates the directory automatically. Each upload advances beyond the known local and remote versions, and its unique suffix prevents concurrent uploads from overwriting each other. Failed uploads restore the local version counter. Successful uploads remove lower-version snapshots from the same day and normally retain at most ten snapshots. Concurrent snapshots with the same version are retained, so the count may temporarily exceed ten.
 
 Downloads compare version numbers first, then dates and unique suffixes. A different file with the same version, or a legacy file whose server identity changed, is still downloaded. Automatic downloads skip lower versions and snapshots reliably identified as already synchronized. Legacy files without server identity metadata are downloaded again. Manual downloads can restore an older version. This release continues to read legacy `<day>-<dataVersion>.venera` files. Upgrade all devices sharing a directory together, since older releases cannot recognize the new filenames.
@@ -28,7 +30,15 @@ When choosing real-time or scheduled mode, choose an initial upload or download.
 
 ## Sync boundaries
 
-The data-sync destination, mode, interval, pending state, local paths, and Bangumi local retry queues stay on this device. Settings listed in `disableSyncFields` are excluded. All cloud accounts and their credentials are included in settings sync, and comic-library configuration always participates; use only a trusted storage service.
+| Content | Sync rule |
+|---|---|
+| Saved cloud and WebDAV accounts | Includes accounts and credentials by default, even when no library uses an account. See [Multi-cloud Storage](multi_cloud.en.md#cross-device-configuration-and-legacy-data) for credential merging. |
+| Comic-library configuration | Includes account references, recognition directories, source identities, automatic-update switches, and intervals. The legacy library-sync switch is no longer used. |
+| Comic archive backup destination | Transferred only when this device enables Sync backup configuration. |
+| App-data sync destination and scheduling | Account selection, directory, mode, interval, pending state, and last-transfer identities remain local; account credentials still belong to the account data above. |
+| Device runtime data | Local paths, proxy settings, device-specific reader preferences, Bangumi retry queues, directory indexes, image caches, and account cooldowns do not migrate with snapshots. |
+
+Advanced field exclusions in `disableSyncFields` can exclude named settings. Library-configuration fields always participate in settings sync, regardless of legacy switches or this exclusion list. Snapshots contain credentials and cookies; use a trusted storage service and check account information before sharing a backup.
 
 Local imports and cloud downloads both restore complete `.venera` snapshots and roll back replaced files on failure. Cloud downloads merge local and remote comic update state; manual local imports restore update state from the selected backup. Restored data reloads databases, comic sources, and affected runtime services. Only a manual local import becomes a new local change for later sync; a cloud download never triggers an upload. An old snapshot without the Home favorites binding clears the previous local binding.
 

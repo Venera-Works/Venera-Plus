@@ -12,11 +12,12 @@
 - `components/` 放可跨页面复用的 UI 组件。若组件只服务某个业务域，应放回对应的 `features/<domain>/`。
 - `foundation/app.dart` 只作为 `App` 单例入口，不再 re-export `foundation/context.dart` 或 `foundation/widget_utils.dart`。
 - 任何文件若使用 BuildContext、Widget、TextStyle 或 Color 扩展，应显式引用实际使用的 `foundation/context.dart` 或 `foundation/widget_utils.dart`，避免把应用状态入口当作 UI 扩展桶。
-- `utils/` 已进入退场状态，不再作为新增工具的默认目录。新增工具应先判断归属：跨功能域基础能力放入 `foundation/`，带明确业务语义的工具放入对应功能域。
+- `utils/` 已退场。新增工具应先判断归属：跨功能域基础能力放入 `foundation/`，带明确业务语义的工具放入对应功能域。
 - 文件路径、文件名清洗、目录复制、文件系统扩展和大小格式化等基础文件能力应直接引用 `foundation/file_system.dart`，避免通过平台文件交互入口绕行。
 - 文件选择、目录选择、文件保存、分享和 Android SAF IO override 等平台文件交互应归入 `foundation/file_interaction.dart`；`utils/io.dart` 已退场，不再作为导出入口。
 - 通用 Dart 扩展通过 `foundation/extensions.dart` 对外暴露；具体 List、String、Future 和 nullable collection 转换实现放在 `foundation/extensions/` 下。
 - `network/` 放通用网络、缓存、请求和文件传输基础设施；`network/webdav.dart` 统一 WebDAV 端点、认证、客户端创建和远端路径规则。业务下载任务与接口封装应放在所属功能域中。
+- `network/remote_storage/` 放统一账号与漫画库配置、WebDAV/OpenList 文件访问、Range 读取与缓存，以及同账号共享的请求调度和限流冷却；通过 `remote_storage.dart` 对外导出。账号管理和目录选择界面归 `features/storage/`，漫画识别与阅读归 `features/remote_library/`。
 - `foundation/image_provider` 只保留通用图片加载基础设施；依赖具体业务模型、缓存目录或功能域管理器的 provider 应放在所属 `features/<domain>/`。
 
 ## `lib/features`
@@ -38,8 +39,9 @@
 - `reader/`：阅读器页面、手势、章节、图片加载、瀑布流阅读实现，以及图片剪贴板写入、音量键监听等阅读场景专用平台交互。
 - `search/`：搜索首页、搜索结果页、聚合搜索页面和搜索查询过滤规则。
 - `settings/`：设置页面、阅读设置、设置页共享控件和九大结构化设置页面（按“阅读与浏览”、“来源与数据”、“系统”分组，个人内容移入书库，废弃独立设置类已清理）。
-- `sync/`：WebDAV 数据同步、顶栏 `SyncActionButton`、应用数据导入导出和本地漫画备份恢复；追更状态通过各设备独立的状态文件合并发现与确认记录，其他数据继续沿用完整快照恢复。
-- `remote_library/` 负责网盘与 WebDAV 在线漫画库的远端目录发现、作品聚合、元数据、按需阅读及本地索引。
+- `storage/`：统一网盘与 WebDAV 账号管理、授权信息导入、网页登录和远端目录选择界面。
+- `sync/`：基于统一网盘或 WebDAV 账号的应用数据同步、顶栏 `SyncActionButton`、应用数据导入导出和本地漫画备份恢复；追更状态通过各设备独立的状态文件合并发现与确认记录，其他数据继续沿用完整快照恢复。
+- `remote_library/`：网盘与 WebDAV 在线漫画库的远端目录发现、作品聚合、元数据、按需阅读及本地索引。
 
 新增功能域时，优先采用以下形态：
 
@@ -67,6 +69,7 @@ test/features/<domain>/
 - 搜索功能通过 `features/search/search.dart` 暴露搜索首页、搜索结果页、聚合搜索页和搜索查询过滤规则。
 - 设置功能通过 `features/settings/settings.dart` 暴露 `SettingsPage` 与结构化设置组件（包括 `ReadingSettings`、`AppearanceSettings`、`BrowsingAndFavoritesSettings`、`SourcesAndServicesSettings`、`StorageAndSyncSettings`、`PrivacyAndSecuritySettings` 等）。
 - 同步功能通过 `features/sync/sync.dart` 暴露数据同步、顶栏 `SyncActionButton`、数据迁移、漫画备份和漫画归档页面。
+- 存储配置界面通过 `features/storage/storage.dart` 暴露账号管理、令牌导入、目录选择和远端位置字段。
 - 本地漫画通过 `features/local_comics/local_comics.dart` 暴露本地库、下载任务、本地漫画页面和下载队列弹窗，通过 `features/local_comics/import_export/import_export.dart` 暴露导入导出工具。
 - 远程漫画库通过 `features/remote_library/remote_library.dart` 暴露在线阅读源、作品类型和设置页面。
 外部页面、路由和测试不应绕过这些入口直接 import 内部实现文件。
@@ -128,12 +131,14 @@ test/features/<domain>/
 - `lib/app_runtime/` 对应 `test/app_runtime/`。
 - `lib/routing/` 对应 `test/routing/`。
 - `tool/` 对应 `test/tool/`。
+- `test/support/` 放跨测试文件复用的辅助能力，例如 `sqlite.dart` 的原生 SQLite 可用性探测；Widget 测试中的真实 IO 通过 `test/widget_test_io.dart` 协调。
 - `utils/` 已退场，不再新增对应测试目录；基础工具测试放入 `test/foundation/`，业务工具测试放入对应 `test/features/<domain>/`。
 
 对于平台冒烟与原生集成测试：
 
 - `test/integration/`：平台与原生集成测试场景代码（仅显式执行；入口文件刻意不以 `_test.dart` 结尾，如 `platform_smoke.dart`，避免被常规 `flutter test --coverage` 默认发现与收集）。
 - `test/driver/`：宿主端集成测试驱动与截图/产物强校验（如 `platform_smoke_driver.dart`，入口亦无 `_test.dart` 后缀）。
+- `test/native/`：供 Android Gradle/JUnit 使用的原生测试源码；Windows C++/CTest 测试位于 `windows/tests/`。
 - 原生集成测试的具体执行说明与参数参见[构建与开发中的质量检查说明](../development/build.zh.md#质量检查)。
 
 移动源码时，应同步移动或更新对应测试文件，并修正 package import。若当前环境缺少平台依赖导致部分测试跳过，应至少保证相关测试可编译并记录跳过原因。
@@ -146,10 +151,10 @@ test/features/<domain>/
 - 更新所有 `package:venera_plus/...` 和相对 import。
 - 使用 `rg` 确认旧路径没有残留引用。
 - 运行 `python .github/scripts/check_structure_imports.py`，确认没有受限方向的 import/export。
-- 更新 `CHANGELOG.md` 的当前版本 `变更` 小节。
-- 运行 `flutter analyze`。
-- 运行与迁移功能域相关的测试；跨域引用较多时运行更大范围测试。
-- 每个独立迁移阶段单独提交，提交信息使用 `refactor(<scope>): ...`。
+- 需要记录用户可见差异时，只更新 `CHANGELOG.md` 的「未发布（Unreleased）」章节，保留已发布记录；同一功能合并描述最终结果。
+- 对本次修改的 Dart 文件执行 `fvm dart format` 和格式校验。
+- 运行针对受影响文件或目录的 `fvm flutter analyze`，以及相关的 `fvm flutter test`；已有有效结果无需重复执行。纯文档修改只检查文档。
+- 提交与分支操作仅在用户明确要求时执行。
 
 ## 结构边界检查
 

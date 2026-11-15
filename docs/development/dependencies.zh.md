@@ -9,7 +9,7 @@ English version: [dependencies.en.md](dependencies.en.md)
 - 同时提交 `pubspec.yaml` 和 `pubspec.lock` 的相关变更。
 - 直接依赖优先使用 pub.dev 的稳定版本；使用 Git fork 时必须说明原因。
 - Git 依赖必须固定到不可变 commit，不能使用默认分支、`main` 或 `HEAD`。
-- 发布工作流中通过 `dart pub global activate` 使用的工具也必须固定到同一 commit。
+- 不通过 `dart pub global activate -s git` 等方式绕过项目依赖清单安装 Git 工具；现有检查器会拒绝工作流中的此类安装。
 - 升级依赖时检查上游变更、安全公告、许可证、平台构建和相关测试。
 - 发布到 pub.dev 不能替代安全维护；发布前仍需完成差异审计和上游同步计划。
 
@@ -22,7 +22,7 @@ English version: [dependencies.en.md](dependencies.en.md)
 - `rhttp` 原生依赖锁定到 `bytes 1.11.1`、`rustls 0.23.46`、`rustls-webpki 0.103.14` 和 `time 0.3.47`，修复内存边界、TLS 握手和会话机密、证书与 CRL 校验及 RFC 2822 解析漏洞。保留 `quinn-proto 0.11.19` 和 `quinn-udp 0.5.16` 的 QUIC 修复。使用已完成全平台签名发布的 [`precompiled_3aea817bfb329ec326ef4561451cab83`](https://github.com/Venera-Works/Venera-Native-Prebuilts/releases/tag/precompiled_3aea817bfb329ec326ef4561451cab83)，Rust 工具链统一升级至 `1.88.0`，满足 `time 0.3.47` 的最低版本要求；FRB 绑定保持 `2.11.1`。
 - `image` / `archive`：升级至 `image 4.12.0` 和 `archive 4.6.0`，代码使用的 ZIP 解码接口要求 `archive >= 4.6.0`。本地 ZIP/CBZ 的 Dart 兜底解压通过 Latin-1 保留旧编码文件名的原始字节，先尝试 UTF-8，再复用 GBK 恢复逻辑；显式设置 `throwOnError: true`，保持损坏压缩数据的错误传播。
 - `pdfrx` / `pdfium_dart`：云端 PDF 通过 `FPDFAvail` 检查所需字节，在两次原生调用之间读取有界 Range；原生回调只同步读取已有缓存，不能发起网络请求或因任务取消返回读取失败。所有 PDFium 操作复用 `PdfrxEntryFunctions.compute` 的串行 worker，文档关闭后才释放 availability、回调及缓存。直接声明现有锁定版本的 `ffi 2.2.0` 和 `pdfium_dart 0.2.5`，与 `pdfrx 2.4.7` 共用原生库。
-- OpenList 内核由 `Venera-Works/Venera-OpenList-Core` 独立发布。`native/openlist_core/core.lock.json` 固定 GitHub Release tag、源码提交和每个平台资产摘要；应用只下载锁定资产，不在应用工作流中安装 Go 或编译内核。升级必须先发布内核版本，再完整更新锁文件中的资产与许可证信息。
+- OpenList 内核由 `Venera-Works/Venera-OpenList-Core` 独立发布，当前锁定版本为 `0.1.0-beta.7`、RPC ABI 为 `1`。`native/openlist_core/core.lock.json` 固定 GitHub Release tag、源码提交和每个平台资产摘要；应用只下载锁定资产，不在应用工作流中安装 Go 或编译内核。升级必须先发布内核版本，再完整更新锁文件中的资产与许可证信息。
 
 ## 当前 Git 依赖
 
@@ -53,7 +53,7 @@ English version: [dependencies.en.md](dependencies.en.md)
 
 - [ ] `pubspec.yaml` 使用固定 commit，未出现 `HEAD` 或默认分支。
 - [ ] `pubspec.lock` 的 resolved commit 与声明一致。
-- [ ] 发布工作流中的 Git 工具使用相同 commit。
-- [ ] 已运行 `flutter pub get --enforce-lockfile`、`flutter analyze --no-pub` 和 `flutter test --no-pub`。
-- [ ] 已运行平台构建，或说明无法运行的平台及原因。
+- [ ] 已运行 `fvm dart tool/check_git_dependencies.dart`，工作流没有绕过清单全局安装 Git 工具。
+- [ ] 依赖声明改动后已运行 `fvm flutter pub get --enforce-lockfile`，并对受影响模块执行 `fvm flutter analyze` 与相关 `fvm flutter test`。
+- [ ] 需要的平台构建已在获授权的本机或 CI 中完成；未验证的平台与原因已说明，未把依赖准备成功视为运行验证。
 - [ ] 已检查许可证、安全公告和上游变更记录。

@@ -11,11 +11,12 @@ English version: [build.en.md](build.en.md)
 
 - FVM，用于管理本地项目 SDK
 - Flutter `3.41.4`，由根目录 `.fvmrc` 固定
-- Dart `>=3.8.0 <4.0.0`
+- Dart `3.11.1`（随固定 Flutter SDK 提供）；`pubspec.yaml` 的语言约束为 `>=3.8.0 <4.0.0`
 - JDK `17`，用于 Android 构建
-- Rust 工具链；Android 构建需要安装对应 Android targets
+- Rust 工具链由 `rust-toolchain.toml` 固定为 `1.88.0`；`rhttp` 使用签名预编译产物，不在应用构建中回退到本地 Cargo 编译
 - 目标平台原生构建环境，例如 Android SDK / NDK、Xcode、Visual Studio 或 Linux GTK/WebKit 依赖
 - Windows 本地构建需要开启系统“开发者模式”；PDF 导入依赖的 `pdfrx` native assets 会在构建时创建符号链接
+下文的 Bash 命令用于对应的原生平台或 CI runner。本地应用构建与运行须先获明确授权，最终交付产物统一归档到根目录 `dist/`；Flutter 和打包脚本的中间文件仍使用各自的 `build/` 目录。
 
 本地命令均在仓库根目录通过 FVM 执行。首次进入项目时，创建 SDK 链接并检查 Flutter 环境：
 
@@ -40,7 +41,7 @@ fvm use 3.41.4 --skip-pub-get
 fvm flutter pub get --enforce-lockfile
 ```
 
-> **注意**：官方仓库当前在 GitHub 上为公开仓库（Public；此前曾设为私有并在未鉴权请求时返回 404），克隆与拉取代码可公开访问。正式安装包与版本发布以 GitHub Releases 实际页面状态为准，不能仅从源码分支推断已发布或公网更新可用。
+正式安装包与版本发布以仓库的 GitHub Releases 页面为准；当前分支可能包含尚未发布的功能，版本差异见 [CHANGELOG](../../CHANGELOG.md)。
 
 不要在不了解依赖影响的情况下删除或重新生成 `pubspec.lock`。
 
@@ -52,6 +53,8 @@ fvm flutter pub get --enforce-lockfile
 版本、源码提交和资产摘要均保存在 `native/openlist_core/core.lock.json`。先在
 Venera-OpenList-Core 发布新版本，确认全部资产与许可证存在后再更新锁文件并运行应用 CI。
 
+当前锁定 `core-v0.1.0-beta.7`，RPC ABI 为 `1`；版本、源码提交和 SHA-256 均以[内核锁文件](../../native/openlist_core/core.lock.json)为准。下载脚本只准备原生依赖，不启动应用或 OpenList HTTP 服务。
+
 Git fork 的来源、固定 commit 和升级要求见[依赖治理](dependencies.zh.md)。
 
 ## rhttp 原生库预编译
@@ -62,7 +65,7 @@ Git fork 的来源、固定 commit 和升级要求见[依赖治理](dependencies
 
 两仓库的准备脚本在计算源码 hash 前应用 Cargo 清单和锁文件，将 Rust 桥接运行库及宏固定到上游提交 [`d59f05b6b0da3606933385f80cbd9e21cc35b59c`](https://github.com/fzyzcjy/flutter_rust_bridge/commit/d59f05b6b0da3606933385f80cbd9e21cc35b59c)，保留 `2.11.1` 版本与现有 Dart 绑定，修复请求取消后迟到回调触发 `unwrap()` 崩溃的问题。新 hash 对应的完整预编译发布就绪后才能构建应用，旧产物不会被复用。
 
-当前锁文件使用 Rust `1.88.0` 编译的安全依赖版本，对应已发布的 [`precompiled_3aea817bfb329ec326ef4561451cab83`](https://github.com/Venera-Works/Venera-Native-Prebuilts/releases/tag/precompiled_3aea817bfb329ec326ef4561451cab83)。`time 0.3.47` 要求 Rust 至少为 `1.88.0`，应用工具链、CI 准备脚本和原生配置保持一致。该版本已完成全平台编译，12 个目标的 28 个附件 SHA-256 摘要及 13 份二进制的 Ed25519 签名均已核验；Windows 发布 DLL 已通过取消回调及真实 HTTP/3 请求验证。其他平台的设备运行验证与应用构建验收仍需分别完成。修补范围见[依赖治理](dependencies.zh.md#关键原生与平台依赖边界)。
+当前原生配置使用 Rust `1.88.0` 和安全依赖版本，对应资源版本 [`precompiled_3aea817bfb329ec326ef4561451cab83`](https://github.com/Venera-Works/Venera-Native-Prebuilts/releases/tag/precompiled_3aea817bfb329ec326ef4561451cab83)。`time 0.3.47` 要求 Rust 至少为 `1.88.0`，应用工具链、CI 准备脚本和原生配置保持一致，FRB 绑定保持 `2.11.1`。预编译资源验签、应用构建和各平台设备运行分别验收；修补范围见[依赖治理](dependencies.zh.md#关键原生与平台依赖边界)。
 
 配置脚本按目录解析 Pub 返回的包 URI，支持绝对或相对 URI、末尾省略 `/` 以及带空格的路径。Apple CI 在安装 Rustup 包装器前创建 `~/.cargo/bin`，并将该目录加入后续步骤的 `PATH`，使并行插件构建中的 Rustup 安装操作串行执行。
 
@@ -113,14 +116,14 @@ version: "2.11.1"
 
 ## 质量检查
 
-本地根据修改范围选择检查，已有有效结果无需重复执行；仅修改文档时检查链接、示例和 `git diff --check`。下列命令列出常用入口，测试文件应按受影响模块替换；分析显式限定应用源码、测试和工具，避免扫描 `cache/` 中的独立参考仓库：
+本地根据修改范围选择检查，已有有效结果无需重复执行；仅修改文档时检查链接、示例和 `git diff --check`。下列命令以网络适配器为例，格式化、分析和测试路径均须替换为本次改动的文件或受影响模块，避免扫描 `cache/` 中的独立参考仓库：
 
 ```bash
 python .github/scripts/check_structure_imports.py
 fvm dart tool/check_git_dependencies.dart
-fvm dart format .
-fvm dart format --output=none --set-exit-if-changed .
-fvm flutter analyze --no-pub lib test tool
+fvm dart format lib/network/app_dio.dart test/network/rhttp_adapter_test.dart
+fvm dart format --output=none --set-exit-if-changed lib/network/app_dio.dart test/network/rhttp_adapter_test.dart
+fvm flutter analyze --no-pub lib/network/app_dio.dart test/network/rhttp_adapter_test.dart
 fvm flutter test --no-pub test/network/rhttp_adapter_test.dart
 git diff --check
 ```
@@ -128,6 +131,8 @@ git diff --check
 CI 将静态检查与 2 个 Dart 测试分片并行运行。按路径排序的 `*_test.dart` 文件交替分配给两个分片，分别执行 `flutter test --no-pub --coverage <分片文件清单>`，使每个 runner 只加载自己的测试文件，并上传各自的覆盖率报告。`analyze` 门禁要求静态检查和全部分片成功，再按源文件与行号合并命中次数，重新计算行覆盖率，将结果写入 `coverage/lcov.info`、工作流摘要及 `dart-coverage` 产物。当前覆盖率用于建立可见基线，尚未设置统一硬阈值；涉及关键业务路径的改动仍必须增加针对性测试。
 
 阅读器 Widget 测试操作真实 SQLite 数据库时，先通过 `test/widget_test_io.dart` 中的 `runWidgetIo`（或文件内等效函数）等待 `HistoryManager.flushReadingProgress()` 完成，再操作书签或直接查询图片收藏。`pumpAndSettle()` 等待界面帧结束，后台 isolate 的数据库写入仍需单独等待。
+
+SQLite 可用性探测复用 `test/support/sqlite.dart`。原生库缺失时，普通测试可按现有条件跳过；平台冒烟中的严格原生开关要求真实依赖，不能用跳过替代验证。命令结束或中止后，清理本轮启动且仍存活的测试、Dart/Java 等子进程。
 
 WebDAV 测试夹具的目录和文件键统一使用解码后的逻辑路径；仅在 HTTP 请求入口解码一次，生成 `PROPFIND` 响应的 `href` 时逐段编码。路径回归应覆盖空格、Unicode、字面百分号和大小写，避免上传与目录发现使用不同路径，或重复解码百分号。
 
@@ -141,6 +146,7 @@ WebDAV 测试夹具的目录和文件键统一使用解码后的逻辑路径；�
 | 本地收藏筛选 | 全部列表跳过历史查询并复用结果，筛选条件变化后维护可见选择 | [local_favorites_filter_test.dart](../../test/features/favorites/local_favorites_filter_test.dart) |
 | WebView 与 Cloudflare | Windows 代理环境和 Cookie 一致，空页面继续等待，异步检查不重叠且关闭后不操作新页面 | [windows_webview_environment_test.dart](../../test/routing/windows_webview_environment_test.dart)、[webview_lifecycle_test.dart](../../test/routing/webview_lifecycle_test.dart) |
 | 封面转场 | 导航重建保持 Hero 控制器，取消返回或替换导航器后清理悬浮层 | [navigation_hero_lifecycle_test.dart](../../test/components/navigation_hero_lifecycle_test.dart) |
+| 远程漫画库 | 渐进发现、异步索引、自动刷新与限流后的恢复边界 | [remote_library_pipeline_test.dart](../../test/features/remote_library/remote_library_pipeline_test.dart)、[remote_library_repository_test.dart](../../test/features/remote_library/remote_library_repository_test.dart)、[remote_library_retry_lifecycle_test.dart](../../test/features/remote_library/remote_library_retry_lifecycle_test.dart) |
 
 同步协议继续读取旧快照，但共享目录内的设备需一并升级以识别新文件名，详见[应用数据同步](../user/data_sync.zh.md)。WebView 的单元与 Widget 测试使用平台接口替身，不能代替 Windows WebView2 的实际代理、登录和 Cookie 验收。
 
@@ -151,7 +157,7 @@ Android PR 任务在 Debug 构建后执行 `:app:testDebugUnitTest --tests com.g
 Windows PR 任务在**已有 Debug 构建后**检查 `flutter_qjs_plugin.dll`、`zip_flutter.dll` 和 `flutter_windows.dll`，将产物目录加入 `PATH`，并以 `CI_REQUIRE_QUICKJS=true` 和 `CI_REQUIRE_NATIVE_ZIP=true` 运行原生 ZIP、源事务与元数据探测，以及 QuickJS WebSocket、Gzip、Comment、图片脚本和源回调桥接场景。下列测试文件的修改也会触发平台验证：
 
 ```powershell
-flutter test --no-pub --reporter=expanded `
+fvm flutter test --no-pub --reporter=expanded `
   --dart-define=CI_REQUIRE_QUICKJS=true --dart-define=CI_REQUIRE_NATIVE_ZIP=true `
   --name 'App data transfer with native ZIP|ComicSourceParser\.probeKey metadata sandboxing|source runtime transactions|SourceFileMetadata|QuickJS|ComicSourceParser (detects comic\.updateReadProgress|bridges comic\.onImageLoad)' `
   test/features/sync/app_data_transfer_test.dart `
@@ -199,7 +205,7 @@ New-Item -ItemType Directory -Path $smokeDir -Force | Out-Null
 flutter drive --driver=test/driver/platform_smoke_driver.dart --target=test/integration/platform_smoke.dart -d windows "--dart-define=CI_NATIVE_SMOKE=true" "--dart-define=SMOKE_ARTIFACT_DIR=$smokeDir" --timeout 900
 ```
 
-Dart 格式检查覆盖 `lib`、`test` 与 `tool`（自动递归覆盖子目录）。`main` 分支要求 PR 通过代码分析、依赖审查和平台冒烟构建门禁，并禁止直接强推或删除分支。
+Dart 格式检查在 CI 中覆盖 `lib`、`test` 与 `tool`。工作流会运行上述检查；哪些结果是合并必需项、是否限制分支删除，由 GitHub 的分支保护或 ruleset 决定，不能仅从仓库文件确认。
 
 涉及发布版本时再运行：
 
@@ -268,10 +274,10 @@ Linux Debian 安装包使用系统自带的 `dpkg-deb` 工具与项目脚本 `de
 
 ```bash
 fvm flutter build linux --release --no-pub
-python debian/build.py --skip-build
+fvm exec python debian/build.py x64 --skip-build
 ```
 
-构建产物位于 `build/linux/{x64,arm64}/release/debian/`。该方式替代了旧的 `flutter_to_debian` 依赖，不再需要全局安装 Git 打包工具。
+架构参数必填，为 `x64` 或 `arm64`，须与已有 release bundle 一致；ARM64 打包时将示例中的 `x64` 改为 `arm64`。脚本产物位于 `build/linux/{x64,arm64}/release/debian/`，本地交付时归档到 `dist/`。该方式替代了旧的 `flutter_to_debian` 依赖，不再需要全局安装 Git 打包工具。
 
 Windows 安装器与便携包由发布工作流生成；本仓库不维护 winget manifest 或公共包管理器条目。
 ## GitHub Actions 与发布版本
@@ -294,6 +300,8 @@ python .github/scripts/release_version.py --check --tag v1.2.3
 
 `pubspec.yaml`、发布 tag 和 `CHANGELOG.md` 版本章节必须与 `release.json` 一致。
 
+日常变更只维护 `CHANGELOG.md` 的「未发布（Unreleased）」章节；执行发布时再归档为对应版本，保留已发布记录。正式发布还需同步根 README 中的版本与下载链接，Beta Release 描述须使用 `AGENTS.md` 规定的警告开头。
+
 `代码分析` 工作流会运行版本与结构检查、Python 脚本测试、Dart 格式检查（`lib`、`test` 与 `tool`，覆盖子目录）、`flutter analyze`、完整 Dart 测试及覆盖率汇总。`依赖安全审查` 会检查 PR 新增或升级的依赖，`PR 平台冒烟构建` 会按改动范围验证 Android 和 Windows 的编译与原生数据库集成测试场景，也可通过手动触发验证已发布的内核。
 
 `构建`（`.github/workflows/build.yml`）同时提供手动平台选择和可复用构建入口，统一维护 Android、Windows、macOS、iOS、Linux x64/ARM64 的构建、产物校验与 Actions 产物上传。普通手动构建将 Android 四种 APK、Windows 安装版 EXE 和完整便携版 ZIP 分别原样上传，使用完整文件名作为产物名，不再额外套一层 ZIP；产物保留 7 天。缺少 Android 正式签名时生成临时签名。
@@ -301,6 +309,8 @@ python .github/scripts/release_version.py --check --tag v1.2.3
 `完整构建`（`.github/workflows/main.yml`）负责发布元数据校验、Release 准备与收尾，通过内部参数 `release_mode: true` 调用共享构建。发布模式继续将 Android 汇总为 `apks`、Windows 汇总为 `windows_build`，供对应的 Release 附件上传任务下载。发布构建必须提供 Android 正式签名，缺少时失败；产物沿用仓库默认保留期。发布平台保持 Android、Windows、iOS、Linux x64/ARM64，macOS 继续通过手动构建生成。
 
 只有推送 `v*` tag 时才创建或恢复 prerelease 并上传 Release 附件。共享工作流中的每个平台上传任务仅依赖对应构建任务，完成后即可追加附件；全部所需构建与上传成功后，`完整构建` 才完成 Release，否则标记为构建未完成。手动运行 `完整构建` 仍要求合法发布 tag，且仅生成 Actions 产物。发布模式不会自动取消进行中的构建；普通手动构建继续允许新运行取消旧运行。
+
+当前 `main.yml` 的任务依赖为发布元数据校验 → Release 准备 → 共享构建 → Release 收尾，未显式依赖 `analyze.yml` 的质量检查结果。质量检查工作流与 tag 发布的构建成功是两项独立结果。
 
 原生平台 CI 构建任务配置了编译与依赖缓存：使用 `sccache` 缓存原生任务中的 Rust 编译及受支持的 Linux CMake 生成器路径下的 C/C++ 编译（未保留 Windows C/C++ 包装器），使用 Cargo 注册表与 Git 下载缓存，以及 Android Gradle 构建缓存。构建步骤在结束时通过 `sccache --show-stats` 打印统计信息，用于确认热缓存命中情况。最终发布包与安装包等产物始终重新构建生成，不会从缓存复用。
 
@@ -333,11 +343,14 @@ fvm flutter pub get --enforce-lockfile
 
 通常是 Flutter/Dart 版本或包源环境不匹配。先核对本页要求的 Flutter 版本和 `fvm flutter doctor -v` 输出，不要直接删除锁文件。
 
-本仓库锁文件中的包源为 `https://pub.dev`。如果本地 `PUB_HOSTED_URL` 指向其他镜像，在 PowerShell 中为当前终端临时对齐包源后重试，不要去掉 `--enforce-lockfile` 或重写锁文件：
+本仓库锁文件中的包源为 `https://pub.dev`。如果本地 `PUB_HOSTED_URL` 指向其他镜像，在使用项目 SDK 的 PowerShell 子进程中临时对齐包源，不要去掉 `--enforce-lockfile` 或重写锁文件：
 
 ```powershell
-$env:PUB_HOSTED_URL = 'https://pub.dev'
-fvm flutter pub get --enforce-lockfile
+fvm exec pwsh -NoProfile -Command '
+  $env:PUB_HOSTED_URL = "https://pub.dev"
+  flutter pub get --enforce-lockfile
+  exit $LASTEXITCODE
+'
 ```
 
 ### Gradle 下载过慢

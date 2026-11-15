@@ -2,6 +2,8 @@
 
 本文档记录针对漫画源图片请求 Header 配置机制的技术预研、代码审查结论及任务跟踪。本文档属于实验与技术跟踪记录，不作为正式路线图承诺。
 
+**状态（2026-11-15）：通用 Header 解析已实现。** 当前逻辑位于 [network/images.dart](../../lib/network/images.dart)，回归入口为 [images_test.dart](../../test/network/images_test.dart)。正式契约以[漫画源开发说明](../api/comic_source.zh.md#header-解析与-user-agent-回退规则)和 [JavaScript API](../api/js.zh.md#header-解析与-user-agent-回退契约)为准；本文保留问题背景与修复范围，不代表已验证特定第三方源的可用性。
+
 ## 声明
 
 VeneraPlus 仅维护漫画阅读器本体与扩展运行时。本仓库不提供、内置、托管、推荐、维护或验证任何第三方漫画源、源列表、源站内容、专有协议或版权状态。扩展文档与运行时规范仅描述通用的接口与网络契约。
@@ -76,7 +78,7 @@ onThumbnailLoad: (url) => {
 
 ## 3. 核心问题定位与修复范围
 
-虽然扩展接口已具备配置能力，但审查发现内部网络层存在 Header 解析与回退（fallback）行为不一致的隐患：
+修复前的审查发现，扩展接口虽已具备配置能力，内部网络层的 Header 解析与回退（fallback）仍存在以下问题；这些问题是历史修复背景，不是当前待实现清单：
 
 1. **Header 大小写敏感性缺失**：HTTP Header 名在规范中大小写不敏感（如 `user-agent` 与 `User-Agent`）。此前部分解析路径仅以固定小写或固定大写进行判空，当扩展提供了不同大小写形式的 `User-Agent` 时，可能被误判为未提供并重复注入默认浏览器 UA。
 2. **Fallback 规则分散**：缩略图（`loadThumbnail`）、章节正文（`loadComicImage`）以及章节重试（`onLoadFailed`）几处分支中的 Header 补全与类型检查逻辑未统一。
@@ -84,7 +86,7 @@ onThumbnailLoad: (url) => {
 
 ### 修复原则
 
-本轮核心修复仅聚焦于统一 `images.dart` 内部的 Header fallback 逻辑：
+核心修复统一了 `lib/network/images.dart` 内部的 Header fallback 逻辑：
 
 - **Source UA 优先**：漫画源返回的 headers 优先级最高；
 - **大小写不敏感匹配**：检查 headers 中是否存在任意大小写形式的 `User-Agent`，只要存在即保留源定义，严禁覆盖或追加默认值；
@@ -120,4 +122,4 @@ onThumbnailLoad: (url) => {
 - [x] 缺失 headers 或未提供 User-Agent 时，正确回退至 `user-agent: webUA`；
 - [x] 非法 headers 类型抛出明确清晰的异常；
 - [x] 核心代码无任何第三方源特判，不修改全局 `webUA`；
-- [ ] 现有其他漫画源行为不受破坏。
+- 第三方源行为由用户在其授权环境中自行确认，不作为本仓库通用 Header 契约的验收项。

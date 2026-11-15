@@ -243,11 +243,13 @@ Across `onImageLoad`, `onThumbnailLoad`, and retry `onLoadFailed`, VeneraPlus ap
 |---|---|
 | `login(account, password)` | Async login; throws on failure |
 | `logout()` | Clears source session data and cookies |
-| `loginWithWebview` | `{url, checkStatus(url, title), onLoginSuccess?}` |
+| `loginWithWebview` | `{url, checkStatus(url, title), onLoginSuccess?}`; `checkStatus` synchronously returns a boolean and `onLoginSuccess` is a synchronous callback |
 | `loginWithCookies` | `{fields: string[], validate(values)}` |
 | `registerWebsite` | Optional registration URL |
 
 Persist data using `this.loadData(key)` and `this.saveData(key, value)`.
+
+Values may be JSON-compatible strings, numbers, booleans, arrays, or plain objects; reads are not restricted to strings. Password login and Cookie validation may be asynchronous, while web-login status checks must not return a Promise. Do not hardcode real credentials or Cookies in scripts.
 
 ### Network Favorites
 
@@ -270,7 +272,7 @@ Errors containing `Login expired` trigger an automatic re-login attempt.
 | `loadChapterComments(comicId, epId, page, replyTo)` | Chapter comments in reader |
 | `sendChapterComment(comicId, epId, content, replyTo)` | Posts a chapter comment or reply |
 | `replyComment(comicId, subId, content, parentId, replyId)` | Nested reply interface |
-| `updateReadProgress(comicId, epId, page)` | **Unidirectional remote reading progress hook**; debounced on stable reader page turns |
+| `updateReadProgress(comicId, epId, page)` | **Unidirectional remote reading progress hook**; debounced on stable page turns and awaited. Throw on failure; the JS return value does not determine success |
 | `likeComic(id, isLike)`, `likeComment(comicId, subId, commentId, isLike)` | Like / unlike |
 | `voteComment(id, subId, commentId, isUp, isCancel)` | Returns updated score |
 | `starRating(id, rating)` | Submits rating from 0 to 10 |
@@ -278,6 +280,8 @@ Errors containing `Login expired` trigger an automatic re-login attempt.
 | `archive.getDownloadUrl(comicId, archiveId)` | Returns non-empty archive download URL |
 
 `Comment` includes `userName`, `content`, optional `avatar`, `time`, `id`, `replyToId`, `replyToUserName`, `replyCount`, `score`, `isLiked`, `voteStatus`.
+
+Extensions return JavaScript data or Promises. `Res<T>` is a host-side Dart result type, not an object source scripts must construct. A progress callback succeeds when it completes normally; returning `false` is not interpreted as failure.
 
 ## 6. Settings and Localization
 
@@ -319,6 +323,6 @@ Single extensions can be installed via file or URL. Repositories provide a UTF-8
 ]
 ```
 
-- `name`, `key`, and `version` are required.
-- Use `url` or `fileName` for download locations.
+- `name`, `key`, and `version` are required; `key` must match the script's class field exactly.
+- Use `url` or `fileName` for download locations. Resolve relative paths against the final successfully loaded catalog URL.
 - This repository does not provide or recommend third-party source repository URLs.

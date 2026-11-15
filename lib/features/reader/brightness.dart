@@ -5,9 +5,9 @@ const int readerBrightnessMin = 20;
 const int readerBrightnessMax = 100;
 const int defaultReaderBrightness = 50;
 
-int normalizeReaderBrightness(Object? value) {
-  final brightness = value is num ? value.round() : defaultReaderBrightness;
-  return brightness.clamp(readerBrightnessMin, readerBrightnessMax);
+double normalizeReaderBrightness(Object? value) {
+  final brightness = value is num ? value : defaultReaderBrightness;
+  return brightness.clamp(readerBrightnessMin, readerBrightnessMax).toDouble();
 }
 
 double readerBrightnessOverlayOpacity({
@@ -61,8 +61,8 @@ class ReaderBrightnessControl extends StatelessWidget {
   final bool enabled;
   final Object? brightness;
   final ValueChanged<bool> onEnabledChanged;
-  final ValueChanged<int> onBrightnessChanged;
-  final ValueChanged<int>? onBrightnessChangeEnd;
+  final ValueChanged<double> onBrightnessChanged;
+  final ValueChanged<double>? onBrightnessChangeEnd;
   final bool compact;
 
   @override
@@ -84,7 +84,7 @@ class ReaderBrightnessControl extends StatelessWidget {
               ? ListTile(
                   contentPadding: compact ? EdgeInsets.zero : null,
                   title: Text('Reader brightness'.tl),
-                  trailing: Text('$normalizedBrightness%'),
+                  trailing: Text('${normalizedBrightness.toStringAsFixed(1)}%'),
                   subtitle: Row(
                     children: [
                       const Icon(Icons.brightness_low, size: 20),
@@ -92,15 +92,9 @@ class ReaderBrightnessControl extends StatelessWidget {
                         child: Slider(
                           min: readerBrightnessMin.toDouble(),
                           max: readerBrightnessMax.toDouble(),
-                          divisions:
-                              (readerBrightnessMax - readerBrightnessMin) ~/ 5,
-                          value: normalizedBrightness.toDouble(),
-                          onChanged: (value) {
-                            onBrightnessChanged(value.round());
-                          },
-                          onChangeEnd: (value) {
-                            onBrightnessChangeEnd?.call(value.round());
-                          },
+                          value: normalizedBrightness,
+                          onChanged: onBrightnessChanged,
+                          onChangeEnd: onBrightnessChangeEnd,
                         ),
                       ),
                       const Icon(Icons.brightness_high, size: 20),
@@ -127,8 +121,8 @@ class ReaderBrightnessBar extends StatelessWidget {
   final bool enabled;
   final Object? brightness;
   final ValueChanged<bool> onEnabledChanged;
-  final ValueChanged<int> onBrightnessChanged;
-  final ValueChanged<int> onBrightnessChangeEnd;
+  final ValueChanged<double> onBrightnessChanged;
+  final ValueChanged<double> onBrightnessChangeEnd;
 
   @override
   Widget build(BuildContext context) {
@@ -180,18 +174,12 @@ class ReaderBrightnessBar extends StatelessWidget {
                       ),
                       child: Slider(
                         semanticFormatterCallback: (value) =>
-                            '${value.round()}%',
+                            '${value.toStringAsFixed(1)}%',
                         min: readerBrightnessMin.toDouble(),
                         max: readerBrightnessMax.toDouble(),
-                        value: value.toDouble(),
-                        divisions:
-                            (readerBrightnessMax - readerBrightnessMin) ~/ 5,
-                        onChanged: enabled
-                            ? (value) => onBrightnessChanged(value.round())
-                            : null,
-                        onChangeEnd: enabled
-                            ? (value) => onBrightnessChangeEnd(value.round())
-                            : null,
+                        value: value,
+                        onChanged: enabled ? onBrightnessChanged : null,
+                        onChangeEnd: enabled ? onBrightnessChangeEnd : null,
                       ),
                     ),
                   ),

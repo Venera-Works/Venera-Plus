@@ -104,12 +104,9 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
   final _sync = DataSync();
 
   Future<void> _manageAccounts() async {
-    final result = await Navigator.of(context)
-        .push<(StorageAccount, StorageAccountPurpose)>(
-          MaterialPageRoute(
-            builder: (_) => StorageAccountsPage(selectPurposeOnAdd: true),
-          ),
-        );
+    final result = await context.to<(StorageAccount, StorageAccountPurpose)>(
+      () => StorageAccountsPage(selectPurposeOnAdd: true),
+    );
     if (!mounted || result == null) return;
     final (account, purpose) = result;
     switch (purpose) {

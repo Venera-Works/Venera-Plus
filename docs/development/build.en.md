@@ -11,11 +11,13 @@ This guide is for developers building, testing, or maintaining VeneraPlus (repos
 
 - FVM to manage the local project SDK
 - Flutter `3.41.4`, pinned in the root `.fvmrc`
-- Dart `>=3.8.0 <4.0.0`
+- Dart `3.11.1`, supplied by the pinned Flutter SDK; the language constraint in `pubspec.yaml` is `>=3.8.0 <4.0.0`
 - JDK `17` for Android builds
-- A Rust toolchain; Android builds require the corresponding Android targets
+- Rust `1.88.0`, pinned in `rust-toolchain.toml`; `rhttp` uses signed prebuilts without falling back to local Cargo compilation in application builds
 - Native tooling for the target platform, such as Android SDK / NDK, Xcode, Visual Studio, or Linux GTK/WebKit dependencies
 - Windows local builds require Developer Mode because the `pdfrx` native assets used by PDF import create symbolic links during the build
+
+Bash examples apply to the corresponding native platform or CI runner. Local application builds and runs require explicit authorization. Archive final local deliverables under the root `dist/` directory; Flutter and packaging scripts retain intermediate files under `build/`.
 
 Run local commands through FVM from the repository root. On first opening the project, create the SDK link and check the Flutter environment:
 
@@ -40,7 +42,7 @@ fvm use 3.41.4 --skip-pub-get
 fvm flutter pub get --enforce-lockfile
 ```
 
-> **Note**: The official repository is currently public on GitHub (previously set to private where unauthenticated API requests returned 404); cloning and fetching code is publicly accessible. Official installation packages and releases are subject to the actual state on GitHub Releases; do not infer release status or public update availability solely from source branches.
+Use the repository's GitHub Releases page for installation packages and published versions. The current branch may contain unreleased features; see [CHANGELOG](../../CHANGELOG.md) for version differences.
 
 Do not delete or regenerate `pubspec.lock` without understanding the dependency changes.
 
@@ -53,6 +55,8 @@ The version, source commit, and asset digests are in `native/openlist_core/core.
 a new Venera-OpenList-Core version first, verify all assets and licenses, then update the lock file
 and run the application CI.
 
+The current pin is `core-v0.1.0-beta.7` with RPC ABI `1`. The [core lockfile](../../native/openlist_core/core.lock.json) is authoritative for the version, source revision, and SHA-256 digests. The fetch script prepares native dependencies without starting the application or an OpenList HTTP service.
+
 See [Dependency Governance](dependencies.en.md) for Git fork provenance, pinned commits, and upgrade requirements.
 
 ## Precompiled rhttp native libraries
@@ -63,7 +67,7 @@ After resolving Flutter dependencies, each platform CI runs `dart tool/prepare_r
 
 Both preparation scripts apply the Cargo manifest and lockfile before computing the source hash. They pin the Rust bridge runtime and macros to upstream revision [`d59f05b6b0da3606933385f80cbd9e21cc35b59c`](https://github.com/fzyzcjy/flutter_rust_bridge/commit/d59f05b6b0da3606933385f80cbd9e21cc35b59c), retaining version `2.11.1` and the existing Dart bindings while fixing the `unwrap()` crash from callbacks returning after request cancellation. Publish the complete prebuilts for the new hash before building the application; old artifacts are not reused.
 
-The current lockfile uses security-patched native dependencies compiled with Rust `1.88.0`, matching the published release [`precompiled_3aea817bfb329ec326ef4561451cab83`](https://github.com/Venera-Works/Venera-Native-Prebuilts/releases/tag/precompiled_3aea817bfb329ec326ef4561451cab83). `time 0.3.47` requires at least Rust `1.88.0`, so the application toolchain, CI preparation script, and native configuration use the same version. Compilation succeeded on all supported platforms. SHA-256 digests for all 28 assets and Ed25519 signatures for all 13 binaries across the 12 targets were verified. The released Windows DLL passed cancellation callback and real HTTP/3 request checks. Device runtime checks on other platforms and application build acceptance remain separate work. See [Dependency Governance](dependencies.en.md#critical-native-and-platform-dependency-boundaries) for the fixes included.
+The current native configuration uses Rust `1.88.0` and security-patched dependencies for [`precompiled_3aea817bfb329ec326ef4561451cab83`](https://github.com/Venera-Works/Venera-Native-Prebuilts/releases/tag/precompiled_3aea817bfb329ec326ef4561451cab83). `time 0.3.47` requires Rust `1.88.0` or later, so the application toolchain, CI preparation, and native configuration use the same version; FRB bindings remain at `2.11.1`. Prebuilt signature checks, application builds, and device runtime checks are separate acceptance steps. See [Dependency Governance](dependencies.en.md#critical-native-and-platform-dependency-boundaries) for the fixes.
 
 The preparation script resolves Pub package URIs as directories, supporting absolute or relative URIs, an omitted trailing `/`, and paths containing spaces. Apple CI creates `~/.cargo/bin` before installing the Rustup wrapper and adds that directory to subsequent steps' `PATH` so Rustup installation operations are serialized during parallel plugin builds.
 
@@ -114,14 +118,14 @@ Use CI artifacts for device comparisons. Local application builds and runs still
 
 ## Quality Checks
 
-Choose local checks for the affected scope and reuse valid results. For documentation changes, check links, examples, and `git diff --check`. The commands below show common entry points; replace the example test path with the affected tests. Limit analysis to application source, tests, and tools to avoid scanning independent reference repositories under `cache/`:
+Choose local checks for the affected scope and reuse valid results. For documentation changes, check links, examples, and `git diff --check`. Adjust the network adapter examples below to the changed Dart files and affected modules. Keep independent reference repositories under `cache/` out of analysis:
 
 ```bash
 python .github/scripts/check_structure_imports.py
 fvm dart tool/check_git_dependencies.dart
-fvm dart format .
-fvm dart format --output=none --set-exit-if-changed .
-fvm flutter analyze --no-pub lib test tool
+fvm dart format lib/network/app_dio.dart test/network/rhttp_adapter_test.dart
+fvm dart format --output=none --set-exit-if-changed lib/network/app_dio.dart test/network/rhttp_adapter_test.dart
+fvm flutter analyze --no-pub lib/network/app_dio.dart test/network/rhttp_adapter_test.dart
 fvm flutter test --no-pub test/network/rhttp_adapter_test.dart
 git diff --check
 ```
@@ -129,6 +133,8 @@ git diff --check
 CI runs static checks and two Dart test shards in parallel. Test files matching `*_test.dart` are sorted by path and assigned alternately to the two shards. Each runs `flutter test --no-pub --coverage <shard file list>` so its runner loads only its assigned files, then uploads its coverage report. The `analyze` gate requires static checks and every shard to succeed, then merges hit counts by source file and line, recalculates line coverage, and publishes `coverage/lcov.info` in the workflow summary and the `dart-coverage` artifact. Coverage is currently a visible baseline rather than a repository-wide hard threshold. Changes to critical behavior still require focused tests.
 
 Reader widget tests that use real SQLite should await `HistoryManager.flushReadingProgress()` through `runWidgetIo` in `test/widget_test_io.dart` (or an equivalent local helper) before bookmark operations or direct image-favorite queries. `pumpAndSettle()` settles Flutter frames; background isolate database writes must be awaited separately.
+
+Reuse `test/support/sqlite.dart` for SQLite availability checks. Ordinary tests may skip according to their existing conditions when a native library is absent; strict platform smoke switches require real dependencies. After completion or cancellation, stop any surviving test, Dart, or Java child processes started for the checks.
 
 WebDAV fixtures store directory and file keys as decoded logical paths. Decode once at HTTP ingress, and encode each segment when generating `PROPFIND` response `href` values. Path regressions should cover spaces, Unicode, literal percent signs, and case preservation to catch mismatched upload/listing paths and repeated percent decoding.
 
@@ -142,6 +148,7 @@ Use the following regression entry points by passing the test paths to `fvm flut
 | Local favorite filters | Reuse All-list results without history queries and retain only visible selections after filter changes | [local_favorites_filter_test.dart](../../test/features/favorites/local_favorites_filter_test.dart) |
 | WebView and Cloudflare | Keep Windows proxy environments and cookies aligned, wait for valid page content, coalesce asynchronous checks, and leave replacement pages untouched after closure | [windows_webview_environment_test.dart](../../test/routing/windows_webview_environment_test.dart), [webview_lifecycle_test.dart](../../test/routing/webview_lifecycle_test.dart) |
 | Cover transitions | Retain the Hero controller across navigation rebuilds and remove overlays after cancelled back gestures or navigator replacement | [navigation_hero_lifecycle_test.dart](../../test/components/navigation_hero_lifecycle_test.dart) |
+| Remote libraries | Progressive discovery, asynchronous indexes, automatic refresh, and recovery after rate limiting | [remote_library_pipeline_test.dart](../../test/features/remote_library/remote_library_pipeline_test.dart), [remote_library_repository_test.dart](../../test/features/remote_library/remote_library_repository_test.dart), [remote_library_retry_lifecycle_test.dart](../../test/features/remote_library/remote_library_retry_lifecycle_test.dart) |
 
 Sync still reads legacy snapshots, but every device sharing a directory must upgrade to recognize the new filenames; see [App Data Synchronization](../user/data_sync.en.md). WebView unit and widget tests use platform interface substitutes and do not replace Windows WebView2 checks with real proxy, login, and cookie behavior.
 
@@ -152,7 +159,7 @@ After the Debug build, the Android PR job runs `:app:testDebugUnitTest --tests c
 After the existing Windows Debug build, the PR job checks `flutter_qjs_plugin.dll`, `zip_flutter.dll`, and `flutter_windows.dll`, adds the runner directory to `PATH`, and runs native ZIP, source transaction and metadata probing tests, plus QuickJS WebSocket, Gzip, Comment, image script, and source callback bridge cases with `CI_REQUIRE_QUICKJS=true` and `CI_REQUIRE_NATIVE_ZIP=true`. Changes to any test file listed below also trigger platform validation:
 
 ```powershell
-flutter test --no-pub --reporter=expanded `
+fvm flutter test --no-pub --reporter=expanded `
   --dart-define=CI_REQUIRE_QUICKJS=true --dart-define=CI_REQUIRE_NATIVE_ZIP=true `
   --name 'App data transfer with native ZIP|ComicSourceParser\.probeKey metadata sandboxing|source runtime transactions|SourceFileMetadata|QuickJS|ComicSourceParser (detects comic\.updateReadProgress|bridges comic\.onImageLoad)' `
   test/features/sync/app_data_transfer_test.dart `
@@ -200,7 +207,7 @@ New-Item -ItemType Directory -Path $smokeDir -Force | Out-Null
 flutter drive --driver=test/driver/platform_smoke_driver.dart --target=test/integration/platform_smoke.dart -d windows "--dart-define=CI_NATIVE_SMOKE=true" "--dart-define=SMOKE_ARTIFACT_DIR=$smokeDir" --timeout 900
 ```
 
-Dart formatting checks cover `lib`, `test`, and `tool` (recursively covering all subdirectories). The `main` branch requires code analysis, dependency review, and the platform smoke-build gate to pass, and direct force-pushes or branch deletion are disabled.
+CI formatting checks cover `lib`, `test`, and `tool`. Workflows run the checks above; required merge checks and branch-deletion restrictions are configured separately through GitHub branch protection or rulesets and cannot be confirmed from repository files alone.
 
 For release-related changes, also run:
 
@@ -269,10 +276,10 @@ Linux Debian packages are built using the host system `dpkg-deb` utility and the
 
 ```bash
 fvm flutter build linux --release --no-pub
-python debian/build.py --skip-build
+fvm exec python debian/build.py x64 --skip-build
 ```
 
-Built packages are placed in `build/linux/{x64,arm64}/release/debian/`. This approach replaces the legacy `flutter_to_debian` dependency and avoids global Git package activation.
+The required architecture argument is `x64` or `arm64` and must match the existing release bundle; replace `x64` with `arm64` for ARM64 packaging. Packages are written to `build/linux/{x64,arm64}/release/debian/`; archive local deliverables under `dist/`. This replaces `flutter_to_debian` without a global Git packaging tool.
 
 The release workflow builds the Windows installer and portable package; this repository does not maintain winget manifests or public package-manager entries.
 ## GitHub Actions and Release Versions
@@ -295,6 +302,8 @@ python .github/scripts/release_version.py --check --tag v1.2.3
 
 `pubspec.yaml`, the release tag, and the version section in `CHANGELOG.md` must match `release.json`.
 
+Maintain daily changes only under Unreleased in `CHANGELOG.md`. Archive them under the matching version during release, preserving published entries. Formal releases also update the root README version and download links; Beta descriptions start with the warning required by `AGENTS.md`.
+
 The `代码分析` workflow runs version and structure checks, Python script tests, Dart formatting checks across `lib`, `test`, and `tool` (covering subdirectories), `flutter analyze`, the full Dart test suite, and coverage reporting. `依赖安全审查` checks dependencies added or upgraded by a pull request, while `PR 平台冒烟构建` verifies Android and Windows compilation as well as native database integration test scenarios when the changed files can affect platform builds; it can also be dispatched manually to validate a released core.
 
 `构建` (`.github/workflows/build.yml`) provides both manual platform selection and a reusable workflow, sharing build steps, artifact validation, and Actions artifact uploads for Android, Windows, macOS, iOS, and Linux x64/ARM64. Ordinary manual builds upload each of the four Android APK variants, the Windows installer EXE, and the complete portable ZIP separately without an additional ZIP wrapper. Artifact names use the complete filenames, and artifacts are retained for seven days. A temporary Android signing key is generated when release signing credentials are absent.
@@ -302,6 +311,8 @@ The `代码分析` workflow runs version and structure checks, Python script tes
 `完整构建` (`.github/workflows/main.yml`) validates release metadata, prepares the Release, and handles completion, calling the shared workflow with the internal `release_mode: true` input. Release mode continues to group Android packages in `apks` and Windows packages in `windows_build` for the corresponding Release asset upload jobs. Release builds require Android release signing credentials and fail when they are absent; artifacts use the repository's default retention period. Release platforms remain Android, Windows, iOS, and Linux x64/ARM64; macOS remains available through manual builds.
 
 Only pushes of `v*` tags create or resume a prerelease and upload Release assets. Each platform's upload job in the shared workflow depends only on its corresponding build, allowing assets to appear as platforms finish. `完整构建` completes the Release only after every required build and upload succeeds; otherwise it marks the build as incomplete. Manual runs of `完整构建` still require a valid release tag and only produce Actions artifacts. Release mode does not automatically cancel running builds; ordinary manual builds continue to cancel superseded runs.
+
+The current `main.yml` dependency chain is release metadata → Release preparation → shared builds → Release finalization. It does not explicitly depend on quality results from `analyze.yml`. The quality workflow and a successful tag build are separate results.
 
 Native CI build jobs configure compilation and dependency caching: `sccache` caches Rust on native jobs and C/C++ on supported Linux CMake generator paths (the Windows C/C++ wrapper was intentionally not retained), Cargo caches registry and Git downloads, and Android jobs reuse the Gradle build cache. Jobs print statistics via `sccache --show-stats` upon completion to verify warm-cache hits. Final release packages and installers are always rebuilt and are never reused from cache.
 
@@ -334,11 +345,14 @@ fvm flutter pub get --enforce-lockfile
 
 The Flutter/Dart version or package-source environment usually does not match. Check the Flutter version required by this guide and the output of `fvm flutter doctor -v`; do not immediately delete the lock file.
 
-The repository lock file uses `https://pub.dev`. If the local `PUB_HOSTED_URL` points to another mirror, temporarily align the source for the current PowerShell terminal and retry. Keep `--enforce-lockfile` and preserve the lock file:
+The repository lock file uses `https://pub.dev`. If `PUB_HOSTED_URL` points to another mirror, temporarily align it in a PowerShell child process using the project SDK. Keep `--enforce-lockfile` and preserve the lock file:
 
 ```powershell
-$env:PUB_HOSTED_URL = 'https://pub.dev'
-fvm flutter pub get --enforce-lockfile
+fvm exec pwsh -NoProfile -Command '
+  $env:PUB_HOSTED_URL = "https://pub.dev"
+  flutter pub get --enforce-lockfile
+  exit $LASTEXITCODE
+'
 ```
 
 ### Slow Gradle Downloads

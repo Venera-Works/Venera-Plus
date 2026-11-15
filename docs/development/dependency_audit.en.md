@@ -1,8 +1,10 @@
-# Git Dependency Management and Replacement Audit (2026-09-30)
+# Git Dependency Management and Replacement Audit
 
 中文版本：[dependency_audit.zh.md](dependency_audit.zh.md) · [Governance](dependencies.en.md) · [Machine-Readable Inventory](git_dependencies.json)
 
 This document records the provenance review, customization rationale, and maintenance responsibilities for VeneraPlus's current Git dependencies. The complete commit SHAs, repository URLs, package paths, and statuses are maintained in the machine-readable inventory `docs/development/git_dependencies.json`.
+
+The baseline audit date is 2026-09-30; later dependency updates have their own sections. The dependency table reflects current pins, while historical checks retain their original scope and do not establish fresh verification of the current branch. The inventory's `reviewed_on` remains the baseline date rather than being advanced for documentation corrections.
 
 ## Completed Governance Changes
 
@@ -22,7 +24,7 @@ This document records the provenance review, customization rationale, and mainte
 | `webdav_client` | `venera-app/webdav_client` (`2f669c9`) | Contains `RHttpAdapter` integration, authentication, redirects, and directory traversal handling. Retain custom branch; replacement requires validating native rhttp transport. |
 | `flutter_saf` | `packages/flutter_saf` in `venera-app/venera-prime` (`056a419a504258e6c6352871f9c888b3fd5bc2f4`) | Same-name `0.0.1` plugin derived from `venera-app/flutter_saf` at `fe182cdf40e5fa6230f451bc1d643b860f610d13`. Retains `license-review`; SAF changes and verification boundaries are detailed below. |
 | `flutter_7zip` | `venera-app/flutter_7zip` (`b333447`) | Core dependency for 7z/CB7 import and ZIP fallback. Retained under `license-review`; retain pinned commit and evaluate equivalent implementations. |
-| `lodepng_flutter` | `venera-app/lodepng_flutter` (`6216834`) | Native PNG encoding pointer and finalizer memory management. Retained under `license-review`; replacement requires verifying large-image encoding throughput and memory safety. |
+| `lodepng_flutter` | `venera-app/lodepng_flutter` (`ac7d05dde32e8d728102a9ff66e6b55f05d94ba1`) | Includes NDK r28 build support; the image pipeline uses its native PNG encoder. Retained under `license-review`; replacement requires verifying large-image encoding performance and memory lifetimes. |
 
 ## SAF Source Update (2026-11-12)
 
@@ -34,6 +36,8 @@ This document records the provenance review, customization rationale, and mainte
 
 
 ## Verification Facts and Boundaries
+
+The following records belong to the baseline audit, not the execution results of this documentation update. Current commands and scoped validation rules are in [Build and Development](build.en.md#quality-checks). Historical WSL results do not authorize current local WSL use.
 
 - **Debian Packaging**: Ran `test_debian_package.py` in WSL Debian GNU/Linux; 6/6 tests passed, covering real system `dpkg-deb` creation and unpacking for amd64 and arm64 architectures, ELF64 architecture inspection, and dpkg version sorting. *Note: this was verified against test bundle fixtures and does not constitute full Linux desktop GUI runtime verification.*
 - **Dependency Checker**: Ran `dart tool/check_git_dependencies.dart` locally and in CI; produced `inventory matches declarations and lockfile` with zero errors.

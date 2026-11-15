@@ -2,7 +2,7 @@
 
 中文版本：[reader_width.zh.md](reader_width.zh.md)
 
-In **Settings → Reader** or from the reader's in-session settings panel, selecting **Continuous (Top to Bottom)** or **Waterfall (Top to Bottom)** exposes the **Side margins (each side)** slider. This setting also appears when automatic reader mode preferences include vertical flow modes.
+In **Settings → Reading** or from the reader's in-session settings panel, selecting **Continuous (Top to Bottom)** or **Waterfall (Top to Bottom)** exposes the **Side margins (each side)** slider. This setting also appears when automatic reader mode preferences include vertical flow modes.
 
 ## Layout and Margin Rules
 
@@ -10,6 +10,8 @@ In **Settings → Reader** or from the reader's in-session settings panel, selec
 - **Applicable Modes**: Applies exclusively to vertical continuous and waterfall reader modes. It does not affect Gallery (single/dual page) or horizontal continuous reading.
 - **Interaction with Width Limit**: If **Limit image width** is enabled, that limit is applied first, followed by the percentage margin reduction. Percentages apply to the constrained content width rather than raw screen width.
 - **Priority**: Follows per-comic, per-device, then global setting precedence. Changes take effect immediately in the active reader. Setting to 0% removes margins while preserving width limit settings.
+
+This changes the reading layout without rewriting local images or remote files. See [Automatic Reading](automatic_reading.en.md) for scrolling and image-wait behavior.
 
 ## Alignment with Adaptive Layout Target
 

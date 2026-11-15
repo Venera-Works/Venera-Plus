@@ -1,5 +1,5 @@
-// Documentation template only. example.invalid is not a real comic service.
-// Replace the endpoints and mappings with an API you are authorized to use.
+// 仅作文档模板，example.invalid 不是实际漫画服务。
+// 使用时替换为有权访问的 API，并按实际验证结果填写 minAppVersion。
 class ExampleSource extends ComicSource {
     name = "Example Source";
     key = "example_source";
@@ -42,7 +42,7 @@ class ExampleSource extends ComicSource {
             const data = await this.requestJson("/comics/" + encodeURIComponent(id));
             const chapters = {};
             for (const chapter of data.chapters) {
-                // Use stable non-integer keys to preserve the service's reading order.
+                // 新源使用稳定的非整数键，保留服务端给出的阅读顺序。
                 chapters["ep_" + chapter.id] = chapter.title;
             }
             return new ComicDetails({
@@ -73,7 +73,7 @@ class ExampleSource extends ComicSource {
             headers: { "Referer": "https://example.invalid/" }
         }),
 
-        // This callback must be synchronous.
+        // 缩略图回调必须同步返回，不能声明为 async。
         onThumbnailLoad: imageKey => ({
             url: imageKey,
             headers: { "Referer": "https://example.invalid/" }

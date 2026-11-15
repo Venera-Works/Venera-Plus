@@ -25,7 +25,7 @@ Previously grouped favorites and histories appear as separate source entries wit
 
 ## Bangumi synchronization
 
-Choose a server from **Settings → Online Services → Bangumi → Website list**. The default is the official `bgm.tv` service; `bangumi.lat` and `anibt.net` mirrors are also included. The list shows a name or domain, with separate stored API, image proxy, and Access Token page addresses rather than inferred subdomains.
+Choose a server from **Settings → Sources and Services → Online Services → Bangumi → Website list**. The default is the official `bgm.tv` service; `bangumi.lat` and `anibt.net` mirrors are also included. The list shows a name or domain, with separate stored API, image proxy, and Access Token page addresses rather than inferred subdomains.
 
 Custom entries require the actual API address; `https://` may be omitted. The name, image proxy, and Access Token page are optional. Empty image proxy settings preserve image URLs returned by the API, and an empty Token page uses the official application page. New entries append to the list; select an entry to switch servers. Custom entries can be edited or deleted, and deleting the active entry restores the official server. The selected API server receives your Access Token, so choose a service you trust.
 
@@ -36,5 +36,7 @@ The server name aligns with the page content, with **Website list** on the right
 If a cloud comic's effective metadata contains `bangumiSubjectId`, scanning the library or opening details while connected to Bangumi automatically binds reading progress. Existing bindings and remote progress are preserved. A missing collection is created as **Wish to read**, and subsequent uploads still follow the **Automatic sync** switch. Automatic binding does not rewrite metadata; retaining the metadata ID causes another scan or details load to bind it again after unbinding.
 
 Bindings for the same subject share confirmed remote episode and volume progress, rating, and collection status. Updating one source also updates the other bindings' cached state. Progress parsing remains source-specific; local chapter and page positions are independent.
+
+Manual binding for a cloud comic updates its directory metadata or file sidecar in the background, preserving valid chapter ranges and extension fields. A failed write does not undo a successful progress binding. The account needs write access; see [comic import and online reading](import_comic.en.md#automatic-bangumi-scraping) for metadata ownership and conditional writes. Automatic binding itself does not rewrite metadata.
 
 Manually lowering progress clears conflicting queued uploads for the same account, subject, and progress field, preventing older tasks from immediately restoring the previous value. Later reading may still generate new progress uploads. See [App Data Synchronization](data_sync.en.md) for cross-device snapshot behavior.

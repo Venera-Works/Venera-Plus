@@ -7,8 +7,8 @@ void main() {
     tester,
   ) async {
     var enabled = false;
-    var brightness = 50;
-    int? saved;
+    var brightness = 50.0;
+    double? saved;
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -50,7 +50,7 @@ void main() {
       expect(normalizeReaderBrightness(null), defaultReaderBrightness);
       expect(normalizeReaderBrightness(5), readerBrightnessMin);
       expect(normalizeReaderBrightness(120), readerBrightnessMax);
-      expect(normalizeReaderBrightness(42.6), 43);
+      expect(normalizeReaderBrightness(42.6), 42.6);
     });
 
     test('maps brightness to a black overlay opacity', () {
@@ -96,8 +96,8 @@ void main() {
     tester,
   ) async {
     bool? enabledValue;
-    int? brightnessValue;
-    int? brightnessEndValue;
+    double? brightnessValue;
+    double? brightnessEndValue;
 
     await tester.pumpWidget(
       MaterialApp(

@@ -9,7 +9,7 @@ This document records governance rules for VeneraPlus's direct dependencies, esp
 - Commit related changes to both `pubspec.yaml` and `pubspec.lock`.
 - Prefer stable pub.dev packages. Every Git fork must have a documented reason.
 - Pin Git dependencies to immutable commits. Do not use a default branch, `main`, or `HEAD`.
-- Tools installed with `dart pub global activate` in release workflows must use the same pinned commit.
+- Do not bypass the dependency inventory through `dart pub global activate -s git` or equivalent Git tool installation. The existing checker rejects these workflow installs.
 - Review upstream changes, security advisories, licenses, platform builds, and relevant tests when upgrading.
 - Publishing a fork to pub.dev does not replace security maintenance; a diff audit and upstream synchronization plan are still required.
 
@@ -22,7 +22,7 @@ This document records governance rules for VeneraPlus's direct dependencies, esp
 - Native `rhttp` dependencies are locked to `bytes 1.11.1`, `rustls 0.23.46`, `rustls-webpki 0.103.14`, and `time 0.3.47`, addressing memory bounds, TLS handshake and session-secret issues, certificate and CRL validation, and RFC 2822 parsing. The QUIC fixes in `quinn-proto 0.11.19` and `quinn-udp 0.5.16` are retained. The application uses the signed release for all supported platforms, [`precompiled_3aea817bfb329ec326ef4561451cab83`](https://github.com/Venera-Works/Venera-Native-Prebuilts/releases/tag/precompiled_3aea817bfb329ec326ef4561451cab83). All Rust toolchain pins move to `1.88.0`, meeting the minimum required by `time 0.3.47`; FRB bindings remain at `2.11.1`.
 - `image` / `archive`: Updated to `image 4.12.0` and `archive 4.6.0`. The ZIP decoding APIs used by the application require `archive >= 4.6.0`. The Dart fallback for local ZIP/CBZ extraction uses Latin-1 to preserve legacy filename bytes, tries UTF-8 first, then reuses GBK recovery. Explicit `throwOnError: true` preserves error propagation for damaged compressed data.
 - `pdfrx` / `pdfium_dart`: Cloud PDFs use `FPDFAvail` to check required bytes and fetch bounded ranges between native calls. Native callbacks synchronously read cached data only; they must not start network requests or report read failures due to cancellation. All PDFium operations share the serialized `PdfrxEntryFunctions.compute` worker. Close the document before releasing availability, callbacks, and cached data. Existing locked versions `ffi 2.2.0` and `pdfium_dart 0.2.5` are declared directly and share the native library with `pdfrx 2.4.7`.
-- The OpenList core is released independently by `Venera-Works/Venera-OpenList-Core`. `native/openlist_core/core.lock.json` fixes the GitHub Release tag, source commit, and each platform asset digest; application workflows only download the locked assets and do not install Go or compile the core. An upgrade must release the core first, then update every asset and license entry in the lock file.
+- The OpenList core is released independently by `Venera-Works/Venera-OpenList-Core`; the current pin is version `0.1.0-beta.7`, RPC ABI `1`. `native/openlist_core/core.lock.json` fixes the GitHub Release tag, source commit, and each platform asset digest; application workflows only download the locked assets and do not install Go or compile the core. An upgrade must release the core first, then update every asset and license entry in the lock file.
 
 ## Current Git Dependencies
 
@@ -53,7 +53,7 @@ The table records the reasons for retaining customized dependencies based on pin
 
 - [ ] `pubspec.yaml` uses immutable commits, never `HEAD` or a default branch.
 - [ ] Resolved commits in `pubspec.lock` match the declarations.
-- [ ] Release workflows use the same commit for Git-installed tools.
-- [ ] `flutter pub get --enforce-lockfile`, `flutter analyze --no-pub`, and `flutter test --no-pub` have passed.
-- [ ] Platform builds have passed, or unverified platforms are documented.
+- [ ] `fvm dart tool/check_git_dependencies.dart` passes, and workflows do not install global Git tools outside the inventory.
+- [ ] Dependency declaration changes pass `fvm flutter pub get --enforce-lockfile`, scoped `fvm flutter analyze`, and relevant `fvm flutter test` checks.
+- [ ] Required platform builds have run in authorized local or CI environments; unverified platforms and reasons are documented. Dependency preparation is not runtime verification.
 - [ ] Licenses, security advisories, and upstream changes have been reviewed.

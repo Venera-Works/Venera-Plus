@@ -13,6 +13,7 @@ This document is the English companion for the repository structure rules. The C
 - `foundation/` contains cross-domain application foundations, including app state, initialization protocols, navigation and startup settings contracts (`navigation_settings.dart`), async queues, Dart extensions, constants, logging, localization, file system helpers, image processing, image provider bases, reading-history metadata contracts, platform channels, and shared data infrastructure.
 - `components/` contains reusable UI components. Components that only serve one business domain should live inside that feature domain.
 - `network/` contains general network, cache, request, and file transfer infrastructure. `network/webdav.dart` owns shared WebDAV endpoints, authentication, client creation, and remote path rules. Business-specific download tasks and API wrappers should remain in their owning feature domain.
+- `network/remote_storage/` owns shared account and library configuration, WebDAV/OpenList file access, range reads and caches, and account-wide scheduling and cooldowns. Its public entry is `remote_storage.dart`. Account and directory-selection UI belongs in `features/storage/`; comic discovery and reading belong in `features/remote_library/`.
 
 ## Feature Domains
 
@@ -33,7 +34,8 @@ This document is the English companion for the repository structure rules. The C
 - `reader/`: reader page, gestures, chapters, image loading, waterfall flow, clipboard image handling, and reader-only platform interactions.
 - `search/`: search page, result page, aggregate search, and search query filters.
 - `settings/`: settings pages, reader settings, reusable setting controls, and structured setting destinations (grouped by Reading & Browsing, Sources & Data, and System; personal content moved to Library, obsolete standalone setting classes cleaned up).
-- `sync/`: WebDAV data sync, top-bar `SyncActionButton`, app data import/export, and local comic backup/restore. Comic update discoveries and confirmations merge through per-device state files; other data retains full-snapshot restore behavior.
+- `storage/`: shared cloud and WebDAV account management, credential import, web authorization, and remote directory-selection UI.
+- `sync/`: app data synchronization through a shared cloud or WebDAV account, top-bar `SyncActionButton`, app data import/export, and local comic backup/restore. Comic update discoveries and confirmations merge through per-device state files; other data retains full-snapshot restore behavior.
 - `remote_library/` provides online comic libraries for cloud accounts and WebDAV, including directory discovery, work aggregation, metadata, on-demand reading, and local indexes.
 
 New domains should generally follow this shape:
@@ -61,6 +63,7 @@ External modules should prefer stable feature entry files instead of importing i
 - `features/search/search.dart` for search page, result page, aggregate search, and query filters.
 - `features/settings/settings.dart` for `SettingsPage` and structured setting section widgets (including `ReadingSettings`, `AppearanceSettings`, `BrowsingAndFavoritesSettings`, `SourcesAndServicesSettings`, `StorageAndSyncSettings`, `PrivacyAndSecuritySettings`, etc.).
 - `features/sync/sync.dart` for `SyncActionButton` and data synchronization.
+- `features/storage/storage.dart` for account management, token import, directory selection, and remote location fields.
 - `features/comic_storage/comic_storage.dart` for archive metadata and file rules.
 - `features/remote_library/remote_library.dart` for remote online comic sources, work types, and library settings.
 
@@ -108,11 +111,13 @@ Tests should mirror source directories where possible:
 - `lib/app_runtime/` maps to `test/app_runtime/`.
 - `lib/routing/` maps to `test/routing/`.
 - `tool/` maps to `test/tool/`.
+- `test/support/` contains shared helpers, including the native SQLite availability probe in `sqlite.dart`. Real IO in widget tests is coordinated through `test/widget_test_io.dart`.
 
 For platform smoke and native integration testing:
 
 - `test/integration/`: platform and native integration scenarios (executed explicitly only; entry files must not end in `_test.dart`, e.g. `platform_smoke.dart`, ensuring isolation from standard `flutter test --coverage` discovery).
 - `test/driver/`: host-side integration test drivers and screenshot/artifact verification (e.g. `platform_smoke_driver.dart`, also without a `_test.dart` suffix).
+- `test/native/`: native test sources used by Android Gradle/JUnit. Windows C++/CTest tests live under `windows/tests/`.
 - For execution instructions and driver arguments, see the quality checks section in [Build and Development](../development/build.en.md#quality-checks).
 
 When moving source files, move or update the matching tests and fix package imports.
@@ -125,9 +130,10 @@ Each structure migration should:
 - Update package and relative imports.
 - Use `rg` to confirm old paths are gone.
 - Run `python .github/scripts/check_structure_imports.py`.
-- Update `CHANGELOG.md`.
-- Run `flutter analyze`.
-- Run relevant tests for the touched domains.
+- Record user-visible differences only under Unreleased in `CHANGELOG.md`, preserving published entries and combining changes to the same feature.
+- Format the changed Dart files with `fvm dart format`, then verify their formatting.
+- Run scoped `fvm flutter analyze` and relevant `fvm flutter test` commands. Reuse valid results; documentation-only changes need document checks only.
+- Perform commits and branch operations only when explicitly requested.
 
 ## Boundary Checks
 

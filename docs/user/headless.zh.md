@@ -12,18 +12,24 @@ VeneraPlus 的无头命令模式允许从命令行运行部分关键功能，适
 venera-plus --headless <command> [subcommand] [options]
 ```
 
+先在图形界面完成账号、同步目标、漫画源和主页收藏夹等所需配置，再使用对应命令。Windows PowerShell 可在已安装程序的目录中运行 `.\VeneraPlus.exe`，例如：
+
+```powershell
+.\VeneraPlus.exe --ignore-disheadless-log --headless webdav up
+```
+
 ## 全局选项
 
-- **`--ignore-disheadless-log`**：抑制日志输出，使脚本解析输出时更干净。
+- **`--ignore-disheadless-log`**：抑制应用日志，保留 `[CLI PRINT]` 结果。将此选项放在 `--headless` 前，避免它被当成命令参数。
 
 ## 命令
 
 ### `webdav`
 
-管理 WebDAV 完整数据快照。
+命令名保留为 `webdav`，实际使用“设置 → 存储与同步 → 应用数据同步”中配置的统一网盘或 WebDAV 账号及目录，操作完整 `.venera` 快照。未配置同步目标时会报错。
 
 - **`webdav up`**：上传当前本地完整快照。
-- **`webdav down`**：下载并恢复较新的远端完整快照。
+- **`webdav down`**：手动下载并恢复按版本排序最新的远端完整快照，即使其版本低于本机；与自动下载的版本跳过规则不同。
 
 只有 `up` 和 `down` 可用；网络或恢复失败会输出 `status: error` 并以非零退出码结束。
 
@@ -77,6 +83,8 @@ venera-plus --headless updatescript all
 
 命令结束时会输出脚本总数、更新数量和失败数量。
 
+汇总的 `status: success` 表示批处理已经结束；仍需检查 `data.errors`，单个源失败不一定使该命令以非零退出码结束。
+
 ```json
 {
   "status": "success",
@@ -108,7 +116,9 @@ venera-plus --headless updatesubscribe --update-comic-by-id-type "comic-id" "sou
 
 ## 输出格式
 
-所有无头命令都会输出带 `[CLI PRINT]` 前缀的 JSON 对象。该结构便于自动化脚本解析。JSON 对象始终包含 `status` 和 `message`，返回数据时还会包含 `data` 字段。
+无头命令的结构化结果是带 `[CLI PRINT]` 前缀的 JSON 对象。脚本应筛选此前缀，再解析其后的 JSON，不将其他标准输出当作结果。对象始终包含 `status` 和 `message`，返回数据时还会包含 `data` 字段。
+
+`webdav` 传输失败、无效命令和 `updatesubscribe` 检查错误使用非零退出码；`updatescript` 的逐项失败按上面的汇总规则判断。同步范围与快照恢复规则见[应用数据同步](data_sync.zh.md)。
 
 ### `updatesubscribe` 输出
 

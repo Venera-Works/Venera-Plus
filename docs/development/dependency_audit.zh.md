@@ -1,8 +1,10 @@
-# Git 依赖接管与替换审计（2026-09-30）
+# Git 依赖接管与替换审计
 
 English: [dependency_audit.en.md](dependency_audit.en.md) · [治理规则](dependencies.zh.md) · [机器可读清单](git_dependencies.json)
 
 本文档记录 VeneraPlus 当前 Git 依赖的来源审查、定制理由与维护责任。完整 commit、仓库 URL、包路径与状态以机器可读清单 `docs/development/git_dependencies.json` 为准。
+
+基线审计日期为 2026-09-30，后续依赖变更按章节追加。依赖表反映当前固定版本；下方历史验证保留原范围，不代表当前分支已重新完成同样的检查。清单的 `reviewed_on` 保留基线日期，不因文档校正而改为新的审计日期。
 
 ## 已完成的治理变更
 
@@ -22,7 +24,7 @@ English: [dependency_audit.en.md](dependency_audit.en.md) · [治理规则](depe
 | `webdav_client` | `venera-app/webdav_client` (`2f669c9`) | 包含底层 `RHttpAdapter` 适配器集成、认证、重定向及目录处理。保留定制分支；替换需验证 native rhttp 网络传输。 |
 | `flutter_saf` | `venera-app/venera-prime` 的 `packages/flutter_saf` (`056a419a504258e6c6352871f9c888b3fd5bc2f4`) | 同名 `0.0.1` 插件，源自 `venera-app/flutter_saf` 的 `fe182cdf40e5fa6230f451bc1d643b860f610d13`。保留许可证待核实（license-review）状态；SAF 修复与验证边界见下文。 |
 | `flutter_7zip` | `venera-app/flutter_7zip` (`b333447`) | 7z/CB7 导入与 ZIP 回退核心依赖。许可证待核实（license-review）；先保留固定 commit，评估等价实现。 |
-| `lodepng_flutter` | `venera-app/lodepng_flutter` (`6216834`) | 原生 PNG 编码指针与 finalizer 内存管理。许可证待核实（license-review）；替换需验证大图编码性能与内存泄漏。 |
+| `lodepng_flutter` | `venera-app/lodepng_flutter` (`ac7d05dde32e8d728102a9ff66e6b55f05d94ba1`) | 固定版本包含 NDK r28 构建适配，图片处理链路依赖其原生 PNG 编码。许可证待核实（license-review）；替换需验证大图编码性能与内存生命周期。 |
 
 ## SAF 来源更新（2026-11-12）
 
@@ -34,6 +36,8 @@ English: [dependency_audit.en.md](dependency_audit.en.md) · [治理规则](depe
 
 
 ## 验证事实与边界说明
+
+以下是基线审计保留的历史验收记录，不是本次文档更新的执行结果。当前验证命令与按模块选择检查的规则见[构建与开发](build.zh.md#质量检查)；历史 WSL 记录不构成本机使用 WSL 的授权。
 
 - **Debian 打包**：在 WSL Debian GNU/Linux 环境下运行 `test_debian_package.py`，6/6 项测试通过，包含真实系统 `dpkg-deb` 对 amd64 与 arm64 架构安装包的生成、解包、ELF64 架构检查与 dpkg 真实版本排序。注意：此项验证基于测试 fixture bundle，不构成真实 Linux 桌面 GUI 运行的充分证明。
 - **依赖检查器**：本地与 CI 执行 `dart tool/check_git_dependencies.dart`，输出 `inventory matches declarations and lockfile`，零错误。

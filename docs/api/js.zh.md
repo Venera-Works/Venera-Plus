@@ -10,7 +10,7 @@
 
 ## Network 网络
 
-所有网络请求函数均返回 Promise。网络传输错误会抛出异常；HTTP 4xx/5xx 状态码通常仍返回响应对象，扩展需自行检查 `status`。
+下表中的 HTTP 请求方法均返回 Promise。网络传输错误会抛出异常；HTTP 4xx/5xx 状态码通常仍返回响应对象，扩展需自行检查 `status`。Cookie 读写是另一组同步桥接接口。
 
 | 方法 | 返回值 | 说明 |
 |---|---|---|
@@ -108,6 +108,8 @@ try {
 
 `comic.onImageLoad` 与 `comic.onThumbnailLoad` 返回普通对象配置图片请求：
 
+`onImageLoad(url, comicId, epId, target)` 可以异步返回，`onThumbnailLoad(url)` 必须同步返回。阅读器的预加载同样使用当前有效的 `target`；保存、复制或分享原图等无视口约束的操作可传入 `null`。
+
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `url` | `string?` | 实际请求图片 URL，缺省使用 image key |
@@ -153,8 +155,8 @@ try {
 
 ### 源实例方法
 
-- `this.loadData(key)`：读取当前源的持久化数据字符串。
-- `this.saveData(key, value)`：持久化保存当前源数据。
+- `this.loadData(key)`：同步读取当前源保存的数据值；可为字符串、数字、布尔值、数组或普通对象，缺失时为空值，不限于字符串。
+- `this.saveData(key, value)`：更新当前源的数据并交由应用保存；值应可 JSON 序列化，不保存函数、原生 `Map`/`Set` 或运行时句柄。
 - `this.deleteData(key)`：删除指定数据项。
 - `this.loadSetting(key)`：读取当前源设置项的值。
 - `this.isLogged`：布尔值，当前源登录状态。
@@ -162,8 +164,8 @@ try {
 
 ### APP 全局信息与剪贴板
 
-- `APP.version`：应用当前版本号字符串（如 `"2.2.1"`）。
-- `APP.locale`：当前系统语言（如 `"zh_CN"`、`"en_US"`）。
+- `APP.version`：应用当前版本号字符串（如 `"3.2.1"`）。
+- `APP.locale`：当前应用语言（如 `"zh_CN"`、`"en_US"`）。
 - `APP.platform`：当前运行平台（`"android"`、`"ios"`、`"windows"`、`"macos"`、`"linux"`）。
 - `setClipboard(text)`：异步写入系统剪贴板。
 - `getClipboard()`：异步读取系统剪贴板文本。
@@ -179,6 +181,8 @@ try {
 | `UI.cancelLoading(id)` | 关闭对应 ID 的加载指示器 |
 | `UI.showInputDialog(title, validator?, image?)` | 弹出输入框，返回 `Promise<string|null>` |
 | `UI.showSelectDialog(title, options, initialIndex?)` | 弹出单选对话框，返回 `Promise<number|null>` |
+
+输入框的 `validator(text)` 为同步校验函数，返回错误文字时阻止确认，返回 `null` 或 `undefined` 表示通过；`image` 可传图片 URL 或 `ArrayBuffer`。单选框的 `options` 为字符串数组，取消时返回 `null`。
 
 ## 日志、计时器与后台计算
 

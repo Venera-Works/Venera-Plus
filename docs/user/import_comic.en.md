@@ -1,5 +1,7 @@
 # Import Comic
 
+[中文](import_comic.zh.md) · [Documentation index](../README.en.md)
+
 ## Introduction
 
 VeneraPlus can import comics from local directories, comic archives, PDF files,
@@ -32,7 +34,7 @@ you can restore the local database by scanning the current local path.
 - It does not copy files or add favorites.
 - Duplicates (same title or directory) are skipped.
 
-Make sure the local storage path in `Settings → Storage and Sync` points to the folder that contains
+Make sure the local storage path in `Settings → Storage and Sync → Local Storage and Downloads` points to the folder that contains
 the downloaded comics before running this.
 
 ## Comic Directory
@@ -235,7 +237,9 @@ In this mode, the title, author, description, and tags come from `metadata.json`
 
 When real chapter directories and `metadata.json` page ranges coexist, the real directory layout takes precedence; page ranges are not matched to directories by position. `chapters[].start` and `chapters[].end` are used for virtual chapters only when the root contains flat images and no chapter directories, which preserves the extracted CBZ layout.
 
-Synchronization performs bounded recursive discovery for unmarked nested libraries. A directory with ordinary root images is a comic. The cloud comic library determines comic boundaries using `metadata.json` and directory structure. `metadata.json` remains the strongest boundary with top priority, and child metadata is never bypassed by chapter naming heuristics. If a directory contains no root images and no metadata, it is recognized as a comic root when its direct leaf child directories match chapter naming conventions. When a category directly contains multiple flat single-volume comics (which are structurally isomorphic to a comic with multiple chapters), the app disambiguates them using chapter naming patterns so non-chapter subdirectories remain individual comics. In all modes, chapter directories are validated for readable comic pages. Empty subdirectories or directories containing only a cover image are excluded from chapter lists and will never be selected as comic covers. If discovery encounters unrecoverable read errors or reaches safety limits (recursion depth or directory count), the sync operation fails closed and preserves the previous successful directory index without committing partial or speculative results. For complex or ambiguous hierarchies, placing `metadata.json` in each comic root is strongly recommended.
+Synchronization performs bounded recursive discovery for unmarked nested libraries. A directory with ordinary root images is a comic. The cloud comic library determines comic boundaries using `metadata.json` and directory structure. `metadata.json` remains the strongest boundary with top priority, and child metadata is never bypassed by chapter naming heuristics. If a directory contains no root images and no metadata, it is recognized as a comic root when its direct leaf child directories match chapter naming conventions. When a category directly contains multiple flat single-volume comics (which are structurally isomorphic to a comic with multiple chapters), the app disambiguates them using chapter naming patterns so non-chapter subdirectories remain individual comics. In all modes, chapter directories are validated for readable comic pages. Empty subdirectories or directories containing only a cover image are excluded from chapter lists and will never be selected as comic covers. For complex or ambiguous hierarchies, placing `metadata.json` in each comic root is strongly recommended.
+
+Each recognition root replaces its complete index only after its scan succeeds. A network failure or scan limit preserves that root's previous index and reports an error, while other successful roots still update. Progressively published summaries may already be visible. Removing deleted remote works from the list requires a successful scan of their root. See [Multi-cloud Storage](multi_cloud.en.md#refresh-caches-and-rate-limits) for refresh schedules and directory caches.
 
 > If an older version mistakenly discovered chapter folders as individual comics and generated `metadata.json` files inside them, delete those erroneous chapter-level `metadata.json` files manually before resynchronizing; the app never deletes remote metadata files automatically.
 
@@ -429,9 +433,9 @@ Manual Bangumi binding from ZIP/CBZ, image-based EPUB, or PDF comic details writ
 
 #### Range Reads and Caching
 
-Libraries on the same cloud account share an archive read queue with at most four concurrent requests and at least 150 milliseconds between request starts. The visible page takes priority over covers and preloads; an existing preload is promoted when that page becomes visible. HTTP 429 responses pause the shared queue according to `Retry-After`, or use delays of 1, 2, and 4 seconds when the header is missing or invalid. Each range read retries at most twice, and queued reads can be cancelled.
+Libraries on the same account share a remote request queue with at most four concurrent requests. OpenList accounts leave at least 150 milliseconds between request starts; WebDAV has no fixed start interval. The visible page takes priority over covers, preloads, and background discovery; an existing preload is promoted when that page becomes visible. Rate limiting starts an account-wide cooldown; see [Multi-cloud Storage](multi_cloud.en.md#refresh-caches-and-rate-limits) for retry timing and restart behavior. Queued reads can be cancelled.
 
-Paged reading prioritizes decoding the next two pages and the previous page in advance, with the forward page count capped by the configured preload count. The rest of the preload window only caches image files. The preload count follows comic-specific, device-specific, then global settings.
+Gallery, continuous, and waterfall modes load and decode following pages according to the effective preload count, also preparing the previous page and prioritizing pages nearest the current one. The count follows comic-specific, device-specific, then global settings. Aggregated works do not preload across edition boundaries.
 
 For small ZIP/CBZ and EPUB image entries, the local header and compressed payload are combined into aligned range requests, each at most 2 MiB. An account-wide 16 MiB memory range cache reuses nearby entries; larger images still use exact on-demand reads. This reduces request bursts and small transfers. Account and IP limits remain subject to the storage provider's rules.
 

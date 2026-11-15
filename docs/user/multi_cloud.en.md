@@ -1,8 +1,12 @@
 # Multi-cloud storage
 
-VeneraPlus connects Baidu Netdisk, Quark, 115, 123 Cloud, OneDrive, and Google Drive through its embedded OpenList core. WebDAV remains available as a separate account type.
+[中文](multi_cloud.zh.md) · [Documentation index](../README.en.md)
+
+VeneraPlus connects Baidu Netdisk, Quark, 115, 123 Cloud, OneDrive, and Google Drive through its embedded OpenList core. WebDAV accounts are also supported.
 
 The embedded core is built independently by Venera-OpenList-Core and packaged with the app. The app uses a fixed released core version and does not download or run an OpenList service on the device.
+
+## Add and authorize accounts
 
 Choose Add on the cloud account management page in Storage & Sync, then select a provider from its own page to open the matching account form. Enter credentials or authorize the account, then choose "Save and test connection" in the fixed action area at the bottom. Editing an existing account opens its form directly. Go back from the form to choose another provider, or go back from the provider list to cancel adding an account. For Baidu Netdisk, 115, 123 Cloud, and OneDrive, choose "Log in and authorize" to complete authorization in the app's WebView and fill the tokens automatically. Authorization and online token refresh continue to use the official OpenList API. The app does not expose an OpenList HTTP server.
 
@@ -12,6 +16,8 @@ Quark uses the `Quark` Cookie driver. Choose "Log in and authorize" to sign in o
 
 Google Drive still requires manual authorization on the [OpenList Token page](https://api.oplist.org/). Token-based providers also accept manually entered tokens. Baidu, 123 Cloud, OneDrive, and Google Drive require a refresh token; 115 requires both access and refresh tokens.
 
+## Configure uses and comic directories
+
 Settings → Storage and Sync groups cloud accounts, online comic libraries, app-data sync, and comic archive backup by purpose, showing the selected accounts, directories, and sync status. Authorize an account once and reuse it across purposes. You can add an account from any account selector and continue the current form. After connecting an account for the first time, you can also choose its purpose directly.
 
 Settings → Sources and Services → Content Sources manages website sources and remote comic libraries in separate groups on one page. Choose Add and select a source type: install website sources from repositories or import a link or file; add remote libraries by selecting a cloud account and comic directories, with the option to create an account during setup. Online Comic Libraries in Storage and Sync and source-management actions in discovery and search open this same page.
@@ -20,15 +26,23 @@ Each online comic library can select one account and one or more recognition dir
 
 In the directory picker, choose a folder name to open it and use the checkbox at the end of its row to select it. The Current folder row also allows selecting the root or an empty folder. Selections remain checked when navigating between directories. The fixed bottom area shows the selected count, with Done on the right to return to configuration; going back cancels the selection changes. Libraries support multiple directories, while sync and backup allow one directory.
 
-Opening an online library first shows cached or newly discovered works. Covers, authors, tags, and other details are filled in progressively in the background. Opening comic details or selecting a volume reads the chapters and file content needed for that view. The library's refresh button requests remote directories again and updates the list as works are discovered or details become available. Use it after adding, deleting, or moving comics outside the app.
+## Refresh, caches, and rate limits
 
-New 115 libraries have automatic updates disabled by default; existing libraries keep their settings. Opening a library without an index still creates its first index. Afterwards, refresh manually or enable automatic updates in the library settings. Automatic scans reuse local directory listings for up to one hour on 115 and ten minutes on other providers. These listings survive restarts; manual refresh always requests remote directories again.
+Opening an online library first shows cached or newly discovered works. Covers, authors, tags, and other details are filled in progressively in the background. Opening comic details or selecting a volume reads the chapters and file content needed for that view. The library's refresh button requests remote directories again and updates the list as works are discovered or details become available. Use it after adding, deleting, or moving comics outside the app. Showing the first results does not mean the entire scan has finished.
+
+New 115 libraries have Automatic library updates disabled by default; other providers default to enabled, and existing libraries keep their settings. Choose updates every 15 minutes, every hour, every six hours, or every day; the default is six hours. Checks run only while the app runs. Opening a library without an index still creates its first index even when automatic updates are disabled. This interval is separate from the app-data sync schedule.
+
+Automatic scans reuse local directory listings for up to one hour on 115 and ten minutes on other providers. Listings survive restarts; manual refresh always requests remote directories again. Recognition directories are scanned independently: successful roots update their indexes, failed roots retain their previous indexes and record an error, and newly discovered works may already be visible. A failed directory read is not treated as an empty directory that removes existing works.
 
 When rate limiting is detected, new directory, direct-link, metadata-write, image, and reading-range requests on the same account are paused while locally cached content remains available. The app follows the server's retry time, or waits fifteen minutes when none is provided. The cooldown is stored locally and applies to manual refresh and requests after a restart. Pending metadata writes also respect their retry time at startup.
+
+## Online reading formats
 
 Online libraries support image directories, remote ZIP/CBZ files, image-based EPUB files, and PDF files. Volume files belonging to one work can be aggregated; explicit edition folders and duplicate volumes become selectable reading groups, while non-overlapping volumes can mix formats. Volumes and covers are inspected and cached on demand, and sequential reading and preloading stop at edition boundaries. Independent ZIP/CBZ files retain chapter folders and groups, EPUB follows spine order and distinguishes chapters from page navigation, and PDF renders original pages with bookmark-based chapters. See [comic import and online reading](import_comic.en.md#on-demand-zipcbz-image-based-epub-and-pdf-reading) for layout examples and metadata rules.
 
 On-demand cloud file reading requires HTTP Range support from the actual file server. Servers that ignore Range, return the full file, or supply invalid partial responses cause an explicit failure without an automatic full download. This also applies to cloud download links, proxies, and redirects. ZIP/CBZ reading supports ZIP/ZIP64 with Store/Deflate, excluding encrypted or split archives and other compression methods. Download 7z/CB7 files for local import, or extract their comic images into a remote directory.
+
+## Cross-device configuration and legacy data
 
 Existing WebDAV sync and archive settings are automatically added to the shared accounts while retaining their remote directories. Local comic paths, cache settings, and download threads are under Local Storage and Downloads; manual data transfer is under App Data Import and Export.
 
@@ -38,4 +52,8 @@ All saved cloud accounts and their credentials are included in app-data snapshot
 
 Account names must be unique, ignoring leading and trailing whitespace and letter case. Use the same name for the same account on every device and different names for different accounts. Synchronization merges accounts with the same name and provider, updating library, sync, and backup references while retaining library IDs and favorite associations. Accounts with matching names but different providers are retained with a name suffix to distinguish them. Renaming an account retains its internal ID.
 
-The macOS app continues to support macOS 12. Because of the Go 1.27 runtime requirement, the six OpenList providers require macOS 13 or later; WebDAV and local features remain available on macOS 12.
+Snapshots contain account credentials. See [App Data Synchronization](data_sync.en.md#sync-boundaries) for included data and device-local settings. Directory indexes, image caches, and rate-limit cooldowns remain local.
+
+## Platform support
+
+The macOS app continues to support macOS 12. The core runtime requires macOS 13 or later for the six OpenList providers; WebDAV and local features remain available on macOS 12.
