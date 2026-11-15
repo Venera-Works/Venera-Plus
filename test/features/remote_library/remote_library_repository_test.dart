@@ -28,6 +28,86 @@ void main() {
       dataDir.deleteSync(recursive: true);
     });
 
+    test('目录缓存跨重启保留并按有效期失效，空目录也能命中', () async {
+      const entries = [
+        {'name': '001.jpg', 'isDirectory': false},
+      ];
+      const maxAge = Duration(seconds: 10);
+      await repository.cacheDirectoryEntries(key, '/book/', entries, 1000);
+      await repository.cacheDirectoryEntries(key, '/empty/', [], 1000);
+      await repository.close();
+      expect(
+        await repository.directoryEntries(
+          key,
+          '/book/',
+          now: 1001,
+          maxAge: maxAge,
+        ),
+        entries,
+      );
+      expect(
+        await repository.directoryEntries(
+          key,
+          '/empty/',
+          now: 1001,
+          maxAge: maxAge,
+        ),
+        isEmpty,
+      );
+      expect(
+        await repository.directoryEntries(
+          key,
+          '/book/',
+          now: 11000,
+          maxAge: maxAge,
+        ),
+        isNull,
+      );
+      expect(
+        await repository.directoryEntries(
+          key,
+          '/book/',
+          now: 999,
+          maxAge: maxAge,
+        ),
+        isNull,
+      );
+    });
+
+    test('目录写入失效和清库只影响对应缓存', () async {
+      await repository.cacheDirectoryEntries(key, '/a/', [], 1000);
+      await repository.cacheDirectoryEntries(key, '/b/', [], 1000);
+      await repository.invalidateDirectoryEntries(key, '/a/');
+      expect(
+        await repository.directoryEntries(
+          key,
+          '/a/',
+          now: 1001,
+          maxAge: const Duration(seconds: 10),
+        ),
+        isNull,
+      );
+      expect(
+        await repository.directoryEntries(
+          key,
+          '/b/',
+          now: 1001,
+          maxAge: const Duration(seconds: 10),
+        ),
+        isEmpty,
+      );
+      await repository.clear(key);
+      expect(
+        await repository.directoryEntries(
+          key,
+          '/b/',
+          now: 1001,
+          maxAge: const Duration(seconds: 10),
+        ),
+        isNull,
+      );
+    });
+
     for (final filename in ['webdav_library.db', 'remote_library.db']) {
       test('从 $filename 的旧表迁移完整快照、根和旧版同步状态', () async {
         final snapshot = {

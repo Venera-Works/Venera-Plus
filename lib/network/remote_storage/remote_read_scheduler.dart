@@ -3,6 +3,8 @@ import 'dart:io' show HttpDate, HttpException;
 
 import 'package:dio/dio.dart';
 
+import 'remote_file_store.dart';
+
 enum RemoteReadPriority { foreground, cover, preload, background }
 
 /// The mutable priority shared by requests for one image or archive operation.
@@ -31,8 +33,13 @@ class RemoteReadScheduler {
   RemoteReadScheduler({
     this.maxConcurrent = 4,
     this.minInterval = const Duration(milliseconds: 150),
+    this.rateLimitDelay = const Duration(seconds: 1),
+    this.failDuringCooldown = false,
+    DateTime? cooldownUntil,
+    this.onCooldown,
     DateTime Function()? now,
-  }) : _now = now ?? DateTime.now {
+  }) : _now = now ?? DateTime.now,
+       _cooldownUntil = cooldownUntil {
     if (maxConcurrent < 1) {
       throw RangeError.value(maxConcurrent, 'maxConcurrent');
     }
@@ -43,6 +50,9 @@ class RemoteReadScheduler {
 
   final int maxConcurrent;
   final Duration minInterval;
+  final Duration rateLimitDelay;
+  final bool failDuringCooldown;
+  final Future<void> Function(DateTime until)? onCooldown;
   final DateTime Function() _now;
   final _queue = <_RemoteReadRequest<dynamic>>[];
   var _active = 0;
@@ -50,6 +60,28 @@ class RemoteReadScheduler {
   Timer? _timer;
   DateTime? _nextStart;
   DateTime? _cooldownUntil;
+
+  DateTime? get cooldownUntil =>
+      _cooldownUntil?.isAfter(_now()) == true ? _cooldownUntil : null;
+
+  void throwIfCoolingDown() {
+    final until = cooldownUntil;
+    if (until != null) {
+      throw RemoteStorageException(
+        '网盘访问已暂停，请在 ${until.toLocal()} 后重试',
+        code: 'rate_limited',
+        retryAt: until,
+      );
+    }
+  }
+
+  Future<void> recordFailure(Object error) async {
+    if (error is RemoteStorageException &&
+        error.isRateLimited &&
+        error.retryAt == null) {
+      await defer(retryAfter: error.retryAfter);
+    }
+  }
 
   /// 同一账号的扫描和阅读复用同一实例，在单次底层读取处排队。
   /// 调度范围应限于底层 I/O，避免嵌套调度占满并发槽位。
@@ -61,8 +93,18 @@ class RemoteReadScheduler {
     if (cancelToken?.isCancelled == true) {
       return Future<T>.error(cancelToken!.cancelError!);
     }
+    if (failDuringCooldown && cooldownUntil != null) {
+      return Future<T>.error(_cooldownError());
+    }
     final request = _RemoteReadRequest(
-      action,
+      () async {
+        try {
+          return await action();
+        } catch (error) {
+          await recordFailure(error);
+          rethrow;
+        }
+      },
       cancelToken,
       context ?? RemoteReadContext.current,
     );
@@ -80,7 +122,7 @@ class RemoteReadScheduler {
 
   /// Delays every new request, including requests for other archives.
   /// Call this before the failing action returns so a freed slot stays paused.
-  void defer({String? retryAfter, int attempt = 0}) {
+  Future<void> defer({String? retryAfter, int attempt = 0}) async {
     final now = _now();
     final value = retryAfter?.trim();
     DateTime? deadline;
@@ -103,20 +145,27 @@ class RemoteReadScheduler {
       }
     }
     deadline ??= now.add(
-      Duration(
-        seconds: attempt <= 0
-            ? 1
-            : attempt == 1
-            ? 2
-            : 4,
-      ),
+      rateLimitDelay *
+          (attempt <= 0
+              ? 1
+              : attempt == 1
+              ? 2
+              : 4),
     );
     if (deadline.isBefore(now)) deadline = now;
     if (_cooldownUntil == null || deadline.isAfter(_cooldownUntil!)) {
       _cooldownUntil = deadline;
+      _schedulePump();
+      await onCooldown?.call(deadline);
     }
     _schedulePump();
   }
+
+  RemoteStorageException _cooldownError() => RemoteStorageException(
+    '网盘访问已暂停，请在 ${_cooldownUntil!.toLocal()} 后重试',
+    code: 'rate_limited',
+    retryAt: _cooldownUntil,
+  );
 
   void _schedulePump() {
     if (_pumpScheduled) return;
@@ -130,6 +179,14 @@ class RemoteReadScheduler {
   void _pump() {
     _timer?.cancel();
     _timer = null;
+    if (failDuringCooldown && cooldownUntil != null) {
+      final error = _cooldownError();
+      for (final request in _queue) {
+        request.result.completeError(error);
+      }
+      _queue.clear();
+      return;
+    }
     for (var i = _queue.length - 1; i >= 0; i--) {
       final token = _queue[i].cancelToken;
       if (token?.isCancelled == true) {

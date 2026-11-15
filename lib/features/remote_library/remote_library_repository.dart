@@ -218,6 +218,36 @@ class RemoteLibraryRepository {
   Future<void> clear(String configKey) =>
       _request(_RemoteLibraryOperation.clear, [configKey]);
 
+  Future<List<Map<String, dynamic>>?> directoryEntries(
+    String configKey,
+    String path, {
+    required int now,
+    required Duration maxAge,
+  }) => _request(_RemoteLibraryOperation.directoryEntries, [
+    configKey,
+    path,
+    now,
+    maxAge.inMilliseconds,
+  ]);
+
+  Future<void> cacheDirectoryEntries(
+    String configKey,
+    String path,
+    List<Map<String, dynamic>> entries,
+    int fetchedAt,
+  ) => _request(_RemoteLibraryOperation.cacheDirectoryEntries, [
+    configKey,
+    path,
+    entries,
+    fetchedAt,
+  ]);
+
+  Future<void> invalidateDirectoryEntries(String configKey, String path) =>
+      _request(_RemoteLibraryOperation.invalidateDirectoryEntries, [
+        configKey,
+        path,
+      ]);
+
   Future<void> close() {
     final next = _operations.then((_) async {
       final worker = _worker;

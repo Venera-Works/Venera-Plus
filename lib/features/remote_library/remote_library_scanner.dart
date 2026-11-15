@@ -4,7 +4,7 @@ class _RemoteLibraryScanner {
   _RemoteLibraryScanner(this._engine);
   final RemoteLibraryEngine _engine;
 
-  Future<Res<bool>> synchronize({bool force = false}) {
+  Future<Res<bool>> synchronize({bool force = false, bool automatic = false}) {
     if (_engine._state.disposed) {
       return Future.value(const Res.error('Remote comic library is closed'));
     }
@@ -13,10 +13,10 @@ class _RemoteLibraryScanner {
         const Res.error('Invalid remote comic library configuration'),
       );
     }
-    return start(force: force).complete;
+    return start(force: force, automatic: automatic).complete;
   }
 
-  _RemoteLibrarySyncRun start({bool force = false}) {
+  _RemoteLibrarySyncRun start({bool force = false, bool automatic = false}) {
     final state = _engine._state;
     final config = _engine._config;
     final current = state.syncRun;
@@ -32,9 +32,10 @@ class _RemoteLibraryScanner {
     final ready = Completer<Res<bool>>();
     late final _RemoteLibrarySyncRun run;
     final complete = Future<Res<bool>>.microtask(
-      () => RemoteReadContext(
-        priority: RemoteReadPriority.background,
-      ).run(() => _scanRoots(config, run, ready, force: force)),
+      () => RemoteReadContext(priority: RemoteReadPriority.background).run(
+        () =>
+            _scanRoots(config, run, ready, force: force, automatic: automatic),
+      ),
     );
     run = _RemoteLibrarySyncRun(
       configurationIdentity: _engine._configurationIdentity(config),
@@ -57,6 +58,7 @@ class _RemoteLibraryScanner {
     _RemoteLibrarySyncRun run,
     Completer<Res<bool>> ready, {
     required bool force,
+    required bool automatic,
   }) async {
     final state = _engine._state;
     var processed = 0;
@@ -101,6 +103,7 @@ class _RemoteLibraryScanner {
               rootConfig,
               root,
               refresh: force,
+              useCache: automatic,
             );
             _engine._throwIfSynchronizationObsolete(run);
             var sequence = 0;
@@ -109,6 +112,7 @@ class _RemoteLibraryScanner {
               rootEntries: entries,
               syncRun: run,
               refresh: force,
+              useCache: automatic,
               onDiscovered: (comic) async {
                 _engine._throwIfSynchronizationObsolete(run);
                 final id = _engine._stableComicPath(rootConfig, comic.id);
@@ -261,6 +265,7 @@ class _RemoteLibraryScanner {
     required List<RemoteLibraryEntry> rootEntries,
     required _RemoteLibrarySyncRun syncRun,
     required bool refresh,
+    required bool useCache,
     required Future<void> Function(_RemoteDiscoveredDirectory) onDiscovered,
   }) async {
     final result = <_RemoteDiscoveredDirectory>[];
@@ -282,7 +287,12 @@ class _RemoteLibraryScanner {
       }
       inspectedDirectories++;
       final entries = List<RemoteLibraryEntry>.from(
-        await _engine._readDirectory(config, path, refresh: refresh),
+        await _engine._readDirectory(
+          config,
+          path,
+          refresh: refresh,
+          useCache: useCache,
+        ),
       );
       _engine._throwIfSynchronizationObsolete(syncRun);
       directoryEntries[path] = entries;

@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:dio/dio.dart';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/comic_storage/comic_storage.dart';
@@ -28,6 +31,7 @@ void main() {
     await RemoteLibrarySource.resetCacheForTesting();
     RemoteLibrarySource.configureMetadataScraper(null);
     RemoteLibrarySource.archiveSchedulerFactory = null;
+    RemoteLibrarySource.archiveDioFactory = null;
     await dataDir.delete(recursive: true);
   });
 
@@ -46,6 +50,76 @@ void main() {
     engines.add(engine);
     return engine;
   }
+
+  test('普通封面签名失效后强制刷新直链并读取图片', () async {
+    final adapter = _ImageAdapter(403);
+    RemoteLibrarySource.archiveDioFactory = () =>
+        Dio()..httpClientAdapter = adapter;
+    final store = _PipelineStore();
+    final engine = open(store, ['/books/']);
+    final config = await engine.getThumbnailLoadingConfig('/books/cover.jpg');
+    final load = config['loadBytes'] as Future<Uint8List> Function(CancelToken);
+    expect(await load(CancelToken()), [1, 2, 3]);
+    expect(store.linkRefreshes, [false, true]);
+    expect(adapter.requests, 2);
+  });
+
+  test('普通图片遇到 429 后暂停同账号的后续直链请求', () async {
+    RemoteLibrarySource.archiveSchedulerFactory = () => RemoteReadScheduler(
+      minInterval: Duration.zero,
+      failDuringCooldown: true,
+    );
+    final adapter = _ImageAdapter(429);
+    RemoteLibrarySource.archiveDioFactory = () =>
+        Dio()..httpClientAdapter = adapter;
+    final store = _PipelineStore();
+    final engine = open(store, ['/books/']);
+    final config = await engine.getImageLoadingConfig(
+      '/books/001.jpg',
+      '/books/',
+      '1',
+    );
+    final load = config['loadBytes'] as Future<Uint8List> Function(CancelToken);
+    await expectLater(load(CancelToken()), throwsA(isA<DioException>()));
+    await expectLater(
+      engine.getThumbnailLoadingConfig('/books/cover.jpg'),
+      throwsA(
+        isA<RemoteStorageException>().having(
+          (error) => error.isRateLimited,
+          '限流',
+          isTrue,
+        ),
+      ),
+    );
+    expect(store.linkRefreshes, [false]);
+    expect(adapter.requests, 1);
+  });
+
+  test('重启后自动扫描复用目录，手动强刷读取外部新增作品', () async {
+    final store = _PipelineStore();
+    store.directories['/books/'] = [store.directory('/books/A/')];
+    store.directories['/books/A/'] = [store.image('/books/A/001.jpg')];
+    final first = open(store, ['/books/']);
+    await first.synchronize();
+    await first.waitForBackgroundTasks();
+    await first.cancel();
+    final reads = store.lists.length;
+    store.directories['/books/']!.add(store.directory('/books/B/'));
+    store.directories['/books/B/'] = [store.image('/books/B/001.jpg')];
+    final reopened = open(store, ['/books/']);
+    await reopened.synchronize(automatic: true);
+    await reopened.waitForBackgroundTasks();
+    expect(store.lists, hasLength(reads));
+    expect((await reopened.loadComics(1)).data.map((comic) => comic.title), [
+      'A',
+    ]);
+    await reopened.synchronize(force: true);
+    await reopened.waitForBackgroundTasks();
+    expect((await reopened.loadComics(1)).data.map((comic) => comic.title), [
+      'A',
+      'B',
+    ]);
+  });
 
   test('慢刮削期间新增作品先显示，后续作品与前台阅读继续推进', () async {
     final store = _PipelineStore();
@@ -258,6 +332,33 @@ void main() {
   });
 }
 
+class _ImageAdapter implements HttpClientAdapter {
+  _ImageAdapter(this.firstStatus);
+  final int firstStatus;
+  var requests = 0;
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    requests++;
+    return requests == 1
+        ? ResponseBody.fromBytes(
+            [],
+            firstStatus,
+            headers: {
+              'retry-after': ['120'],
+            },
+          )
+        : ResponseBody.fromBytes([1, 2, 3], 200);
+  }
+
+  @override
+  void close({bool force = false}) {}
+}
+
 class _PipelineStore extends Fake implements RemoteFileStore {
   @override
   final account = const StorageAccount(
@@ -270,6 +371,7 @@ class _PipelineStore extends Fake implements RemoteFileStore {
   final directories = <String, List<RemoteEntry>>{};
   final texts = <String, String>{};
   final writes = <String>[];
+  final linkRefreshes = <bool>[];
   final lists = <({String path, bool refresh})>[];
   final textStarted = Completer<void>();
   Completer<void>? textGate;
@@ -329,7 +431,11 @@ class _PipelineStore extends Fake implements RemoteFileStore {
   }
 
   @override
-  Future<RemoteLink> link(String path) async => RemoteLink(url: path);
+  Future<RemoteLink> link(String path, {bool refresh = false}) async {
+    linkRefreshes.add(refresh);
+    return RemoteLink(url: 'https://files.example$path');
+  }
+
   @override
   Future<void> cancelAll() async {
     cancellations++;

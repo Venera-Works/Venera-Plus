@@ -13,11 +13,13 @@ class RemoteRangeReader {
   RemoteRangeReader({
     required this.size,
     required Future<RemoteLink> Function() link,
+    Future<RemoteLink> Function()? refreshLink,
     Dio? dio,
     RemoteReadScheduler? scheduler,
     RemoteRangeCache? cache,
     String? cacheKey,
   }) : _link = link,
+       _refreshLink = refreshLink,
        _dio = dio ?? AppDio(),
        _scheduler = scheduler ?? RemoteReadScheduler(),
        _cache = cache,
@@ -28,11 +30,13 @@ class RemoteRangeReader {
 
   final int size;
   final Future<RemoteLink> Function() _link;
+  final Future<RemoteLink> Function()? _refreshLink;
   final Dio _dio;
   final RemoteReadScheduler _scheduler;
   final RemoteRangeCache? _cache;
   final String? _cacheKey;
   Future<RemoteLink>? _linkFuture;
+  bool _forceLinkRefresh = false;
   // Download validators can differ from directory metadata.
   String? _eTag;
   int? _modifiedAt;
@@ -102,6 +106,7 @@ class RemoteRangeReader {
         if ((status == 401 || status == 403) && !refreshed) {
           refreshed = true;
           _linkFuture = null;
+          _forceLinkRefresh = true;
           continue;
         }
         if (status == 200) {
@@ -216,7 +221,7 @@ class RemoteRangeReader {
       if (error.response?.statusCode == 429) {
         // Set the shared deadline before releasing this request's slot.
         final values = error.response?.headers['retry-after'];
-        _scheduler.defer(
+        await _scheduler.defer(
           retryAfter: values?.length == 1 ? values!.single : null,
           attempt: rateLimitAttempt,
         );
@@ -234,7 +239,9 @@ class RemoteRangeReader {
   }
 
   Future<RemoteLink> _resolveLink(CancelToken? cancelToken) async {
-    final pending = _linkFuture ??= _link();
+    final pending = _linkFuture ??= (_forceLinkRefresh
+        ? _refreshLink ?? _link
+        : _link)();
     try {
       if (cancelToken == null) return await pending;
       return await Future.any([

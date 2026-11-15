@@ -848,7 +848,8 @@ class _InMemoryRemoteStore implements RemoteFileStore {
   Future<void> cancelAll() async {}
 
   @override
-  Future<RemoteLink> link(String path) async => RemoteLink(url: path);
+  Future<RemoteLink> link(String path, {bool refresh = false}) async =>
+      RemoteLink(url: path);
 
   @override
   Future<RemoteTextFile> readText(String path) async {

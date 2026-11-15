@@ -831,7 +831,7 @@ class _PdfStore implements RemoteFileStore {
   }
 
   @override
-  Future<RemoteLink> link(String path) async {
+  Future<RemoteLink> link(String path, {bool refresh = false}) async {
     linkedPaths.add(path);
     expect(path, file().path);
     return remoteLink;

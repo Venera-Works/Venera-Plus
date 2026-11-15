@@ -7,6 +7,32 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 
 void main() {
+  test('签名失效时强制刷新链接，后续分段继续复用新链接', () async {
+    var cachedLinks = 0;
+    var refreshedLinks = 0;
+    final adapter = _RangeAdapter(
+      (_, index) => index == 0 ? ResponseBody.fromBytes([], 403) : _partial(),
+    );
+    final reader = RemoteRangeReader(
+      size: 10,
+      scheduler: RemoteReadScheduler(minInterval: Duration.zero),
+      link: () async {
+        cachedLinks++;
+        return const RemoteLink(url: 'https://files.example/old');
+      },
+      refreshLink: () async {
+        refreshedLinks++;
+        return const RemoteLink(url: 'https://files.example/new');
+      },
+      dio: _dio(adapter),
+    );
+    expect(await reader.read(2, 3), [2, 3, 4]);
+    expect(await reader.read(2, 3), [2, 3, 4]);
+    expect(cachedLinks, 1);
+    expect(refreshedLinks, 1);
+    expect(adapter.requests.last.path, 'https://files.example/new');
+  });
+
   test('429 pauses other archives on the account before retrying', () async {
     var now = DateTime.utc(2026, 10, 23);
     final scheduler = RemoteReadScheduler(

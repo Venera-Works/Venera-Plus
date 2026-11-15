@@ -1020,7 +1020,7 @@ class _ArchiveStore implements RemoteFileStore {
   }
 
   @override
-  Future<RemoteLink> link(String path) async {
+  Future<RemoteLink> link(String path, {bool refresh = false}) async {
     links++;
     return remoteLink;
   }

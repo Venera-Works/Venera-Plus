@@ -17,6 +17,9 @@ enum _RemoteLibraryOperation {
   hasDirectoryIndex,
   setLastSuccessfulSync,
   clear,
+  directoryEntries,
+  cacheDirectoryEntries,
+  invalidateDirectoryEntries,
   close,
 }
 
@@ -226,6 +229,13 @@ class _RemoteLibraryDatabase {
       );
       CREATE TABLE IF NOT EXISTS remote_library_migrations (
         name TEXT PRIMARY KEY
+      );
+      CREATE TABLE IF NOT EXISTS remote_library_directory_cache (
+        config_key TEXT NOT NULL,
+        path TEXT NOT NULL,
+        entries_json TEXT NOT NULL,
+        fetched_at INTEGER NOT NULL,
+        PRIMARY KEY (config_key, path)
       );
     ''');
     if (!_columns(
@@ -520,6 +530,7 @@ class _RemoteLibraryDatabase {
             'state',
             'root_membership',
             'root_state',
+            'directory_cache',
           ]) {
             db.execute(
               'DELETE FROM remote_library_$table WHERE config_key = ?;',
@@ -527,6 +538,39 @@ class _RemoteLibraryDatabase {
             );
           }
         });
+        return null;
+      case _RemoteLibraryOperation.directoryEntries:
+        final now = arguments[2] as int;
+        final rows = db.select(
+          '''
+          SELECT entries_json FROM remote_library_directory_cache
+          WHERE config_key = ? AND path = ? AND fetched_at <= ? AND fetched_at > ?;
+        ''',
+          [configKey, arguments[1] as String, now, now - (arguments[3] as int)],
+        );
+        if (rows.isEmpty) return null;
+        return (jsonDecode(rows.single['entries_json'] as String) as List)
+            .cast<Map<String, dynamic>>();
+      case _RemoteLibraryOperation.cacheDirectoryEntries:
+        db.execute(
+          '''
+          INSERT INTO remote_library_directory_cache VALUES (?, ?, ?, ?)
+          ON CONFLICT(config_key, path) DO UPDATE SET
+            entries_json = excluded.entries_json, fetched_at = excluded.fetched_at;
+        ''',
+          [
+            configKey,
+            arguments[1] as String,
+            jsonEncode(arguments[2]),
+            arguments[3] as int,
+          ],
+        );
+        return null;
+      case _RemoteLibraryOperation.invalidateDirectoryEntries:
+        db.execute(
+          'DELETE FROM remote_library_directory_cache WHERE config_key = ? AND path = ?;',
+          [configKey, arguments[1] as String],
+        );
         return null;
       case _RemoteLibraryOperation.close:
         throw StateError('关闭请求应由 worker 处理');

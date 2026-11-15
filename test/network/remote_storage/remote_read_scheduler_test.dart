@@ -5,8 +5,68 @@ import 'package:dio/dio.dart';
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/network/remote_storage/remote_read_scheduler.dart';
+import 'package:venera_plus/network/remote_storage/remote_file_store.dart';
 
 void main() {
+  test('限流停止账号队列并保留冷却时间，到期后允许新请求', () {
+    fakeAsync((async) {
+      final saved = <DateTime>[];
+      final scheduler = RemoteReadScheduler(
+        maxConcurrent: 1,
+        minInterval: Duration.zero,
+        failDuringCooldown: true,
+        now: () => _initialTime.add(async.elapsed),
+        onCooldown: (until) async => saved.add(until),
+      );
+      final errors = <Object>[];
+      var requests = 0;
+      _captureError(
+        scheduler.run(() async {
+          requests++;
+          throw const RemoteStorageException(
+            '访问频繁',
+            code: 'rate_limited',
+            retryAfter: '30',
+          );
+        }),
+        errors,
+      );
+      _captureError(scheduler.run(() async => requests++), errors);
+      async.flushMicrotasks();
+      expect(requests, 1);
+      expect(errors, hasLength(2));
+      expect(saved, [_initialTime.add(const Duration(seconds: 30))]);
+      expect(async.pendingTimers, isEmpty);
+      _captureError(scheduler.run(() async => requests++), errors);
+      async.flushMicrotasks();
+      expect(errors, hasLength(3));
+      expect(requests, 1);
+      async.elapse(const Duration(seconds: 30));
+      scheduler.run(() async => requests++);
+      async.flushMicrotasks();
+      expect(requests, 2);
+    });
+  });
+
+  test('恢复的账号冷却不会被新的手动请求绕过', () {
+    fakeAsync((async) {
+      final scheduler = RemoteReadScheduler(
+        failDuringCooldown: true,
+        cooldownUntil: _initialTime.add(const Duration(minutes: 15)),
+        now: () => _initialTime.add(async.elapsed),
+      );
+      final errors = <Object>[];
+      var ran = false;
+      _captureError(scheduler.run(() async => ran = true), errors);
+      async.flushMicrotasks();
+      expect(ran, isFalse);
+      expect(
+        (errors.single as RemoteStorageException).retryAt,
+        scheduler.cooldownUntil,
+      );
+    });
+  });
+
   test('context propagates synchronously and through asynchronous work', () {
     fakeAsync((async) {
       final context = RemoteReadContext(priority: RemoteReadPriority.preload);

@@ -38,6 +38,19 @@ void main() {
     await dataDir.delete(recursive: true);
   });
 
+  test('启动遵守元数据写回的重试时间', () async {
+    await expectLater(
+      engine.writeMetadata('/books/A/', _metadata['/books/A/']!),
+      throwsA(isA<RemoteLibraryTransientException>()),
+    );
+    final attempts = engine.metadataPendingStatuses.single.attempts;
+    store.failWrites = false;
+    engine.initializeMetadataRetry();
+    await engine.waitForBackgroundTasks();
+    expect(store.texts, isEmpty);
+    expect(engine.metadataPendingStatuses.single.attempts, attempts);
+  });
+
   test('首项重试 I/O 阻塞时关闭保留两项持久记录，恢复后仍可写回', () async {
     for (final entry in _metadata.entries) {
       await expectLater(

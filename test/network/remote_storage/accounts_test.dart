@@ -10,17 +10,83 @@ import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 void main() {
   late Directory dataDir;
   late RemoteStorageAccounts storage;
+  late Map<String, dynamic> previousImplicitData;
 
   setUp(() {
     dataDir = Directory.systemTemp.createTempSync('venera-remote-accounts-');
     App.dataPath = dataDir.path;
     appdata.settings.replaceAll({});
+    previousImplicitData = appdata.implicitData;
+    appdata.implicitData = {};
     storage = RemoteStorageAccounts();
   });
 
   tearDown(() async {
     storage.dispose();
+    appdata.implicitData = previousImplicitData;
     await dataDir.delete(recursive: true);
+  });
+
+  test('115 新建漫画库默认手动更新，保留已有库明确开启的设置', () {
+    const account115 = StorageAccount(
+      id: 'account',
+      backend: StorageBackend.openlist,
+      driver: '115 Open',
+      name: '115',
+      authorization: {'access_token': 'access', 'refresh_token': 'refresh'},
+    );
+    appdata.settings[remoteStorageAccountsSetting] = [account115.toJson()];
+    final library = RemoteComicLibraryRegistry.create(
+      accountId: account115.id,
+      directories: ['/Comics'],
+      name: '115 漫画',
+    );
+    expect(library.autoRefresh, isFalse);
+    expect(
+      RemoteLibrary.fromJson(
+        library.copyWith(autoRefresh: true).toJson(),
+      ).autoRefresh,
+      isTrue,
+    );
+  });
+
+  test('限流跨用途与重启生效，并写入本机冷却时间', () async {
+    final rpc = _RateLimitedRpc();
+    storage.configureOpenList(rpc);
+    appdata.settings[remoteStorageAccountsSetting] = [_account.toJson()];
+    final browsing = storage.open(_account);
+    final sync = storage.open(_account);
+    await expectLater(
+      browsing.list('/Comics/'),
+      throwsA(isA<RemoteStorageException>()),
+    );
+    await expectLater(
+      sync.readText('/sync.json'),
+      throwsA(
+        isA<RemoteStorageException>().having(
+          (error) => error.retryAt,
+          '冷却时间',
+          isNotNull,
+        ),
+      ),
+    );
+    final persisted =
+        jsonDecode(
+              await File('${dataDir.path}/implicitData.json').readAsString(),
+            )
+            as Map;
+    expect(
+      (persisted['remoteStorageCooldowns'] as Map)[_account.id],
+      isA<int>(),
+    );
+    appdata.implicitData = Map<String, dynamic>.from(persisted);
+    final restarted = RemoteStorageAccounts(openListRpc: rpc);
+    await expectLater(
+      restarted.open(_account).link('/cover.jpg'),
+      throwsA(isA<RemoteStorageException>()),
+    );
+    restarted.dispose();
+    expect(rpc.operations, 1);
   });
 
   test('账号存储手动刷新缓存目录后返回新增文件并更新后续列表', () async {
@@ -463,6 +529,26 @@ const _account = StorageAccount(
   name: 'Drive',
   authorization: {'refresh_token': 'refresh'},
 );
+
+class _RateLimitedRpc implements OpenListRpcClient {
+  var operations = 0;
+  @override
+  Future<Map<String, dynamic>> invoke(
+    String method,
+    Map<String, dynamic> request,
+  ) async {
+    if (method == 'list' || method == 'link' || method == 'readText') {
+      operations++;
+      return const {
+        'error': {
+          'code': 'operation_failed',
+          'message': 'HTTP 429 Too Many Requests',
+        },
+      };
+    }
+    return const {'data': {}};
+  }
+}
 
 class _CachedDirectoryRpc implements OpenListRpcClient {
   final files = ['已有.cbz'];

@@ -69,7 +69,7 @@ class WebDavFileStore implements RemoteFileStore {
   }
 
   @override
-  Future<RemoteLink> link(String path) async =>
+  Future<RemoteLink> link(String path, {bool refresh = false}) async =>
       RemoteLink(url: _endpoint.fileUrl(path), headers: _endpoint.authHeaders);
 
   @override
@@ -260,12 +260,15 @@ class WebDavFileStore implements RemoteFileStore {
     );
   }
 
-  static RemoteStorageException _webDavError(DioException error, String path) =>
-      RemoteStorageException(
-        error.message ?? 'WebDAV request failed: $path',
-        code: error.response?.statusCode == 404
-            ? 'not_found'
-            : '${error.response?.statusCode}',
-        cause: error,
-      );
+  static RemoteStorageException _webDavError(DioException error, String path) {
+    final retryAfter = error.response?.headers['retry-after'];
+    return RemoteStorageException(
+      error.message ?? 'WebDAV request failed: $path',
+      code: error.response?.statusCode == 404
+          ? 'not_found'
+          : '${error.response?.statusCode}',
+      cause: error,
+      retryAfter: retryAfter?.length == 1 ? retryAfter!.single : null,
+    );
+  }
 }

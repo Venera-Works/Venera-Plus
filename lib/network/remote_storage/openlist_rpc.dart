@@ -42,8 +42,8 @@ class OpenListFileStore implements RemoteFileStore {
       _entry(await _operation('stat', {'path': path}));
 
   @override
-  Future<RemoteLink> link(String path) async {
-    final value = await _operation('link', {'path': path});
+  Future<RemoteLink> link(String path, {bool refresh = false}) async {
+    final value = await _operation('link', {'path': path, 'refresh': refresh});
     return RemoteLink(
       url: value['url'] as String? ?? '',
       headers: _stringMap(value['headers']),
@@ -224,6 +224,7 @@ class OpenListFileStore implements RemoteFileStore {
       RemoteStorageException(
         error['message'] as String? ?? 'OpenList operation failed',
         code: error['code']?.toString(),
+        retryAfter: error['retryAfter']?.toString(),
       );
   RemoteEntry _entry(Map<Object?, Object?> item) => RemoteEntry(
     name: item['name'] as String? ?? '',

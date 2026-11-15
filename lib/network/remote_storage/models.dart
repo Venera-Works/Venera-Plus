@@ -133,6 +133,10 @@ class RemoteLibrary {
   final bool autoRefresh;
   final int refreshIntervalMinutes;
 
+  static bool defaultAutoRefresh(StorageAccount? account) =>
+      account?.backend != StorageBackend.openlist ||
+      account?.driver != '115 Open';
+
   RemoteLibrary normalized() => RemoteLibrary(
     id: id,
     sourceKey: sourceKey,

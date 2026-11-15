@@ -58,7 +58,7 @@ abstract class RemoteFileStore {
   /// refresh 为 true 时刷新服务端目录缓存，返回当前目录内容。
   Future<List<RemoteEntry>> list(String directory, {bool refresh = false});
   Future<RemoteEntry> stat(String path);
-  Future<RemoteLink> link(String path);
+  Future<RemoteLink> link(String path, {bool refresh = false});
   Future<RemoteTextFile> readText(String path);
   Future<RemoteWriteResult> writeText(
     String path,
@@ -84,10 +84,25 @@ abstract class RemoteFileStore {
 }
 
 class RemoteStorageException implements Exception {
-  const RemoteStorageException(this.message, {this.code, this.cause});
+  const RemoteStorageException(
+    this.message, {
+    this.code,
+    this.cause,
+    this.retryAfter,
+    this.retryAt,
+  });
   final String message;
   final String? code;
   final Object? cause;
+  final String? retryAfter;
+  final DateTime? retryAt;
+  bool get isRateLimited =>
+      code == 'rate_limited' ||
+      code == '429' ||
+      RegExp(
+        r'(?:HTTP|status(?: code)?|code)[:\s]+429\b|too many requests|rate.?limit|请求(?:过于)?频繁|访问(?:过于)?频繁|操作(?:过于)?频繁|限流|频控',
+        caseSensitive: false,
+      ).hasMatch(message);
   bool get isAuthorizationFailure =>
       code == 'unauthorized' ||
       code == 'invalid_token' ||

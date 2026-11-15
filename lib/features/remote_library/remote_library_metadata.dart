@@ -948,7 +948,7 @@ class _RemoteLibraryMetadataPipeline {
   }
 
   void initializeMetadataRetry() {
-    unawaited(retryPendingMetadata(force: true));
+    unawaited(retryPendingMetadata());
   }
 
   Future<void> retryPendingMetadata({bool force = false}) => _track(
@@ -963,6 +963,10 @@ class _RemoteLibraryMetadataPipeline {
     _metadataRetryTimer = null;
     final config = _engine._config;
     if (!config.isValid) return;
+    if (_engine._archiveAccount(config).scheduler.cooldownUntil != null) {
+      _scheduleMetadataRetry();
+      return;
+    }
     final now = DateTime.now().millisecondsSinceEpoch;
     for (final pending in _pendingMetadataWrites()) {
       if (_engine._state.disposed) return;
@@ -1121,8 +1125,15 @@ class _RemoteLibraryMetadataPipeline {
           return earliest == null || value < earliest ? value : earliest;
         });
     if (due == null) return;
+    final cooldown = _engine
+        ._archiveAccount(_engine._config)
+        .scheduler
+        .cooldownUntil;
+    final retryAt = cooldown == null || cooldown.millisecondsSinceEpoch < due
+        ? due
+        : cooldown.millisecondsSinceEpoch;
     final delay = Duration(
-      milliseconds: (due - DateTime.now().millisecondsSinceEpoch).clamp(
+      milliseconds: (retryAt - DateTime.now().millisecondsSinceEpoch).clamp(
         0,
         const Duration(days: 1).inMilliseconds,
       ),

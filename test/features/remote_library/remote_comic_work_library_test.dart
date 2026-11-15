@@ -1582,7 +1582,7 @@ class _MultiFileStore implements RemoteFileStore {
   }
 
   @override
-  Future<RemoteLink> link(String path) async {
+  Future<RemoteLink> link(String path, {bool refresh = false}) async {
     links++;
     return RemoteLink(
       url: '${remoteLink.url}?path=${Uri.encodeQueryComponent(path)}',

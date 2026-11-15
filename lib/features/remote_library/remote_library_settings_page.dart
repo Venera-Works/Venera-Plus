@@ -68,7 +68,9 @@ Future<void> showRemoteLibraryEditor(
                 _storage.accounts.firstOrNull
           : null);
   var directories = initial?.directories ?? const <String>[];
-  var autoRefresh = initial?.autoRefresh ?? true;
+  var autoRefresh =
+      initial?.autoRefresh ?? RemoteLibrary.defaultAutoRefresh(account);
+  var autoRefreshChosen = initial != null;
   var refreshIntervalMinutes = initial?.refreshIntervalMinutes ?? 360;
   final result = await showDialog<RemoteLibrary>(
     context: context,
@@ -94,13 +96,19 @@ Future<void> showRemoteLibraryEditor(
                 onChanged: (value, selected) => setDialogState(() {
                   account = value;
                   directories = selected;
+                  if (!autoRefreshChosen) {
+                    autoRefresh = RemoteLibrary.defaultAutoRefresh(value);
+                  }
                 }),
               ),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: Text('Automatic library updates'.tl),
                 value: autoRefresh,
-                onChanged: (value) => setDialogState(() => autoRefresh = value),
+                onChanged: (value) => setDialogState(() {
+                  autoRefresh = value;
+                  autoRefreshChosen = true;
+                }),
               ),
               if (autoRefresh)
                 DropdownButtonFormField<int>(

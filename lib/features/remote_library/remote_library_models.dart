@@ -122,6 +122,9 @@ class RemoteComicLibraryRegistry {
       accountId: accountId,
       directories: directories,
       name: name,
+      autoRefresh: RemoteLibrary.defaultAutoRefresh(
+        RemoteStorageAccounts.instance.account(accountId),
+      ),
     ).normalized();
   }
 

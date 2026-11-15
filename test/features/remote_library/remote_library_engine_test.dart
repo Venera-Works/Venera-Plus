@@ -549,10 +549,8 @@ void main() {
       final config = await sources[id]!.getThumbnailLoadingConfig?.call(
         imageKey,
       );
-      expect(config, {
-        'url': 'https://$id.example.com/cover.jpg?sign=$id',
-        'headers': {'Referer': 'https://$id.example.com/'},
-      });
+      expect(config?['url'], 'https://$id.example.com/cover.jpg?sign=$id');
+      expect(config?['headers'], {'Referer': 'https://$id.example.com/'});
       expect(stores[id]!.linkedPaths, [imageKey]);
     }
   });
@@ -3926,7 +3924,7 @@ class _FakeRemoteFileStore implements RemoteFileStore {
   }) async {}
 
   @override
-  Future<RemoteLink> link(String path) async {
+  Future<RemoteLink> link(String path, {bool refresh = false}) async {
     linkedPaths.add(path);
     return links[path] ?? RemoteLink(url: path);
   }

@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:io' show HttpDate;
 
 import 'package:crypto/crypto.dart';
-import 'package:dio/dio.dart';
 
 import 'package:flutter/foundation.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
@@ -16,6 +15,7 @@ import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/throttled_task_runner.dart';
 import 'package:venera_plus/network/webdav.dart';
+import 'package:venera_plus/network/app_dio.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 import 'remote_archive_comic.dart';
 import 'remote_comic_work.dart';
@@ -66,6 +66,7 @@ class _RemoteLibraryEngineState {
   CancelToken scanToken = CancelToken();
   final lifetimeToken = CancelToken();
   bool disposed = false;
+  Future<void>? statusReady;
 }
 
 class RemoteLibraryEngine {
@@ -104,6 +105,7 @@ class RemoteLibraryEngine {
   late final _scanner = _RemoteLibraryScanner(this);
   late final _metadata = _RemoteLibraryMetadataPipeline(this);
   Timer? _autoRefreshTimer;
+  Dio? _imageDio;
 
   // 同一账号的目录、元数据和 Range 请求共用一个调度器。
   static final _archiveAccounts =
@@ -136,13 +138,11 @@ class RemoteLibraryEngine {
     () => (
       scheduler:
           RemoteLibrarySource.archiveSchedulerFactory?.call() ??
-          RemoteReadScheduler(
-            minInterval:
-                config.remoteStore == null ||
-                    config.remoteStore!.account.backend == StorageBackend.webdav
-                ? Duration.zero
-                : const Duration(milliseconds: 150),
-          ),
+          (config.remoteStore == null
+              ? RemoteReadScheduler(minInterval: Duration.zero)
+              : RemoteStorageAccounts.instance.readSchedulerFor(
+                  config.remoteStore!.account,
+                )),
       cache: RemoteRangeCache(),
     ),
   );
@@ -181,16 +181,58 @@ class RemoteLibraryEngine {
     RemoteLibraryConfig config,
     String path, {
     bool refresh = false,
-  }) => _archiveAccount(config).scheduler.run(
-    () {
+    bool useCache = false,
+  }) async {
+    final cachePath = normalizeRemoteDirectory(path);
+    final generation = _state.syncGeneration;
+    final maxAge = config.remoteStore?.account.driver == '115 Open'
+        ? const Duration(hours: 1)
+        : const Duration(minutes: 10);
+    if (useCache && !refresh) {
+      final cached = await _cache.directoryEntries(
+        config.cacheKey,
+        cachePath,
+        now: DateTime.now().millisecondsSinceEpoch,
+        maxAge: maxAge,
+      );
       _ensureActive();
-      return _activeOps.readDir(config, path, refresh: refresh);
-    },
-    cancelToken:
-        RemoteReadContext.current.priority == RemoteReadPriority.background
-        ? _state.scanToken
-        : _state.lifetimeToken,
-  );
+      if (cached != null) {
+        return [
+          for (final entry in cached)
+            RemoteLibraryEntry(
+              name: entry['name'] as String,
+              isDirectory: entry['isDirectory'] as bool,
+              size: entry['size'] as int?,
+              modifiedAt: entry['modifiedAt'] as int?,
+              eTag: entry['eTag'] as String?,
+            ),
+        ];
+      }
+    }
+    final entries = await _archiveAccount(config).scheduler.run(
+      () {
+        _ensureActive();
+        return _activeOps.readDir(config, path, refresh: refresh);
+      },
+      cancelToken:
+          RemoteReadContext.current.priority == RemoteReadPriority.background
+          ? _state.scanToken
+          : _state.lifetimeToken,
+    );
+    if (!_state.disposed && generation == _state.syncGeneration) {
+      await _cache.cacheDirectoryEntries(config.cacheKey, cachePath, [
+        for (final entry in entries)
+          {
+            'name': entry.name,
+            'isDirectory': entry.isDirectory,
+            'size': entry.size,
+            'modifiedAt': entry.modifiedAt,
+            'eTag': entry.eTag,
+          },
+      ], DateTime.now().millisecondsSinceEpoch);
+    }
+    return entries;
+  }
 
   Future<RemoteLibraryTextFile> _readText(
     RemoteLibraryConfig config,
@@ -214,27 +256,34 @@ class RemoteLibraryEngine {
     String? ifMatch,
     int? ifUnmodifiedSince,
     int? expectedGeneration,
-  }) => _archiveAccount(config).scheduler.run(
-    () {
-      _ensureActive();
-      if (expectedGeneration != null &&
-          expectedGeneration != _state.syncGeneration) {
-        throw const _RemoteSynchronizationObsoleteException();
-      }
-      return _activeOps.writeText(
-        config,
-        path,
-        content,
-        createOnly: createOnly,
-        ifMatch: ifMatch,
-        ifUnmodifiedSince: ifUnmodifiedSince,
-      );
-    },
-    cancelToken:
-        RemoteReadContext.current.priority == RemoteReadPriority.background
-        ? _state.scanToken
-        : _state.lifetimeToken,
-  );
+  }) async {
+    final result = await _archiveAccount(config).scheduler.run(
+      () {
+        _ensureActive();
+        if (expectedGeneration != null &&
+            expectedGeneration != _state.syncGeneration) {
+          throw const _RemoteSynchronizationObsoleteException();
+        }
+        return _activeOps.writeText(
+          config,
+          path,
+          content,
+          createOnly: createOnly,
+          ifMatch: ifMatch,
+          ifUnmodifiedSince: ifUnmodifiedSince,
+        );
+      },
+      cancelToken:
+          RemoteReadContext.current.priority == RemoteReadPriority.background
+          ? _state.scanToken
+          : _state.lifetimeToken,
+    );
+    final parent = normalizeRemoteDirectory(
+      path.substring(0, path.lastIndexOf('/') + 1),
+    );
+    await _cache.invalidateDirectoryEntries(config.cacheKey, parent);
+    return result;
+  }
 
   String _configurationIdentity(RemoteLibraryConfig config) =>
       jsonEncode([config.cacheKey, config.connectionKey, config.directories]);
@@ -357,6 +406,7 @@ class RemoteLibraryEngine {
         .map((load) => load.future)
         .toList();
     _clearMemoryCaches();
+    _imageDio?.close(force: true);
     final closingMetadata = _metadata.cancel();
     final store = _store;
     if (store != null) {
@@ -386,11 +436,17 @@ class RemoteLibraryEngine {
     );
     _autoRefreshTimer = Timer.periodic(
       interval,
-      (_) => unawaited(synchronize()),
+      (_) => checkForAutomaticSync(),
     );
   }
 
   void checkForAutomaticSync() {
+    unawaited(_checkForAutomaticSync());
+  }
+
+  Future<void> _checkForAutomaticSync() async {
+    if (_state.disposed) return;
+    await (_state.statusReady ??= _loadStatus());
     if (_state.disposed) return;
     final enabled = _legacy
         ? appdata.settings['webdavComicLibraryAutoSync'] == true
@@ -405,7 +461,9 @@ class RemoteLibraryEngine {
         DateTime.now().millisecondsSinceEpoch - _state.lastSuccessfulSync;
     if (_state.lastSuccessfulSync == 0 ||
         elapsed >= Duration(minutes: interval).inMilliseconds) {
-      unawaited(synchronize());
+      if (_archiveAccount(_config).scheduler.cooldownUntil == null) {
+        unawaited(synchronize(automatic: true));
+      }
     }
   }
 
@@ -429,8 +487,8 @@ class RemoteLibraryEngine {
   @visibleForTesting
   Future<void> waitForBackgroundTasks() => _metadata.waitForIdle();
 
-  Future<Res<bool>> synchronize({bool force = false}) =>
-      _scanner.synchronize(force: force);
+  Future<Res<bool>> synchronize({bool force = false, bool automatic = false}) =>
+      _scanner.synchronize(force: force, automatic: automatic);
 
   Future<Res<List<Comic>>> loadComics(int page) async {
     final config = _config;
@@ -474,7 +532,7 @@ class RemoteLibraryEngine {
 
   ComicSource create() {
     initializeAutoRefresh();
-    unawaited(_loadStatus());
+    unawaited(_state.statusReady ??= _loadStatus());
     return ComicSource(
       _legacy ? 'Remote Library' : library.name,
       _activeSourceKey,
@@ -1032,6 +1090,9 @@ class RemoteLibraryEngine {
                 url: config.fileUrl(archive.path),
                 headers: config.authHeaders,
               ),
+        refreshLink: config.remoteStore == null
+            ? null
+            : () => config.remoteStore!.link(archive.path, refresh: true),
         dio: RemoteLibrarySource.archiveDioFactory?.call(),
       ),
     );
@@ -1846,6 +1907,56 @@ class RemoteLibraryEngine {
     );
   }
 
+  Future<Uint8List> _loadRemoteImage(
+    RemoteLibraryConfig config,
+    String path,
+    RemoteLink link,
+    CancelToken token,
+  ) async {
+    _state.archiveTokens.add(token);
+    final scheduler = _archiveAccount(config).scheduler;
+    try {
+      return await scheduler.run(() async {
+        _ensureActive();
+        final dio = _imageDio ??=
+            RemoteLibrarySource.archiveDioFactory?.call() ?? AppDio();
+        var refreshed = false;
+        while (true) {
+          try {
+            final response = await dio.get<List<int>>(
+              link.url,
+              cancelToken: token,
+              options: Options(
+                headers: link.headers,
+                responseType: ResponseType.bytes,
+                extra: {'allowImageHttp3Fallback': true},
+              ),
+            );
+            final bytes =
+                response.data ?? (throw const FormatException('图片响应为空'));
+            return Uint8List.fromList(bytes);
+          } on DioException catch (error) {
+            final status = error.response?.statusCode;
+            if (status == 429) {
+              final retryAfter = error.response?.headers['retry-after'];
+              await scheduler.defer(
+                retryAfter: retryAfter?.length == 1 ? retryAfter!.single : null,
+              );
+            }
+            if ((status == 401 || status == 403) && !refreshed) {
+              refreshed = true;
+              link = await config.remoteStore!.link(path, refresh: true);
+              continue;
+            }
+            rethrow;
+          }
+        }
+      }, cancelToken: token);
+    } finally {
+      _state.archiveTokens.remove(token);
+    }
+  }
+
   Future<Map<String, dynamic>> getImageLoadingConfig(
     String imageKey,
     String comicId,
@@ -1863,8 +1974,16 @@ class RemoteLibraryEngine {
       return {'loadBytes': loadBytes};
     }
     if (config.remoteStore != null) {
-      final link = await config.remoteStore!.link(imageKey);
-      return {'url': link.url, 'headers': link.headers};
+      final link = await _archiveAccount(config).scheduler.run(
+        () => config.remoteStore!.link(imageKey),
+        cancelToken: _state.lifetimeToken,
+      );
+      return {
+        'url': link.url,
+        'headers': link.headers,
+        'loadBytes': (CancelToken token) =>
+            _loadRemoteImage(config, imageKey, link, token),
+      };
     }
     return {'url': config.fileUrl(imageKey), 'headers': config.authHeaders};
   }
@@ -1886,8 +2005,16 @@ class RemoteLibraryEngine {
       return {'headers': config.authHeaders};
     }
     if (config.remoteStore != null) {
-      final link = await config.remoteStore!.link(imageKey);
-      return {'url': link.url, 'headers': link.headers};
+      final link = await _archiveAccount(config).scheduler.run(
+        () => config.remoteStore!.link(imageKey),
+        cancelToken: _state.lifetimeToken,
+      );
+      return {
+        'url': link.url,
+        'headers': link.headers,
+        'loadBytes': (CancelToken token) =>
+            _loadRemoteImage(config, imageKey, link, token),
+      };
     }
     return {'url': config.fileUrl(imageKey), 'headers': config.authHeaders};
   }

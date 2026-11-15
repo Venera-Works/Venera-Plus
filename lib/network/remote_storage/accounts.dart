@@ -2,11 +2,13 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
+import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 
 import 'models.dart';
 import 'openlist_rpc.dart';
 import 'remote_file_store.dart';
+import 'remote_read_scheduler.dart';
 import 'webdav_file_store.dart';
 import '../webdav.dart';
 
@@ -23,6 +25,31 @@ class RemoteStorageAccounts with ChangeNotifier {
   String? _proxy;
   final _uuid = const Uuid();
   final _activeStores = <String, Set<RemoteFileStore>>{};
+  final _readSchedulers = <String, RemoteReadScheduler>{};
+
+  RemoteReadScheduler readSchedulerFor(StorageAccount account) =>
+      _readSchedulers.putIfAbsent('${App.dataPath}:${account.id}', () {
+        final raw = appdata.implicitData['remoteStorageCooldowns'];
+        final until = raw is Map ? raw[account.id] : null;
+        return RemoteReadScheduler(
+          minInterval: account.backend == StorageBackend.webdav
+              ? Duration.zero
+              : const Duration(milliseconds: 150),
+          rateLimitDelay: const Duration(minutes: 15),
+          failDuringCooldown: true,
+          cooldownUntil: until is int
+              ? DateTime.fromMillisecondsSinceEpoch(until)
+              : null,
+          onCooldown: (deadline) async {
+            final current = appdata.implicitData['remoteStorageCooldowns'];
+            appdata.implicitData['remoteStorageCooldowns'] = {
+              if (current is Map) ...current,
+              account.id: deadline.millisecondsSinceEpoch,
+            };
+            await appdata.writeImplicitData();
+          },
+        );
+      });
 
   void configureOpenList(
     OpenListRpcClient rpc, {
@@ -426,7 +453,11 @@ class RemoteStorageAccounts with ChangeNotifier {
         waitForInitialization: ensureInitialized,
       ),
     };
-    return _StatusTrackingStore(delegate, _recordResult);
+    return _StatusTrackingStore(
+      delegate,
+      _recordResult,
+      readSchedulerFor(account),
+    );
   }
 
   Future<void> _recordResult(StorageAccount account, Object? error) async {
@@ -858,17 +889,20 @@ bool _authorizationTokensChanged(
 }
 
 class _StatusTrackingStore implements RemoteFileStore {
-  _StatusTrackingStore(this._delegate, this._record);
+  _StatusTrackingStore(this._delegate, this._record, this._scheduler);
   final RemoteFileStore _delegate;
   final Future<void> Function(StorageAccount account, Object? error) _record;
+  final RemoteReadScheduler _scheduler;
   @override
   StorageAccount get account => _delegate.account;
   Future<T> _run<T>(Future<T> Function() operation) async {
+    _scheduler.throwIfCoolingDown();
     try {
       final value = await operation();
       await _record(account, null);
       return value;
     } catch (error) {
+      await _scheduler.recordFailure(error);
       await _record(account, error);
       rethrow;
     }
@@ -882,7 +916,8 @@ class _StatusTrackingStore implements RemoteFileStore {
   @override
   Future<RemoteEntry> stat(String path) => _run(() => _delegate.stat(path));
   @override
-  Future<RemoteLink> link(String path) => _run(() => _delegate.link(path));
+  Future<RemoteLink> link(String path, {bool refresh = false}) =>
+      _run(() => _delegate.link(path, refresh: refresh));
   @override
   Future<RemoteTextFile> readText(String path) =>
       _run(() => _delegate.readText(path));
