@@ -95,13 +95,11 @@ Future<void> showPdfImportTasksDialog({
                 ),
         ),
         actions: [
-          Flexible(
-            child: TextButton(
-              onPressed: manager.tasks.any((task) => task.isFinished)
-                  ? manager.clearFinished
-                  : null,
-              child: Text('Clear completed tasks'.tl),
-            ),
+          TextButton(
+            onPressed: manager.tasks.any((task) => task.isFinished)
+                ? manager.clearFinished
+                : null,
+            child: Text('Clear completed tasks'.tl),
           ),
         ],
       ),
@@ -174,32 +172,21 @@ class PdfImportDialog extends StatelessWidget {
             ),
           ),
           actions: [
-            Flexible(
-              child: Wrap(
-                alignment: WrapAlignment.end,
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  if (result == null) ...[
-                    TextButton.icon(
-                      onPressed: task.isCancelling
-                          ? null
-                          : () => tasks.cancel(task),
-                      icon: const Icon(Icons.stop_circle_outlined),
-                      label: Text('Cancel'.tl),
-                    ),
-                    FilledButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      child: Text('Run in background'.tl),
-                    ),
-                  ] else
-                    FilledButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      child: Text('OK'.tl),
-                    ),
-                ],
+            if (result == null) ...[
+              TextButton.icon(
+                onPressed: task.isCancelling ? null : () => tasks.cancel(task),
+                icon: const Icon(Icons.stop_circle_outlined),
+                label: Text('Cancel'.tl),
               ),
-            ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: Text('Run in background'.tl),
+              ),
+            ] else
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: Text('OK'.tl),
+              ),
           ],
         );
       },
