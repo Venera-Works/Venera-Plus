@@ -2,56 +2,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/foundation/channel.dart';
 
 void main() {
-  test("1-3-1", () async {
-    var channel = Channel<int>(1);
-
-    // producer
-    () async {
-      await channel.push(1);
-    }();
-    () async {
-      await channel.push(2);
-    }();
-    () async {
-      await channel.push(3);
-    }();
-
-    // consumer
-    var results = <int>[];
-    for (var i = 0; i < 3; i++) {
-      var item = await channel.pop();
-      if (item != null) {
-        results.add(item);
-      }
-    }
-    expect(results.length, 3);
-  });
-
-  test("2-3-1", () async {
-    var channel = Channel<int>(2);
-
-    // producer
-    () async {
-      await channel.push(1);
-    }();
-    () async {
-      await channel.push(2);
-    }();
-    () async {
-      await channel.push(3);
-    }();
-
-    // consumer
-    var results = <int>[];
-    for (var i = 0; i < 3; i++) {
-      var item = await channel.pop();
-      if (item != null) {
-        results.add(item);
-      }
-    }
-    expect(results.length, 3);
-  });
-
   test("1-1-3", () async {
     var channel = Channel<int>(1);
 

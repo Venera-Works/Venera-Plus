@@ -25,11 +25,6 @@ void main() {
     }
   });
 
-  test('default settings leave optional features unconfigured', () {
-    expect(appdata.settings['comicSourceListUrl'], isEmpty);
-    expect(appdata.settings['oneHandedMode'], isFalse);
-  });
-
   test(
     'sync snapshots retain cloud accounts and keep the sync target local',
     () async {

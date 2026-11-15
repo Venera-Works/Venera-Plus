@@ -172,7 +172,7 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
                       ? 'Add Cloud Storage Account'.tl
                       : accounts.map((a) => a.name).join(' · '),
                 ),
-                trailing: const Icon(Icons.chevron_right),
+                trailing: const Icon(Icons.arrow_right),
                 onTap: _manageAccounts,
               ),
             ]),
@@ -189,7 +189,7 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
                     'count': libraries.length,
                   }),
                 ),
-                trailing: const Icon(Icons.chevron_right),
+                trailing: const Icon(Icons.arrow_right),
                 onTap: () => context.to(() => const ContentSourcesPage()),
               ),
               ListTile(
@@ -199,14 +199,14 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
                   '${_locationSummary('syncRemoteLocation')}'
                   '${status.isConfigured ? '\n$mode · $syncStatus' : ''}',
                 ),
-                trailing: const Icon(Icons.chevron_right),
+                trailing: const Icon(Icons.arrow_right),
                 onTap: () => showDataSyncSettings(context),
               ),
               ListTile(
                 key: const Key('comic-backup-entry'),
                 title: Text('Comic Archive Backup'.tl),
                 subtitle: Text(_locationSummary('backupRemoteLocation')),
-                trailing: const Icon(Icons.chevron_right),
+                trailing: const Icon(Icons.arrow_right),
                 onTap: () async {
                   await _storage.migrateLegacyWebDavLocations();
                   if (context.mounted) {
@@ -228,13 +228,13 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
                 subtitle: Text(
                   'Comic storage path, cache and download threads.'.tl,
                 ),
-                trailing: const Icon(Icons.chevron_right),
+                trailing: const Icon(Icons.arrow_right),
                 onTap: () => context.to(() => const _LocalStorageSettings()),
               ),
               ListTile(
                 title: Text('App Data Import and Export'.tl),
                 subtitle: Text('Save or restore a local app-data file.'.tl),
-                trailing: const Icon(Icons.chevron_right),
+                trailing: const Icon(Icons.arrow_right),
                 onTap: () => context.to(() => const _AppDataTransferSettings()),
               ),
             ]),

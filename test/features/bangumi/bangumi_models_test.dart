@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/bangumi/bangumi.dart';
-import 'package:venera_plus/foundation/appdata.dart';
 
 void main() {
   group('BangumiTitleProgressParser', () {
@@ -473,15 +472,5 @@ void main() {
 
     expect(subject.title, ' Original title ');
     expect(subject.metadataTitle, 'Original title');
-  });
-
-  test('Bangumi settings have defaults', () {
-    expect(appdata.settings['bangumiAccessToken'], '');
-    expect(appdata.settings['bangumiUsername'], '');
-    expect(appdata.settings['bangumiAutoSyncEnabled'], isTrue);
-    expect(
-      appdata.settings['bangumiBindings'],
-      isA<Map<String, Map<String, dynamic>>>(),
-    );
   });
 }

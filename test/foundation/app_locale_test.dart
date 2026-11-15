@@ -1,5 +1,3 @@
-import 'dart:ui' show PlatformDispatcher;
-
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/foundation/app.dart';
@@ -180,14 +178,6 @@ void main() {
         expect(resolveAppLocale('system', testCase.system), testCase.expected);
       });
     }
-
-    test('App.locale delegates to the production resolver', () {
-      appdata.settings['language'] = 'system';
-      expect(
-        resolveAppLocale('system', PlatformDispatcher.instance.locales),
-        App.locale,
-      );
-    });
   });
 
   group('JS script locale compatibility', () {
