@@ -1656,6 +1656,10 @@ class ContinuousModeState extends State<_ContinuousMode>
 
   bool _isNavigatingWaterfallLocation = false;
 
+  int _waterfallRequestGeneration = 0;
+
+  Completer<void>? _waterfallScrollIdle;
+
   String? _nextSegmentError;
 
   int get preCacheCount => reader.readerSetting('preloadImageCount');
@@ -1786,8 +1790,72 @@ class ContinuousModeState extends State<_ContinuousMode>
     );
   }
 
+  bool _isCurrentWaterfallRequest(int generation) =>
+      mounted &&
+      generation == _waterfallRequestGeneration &&
+      reader.imageViewController == this;
+
+  int _invalidateWaterfallRequests() {
+    _waterfallRequestGeneration++;
+    final idle = _waterfallScrollIdle;
+    _waterfallScrollIdle = null;
+    if (idle != null && !idle.isCompleted) idle.complete();
+    _isLoadingPrevSegment = false;
+    _isLoadingNextSegment = false;
+    _isRestoringPrependedSegmentPosition = false;
+    _isNavigatingWaterfallLocation = false;
+    return _waterfallRequestGeneration;
+  }
+
+  Future<bool> _waitForWaterfallScrollIdle(int generation) async {
+    while (_isCurrentWaterfallRequest(generation)) {
+      final controller = _scrollController;
+      if (controller == null || !controller.hasClients) return false;
+      final scrolling = controller.position.isScrollingNotifier;
+      if (scrolling.value) {
+        final idle = Completer<void>();
+        _waterfallScrollIdle = idle;
+        void changed() {
+          if (!scrolling.value && !idle.isCompleted) idle.complete();
+        }
+
+        scrolling.addListener(changed);
+        try {
+          await idle.future;
+        } finally {
+          scrolling.removeListener(changed);
+          if (identical(_waterfallScrollIdle, idle)) {
+            _waterfallScrollIdle = null;
+          }
+        }
+      }
+      if (!_isCurrentWaterfallRequest(generation)) return false;
+      // 等最后一次拖动完成布局，也跳过拖动转惯性滚动时的短暂空闲。
+      final layout = Completer<void>();
+      _waterfallScrollIdle = layout;
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        if (!layout.isCompleted) layout.complete();
+      });
+      SchedulerBinding.instance.scheduleFrame();
+      try {
+        await layout.future;
+      } finally {
+        if (identical(_waterfallScrollIdle, layout)) {
+          _waterfallScrollIdle = null;
+        }
+      }
+      if (!_isCurrentWaterfallRequest(generation)) return false;
+      if (_scrollController?.hasClients != true) return false;
+      if (!scrollController.position.isScrollingNotifier.value) return true;
+    }
+    return false;
+  }
+
   Future<void> _ensureWaterfallImagesAfter(int current) async {
-    if (!crossChapter || _isLoadingNextSegment || _nextSegmentError != null) {
+    if (!crossChapter ||
+        _isNavigatingWaterfallLocation ||
+        _isLoadingNextSegment ||
+        _nextSegmentError != null) {
       return;
     }
     _initSegments();
@@ -1801,11 +1869,12 @@ class ContinuousModeState extends State<_ContinuousMode>
       return;
     }
     var nextChapter = _waterfallFlow.lastChapter! + 1;
+    final generation = _waterfallRequestGeneration;
     setState(() => _isLoadingNextSegment = true);
     var loaded = false;
     try {
       var images = await _loadChapterImages(nextChapter);
-      if (!mounted) return;
+      if (!_isCurrentWaterfallRequest(generation)) return;
       setState(() {
         _waterfallFlow.addAfter(
           WaterfallChapterSegment(
@@ -1820,19 +1889,24 @@ class ContinuousModeState extends State<_ContinuousMode>
       });
       loaded = true;
     } catch (e) {
-      if (!mounted) return;
+      if (!_isCurrentWaterfallRequest(generation)) return;
       setState(() => _nextSegmentError = e.toString());
     } finally {
-      _isLoadingNextSegment = false;
-      if (mounted) setState(() {});
-      if (loaded && mounted && _flowImageCount - current < threshold) {
-        _ensureWaterfallImagesAfter(current);
+      if (_isCurrentWaterfallRequest(generation)) {
+        setState(() => _isLoadingNextSegment = false);
+        if (loaded && _flowImageCount - current < threshold) {
+          _ensureWaterfallImagesAfter(current);
+        }
       }
     }
   }
 
   Future<void> _ensureWaterfallImagesBefore(int current) async {
-    if (!crossChapter || _isLoadingPrevSegment) return;
+    if (!crossChapter ||
+        _isNavigatingWaterfallLocation ||
+        _isLoadingPrevSegment) {
+      return;
+    }
     _initSegments();
     var threshold = math.max(preCacheCount, 1);
     if (!_waterfallFlow.shouldLoadBefore(
@@ -1843,14 +1917,30 @@ class ContinuousModeState extends State<_ContinuousMode>
       return;
     }
     var prevChapter = _waterfallFlow.firstChapter! - 1;
+    final generation = _waterfallRequestGeneration;
     _isLoadingPrevSegment = true;
-    var insertedCount = 0;
     try {
       var images = await _loadChapterImages(prevChapter);
-      if (!mounted) return;
+      if (!await _waitForWaterfallScrollIdle(generation) ||
+          !_isCurrentWaterfallRequest(generation)) {
+        return;
+      }
+      ItemPosition? anchor;
+      for (final item in itemPositionsListener.itemPositions.value) {
+        if (_imageRefAt(item.index) != null &&
+            item.itemTrailingEdge > 0 &&
+            item.itemLeadingEdge < 1 &&
+            (anchor == null || item.index < anchor.index)) {
+          anchor = item;
+        }
+      }
+      if (anchor == null) return;
+      // 请求期间用户可能已滚到另一页，以插入前的真实图片和部分偏移为准。
+      final anchorRef = _imageRefAt(anchor.index)!;
+      final alignment = anchor.itemLeadingEdge;
       _isRestoringPrependedSegmentPosition = true;
       setState(() {
-        insertedCount = _waterfallFlow.addBefore(
+        _waterfallFlow.addBefore(
           WaterfallChapterSegment(
             chapter: prevChapter,
             eid:
@@ -1860,29 +1950,25 @@ class ContinuousModeState extends State<_ContinuousMode>
           ),
         );
       });
-      if (insertedCount == 0) {
-        _isRestoringPrependedSegmentPosition = false;
-      }
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        if (!_isCurrentWaterfallRequest(generation)) return;
+        final index = _waterfallIndexOfChapterPage(
+          anchorRef.chapter,
+          anchorRef.page,
+        )!;
+        itemScrollController.jumpTo(index: index, alignment: alignment);
+        SchedulerBinding.instance.addPostFrameCallback((_) {
+          if (!_isCurrentWaterfallRequest(generation)) return;
+          _isRestoringPrependedSegmentPosition = false;
+        });
+      });
     } catch (e) {
+      if (!_isCurrentWaterfallRequest(generation)) return;
       _isRestoringPrependedSegmentPosition = false;
-      if (!mounted) return;
       Log.error("Reader", "Failed to load previous chapter", e);
     } finally {
-      _isLoadingPrevSegment = false;
-      if (mounted) {
-        setState(() {});
-      }
-      if (mounted && insertedCount > 0) {
-        SchedulerBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
-            itemScrollController.jumpTo(index: current + insertedCount);
-            SchedulerBinding.instance.addPostFrameCallback((_) {
-              if (mounted) {
-                _isRestoringPrependedSegmentPosition = false;
-              }
-            });
-          }
-        });
+      if (_isCurrentWaterfallRequest(generation)) {
+        _isLoadingPrevSegment = false;
       }
     }
   }
@@ -1915,11 +2001,15 @@ class ContinuousModeState extends State<_ContinuousMode>
     return _waterfallFlow.imageIndexOf(chapter: chapter, page: page);
   }
 
-  Future<bool> _loadWaterfallNavigationChapter(int chapter) async {
+  Future<bool> _loadWaterfallNavigationChapter(
+    int chapter,
+    int generation,
+  ) async {
     if (_segmentOfChapter(chapter) != null) return true;
     try {
       var images = await _loadChapterImages(chapter);
-      if (!mounted) return false;
+      if (!_isCurrentWaterfallRequest(generation)) return false;
+      if (images.isEmpty) return false;
       setState(() {
         _waterfallFlow.reset(
           WaterfallChapterSegment(
@@ -1933,7 +2023,7 @@ class ContinuousModeState extends State<_ContinuousMode>
       });
       return true;
     } catch (e) {
-      if (!mounted) return false;
+      if (!_isCurrentWaterfallRequest(generation)) return false;
       Log.error("Reader", "Failed to load chapter $chapter", e);
       context.showMessage(message: e.toString());
       return false;
@@ -1944,30 +2034,38 @@ class ContinuousModeState extends State<_ContinuousMode>
     int chapter, {
     required bool toLastPage,
   }) async {
+    final generation = _invalidateWaterfallRequests();
+    _isNavigatingWaterfallLocation = true;
     final needsLoading = _segmentOfChapter(chapter) == null;
     if (needsLoading) {
       reader.onReaderContentLoading(keepImageViewController: true);
     }
     try {
-      if (!await _loadWaterfallNavigationChapter(chapter) || !mounted) {
+      if (!await _loadWaterfallNavigationChapter(chapter, generation) ||
+          !_isCurrentWaterfallRequest(generation)) {
+        if (_isCurrentWaterfallRequest(generation)) {
+          _isNavigatingWaterfallLocation = false;
+        }
         return;
       }
     } finally {
-      if (needsLoading && mounted) reader.onReaderContentReady();
-      if (mounted) {
+      if (_isCurrentWaterfallRequest(generation)) {
+        if (needsLoading) reader.onReaderContentReady();
         reader.imageViewController ??= this;
       }
     }
-    if (!mounted) return;
+    if (!_isCurrentWaterfallRequest(generation)) return;
     reader.imageViewController = this;
     var segment = _segmentOfChapter(chapter);
-    if (segment == null || segment.images.isEmpty) return;
+    if (segment == null || segment.images.isEmpty) {
+      _isNavigatingWaterfallLocation = false;
+      return;
+    }
     var page = toLastPage ? segment.images.length : 1;
     var index = _waterfallIndexOfChapterPage(chapter, page);
     if (index == null) return;
     var imageRef = _imageRefAt(index);
     if (imageRef == null) return;
-    _isNavigatingWaterfallLocation = true;
     setState(() {
       reader.chapter = chapter;
       reader.images = segment.images;
@@ -1976,12 +2074,12 @@ class ContinuousModeState extends State<_ContinuousMode>
     });
     context.readerScaffold.update();
     SchedulerBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
+      if (!_isCurrentWaterfallRequest(generation)) return;
       itemScrollController.jumpTo(index: index);
       _futurePosition = null;
       cacheImages(index);
       SchedulerBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
+        if (!_isCurrentWaterfallRequest(generation)) return;
         final positions = itemPositionsListener.itemPositions.value;
         if (positions.isNotEmpty) {
           final actualIndex = resolveFlowCurrentImageIndex(
@@ -2017,6 +2115,7 @@ class ContinuousModeState extends State<_ContinuousMode>
 
   @override
   void dispose() {
+    _invalidateWaterfallRequests();
     if (reader.imageViewController == this) {
       reader.imageViewController = null;
     }
@@ -2636,6 +2735,7 @@ class ContinuousModeState extends State<_ContinuousMode>
 
   @override
   Future<void> animateToPage(int page) {
+    _invalidateWaterfallRequests();
     var index = _waterfallIndexOfChapterPage(reader.chapter, page) ?? page;
     return itemScrollController.scrollTo(
       index: index,
@@ -2701,6 +2801,7 @@ class ContinuousModeState extends State<_ContinuousMode>
 
   @override
   void toPage(int page) {
+    _invalidateWaterfallRequests();
     var index = _waterfallIndexOfChapterPage(reader.chapter, page) ?? page;
     itemScrollController.jumpTo(index: index);
     _futurePosition = null;

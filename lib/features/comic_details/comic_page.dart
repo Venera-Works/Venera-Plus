@@ -72,6 +72,7 @@ class ComicPage extends StatefulWidget {
     this.heroID,
     this.selectSource = false,
     this.continueReading = false,
+    this.initialReaderPage,
   });
 
   final String id;
@@ -85,6 +86,9 @@ class ComicPage extends StatefulWidget {
   final int? heroID;
   final bool selectSource;
   final bool continueReading;
+
+  /// 外部图库链接指定的阅读页码，从 1 开始。
+  final int? initialReaderPage;
 
   @override
   State<ComicPage> createState() => _ComicPageState();
@@ -100,6 +104,7 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
   ModalRoute<dynamic>? _route;
   bool _tickerModeEnabled = true;
   bool _needsHistoryRefresh = false;
+  bool _openedLinkPage = false;
 
   bool get _isVisible => _tickerModeEnabled && (_route?.isCurrent ?? true);
 
@@ -191,6 +196,7 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
     // The root reader can cover a details page on the nested main navigator.
     _tickerModeEnabled = TickerMode.valuesOf(context).enabled;
     if (_isVisible && _needsHistoryRefresh) _refreshHistory();
+    _openInitialReaderPage();
   }
 
   @override
@@ -397,11 +403,34 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
         }
       }
     }
-    if (widget.continueReading && history?.hasReadingProgress == true) {
+    if (widget.initialReaderPage case final page? when page > 0) {
+      _openInitialReaderPage();
+    } else if (widget.continueReading && history?.hasReadingProgress == true) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) read();
       });
     }
+  }
+
+  void _openInitialReaderPage() {
+    final page = widget.initialReaderPage;
+    if (_openedLinkPage ||
+        widget.selectSource ||
+        page == null ||
+        page < 1 ||
+        data == null ||
+        !_isVisible) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _openedLinkPage || !_isVisible) return;
+      _openedLinkPage = true;
+      final maxPage = comic.maxPage;
+      read(
+        1,
+        maxPage != null && maxPage > 0 ? page.clamp(1, maxPage).toInt() : page,
+      );
+    });
   }
 
   Iterable<Widget> buildTitle() sync* {

@@ -9,6 +9,7 @@ import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/navigation_settings.dart';
 import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/routing/app_links.dart';
 
 import '../components/navigation_bar.dart';
 import '../foundation/app.dart';
@@ -86,6 +87,16 @@ class _MainPageState extends State<MainPage> {
     }
 
     super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setAppLinkNavigationReady(true);
+    });
+  }
+
+  @override
+  void dispose() {
+    setAppLinkNavigationReady(false);
+    if (App.mainNavigatorKey == _navigatorKey) App.mainNavigatorKey = null;
+    super.dispose();
   }
 
   @override

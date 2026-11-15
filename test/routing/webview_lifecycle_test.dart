@@ -13,6 +13,7 @@ import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/network/cloudflare.dart';
 import 'package:venera_plus/network/cookie_jar.dart';
 import 'package:venera_plus/routing/cloudflare.dart';
+import 'package:venera_plus/routing/cloudflare_verification.dart';
 import 'package:venera_plus/routing/webview.dart';
 import 'package:venera_plus/routing/windows_webview_environment.dart';
 
@@ -254,6 +255,109 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    testWidgets('Cloudflare retries a slow document and clearance cookie', (
+      tester,
+    ) async {
+      cleanUpWidget(tester);
+      await showRequest(tester);
+      var finished = 0;
+      final verification = passCloudflare(
+        CloudflareException('https://example.test/'),
+        () => finished++,
+      );
+      await pumpInitialization(tester);
+      final native = _Controller()..readyState = 'loading';
+      final controller = attach(native);
+      final view = platform.views.last;
+      view.params.onLoadStop!(controller, WebUri('https://example.test/'));
+      await tester.pump();
+      expect(platform.cookieEnvironments, isEmpty);
+
+      native
+        ..readyState = 'interactive'
+        ..head = '<title>Ready</title>'
+        ..body = '<main>Ready</main>';
+      await tester.pump(cloudflareVerificationRetryDelay);
+      await tester.pump();
+      expect(platform.cookieEnvironments, hasLength(1));
+      expect(finished, 0);
+
+      platform.cookies = [Cookie(name: 'cf_clearance', value: 'test')];
+      await tester.pump(cloudflareVerificationRetryDelay);
+      await tester.pumpAndSettle();
+      await verification;
+      expect(finished, 1);
+      expect(jar.saved, hasLength(1));
+    });
+
+    testWidgets('Cloudflare cancels delayed checks for replaced navigation', (
+      tester,
+    ) async {
+      cleanUpWidget(tester);
+      await showRequest(tester);
+      var finished = 0;
+      final verification = passCloudflare(
+        CloudflareException('https://example.test/'),
+        () => finished++,
+      );
+      await pumpInitialization(tester);
+      final native = _Controller()..readyState = 'loading';
+      final controller = attach(native);
+      final view = platform.views.last;
+      view.params.onLoadStop!(controller, WebUri('https://example.test/'));
+      await tester.pump();
+      view.params.onLoadStart!(controller, WebUri('https://example.test/next'));
+      native
+        ..readyState = 'complete'
+        ..head = '<title>Ready</title>'
+        ..body = '<main>Ready</main>';
+      platform.cookies = [Cookie(name: 'cf_clearance', value: 'test')];
+      await tester.pump(cloudflareVerificationRetryDelay);
+      await tester.pump();
+      expect(platform.cookieEnvironments, isEmpty);
+      expect(finished, 0);
+
+      view.params.onLoadStop!(controller, WebUri('https://example.test/next'));
+      await tester.pumpAndSettle();
+      await verification;
+      expect(finished, 1);
+      expect(jar.saved, hasLength(1));
+    });
+
+    testWidgets('Cloudflare cancels delayed checks after closing the route', (
+      tester,
+    ) async {
+      cleanUpWidget(tester);
+      await showRequest(tester);
+      var finished = 0;
+      final verification = passCloudflare(
+        CloudflareException('https://example.test/'),
+        () => finished++,
+      );
+      await pumpInitialization(tester);
+      final native = _Controller()..readyState = 'loading';
+      final controller = attach(native);
+      platform.views.last.params.onLoadStop!(
+        controller,
+        WebUri('https://example.test/'),
+      );
+      await tester.pump();
+      App.rootNavigatorKey.currentState!.pop();
+      await tester.pumpAndSettle();
+      await verification;
+
+      native
+        ..readyState = 'complete'
+        ..head = '<title>Ready</title>'
+        ..body = '<main>Ready</main>';
+      platform.cookies = [Cookie(name: 'cf_clearance', value: 'test')];
+      await tester.pump(cloudflareVerificationRetryDelay);
+      await tester.pump();
+      expect(platform.cookieEnvironments, isEmpty);
+      expect(finished, 1);
+      expect(jar.saved, isEmpty);
+    });
+
     testWidgets('Cloudflare catches JS and cookie errors and permits retry', (
       tester,
     ) async {
@@ -275,7 +379,7 @@ void main() {
 
       native.failEvaluation = false;
       native.head = '';
-      native.body = '';
+      native.body = '<main>Ready</main>';
       platform.failCookies = true;
       view.params.onTitleChanged!(controller, 'Ready');
       await tester.pump();
@@ -307,18 +411,19 @@ void main() {
       final controller = attach(native);
       final view = platform.views.last;
       view.params.onLoadStop!(controller, WebUri('https://example.test/'));
+      await tester.pump();
       view.params.onTitleChanged!(controller, 'Ready');
       view.params.onLoadStart!(controller, WebUri('https://example.test/'));
       view.params.onLoadStop!(controller, WebUri('https://example.test/'));
       expect(native.headReads, 1);
       pending.complete(null);
-      await tester.pumpAndSettle();
+      await tester.pump();
       expect(native.headReads, 2);
       expect(finished, 0);
       expect(jar.saved, isEmpty);
       native.pendingHead = null;
       native.head = '';
-      native.body = '';
+      native.body = '<main>Ready</main>';
       platform.cookies = [Cookie(name: 'cf_clearance', value: 'test')];
       view.params.onLoadStop!(controller, WebUri('https://example.test/'));
       await tester.pumpAndSettle();
@@ -342,7 +447,7 @@ void main() {
       await pumpInitialization(tester);
       final native = _Controller()
         ..head = ''
-        ..body = '';
+        ..body = '<main>Ready</main>';
       final controller = attach(native);
       platform.views.last.params.onLoadStop!(
         controller,
@@ -457,6 +562,7 @@ class _Controller extends PlatformInAppWebViewController {
 
   dynamic head;
   dynamic body;
+  dynamic readyState = 'complete';
   Future<dynamic>? pendingHead;
   bool failEvaluation = false;
   int headReads = 0;
@@ -468,6 +574,7 @@ class _Controller extends PlatformInAppWebViewController {
     ContentWorld? contentWorld,
   }) async {
     if (failEvaluation) throw StateError('JS evaluation failed');
+    if (source == 'document.readyState') return readyState;
     if (source.contains('document.head')) {
       headReads++;
       return pendingHead == null ? head : await pendingHead;

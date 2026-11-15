@@ -702,6 +702,14 @@ class ReaderState extends State<Reader>
   void onReaderContentReady() {
     isLoading = false;
     _readerContentReady = images?.isNotEmpty ?? false;
+    if (_readerContentReady &&
+        !_initialNavigationSubmitted &&
+        widget.initialPage != null &&
+        pageValue > maxPage) {
+      // 外部链接可能没有总页数，图片加载后将初始目标限制在实际正文内。
+      pageValue = images!.length;
+      initImagesPerPage(pageValue);
+    }
     final lifecycleState = WidgetsBinding.instance.lifecycleState;
     if (lifecycleState == null || lifecycleState == AppLifecycleState.resumed) {
       _readingSession.start();

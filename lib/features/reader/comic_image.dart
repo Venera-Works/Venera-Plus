@@ -183,6 +183,8 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   ImageStream? _imageStream;
   ImageInfo? _imageInfo;
   ImageChunkEvent? _loadingProgress;
+  ImageChunkEvent? _pendingProgress;
+  int? _pendingProgressFrameCallbackId;
   bool _isListeningToStream = false;
   late bool _invertColors;
   int? _frameNumber;
@@ -411,6 +413,7 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
     assert(_imageStream != null);
     WidgetsBinding.instance.removeObserver(this);
     _cancelDecodeRequest();
+    _cancelPendingProgress();
     _zoomSubscription?.cancel();
     _stopListeningToStream();
     _completerHandle?.dispose();
@@ -550,6 +553,7 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
         onError: (Object error, StackTrace? stackTrace) {
           if (!mounted || _imageStream != stream) return;
           _displaySpan?.finish(success: false);
+          _cancelPendingProgress();
           setState(() {
             _lastException = error;
           });
@@ -564,6 +568,7 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
       width: imageInfo.image.width,
       height: imageInfo.image.height,
     );
+    _cancelPendingProgress();
     final isFirstBaseFrame =
         _resolvedImage == widget.image && _layoutSize == null;
     if (isFirstBaseFrame) {
@@ -586,10 +591,29 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   }
 
   void _handleImageChunk(ImageChunkEvent event) {
-    setState(() {
-      _loadingProgress = event;
-      _lastException = null;
-    });
+    _pendingProgress = event;
+    if (_pendingProgressFrameCallbackId != null) return;
+    final stream = _imageStream;
+    _pendingProgressFrameCallbackId = SchedulerBinding.instance
+        .scheduleFrameCallback((_) {
+          _pendingProgressFrameCallbackId = null;
+          final progress = _pendingProgress;
+          _pendingProgress = null;
+          if (!mounted || _imageStream != stream || progress == null) return;
+          setState(() {
+            _loadingProgress = progress;
+            _lastException = null;
+          });
+        });
+  }
+
+  void _cancelPendingProgress() {
+    final callbackId = _pendingProgressFrameCallbackId;
+    if (callbackId != null) {
+      SchedulerBinding.instance.cancelFrameCallbackWithId(callbackId);
+      _pendingProgressFrameCallbackId = null;
+    }
+    _pendingProgress = null;
   }
 
   void _replaceImage({required ImageInfo? info}) {
@@ -611,6 +635,7 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
     if (_imageStream?.key == newStream.key) {
       return;
     }
+    _cancelPendingProgress();
 
     if (_isListeningToStream) {
       _imageStream!.removeListener(_getListener());
@@ -659,6 +684,7 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   /// to true, which create [ImageStreamCompleterHandle] to keep the completer
   /// alive and is compatible with the [TickerMode] being off.
   void _stopListeningToStream({bool keepStreamAlive = false}) {
+    _cancelPendingProgress();
     if (!_isListeningToStream) {
       return;
     }
@@ -697,6 +723,7 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
                     onPointerDown: (details) {
                       GlobalState.find<ReaderGestureDetectorState>()
                           .ignoreNextTap();
+                      _cancelPendingProgress();
                       if (widget.onRetry != null) {
                         widget.onRetry!();
                         return;
