@@ -2,7 +2,7 @@ import argparse
 import subprocess
 
 
-DEFAULT_VERSION = "1.85.1"
+DEFAULT_VERSION = "1.88.0"
 
 
 def prepare_toolchain(

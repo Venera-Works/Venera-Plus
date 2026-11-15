@@ -62,7 +62,7 @@ Git fork 的来源、固定 commit 和升级要求见[依赖治理](dependencies
 
 两仓库的准备脚本在计算源码 hash 前应用 Cargo 清单和锁文件，将 Rust 桥接运行库及宏固定到上游提交 [`d59f05b6b0da3606933385f80cbd9e21cc35b59c`](https://github.com/fzyzcjy/flutter_rust_bridge/commit/d59f05b6b0da3606933385f80cbd9e21cc35b59c)，保留 `2.11.1` 版本与现有 Dart 绑定，修复请求取消后迟到回调触发 `unwrap()` 崩溃的问题。新 hash 对应的完整预编译发布就绪后才能构建应用，旧产物不会被复用。
 
-当前锁文件使用 `quinn-proto 0.11.19` 和 `quinn-udp 0.5.16`，对应已发布的 [`precompiled_b42566ca820f81fe4492745317a6b164`](https://github.com/Venera-Works/Venera-Native-Prebuilts/releases/tag/precompiled_b42566ca820f81fe4492745317a6b164)。该版本已完成全平台编译，12 个目标的 13 份二进制、13 份签名和两份许可证均已核验；Windows 发布 DLL 已通过取消回调及真实 HTTP/3 请求验证。其他平台的设备运行验证与应用构建验收仍需分别完成。修补范围见[依赖治理](dependencies.zh.md#关键原生与平台依赖边界)。
+当前锁文件使用 Rust `1.88.0` 编译的安全依赖版本，对应已发布的 [`precompiled_3aea817bfb329ec326ef4561451cab83`](https://github.com/Venera-Works/Venera-Native-Prebuilts/releases/tag/precompiled_3aea817bfb329ec326ef4561451cab83)。`time 0.3.47` 要求 Rust 至少为 `1.88.0`，应用工具链、CI 准备脚本和原生配置保持一致。该版本已完成全平台编译，12 个目标的 28 个附件 SHA-256 摘要及 13 份二进制的 Ed25519 签名均已核验；Windows 发布 DLL 已通过取消回调及真实 HTTP/3 请求验证。其他平台的设备运行验证与应用构建验收仍需分别完成。修补范围见[依赖治理](dependencies.zh.md#关键原生与平台依赖边界)。
 
 配置脚本按目录解析 Pub 返回的包 URI，支持绝对或相对 URI、末尾省略 `/` 以及带空格的路径。Apple CI 在安装 Rustup 包装器前创建 `~/.cargo/bin`，并将该目录加入后续步骤的 `PATH`，使并行插件构建中的 Rustup 安装操作串行执行。
 

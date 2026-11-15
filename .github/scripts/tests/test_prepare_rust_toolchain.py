@@ -24,7 +24,7 @@ class PrepareRustToolchainTest(unittest.TestCase):
                         "rustup",
                         "toolchain",
                         "install",
-                        "1.85.1",
+                        "1.88.0",
                         "--profile",
                         "minimal",
                         "--component",
@@ -37,7 +37,7 @@ class PrepareRustToolchainTest(unittest.TestCase):
                     check=True,
                 ),
                 call(
-                    ["rustup", "run", "1.85.1", "cargo", "--version"],
+                    ["rustup", "run", "1.88.0", "cargo", "--version"],
                     check=True,
                 ),
             ]

@@ -5,7 +5,7 @@
   "flutterRustBridgeVersion": "2.11.1",
   "flutterVersion": "3.41.4",
   "dartVersion": "3.11.1",
-  "rustVersion": "1.85.1",
+  "rustVersion": "1.88.0",
   "androidNdkVersion": "28.0.13004108",
   "androidMinSdkVersion": 21,
   "repository": "Venera-Works/Venera-Native-Prebuilts"

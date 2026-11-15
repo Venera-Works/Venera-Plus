@@ -1,4 +1,4 @@
-# rhttp 0.15.1; FRB 2.11.1; Rust 1.85.1; NDK 28.0.13004108; Android API 21
+# rhttp 0.15.1; FRB 2.11.1; Rust 1.88.0; NDK 28.0.13004108; Android API 21
 cargo:
   release:
     extra_flags:
