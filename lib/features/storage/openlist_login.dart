@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/routing/webview.dart';
 
 import 'token_import.dart';
@@ -111,22 +112,18 @@ Future<Map<String, dynamic>?> showOpenListLogin(
     await webview.open();
     await closed.future;
   } else {
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute(
-        builder: (loginContext) {
-          void close() => Navigator.of(loginContext).pop();
-          return AppWebview(
-            initialUrl: requestUrl,
-            initialScripts: const [_captureCallbackScript],
-            onLoadStart: (url, _) => receiveCallback(url, close),
-            onLoadStop: (controller) => readPage(
-              (script) => controller.evaluateJavascript(source: script),
-              close,
-            ),
-          );
-        },
-      ),
-    );
+    await context.to<void>(() {
+      void close() => context.pop();
+      return AppWebview(
+        initialUrl: requestUrl,
+        initialScripts: const [_captureCallbackScript],
+        onLoadStart: (url, _) => receiveCallback(url, close),
+        onLoadStop: (controller) => readPage(
+          (script) => controller.evaluateJavascript(source: script),
+          close,
+        ),
+      );
+    });
   }
   finished = true;
   if (failure != null) throw FormatException(failure!);

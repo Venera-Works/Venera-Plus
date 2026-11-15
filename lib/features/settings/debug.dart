@@ -33,12 +33,12 @@ class AdvancedSettingsState extends State<AdvancedSettings> {
             ComicSourceManager().reload();
           },
         ).toSliver(),
-        CallbackSetting(
-          title: "Open Log".tl,
-          callback: () {
+        ListTile(
+          title: Text("Open Log".tl),
+          trailing: const Icon(Icons.arrow_right),
+          onTap: () {
             context.to(() => const LogsPage());
           },
-          actionTitle: 'Open'.tl,
         ).toSliver(),
         SwitchSetting(
           title: "Ignore Certificate Errors".tl,

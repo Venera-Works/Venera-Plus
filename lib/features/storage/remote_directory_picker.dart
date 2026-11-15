@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 
@@ -83,7 +84,7 @@ class _RemoteDirectoryPickerState extends State<RemoteDirectoryPicker> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: Text('Select Remote Directory'.tl)),
+    appBar: Appbar(title: Text('Select Remote Directory'.tl)),
     body: SafeArea(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

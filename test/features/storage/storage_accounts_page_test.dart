@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/features/storage/storage.dart';
 import 'package:venera_plus/foundation/app.dart';
@@ -105,7 +106,7 @@ void main() {
       );
       final url = find.widgetWithText(TextField, 'URL');
       final password = find.widgetWithText(TextField, 'Password');
-      expect(tester.widget<AppBar>(find.byType(AppBar)).actions, isNull);
+      expect(tester.widget<Appbar>(find.byType(Appbar)).actions, isNull);
       final originalSaveRect = tester.getRect(save);
       expect(originalSaveRect.height, greaterThanOrEqualTo(52));
       expect(originalSaveRect.width, tester.getRect(url).width);
@@ -307,10 +308,10 @@ void main() {
     await tester.pumpAndSettle();
     final pageWidth =
         tester.view.physicalSize.width / tester.view.devicePixelRatio;
-    expect(tester.getSize(find.byType(AppBar)).width, pageWidth);
+    expect(tester.getSize(find.byType(Appbar)).width, pageWidth);
     await tester.tap(find.widgetWithText(ListTile, 'BaiduNetdisk'));
     await tester.pumpAndSettle();
-    expect(tester.getSize(find.byType(AppBar)).width, pageWidth);
+    expect(tester.getSize(find.byType(Appbar)).width, pageWidth);
     await tester.enterText(find.widgetWithText(TextField, 'Name'), 'New Drive');
     await tester.enterText(
       find.widgetWithText(TextField, 'Refresh Token'),

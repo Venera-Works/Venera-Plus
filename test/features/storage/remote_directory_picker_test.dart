@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/features/storage/storage.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 
@@ -174,7 +175,7 @@ void main() {
       expect(position.center.dy, closeTo(footer.center.dy, 0.01));
       expect(position.bottom, lessThanOrEqualTo(footer.bottom));
       expect(position.height, greaterThanOrEqualTo(52));
-      expect(tester.widget<AppBar>(find.byType(AppBar)).actions, isNull);
+      expect(tester.widget<Appbar>(find.byType(Appbar)).actions, isNull);
       expect(find.byType(FloatingActionButton), findsNothing);
       await tester.drag(find.byType(ListView), const Offset(0, -250));
       await tester.pumpAndSettle();

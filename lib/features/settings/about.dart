@@ -74,7 +74,7 @@ class _AboutSettingsState extends State<AboutSettings> {
         ).toSliver(),
         ListTile(
           title: Text("Changelog".tl),
-          trailing: const Icon(Icons.keyboard_arrow_right),
+          trailing: const Icon(Icons.arrow_right),
           onTap: () {
             context.to(() => const ChangelogPage());
           },

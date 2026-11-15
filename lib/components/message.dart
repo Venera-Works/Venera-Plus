@@ -396,30 +396,38 @@ class ContentDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    var content = SingleChildScrollView(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          title != null
-              ? Appbar(
-                  leading: IconButton(
-                    icon: const Icon(Icons.close),
-                    onPressed: dismissible ? context.pop : null,
-                  ),
-                  title: Text(title!),
-                  backgroundColor: Colors.transparent,
-                )
-              : const SizedBox.shrink(),
-          this.content,
-          const SizedBox(height: 16),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: actions,
-          ).paddingRight(12),
-          const SizedBox(height: 16),
-        ],
-      ),
+    var content = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        title != null
+            ? Appbar(
+                leading: IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: dismissible ? context.pop : null,
+                ),
+                title: Text(title!),
+                backgroundColor: Colors.transparent,
+              )
+            : const SizedBox.shrink(),
+        Flexible(
+          child: SingleChildScrollView(
+            child: AnimatedSize(
+              duration: const Duration(milliseconds: 200),
+              alignment: Alignment.topCenter,
+              child: this.content,
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        OverflowBar(
+          alignment: MainAxisAlignment.end,
+          overflowAlignment: OverflowBarAlignment.end,
+          overflowSpacing: 8,
+          children: actions,
+        ).paddingRight(12),
+        const SizedBox(height: 16),
+      ],
     );
     return Dialog(
       shape: RoundedRectangleBorder(
@@ -434,21 +442,17 @@ class ContentDialog extends StatelessWidget {
       elevation: 2,
       shadowColor: context.colorScheme.shadow,
       backgroundColor: context.colorScheme.surface,
-      child: AnimatedSize(
-        duration: const Duration(milliseconds: 200),
-        alignment: Alignment.topCenter,
-        child: IntrinsicWidth(
-          child: ConstrainedBox(
-            constraints: BoxConstraints(
-              maxWidth: 600,
-              minWidth: math.min(400, context.width - 16),
-            ),
-            child: MediaQuery.removePadding(
-              removeTop: true,
-              removeBottom: true,
-              context: context,
-              child: content,
-            ),
+      child: IntrinsicWidth(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: 600,
+            minWidth: math.min(400, context.width - 16),
+          ),
+          child: MediaQuery.removePadding(
+            removeTop: true,
+            removeBottom: true,
+            context: context,
+            child: content,
           ),
         ),
       ),

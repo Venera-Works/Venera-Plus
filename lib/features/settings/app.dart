@@ -53,11 +53,11 @@ class _SourcesAndServicesSettingsState
           title: "Comic Sources".tl,
           icon: Icons.source_outlined,
         ),
-        CallbackSetting(
-          title: "Content Sources".tl,
-          subtitle: 'Website sources and remote comic libraries.'.tl,
-          actionTitle: "Open".tl,
-          callback: () {
+        ListTile(
+          title: Text("Content Sources".tl),
+          subtitle: Text('Website sources and remote comic libraries.'.tl),
+          trailing: const Icon(Icons.arrow_right),
+          onTap: () {
             context.to(() => const ContentSourcesPage());
           },
         ).toSliver(),
@@ -586,39 +586,44 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                         onPressed: () {
                           showDialog(
                             context: context,
-                            builder: (_) => AlertDialog(
-                              title: Text("Skip Setting Fields".tl),
-                              content: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    "When sync data, skip certain setting fields, which means these won't be uploaded / override."
-                                        .tl,
-                                  ),
-                                  const SizedBox(height: 12),
-                                  Row(
-                                    children: [
-                                      Expanded(
-                                        child: Text(
-                                          "See source code for available fields."
-                                              .tl,
+                            builder: (_) => ContentDialog(
+                              title: "Skip Setting Fields".tl,
+                              content: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                ),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      "When sync data, skip certain setting fields, which means these won't be uploaded / override."
+                                          .tl,
+                                    ),
+                                    const SizedBox(height: 12),
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            "See source code for available fields."
+                                                .tl,
+                                          ),
                                         ),
-                                      ),
-                                      Align(
-                                        alignment: Alignment.centerRight,
-                                        child: IconButton(
-                                          icon: const Icon(Icons.open_in_new),
-                                          onPressed: () {
-                                            launchUrlString(
-                                              "https://github.com/Venera-Works/Venera-Plus/blob/main/lib/foundation/appdata.dart#L335",
-                                            );
-                                          },
+                                        Align(
+                                          alignment: Alignment.centerRight,
+                                          child: IconButton(
+                                            icon: const Icon(Icons.open_in_new),
+                                            onPressed: () {
+                                              launchUrlString(
+                                                "https://github.com/Venera-Works/Venera-Plus/blob/main/lib/foundation/appdata.dart#L335",
+                                              );
+                                            },
+                                          ),
                                         ),
-                                      ),
-                                    ],
-                                  ),
-                                ],
+                                      ],
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
                           );
@@ -814,6 +819,7 @@ class _BackupWebdavSettingState extends State<_BackupWebdavSetting> {
               leading: const Icon(Icons.archive_outlined),
               title: Text('Browse Backed-up Comics'.tl),
               subtitle: Text('Use the saved backup location.'.tl),
+              trailing: const Icon(Icons.arrow_right),
               enabled: BackupConfig.fromSettings().isValid,
               onTap: BackupConfig.fromSettings().isValid
                   ? () => context.to(() => const ComicArchivePage())

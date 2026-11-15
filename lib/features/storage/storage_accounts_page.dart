@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/appbar.dart';
+import 'package:venera_plus/foundation/app_page_route.dart';
+import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
@@ -18,7 +21,7 @@ Future<StorageAccount?> showStorageAccountEditor(
   final storage = accounts ?? RemoteStorageAccounts.instance;
   final result = await Navigator.of(context, rootNavigator: true)
       .push<StorageAccount>(
-        MaterialPageRoute(
+        AppPageRoute(
           builder: (_) => initial == null
               ? _StorageProviderPage(accounts: storage)
               : _StorageAccountPage(
@@ -146,7 +149,7 @@ class _StorageAccountsPageState extends State<StorageAccountsPage> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: Text('Cloud Storage Accounts'.tl)),
+    appBar: Appbar(title: Text('Cloud Storage Accounts'.tl)),
     floatingActionButton: FloatingActionButton(
       onPressed: _edit,
       child: const Icon(Icons.add),
@@ -196,7 +199,7 @@ class _StorageProviderPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: Text('Add Cloud Storage Account'.tl)),
+    appBar: Appbar(title: Text('Add Cloud Storage Account'.tl)),
     body: SafeArea(
       child: Align(
         alignment: Alignment.topCenter,
@@ -216,17 +219,14 @@ class _StorageProviderPage extends StatelessWidget {
                       'Get a token from OpenList, then enter it manually.'.tl,
                     _ => 'Log in to authorize or enter tokens.'.tl,
                   }),
-                  trailing: const Icon(Icons.chevron_right),
+                  trailing: const Icon(Icons.arrow_right),
                   onTap: () async {
-                    final result = await Navigator.of(context)
-                        .push<StorageAccount>(
-                          MaterialPageRoute(
-                            builder: (_) => _StorageAccountPage(
-                              accounts: accounts,
-                              driver: driver,
-                            ),
-                          ),
-                        );
+                    final result = await context.to<StorageAccount>(
+                      () => _StorageAccountPage(
+                        accounts: accounts,
+                        driver: driver,
+                      ),
+                    );
                     if (context.mounted && result != null) {
                       Navigator.pop(context, result);
                     }
@@ -303,7 +303,7 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
     final quark = _driver == 'Quark';
     final hasLogin = quark || openListLoginDrivers.containsKey(_driver);
     return Scaffold(
-      appBar: AppBar(
+      appBar: Appbar(
         title: Text(
           (widget.initial == null
                   ? 'Add @provider Account'

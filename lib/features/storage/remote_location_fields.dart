@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 
@@ -116,23 +117,20 @@ class _RemoteLocationFieldsState extends State<RemoteLocationFields> {
                 ? 'None selected'.tl
                 : widget.directories.join('\n'),
           ),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: const Icon(Icons.arrow_right),
           onTap: account == null || _adding
               ? null
               : () async {
                   final store = _storage.storeFor(account.id);
-                  final selected = await Navigator.of(context)
-                      .push<List<String>>(
-                        MaterialPageRoute(
-                          builder: (_) => RemoteDirectoryPicker(
-                            store: store,
-                            initialDirectories: widget.directories,
-                            multiSelect: widget.multiSelect,
-                            disposeStore: true,
-                            onDisposeStore: _storage.release,
-                          ),
-                        ),
-                      );
+                  final selected = await context.to<List<String>>(
+                    () => RemoteDirectoryPicker(
+                      store: store,
+                      initialDirectories: widget.directories,
+                      multiSelect: widget.multiSelect,
+                      disposeStore: true,
+                      onDisposeStore: _storage.release,
+                    ),
+                  );
                   if (mounted && selected != null) {
                     widget.onChanged(account, selected);
                   }

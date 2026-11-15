@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/keyword_filter.dart';
@@ -299,13 +300,11 @@ class _KeywordRuleEditorState extends State<KeywordRuleEditor> {
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: Text(
-      (widget.initialRule == null ? 'Add keyword' : 'Edit keyword').tl,
-    ),
-    scrollable: true,
-    content: SizedBox(
+  Widget build(BuildContext context) => ContentDialog(
+    title: (widget.initialRule == null ? 'Add keyword' : 'Edit keyword').tl,
+    content: Container(
       width: 480,
+      padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/network/app_dio.dart';
@@ -244,11 +245,12 @@ class _BangumiServerListState extends State<_BangumiServerList> {
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: Text('Bangumi website list'.tl),
-    content: SizedBox(
+  Widget build(BuildContext context) => ContentDialog(
+    title: 'Bangumi website list'.tl,
+    content: Container(
       width: 520,
       height: math.min(400, MediaQuery.sizeOf(context).height * 0.55),
+      padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Column(
         children: [
           Expanded(
@@ -388,70 +390,68 @@ class _BangumiServerEditorState extends State<_BangumiServerEditor> {
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: Text(
-      (widget.initial == null ? 'Add Bangumi server' : 'Edit Bangumi server')
-          .tl,
-    ),
-    content: SizedBox(
+  Widget build(BuildContext context) => ContentDialog(
+    title:
+        (widget.initial == null ? 'Add Bangumi server' : 'Edit Bangumi server')
+            .tl,
+    content: Container(
       width: 460,
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            TextField(
-              key: const Key('bangumi-server-name'),
-              controller: _name,
-              decoration: InputDecoration(
-                labelText: 'Name or domain (optional)'.tl,
-              ),
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            key: const Key('bangumi-server-name'),
+            controller: _name,
+            decoration: InputDecoration(
+              labelText: 'Name or domain (optional)'.tl,
             ),
-            TextField(
-              key: const Key('bangumi-server-api'),
-              controller: _api,
-              keyboardType: TextInputType.url,
-              autocorrect: false,
-              decoration: InputDecoration(
-                labelText: 'API address'.tl,
-                hintText: 'bgmapi.anibt.net',
-              ),
+          ),
+          TextField(
+            key: const Key('bangumi-server-api'),
+            controller: _api,
+            keyboardType: TextInputType.url,
+            autocorrect: false,
+            decoration: InputDecoration(
+              labelText: 'API address'.tl,
+              hintText: 'bgmapi.anibt.net',
             ),
-            TextField(
-              key: const Key('bangumi-server-images'),
-              controller: _images,
-              keyboardType: TextInputType.url,
-              autocorrect: false,
-              decoration: InputDecoration(
-                labelText: 'Image proxy (optional)'.tl,
-                helperText:
-                    'Leave empty to use image addresses returned by the API'.tl,
-                helperMaxLines: 3,
-              ),
+          ),
+          TextField(
+            key: const Key('bangumi-server-images'),
+            controller: _images,
+            keyboardType: TextInputType.url,
+            autocorrect: false,
+            decoration: InputDecoration(
+              labelText: 'Image proxy (optional)'.tl,
+              helperText:
+                  'Leave empty to use image addresses returned by the API'.tl,
+              helperMaxLines: 3,
             ),
-            TextField(
-              key: const Key('bangumi-server-token-page'),
-              controller: _token,
-              keyboardType: TextInputType.url,
-              autocorrect: false,
-              decoration: InputDecoration(
-                labelText: 'Access Token page (optional)'.tl,
-                helperText:
-                    'Leave empty to use the official Access Token page'.tl,
-                helperMaxLines: 3,
-              ),
+          ),
+          TextField(
+            key: const Key('bangumi-server-token-page'),
+            controller: _token,
+            keyboardType: TextInputType.url,
+            autocorrect: false,
+            decoration: InputDecoration(
+              labelText: 'Access Token page (optional)'.tl,
+              helperText:
+                  'Leave empty to use the official Access Token page'.tl,
+              helperMaxLines: 3,
             ),
-            const SizedBox(height: 12),
-            Text('The selected API server receives your Access Token.'.tl),
-            if (_error != null) ...[
-              const SizedBox(height: 8),
-              Text(
-                _error!,
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
-              ),
-            ],
+          ),
+          const SizedBox(height: 12),
+          Text('The selected API server receives your Access Token.'.tl),
+          if (_error != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              _error!,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
           ],
-        ),
+        ],
       ),
     ),
     actions: [

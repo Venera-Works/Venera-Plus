@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart'
     show InAppWebViewController;
 import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/routing/webview.dart';
 
 const _loginUrl = 'https://pan.quark.cn/';
@@ -101,31 +102,27 @@ Future<Map<String, dynamic>?> showQuarkLogin(BuildContext context) async {
       await webview.open();
       await closed.future;
     } else {
-      await Navigator.of(context).push<void>(
-        MaterialPageRoute(
-          builder: (loginContext) {
-            void check(InAppWebViewController controller) => checkLogin(
-              () async => {
-                for (final cookie in await controller.getCookies(_apiUrl) ?? [])
-                  cookie.name: cookie.value,
-              },
-              (script) => controller.evaluateJavascript(source: script),
-              () => Navigator.of(loginContext).pop(),
-            );
-            return AppWebview(
-              initialUrl: _loginUrl,
-              userAgent: _desktopUserAgent,
-              onStarted: (controller) {
-                timer = Timer.periodic(
-                  const Duration(seconds: 2),
-                  (_) => check(controller),
-                );
-              },
-              onLoadStop: check,
+      await context.to<void>(() {
+        void check(InAppWebViewController controller) => checkLogin(
+          () async => {
+            for (final cookie in await controller.getCookies(_apiUrl) ?? [])
+              cookie.name: cookie.value,
+          },
+          (script) => controller.evaluateJavascript(source: script),
+          () => context.pop(),
+        );
+        return AppWebview(
+          initialUrl: _loginUrl,
+          userAgent: _desktopUserAgent,
+          onStarted: (controller) {
+            timer = Timer.periodic(
+              const Duration(seconds: 2),
+              (_) => check(controller),
             );
           },
-        ),
-      );
+          onLoadStop: check,
+        );
+      });
     }
   } finally {
     finished = true;

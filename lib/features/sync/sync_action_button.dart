@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/features/sync/data_sync.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/translations.dart';
@@ -66,9 +67,12 @@ class _SyncActionButtonState extends State<SyncActionButton>
     }
     final action = await showDialog<_SyncAction>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text('Sync Data'.tl),
-        content: Text('Choose a sync action'.tl),
+      builder: (dialogContext) => ContentDialog(
+        title: 'Sync Data'.tl,
+        content: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Text('Choose a sync action'.tl),
+        ),
         actions: [
           TextButton(
             onPressed: () =>

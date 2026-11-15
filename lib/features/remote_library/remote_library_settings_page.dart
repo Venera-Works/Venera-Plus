@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/storage/storage.dart';
 import 'package:venera_plus/features/remote_library/remote_library_engine.dart';
@@ -75,11 +76,12 @@ Future<void> showRemoteLibraryEditor(
   final result = await showDialog<RemoteLibrary>(
     context: context,
     builder: (context) => StatefulBuilder(
-      builder: (context, setDialogState) => AlertDialog(
-        title: Text(
-          initial == null ? 'Add Comic Library'.tl : 'Edit Comic Library'.tl,
-        ),
-        content: SingleChildScrollView(
+      builder: (context, setDialogState) => ContentDialog(
+        title: initial == null
+            ? 'Add Comic Library'.tl
+            : 'Edit Comic Library'.tl,
+        content: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/window_hotkey.dart';
 import 'package:venera_plus/foundation/window_hotkey_controller.dart';
@@ -160,9 +161,10 @@ class _HotkeyDialogState extends State<_HotkeyDialog> {
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: Text('Global hide/restore shortcut'.tl),
-    content: SingleChildScrollView(
+  Widget build(BuildContext context) => ContentDialog(
+    title: 'Global hide/restore shortcut'.tl,
+    content: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
