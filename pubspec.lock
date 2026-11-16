@@ -469,9 +469,9 @@ packages:
     dependency: "direct main"
     description:
       path: "."
-      ref: "8feae95df7fb00455df129ad7a0dfec1d0e8d8e4"
-      resolved-ref: "8feae95df7fb00455df129ad7a0dfec1d0e8d8e4"
-      url: "https://github.com/venera-app/flutter_qjs"
+      ref: "8e7db82c57f2c780eebd4c7c6903d3aa41a65e2e"
+      resolved-ref: "8e7db82c57f2c780eebd4c7c6903d3aa41a65e2e"
+      url: "https://github.com/Venera-Works/Venera-flutter_qjs"
     source: git
     version: "0.3.7"
   flutter_reorderable_grid_view:

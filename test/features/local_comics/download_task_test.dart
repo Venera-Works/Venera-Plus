@@ -7,6 +7,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
+import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/app_runtime/android_downloads.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
@@ -14,6 +15,8 @@ import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/network/images.dart';
+
+import '../../support/sqlite.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -411,6 +414,90 @@ void main() {
     expect(task.timer, isNull);
     expect(LocalManager().downloadingTasks, isNot(contains(task)));
   });
+
+  test(
+    '入库失败保留下载任务并支持重试',
+    () async {
+      final root = Directory.systemTemp.createTempSync('download-complete-db-');
+      addTearDown(() async {
+        LocalManager.resetForTesting();
+        await root.delete(recursive: true);
+      });
+      App.dataPath = App.cachePath = root.path;
+      LocalManager.debugSkipComicSourceInit = true;
+      final manager = LocalManager();
+      await manager.init();
+      final task = _CompletedTask('storage-failure');
+      final queued = _QueuedTask();
+      manager.downloadingTasks.addAll([task, queued]);
+      final database = sqlite3.open(
+        '${root.path}${Platform.pathSeparator}local.db',
+      );
+      database.execute('''
+        CREATE TRIGGER fail_completed_download
+        BEFORE INSERT ON comics
+        BEGIN
+          SELECT RAISE(ABORT, 'storage failure');
+        END;
+      ''');
+      database.close();
+
+      await expectLater(
+        manager.completeTask(task),
+        throwsA(isA<SqliteException>()),
+      );
+
+      expect(manager.downloadingTasks, [task, queued]);
+      expect(queued.resumes, 0);
+
+      final retryDatabase = sqlite3.open(
+        '${root.path}${Platform.pathSeparator}local.db',
+      );
+      retryDatabase.execute('DROP TRIGGER fail_completed_download');
+      retryDatabase.close();
+      await manager.completeTask(task);
+
+      expect(manager.downloadingTasks, [queued]);
+      expect(queued.resumes, 1);
+    },
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+  );
+
+  test(
+    '队列保存失败恢复下载任务并支持重试',
+    () async {
+      final root = Directory.systemTemp.createTempSync('download-complete-io-');
+      addTearDown(() async {
+        LocalManager.resetForTesting();
+        await root.delete(recursive: true);
+      });
+      App.dataPath = App.cachePath = root.path;
+      LocalManager.debugSkipComicSourceInit = true;
+      final manager = LocalManager();
+      await manager.init();
+      final task = _CompletedTask('checkpoint-failure');
+      final queued = _QueuedTask();
+      manager.downloadingTasks.addAll([task, queued]);
+      final blockedPath = File('${root.path}${Platform.pathSeparator}blocked')
+        ..writeAsStringSync('not a directory');
+      App.dataPath = blockedPath.path;
+
+      await expectLater(
+        manager.completeTask(task),
+        throwsA(isA<FileSystemException>()),
+      );
+
+      expect(manager.downloadingTasks, [task, queued]);
+      expect(queued.resumes, 0);
+
+      App.dataPath = root.path;
+      await manager.completeTask(task);
+
+      expect(manager.downloadingTasks, [queued]);
+      expect(queued.resumes, 1);
+    },
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+  );
 }
 
 class _QueuedTask extends DownloadTask {
@@ -454,6 +541,29 @@ class _QueuedTask extends DownloadTask {
   Map<String, dynamic> toJson() => {'type': 'queue-test'};
   @override
   LocalComic toLocalComic() => throw UnimplementedError();
+}
+
+class _CompletedTask extends _QueuedTask {
+  _CompletedTask(this._taskId);
+
+  final String _taskId;
+
+  @override
+  String get id => _taskId;
+
+  @override
+  LocalComic toLocalComic() => LocalComic(
+    id: id,
+    title: 'Completed $id',
+    subtitle: '',
+    tags: const [],
+    directory: id,
+    chapters: null,
+    cover: '',
+    comicType: ComicType.local,
+    downloadedChapters: const [],
+    createdAt: DateTime(2026),
+  );
 }
 
 ComicSource _testSource(String key, {LoadComicFunc? loadComicInfo}) {

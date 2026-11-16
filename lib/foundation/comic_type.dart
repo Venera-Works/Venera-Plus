@@ -21,11 +21,8 @@ class ComicType {
     if (this == local) {
       return "local";
     }
-    final sourceKey = _sourceKeyResolver?.call(value);
-    if (sourceKey == null) {
-      throw StateError("Comic source key not found for $value.");
-    }
-    return sourceKey;
+    // 源被移除后仍保留可还原的标识，供已下载漫画离线阅读。
+    return _sourceKeyResolver?.call(value) ?? 'Unknown:$value';
   }
 
   static const local = ComicType(0);
@@ -33,8 +30,11 @@ class ComicType {
   factory ComicType.fromKey(String key) {
     if (key == "local") {
       return local;
-    } else {
-      return ComicType(key.hashCode);
     }
+    if (key.startsWith('Unknown:')) {
+      final value = int.tryParse(key.substring('Unknown:'.length));
+      if (value != null) return ComicType(value);
+    }
+    return ComicType(key.hashCode);
   }
 }

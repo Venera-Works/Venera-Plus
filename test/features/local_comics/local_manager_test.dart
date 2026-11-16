@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
@@ -24,6 +25,57 @@ LocalComic _localComic(String id) {
 }
 
 void main() {
+  test(
+    '移除漫画源后保留本地漫画身份并支持标识往返',
+    () async {
+      final root = Directory.systemTemp.createTempSync('venera-local-source-');
+      addTearDown(() {
+        LocalManager.resetForTesting();
+        configureComicTypeSourceKeyResolver();
+        root.deleteSync(recursive: true);
+      });
+      App.dataPath = App.cachePath = root.path;
+      LocalManager.resetForTesting();
+      LocalManager.debugSkipComicSourceInit = true;
+      var sourceAvailable = true;
+      ComicType.configureSourceKeyResolver(
+        (value) => value == _testComicType.value && sourceAvailable
+            ? 'removed_source'
+            : null,
+      );
+      var manager = LocalManager();
+      await manager.init();
+      final comic = _localComic('downloaded');
+      await manager.add(comic);
+      expect(comic.sourceKey, 'removed_source');
+
+      sourceAvailable = false;
+      final missingKey = comic.sourceKey;
+      expect(missingKey, 'Unknown:${_testComicType.value}');
+      expect(ComicType.fromKey(missingKey), _testComicType);
+      expect(comic.toJson()['sourceKey'], missingKey);
+      expect(ComicType.fromKey('local'), ComicType.local);
+      expect(
+        ComicType.fromKey('Unknown:invalid').value,
+        'Unknown:invalid'.hashCode,
+      );
+
+      LocalManager.resetForTesting();
+      LocalManager.debugSkipComicSourceInit = true;
+      manager = LocalManager();
+      await manager.init();
+      final restored = manager.find(comic.id, ComicType.fromKey(missingKey));
+      expect(restored, isNotNull);
+      expect(restored!.comicType, comic.comicType);
+      expect(restored.directory, comic.directory);
+
+      sourceAvailable = true;
+      expect(restored.sourceKey, 'removed_source');
+      expect(manager.getComics(LocalSortType.name), hasLength(1));
+    },
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+  );
+
   test(
     'getImages filters non-images and sorts numeric page names',
     () async {

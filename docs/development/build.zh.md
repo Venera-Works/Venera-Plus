@@ -57,6 +57,10 @@ Venera-OpenList-Core 发布新版本，确认全部资产与许可证存在后�
 
 Git fork 的来源、固定 commit 和升级要求见[依赖治理](dependencies.zh.md)。
 
+## QuickJS 独立仓库
+
+`flutter_qjs` 在 [Venera-Works/Venera-flutter_qjs](https://github.com/Venera-Works/Venera-flutter_qjs) 独立维护。
+
 ## rhttp 原生库预编译
 
 `rhttp` 原生库由 `Venera-Works/Venera-Native-Prebuilts` 独立编译和签名发布，本地资源仓库位于 `cache/Venera-Native-Prebuilts`。应用的 `native/prebuilts/rhttp/lock.json` 固定包归档摘要、桥接库与工具链版本，`cargokit.yaml` 固定下载地址、公钥和编译参数；`Cargo.toml` 与 `Cargo.lock` 固定原生依赖。这四份文件必须与资源仓库的 `rhttp/` 保持一致。

@@ -127,6 +127,39 @@ void main() {
     },
   );
 
+  test('移除漫画源后通过缺失源标识读取已下载章节', () async {
+    await add();
+    ComicSourceManager().remove(_key);
+    final local = manager.find('book', _type)!;
+    final offlineType = ComicType.fromKey(local.sourceKey);
+    expect(offlineType, _type);
+    final images = await loadReaderChapterImages(
+      comicId: local.id,
+      type: offlineType,
+      chapter: 1,
+      chapters: local.chapters,
+    );
+    expect(images.single, endsWith('first${Platform.pathSeparator}1.jpg'));
+    expect(onlineCalls, 0);
+    expect(manager.find(local.id, _type)!.downloadedChapters, ['first']);
+
+    final history = History.fromMap({
+      'type': _type.value,
+      'time': DateTime(2026, 3, 1).millisecondsSinceEpoch,
+      'title': local.title,
+      'subtitle': local.subtitle,
+      'cover': local.cover,
+      'id': local.id,
+      'page': 1,
+      'ep': 1,
+      'readEpisode': ['1'],
+      'max_page': 2,
+    });
+    expect(ComicType.fromKey(history.sourceKey), offlineType);
+    expect(history.page, 1);
+    expect(history.ep, 1);
+  });
+
   test(
     'uses stable chapter ID when source and download order differ',
     () async {

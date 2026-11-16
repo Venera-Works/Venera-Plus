@@ -775,11 +775,20 @@ class LocalManager with ChangeNotifier {
     return DocumentImportSession.allocateDirectory(path, name);
   }
 
-  void completeTask(DownloadTask task) {
-    add(task.toLocalComic());
-    downloadingTasks.remove(task);
+  Future<void> completeTask(DownloadTask task) async {
+    await add(task.toLocalComic());
+    final index = downloadingTasks.indexOf(task);
+    if (index < 0) return;
+    downloadingTasks.removeAt(index);
     notifyListeners();
-    saveCurrentDownloadingTasks();
+    try {
+      await saveCurrentDownloadingTasks();
+    } catch (_) {
+      downloadingTasks.insert(index, task);
+      notifyListeners();
+      rethrow;
+    }
+    downloadTransition = task.pendingCleanup;
     currentDownloadTask?.resume();
   }
 

@@ -16,7 +16,7 @@ The baseline audit date is 2026-09-30; later dependency updates have their own s
 
 | Dependency | Upstream & Revision | Status & Replacement Criteria |
 |---|---|---|
-| `flutter_qjs` | `venera-app/flutter_qjs` (`8feae95`) | Migrated to QuickJS-NG, fixes JS numeric/NaN conversions, platform build fixes. Retain custom branch; replacement requires verifying runtime lifetimes, promises, and cross-platform native builds. |
+| `flutter_qjs` | `Venera-Works/Venera-flutter_qjs`; upstream baseline `venera-app/flutter_qjs@8feae95` | Venera-Works maintains source and patches separately; the application no longer embeds them. Preserves package version `0.3.7`, API, FFI ABI, and platform entry points. Replacement requires lifetime, Promise, and cross-platform build verification. |
 | `photo_view` | `venera-app/photo_view` (`a1255d1`) | Reader depends on custom `getInitialScale` and gesture/animation extensions absent from upstream. Retain custom branch; replacement requires re-adapting reader zooming, dual pages, and auto-reading. |
 | `scrollable_positioned_list` | `venera-app/flutter.widgets` (`09e756b`) | Provides reader-specific `scrollControllerCallback` and `scrollBehavior` support. Retain custom branch; replacement requires verifying long-chapter jumping and scroll synchronization. |
 | `desktop_webview_window` | `venera-app/flutter_desktop_webview` (`7801fc5`) | Desktop proxy, Linux libsoup, and Windows ARM64 patches. Retained under `license-review`; requires provenance clarification before any replacement. |
@@ -25,6 +25,12 @@ The baseline audit date is 2026-09-30; later dependency updates have their own s
 | `flutter_saf` | `packages/flutter_saf` in `venera-app/venera-prime` (`056a419a504258e6c6352871f9c888b3fd5bc2f4`) | Same-name `0.0.1` plugin derived from `venera-app/flutter_saf` at `fe182cdf40e5fa6230f451bc1d643b860f610d13`. Retains `license-review`; SAF changes and verification boundaries are detailed below. |
 | `flutter_7zip` | `venera-app/flutter_7zip` (`b333447`) | Core dependency for 7z/CB7 import and ZIP fallback. Retained under `license-review`; retain pinned commit and evaluate equivalent implementations. |
 | `lodepng_flutter` | `venera-app/lodepng_flutter` (`ac7d05dde32e8d728102a9ff66e6b55f05d94ba1`) | Includes NDK r28 build support; the image pipeline uses its native PNG encoder. Retained under `license-review`; replacement requires verifying large-image encoding performance and memory lifetimes. |
+
+## Separate QuickJS Maintenance Repository (2026-11-17)
+
+Source and patches have moved to [Venera-Works/Venera-flutter_qjs](https://github.com/Venera-Works/Venera-flutter_qjs), with the local checkout at `cache/Venera-flutter_qjs`; `packages/flutter_qjs` has been removed. This organization-maintained repository is an explicit exception to retaining other third-party forks.
+
+The TypedData optimization, QuickJS-NG core backports, and Apple version-file path fix remain; that repository's pinned [UPSTREAM.md](https://github.com/Venera-Works/Venera-flutter_qjs/blob/8e7db82c57f2c780eebd4c7c6903d3aa41a65e2e/UPSTREAM.md) records complete provenance. The application's Git dependency pins `8e7db82c57f2c780eebd4c7c6903d3aa41a65e2e`, matching the lockfile and inventory. 
 
 ## SAF Source Update (2026-11-12)
 

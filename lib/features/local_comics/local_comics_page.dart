@@ -11,7 +11,6 @@ import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
-import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/features/local_comics/downloading_page.dart';
 import 'download.dart';
@@ -509,7 +508,7 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
                     // prevent dirty data
                     var comic = LocalManager().find(
                       c.id,
-                      ComicType.fromKey(c.sourceKey),
+                      (c as LocalComic).comicType,
                     )!;
                     comic.read();
                   }
@@ -547,7 +546,7 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
                       onClick: () {
                         var localComic = LocalManager().find(
                           c.id,
-                          ComicType.fromKey(c.sourceKey),
+                          c.comicType,
                         )!;
                         localComic.read();
                       },

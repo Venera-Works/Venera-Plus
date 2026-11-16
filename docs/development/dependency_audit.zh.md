@@ -16,7 +16,7 @@ English: [dependency_audit.en.md](dependency_audit.en.md) · [治理规则](depe
 
 | 依赖 | 来源与版本 | 现状与替换要求 |
 |---|---|---|
-| `flutter_qjs` | `venera-app/flutter_qjs` (`8feae95`) | 包含 QuickJS-NG 迁移、JS 数值与 NaN 转换修复、Apple/Android 平台构建适配。保留定制分支；替换需验证运行时对象生命周期、异步 Promise 与跨平台构建。 |
+| `flutter_qjs` | `Venera-Works/Venera-flutter_qjs`；上游基线 `venera-app/flutter_qjs@8feae95` | 由 Venera-Works 独立维护源码与补丁，应用不再内嵌。保留 `0.3.7` 包版本、API、FFI ABI 和平台入口；替换需验证对象生命周期、Promise 与跨平台构建。 |
 | `photo_view` | `venera-app/photo_view` (`a1255d1`) | 阅读器依赖定制的 `getInitialScale` 及手势/动画定位扩展。保留定制分支；替换需重新适配阅读器缩放、双页与自动阅读。 |
 | `scrollable_positioned_list` | `venera-app/flutter.widgets` (`09e756b`) | 包含阅读器专用的 `scrollControllerCallback` 与 `scrollBehavior` 回调支持。保留定制分支；替换需验证长章节跳页与滚动同步。 |
 | `desktop_webview_window` | `venera-app/flutter_desktop_webview` (`7801fc5`) | 包含桌面端代理、Linux libsoup 与 Windows ARM64 适配。许可证待核实（license-review）；替换前需评估清晰授权方案。 |
@@ -25,6 +25,12 @@ English: [dependency_audit.en.md](dependency_audit.en.md) · [治理规则](depe
 | `flutter_saf` | `venera-app/venera-prime` 的 `packages/flutter_saf` (`056a419a504258e6c6352871f9c888b3fd5bc2f4`) | 同名 `0.0.1` 插件，源自 `venera-app/flutter_saf` 的 `fe182cdf40e5fa6230f451bc1d643b860f610d13`。保留许可证待核实（license-review）状态；SAF 修复与验证边界见下文。 |
 | `flutter_7zip` | `venera-app/flutter_7zip` (`b333447`) | 7z/CB7 导入与 ZIP 回退核心依赖。许可证待核实（license-review）；先保留固定 commit，评估等价实现。 |
 | `lodepng_flutter` | `venera-app/lodepng_flutter` (`ac7d05dde32e8d728102a9ff66e6b55f05d94ba1`) | 固定版本包含 NDK r28 构建适配，图片处理链路依赖其原生 PNG 编码。许可证待核实（license-review）；替换需验证大图编码性能与内存生命周期。 |
+
+## QuickJS 独立仓库维护（2026-11-17）
+
+源码与补丁迁至 [Venera-Works/Venera-flutter_qjs](https://github.com/Venera-Works/Venera-flutter_qjs)，本地工作副本为 `cache/Venera-flutter_qjs`，原 `packages/flutter_qjs` 已移除。该仓库由本项目所属组织维护，是其他保留第三方来源依赖之外的明确例外。
+
+保留此前回移的 TypedData 引用扫描优化、QuickJS-NG 核心补丁和 Apple 版本文件路径修正，来源及完整提交见独立仓库的 [UPSTREAM.md](https://github.com/Venera-Works/Venera-flutter_qjs/blob/8e7db82c57f2c780eebd4c7c6903d3aa41a65e2e/UPSTREAM.md)。应用通过 Git 依赖固定 `8e7db82c57f2c780eebd4c7c6903d3aa41a65e2e`，声明、锁文件和来源清单同步。
 
 ## SAF 来源更新（2026-11-12）
 

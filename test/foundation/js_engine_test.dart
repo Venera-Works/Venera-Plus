@@ -13,6 +13,94 @@ import 'package:venera_plus/foundation/log.dart';
 const _ciRequireQuickJs = bool.fromEnvironment('CI_REQUIRE_QUICKJS');
 
 void main() {
+  test('QuickJS 数值缓冲与循环对象保持引用释放行为', () {
+    final reference = _CountedJsReference();
+    final bytes = Uint8List.fromList([0, 1, 2, 3, 254, 255]);
+    final view = Uint8List.sublistView(bytes, 1, 5);
+    final graph = <Object?>[];
+    final child = <String, Object?>{
+      'bytes': Uint8List(256 * 1024),
+      'view': view,
+      'signed': Int32List.fromList([-1, 0, 1]),
+      'floats': Float64List.fromList([-1.5, 0, 1.5]),
+      'data': ByteData.sublistView(bytes),
+      'callback': reference,
+      'parent': graph,
+    };
+    graph.addAll([child, child, reference, graph]);
+
+    JSRef.dupRecursive(graph);
+    expect(reference.duplicates, 2);
+    JSRef.freeRecursive(graph);
+    expect(reference.releases, 2);
+    expect(reference.destroyed, 0);
+    expect(bytes, [0, 1, 2, 3, 254, 255]);
+    expect(view, [1, 2, 3, 254]);
+    reference.free();
+    expect(reference.destroyed, 1);
+  });
+
+  test(
+    'QuickJS ArrayBuffer 转移后旧视图失效且新缓冲保留数据',
+    () {
+      final engine = FlutterQjs();
+      addTearDown(engine.close);
+      final result = engine.evaluate(r'''
+        (() => {
+          const buffer = new ArrayBuffer(8);
+          const bytes = new Uint8Array(buffer);
+          const data = new DataView(buffer);
+          bytes.set([1, 2, 3, 4]);
+          const moved = buffer.transfer(12);
+          const values = new Uint8Array(moved);
+          let dataDetached = false;
+          try { data.getUint8(0); } catch (error) {
+            dataDetached = error instanceof TypeError;
+          }
+          return {
+            oldBufferLength: buffer.byteLength,
+            oldViewLength: bytes.length,
+            oldViewEmpty: bytes[0] === undefined,
+            dataDetached,
+            movedLength: moved.byteLength,
+            values: Array.from(values)
+          };
+        })()
+      ''');
+      expect(result['oldBufferLength'], 0);
+      expect(result['oldViewLength'], 0);
+      expect(result['oldViewEmpty'], isTrue);
+      expect(result['dataDetached'], isTrue);
+      expect(result['movedLength'], 12);
+      expect(result['values'], [1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0]);
+    },
+    skip: _qjsAvailable() ? false : 'flutter_qjs native library is unavailable',
+  );
+
+  test(
+    'QuickJS Promise 字节子视图与 Map 返回后仍可继续执行并关闭',
+    () async {
+      final initScript = await File('assets/init.js').readAsBytes();
+      JsEngine.cacheJsInit(initScript);
+      addTearDown(() => JsEngine().dispose());
+      await JsEngine().init();
+      final result = await JsEngine().runCode(r'''
+        (async () => {
+          const values = new Uint8Array([9, 1, 2, 254, 255, 8]);
+          const bytes = await Promise.resolve(values.subarray(1, 5));
+          return {
+            bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+            nested: {length: bytes.length, ok: true}
+          };
+        })()
+      ''');
+      expect(result['bytes'], Uint8List.fromList([1, 2, 254, 255]));
+      expect(result['nested'], {'length': 4, 'ok': true});
+      expect(await JsEngine().runCode('1 + 1'), 2);
+    },
+    skip: _qjsAvailable() ? false : 'flutter_qjs native library is unavailable',
+  );
+
   test('read-only source retry recognizes malformed JSON responses', () {
     expect(
       JsEngine.debugIsRetryableReadError(
@@ -508,6 +596,27 @@ void main() {
     },
     skip: _qjsAvailable() ? false : 'flutter_qjs native library is unavailable',
   );
+}
+
+class _CountedJsReference extends JSRef {
+  int duplicates = 0;
+  int releases = 0;
+  int destroyed = 0;
+
+  @override
+  void dup() {
+    duplicates++;
+    super.dup();
+  }
+
+  @override
+  void free() {
+    releases++;
+    super.free();
+  }
+
+  @override
+  void destroy() => destroyed++;
 }
 
 class _BlockingWebSocketBridge extends JsWebSocketBridge {

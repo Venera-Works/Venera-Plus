@@ -17,8 +17,8 @@ dependencies:
   sqlite3: ^3.5.2
   flutter_qjs:
     git:
-      url: https://github.com/venera-app/flutter_qjs
-      ref: 8feae95df7fb00455df129ad7a0dfec1d0e8d8e4
+      url: https://github.com/Venera-Works/Venera-flutter_qjs
+      ref: 8e7db82c57f2c780eebd4c7c6903d3aa41a65e2e
   crypto: ^3.0.8
   dio: ^5.11.1
   html: ^0.15.7

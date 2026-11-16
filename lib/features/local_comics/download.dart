@@ -630,8 +630,8 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
       notifyListeners();
       return;
     }
+    await LocalManager().completeTask(this);
     _isRunning = false;
-    LocalManager().completeTask(this);
     stopRecorder();
   }
 
@@ -1108,8 +1108,8 @@ class ArchiveDownloadTask extends DownloadTask {
     if (!_isCurrentRun(generation)) return;
     await archiveFile.deleteIgnoreError();
 
+    await LocalManager().completeTask(this);
     _isRunning = false;
-    LocalManager().completeTask(this);
   }
 
   static Future<void> _extractArchive(String archive, String outDir) async {

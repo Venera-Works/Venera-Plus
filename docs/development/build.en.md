@@ -59,6 +59,10 @@ The current pin is `core-v0.1.0-beta.7` with RPC ABI `1`. The [core lockfile](..
 
 See [Dependency Governance](dependencies.en.md) for Git fork provenance, pinned commits, and upgrade requirements.
 
+## Separate QuickJS Repository
+
+`flutter_qjs` is maintained in [Venera-Works/Venera-flutter_qjs](https://github.com/Venera-Works/Venera-flutter_qjs).
+
 ## Precompiled rhttp native libraries
 
 `Venera-Works/Venera-Native-Prebuilts` builds, signs, and releases the `rhttp` native libraries independently; its local checkout is `cache/Venera-Native-Prebuilts`. The application's `native/prebuilts/rhttp/lock.json` pins the package archive digest, bridge version, and toolchain versions. `cargokit.yaml` pins the release URL, public key, and build arguments; `Cargo.toml` and `Cargo.lock` pin native dependencies. Keep all four files identical to the resource repository's `rhttp/` files.
