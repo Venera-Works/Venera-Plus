@@ -215,10 +215,9 @@ class _StorageProviderPage extends StatelessWidget {
                     'WebDAV' =>
                       'Connect with a server address, username and password.'
                           .tl,
-                    'Quark' => 'Log in to authorize or enter a Cookie.'.tl,
                     'GoogleDrive' =>
                       'Get a token from OpenList, then enter it manually.'.tl,
-                    _ => 'Log in to authorize or enter tokens.'.tl,
+                    _ => 'Log in to authorize and save automatically.'.tl,
                   }),
                   trailing: const Icon(Icons.arrow_right),
                   onTap: () async {
@@ -284,6 +283,9 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
     text: widget.initial?.authorization['cookie'] as String?,
   );
   String get _driver => widget.driver;
+  bool get _autoSaveAfterLogin =>
+      widget.initial == null &&
+      (_driver == 'Quark' || openListLoginDrivers.containsKey(_driver));
   String? _error;
   bool _loggingIn = false;
   @override
@@ -355,48 +357,50 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                     ),
                     const SizedBox(height: 16),
                   ],
-                  if (quark)
-                    TextField(
-                      controller: _cookie,
-                      obscureText: true,
-                      autocorrect: false,
-                      enableSuggestions: false,
-                      decoration: InputDecoration(labelText: 'Cookie'.tl),
-                    )
-                  else ...[
-                    if (_driver == '115 Open') ...[
+                  if (!_autoSaveAfterLogin) ...[
+                    if (quark)
                       TextField(
-                        controller: _accessToken,
+                        controller: _cookie,
+                        obscureText: true,
+                        autocorrect: false,
+                        enableSuggestions: false,
+                        decoration: InputDecoration(labelText: 'Cookie'.tl),
+                      )
+                    else ...[
+                      if (_driver == '115 Open') ...[
+                        TextField(
+                          controller: _accessToken,
+                          decoration: InputDecoration(
+                            labelText: 'Access Token'.tl,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                      ],
+                      TextField(
+                        controller: _refreshToken,
+                        onChanged: _driver == '115 Open'
+                            ? null
+                            : (_) => _accessToken.clear(),
                         decoration: InputDecoration(
-                          labelText: 'Access Token'.tl,
+                          labelText: 'Refresh Token'.tl,
                         ),
                       ),
-                      const SizedBox(height: 16),
-                    ],
-                    TextField(
-                      controller: _refreshToken,
-                      onChanged: _driver == '115 Open'
-                          ? null
-                          : (_) => _accessToken.clear(),
-                      decoration: InputDecoration(
-                        labelText: 'Refresh Token'.tl,
-                      ),
-                    ),
-                    if (!hasLogin) ...[
-                      Text(
-                        'Use parameters provided by OpenList on the token page, then fill in the required tokens.'
-                            .tl,
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                      TextButton.icon(
-                        style: actionButtonStyle,
-                        onPressed: () => launchUrl(
-                          Uri.parse('https://api.oplist.org/'),
-                          mode: LaunchMode.externalApplication,
+                      if (!hasLogin) ...[
+                        Text(
+                          'Use parameters provided by OpenList on the token page, then fill in the required tokens.'
+                              .tl,
+                          style: Theme.of(context).textTheme.bodySmall,
                         ),
-                        icon: const Icon(Icons.open_in_new),
-                        label: Text('Open OpenList token page'.tl),
-                      ),
+                        TextButton.icon(
+                          style: actionButtonStyle,
+                          onPressed: () => launchUrl(
+                            Uri.parse('https://api.oplist.org/'),
+                            mode: LaunchMode.externalApplication,
+                          ),
+                          icon: const Icon(Icons.open_in_new),
+                          label: Text('Open OpenList token page'.tl),
+                        ),
+                      ],
                     ],
                   ],
                 ],
@@ -409,15 +413,17 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                     ),
                   ),
                 ],
-                const SizedBox(height: 16),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton(
-                    style: actionButtonStyle,
-                    onPressed: _loggingIn ? null : _save,
-                    child: Text('Save and test connection'.tl),
+                if (!_autoSaveAfterLogin) ...[
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      style: actionButtonStyle,
+                      onPressed: _loggingIn ? null : _save,
+                      child: Text('Save and test connection'.tl),
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
           ),
@@ -485,6 +491,13 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
   }
 
   Future<void> _login() async {
+    if (_autoSaveAfterLogin) {
+      final name = _name.text.trim().isEmpty ? _driver.tl : _name.text.trim();
+      if (widget.accounts.isNameInUse(name)) {
+        setState(() => _error = 'An account with this name already exists.'.tl);
+        return;
+      }
+    }
     setState(() {
       _loggingIn = true;
       _error = null;
@@ -495,6 +508,7 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
           : await showOpenListLogin(context, driver: _driver);
       if (mounted && authorization != null) {
         _applyAuthorization({..._authorization, ...authorization});
+        if (_autoSaveAfterLogin) _save();
       }
     } catch (error) {
       if (mounted) {

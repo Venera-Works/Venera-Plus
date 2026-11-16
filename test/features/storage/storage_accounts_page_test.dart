@@ -28,11 +28,11 @@ void main() {
 
     for (final (driver, fields) in [
       ('WebDAV', ['URL', 'Username', 'Password']),
-      ('Quark', ['Cookie']),
-      ('115 Open', ['Access Token', 'Refresh Token']),
-      ('BaiduNetdisk', ['Refresh Token']),
-      ('123 Open', ['Refresh Token']),
-      ('Onedrive', ['Refresh Token']),
+      ('Quark', <String>[]),
+      ('115 Open', <String>[]),
+      ('BaiduNetdisk', <String>[]),
+      ('123 Open', <String>[]),
+      ('Onedrive', <String>[]),
       ('GoogleDrive', ['Refresh Token']),
     ]) {
       final provider = find.widgetWithText(ListTile, driver);
@@ -54,6 +54,12 @@ void main() {
       expect(
         find.text('Open OpenList token page'),
         driver == 'GoogleDrive' ? findsOneWidget : findsNothing,
+      );
+      expect(
+        find.text('Save and test connection'),
+        driver == 'WebDAV' || driver == 'GoogleDrive'
+            ? findsOneWidget
+            : findsNothing,
       );
 
       await tester.pageBack();
@@ -131,28 +137,26 @@ void main() {
       find.widgetWithText(TextField, 'Name'),
       ' my DRIVE ',
     );
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Refresh Token'),
-      'new',
-    );
-    await tester.tap(find.text('Save and test connection'));
+    await tester.tap(find.text('Log in and authorize'));
     await tester.pumpAndSettle();
     expect(
       find.text('An account with this name already exists.'),
       findsOneWidget,
     );
     expect(find.text('Add BaiduNetdisk Account'), findsOneWidget);
+    expect(find.byType(AppWebview), findsNothing);
     expect(accounts.saved, same(previous));
+    expect(accounts.saveCalls, 0);
     expect(accounts.rpc.testCalls, 0);
 
     await tester.enterText(
       find.widgetWithText(TextField, 'Name'),
       'Other Drive',
     );
-    await tester.tap(find.text('Save and test connection'));
-    await tester.pumpAndSettle();
+    await _authorize(tester);
     expect(find.text('Add BaiduNetdisk Account'), findsNothing);
     expect(accounts.saved?.name, 'Other Drive');
+    expect(accounts.saveCalls, 1);
     expect(accounts.rpc.testCalls, 1);
   });
 
@@ -187,16 +191,12 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(ListTile, 'BaiduNetdisk'));
     await tester.pumpAndSettle();
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Refresh Token'),
-      'refresh',
-    );
-    await tester.tap(find.text('Save and test connection'));
-    await tester.pumpAndSettle();
+    await _authorize(tester);
     expect(find.text('Use this account for'), findsOneWidget);
     await tester.tap(find.text('App Data Sync'));
     await tester.pumpAndSettle();
     expect(selected?.$1.id, 'new-account');
+    expect(selected?.$1.name, 'BaiduNetdisk');
     expect(selected?.$2, StorageAccountPurpose.sync);
     expect(find.byType(StorageAccountsPage), findsNothing);
   });
@@ -254,12 +254,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.getSize(find.byType(Appbar)).width, pageWidth);
     await tester.enterText(find.widgetWithText(TextField, 'Name'), 'New Drive');
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Refresh Token'),
-      'refresh',
-    );
-    await tester.tap(find.text('Save and test connection'));
-    await tester.pumpAndSettle();
+    await _authorize(tester);
     expect(selected?.name, 'New Drive');
     expect(find.text('New Drive'), findsOneWidget);
     expect(name.text, 'Unfinished library');
@@ -287,7 +282,7 @@ void main() {
     expect(accounts.rpc.testCalls, 1);
   });
 
-  testWidgets('Baidu login shows required tokens and validates them', (
+  testWidgets('canceling authorization keeps the name and allows retrying', (
     tester,
   ) async {
     final accounts = _Accounts();
@@ -299,26 +294,85 @@ void main() {
     await tester.tap(find.widgetWithText(ListTile, 'BaiduNetdisk'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Refresh Token'), findsOneWidget);
-    expect(find.text('Access Token'), findsNothing);
-    expect(find.text('AppID'), findsNothing);
-    expect(find.text('Log in and authorize'), findsOneWidget);
-    expect(find.text('Open OpenList token page'), findsNothing);
-    expect(find.text('Import token JSON or callback'), findsNothing);
-    await tester.tap(find.text('Save and test connection'));
+    await tester.enterText(find.widgetWithText(TextField, 'Name'), 'My Drive');
+    await _openLogin(tester);
+    if (Platform.isLinux) {
+      tester.binding.channelBuffers.push(
+        'webview_window',
+        const StandardMethodCodec().encodeMethodCall(
+          const MethodCall('onWindowClose', {'id': 1}),
+        ),
+        (_) {},
+      );
+    } else {
+      Navigator.of(tester.element(find.byType(AppWebview))).pop();
+    }
     await tester.pumpAndSettle();
-    expect(find.text('Refresh Token is required'), findsOneWidget);
     expect(accounts.saved, isNull);
-
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Refresh Token'),
-      'refresh',
+    expect(accounts.saveCalls, 0);
+    expect(accounts.rpc.testCalls, 0);
+    expect(
+      tester
+          .widget<TextField>(find.widgetWithText(TextField, 'Name'))
+          .controller!
+          .text,
+      'My Drive',
     );
-    await tester.tap(find.text('Save and test connection'));
-    await tester.pumpAndSettle();
+
+    await _authorize(tester);
+    expect(accounts.saved!.name, 'My Drive');
     expect(accounts.saved!.authorization['refresh_token'], 'refresh');
-    expect(accounts.saved!.authorization['use_online_api'], isTrue);
+    expect(accounts.saveCalls, 1);
+    expect(accounts.rpc.testCalls, 1);
   });
+
+  for (final driver in [
+    'BaiduNetdisk',
+    'Quark',
+    '115 Open',
+    '123 Open',
+    'Onedrive',
+  ]) {
+    testWidgets('$driver authorization saves and tests the account once', (
+      tester,
+    ) async {
+      final accounts = _Accounts();
+      await tester.pumpWidget(
+        MaterialApp(home: StorageAccountsPage(accounts: accounts)),
+      );
+      await tester.tap(find.byIcon(Icons.add));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ListTile, driver));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Name'),
+        ' My $driver ',
+      );
+      await _authorize(tester, driver: driver);
+
+      expect(find.text('Cloud Storage Accounts'), findsOneWidget);
+      expect(find.text('Add Cloud Storage Account'), findsNothing);
+      expect(find.byType(AppWebview), findsNothing);
+      expect(accounts.saved!.name, 'My $driver');
+      expect(accounts.saved!.driver, driver);
+      expect(accounts.saved!.status, StorageAuthorizationStatus.valid);
+      if (driver == 'Quark') {
+        expect(
+          accounts.saved!.authorization['cookie'],
+          '__pus=session; __puus=secret',
+        );
+      } else {
+        expect(
+          accounts.saved!.authorization[driver == '123 Open'
+              ? 'RefreshToken'
+              : 'refresh_token'],
+          'refresh',
+        );
+      }
+      expect(accounts.saveCalls, 1);
+      expect(accounts.rpc.testCalls, 1);
+    });
+  }
 
   testWidgets('manual token edits replace old tokens and preserve settings', (
     tester,
@@ -436,46 +490,6 @@ void main() {
   testWidgets('authorization callback fills tokens and replaces old app keys', (
     tester,
   ) async {
-    final controller = _WebviewController();
-    String? desktopUrl;
-    var desktopClosed = false;
-    if (Platform.isLinux) {
-      App.dataPath = Directory.systemTemp.path;
-      const channel = MethodChannel('webview_window');
-      const codec = StandardMethodCodec();
-      final messenger = tester.binding.defaultBinaryMessenger;
-      messenger.setMockMethodCallHandler(channel, (call) async {
-        switch (call.method) {
-          case 'create':
-            return 1;
-          case 'launch':
-            desktopUrl = call.arguments['url'] as String;
-            return null;
-          case 'evaluateJavaScript':
-            final script = call.arguments['javaScriptString'] as String;
-            if (script.contains('function collect()')) {
-              return jsonEncode({
-                'id': 'document_created',
-                'data': {'title': 'Login', 'ua': 'test'},
-              });
-            }
-            return controller.evaluateJavascript(source: script);
-          case 'close':
-            desktopClosed = true;
-            tester.binding.channelBuffers.push(
-              channel.name,
-              codec.encodeMethodCall(
-                const MethodCall('onWindowClose', {'id': 1}),
-              ),
-              (_) {},
-            );
-            return null;
-          default:
-            return null;
-        }
-      });
-      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
-    }
     final accounts = _Accounts()
       ..saved = const StorageAccount(
         id: 'onedrive',
@@ -495,14 +509,12 @@ void main() {
     );
     await tester.tap(find.text('My OneDrive'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Log in and authorize'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 350));
+    final controller = await _openLogin(tester);
 
     final login = Platform.isLinux
         ? null
         : tester.widget<AppWebview>(find.byType(AppWebview));
-    final loginUrl = Platform.isLinux ? desktopUrl! : login!.initialUrl;
+    final loginUrl = controller.initialUrl;
     expect(Uri.parse(loginUrl).queryParameters['driver_txt'], 'onedrive_pr');
     controller.page = {
       'url': loginUrl,
@@ -540,7 +552,7 @@ void main() {
     }
     await tester.pumpAndSettle();
 
-    if (Platform.isLinux) expect(desktopClosed, isTrue);
+    if (Platform.isLinux) expect(controller.closed, isTrue);
     expect(find.byType(AppWebview), findsNothing);
     final refresh = tester.widget<TextField>(
       find.widgetWithText(TextField, 'Refresh Token'),
@@ -570,12 +582,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(ListTile, 'BaiduNetdisk'));
     await tester.pumpAndSettle();
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Refresh Token'),
-      'refresh',
-    );
-    await tester.tap(find.text('Save and test connection'));
-    await tester.pumpAndSettle();
+    await _authorize(tester);
 
     expect(find.text(originalError), findsOneWidget);
     expect(accounts.rpc.testCalls, 0);
@@ -594,9 +601,116 @@ void main() {
   });
 }
 
+Future<_WebviewController> _openLogin(WidgetTester tester) async {
+  final controller = _WebviewController();
+  if (Platform.isLinux) {
+    App.dataPath = Directory.systemTemp.path;
+    const channel = MethodChannel('webview_window');
+    const codec = StandardMethodCodec();
+    final messenger = tester.binding.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      switch (call.method) {
+        case 'create':
+          return 1;
+        case 'launch':
+          controller.initialUrl = call.arguments['url'] as String;
+          return null;
+        case 'evaluateJavaScript':
+          final script = call.arguments['javaScriptString'] as String;
+          if (script.contains('function collect()')) {
+            return jsonEncode({
+              'id': 'document_created',
+              'data': {'title': 'Login', 'ua': 'test'},
+            });
+          }
+          final result = await controller.evaluateJavascript(source: script);
+          return result is String ? result : jsonEncode(result);
+        case 'getAllCookies':
+          return [
+            for (final (name, value) in [
+              ('__pus', 'session'),
+              ('__puus', 'secret'),
+            ])
+              {
+                'name': name,
+                'value': value,
+                'domain': '.quark.cn',
+                'path': '/',
+                'httpOnly': true,
+              },
+          ];
+        case 'close':
+          controller.closed = true;
+          tester.binding.channelBuffers.push(
+            channel.name,
+            codec.encodeMethodCall(
+              const MethodCall('onWindowClose', {'id': 1}),
+            ),
+            (_) {},
+          );
+          return null;
+        default:
+          return null;
+      }
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+  } else {
+    App.dataPath = Directory.systemTemp.path;
+    final previous = InAppWebViewPlatform.instance;
+    InAppWebViewPlatform.instance = _LoginPlatform();
+    addTearDown(() {
+      if (previous != null) InAppWebViewPlatform.instance = previous;
+    });
+  }
+  await tester.tap(find.text('Log in and authorize'));
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 350));
+  if (!Platform.isLinux) {
+    controller.initialUrl = tester
+        .widget<AppWebview>(find.byType(AppWebview))
+        .initialUrl;
+    final view = tester.widget<InAppWebView>(find.byType(InAppWebView));
+    view.platform.params.onWebViewCreated!(controller);
+    view.platform.params.onProgressChanged!(controller, 100);
+  }
+  return controller;
+}
+
+Future<void> _authorize(
+  WidgetTester tester, {
+  String driver = 'BaiduNetdisk',
+}) async {
+  final controller = await _openLogin(tester);
+  if (driver == 'Quark') {
+    controller.page = true;
+  } else {
+    final payload = base64Encode(
+      utf8.encode(
+        jsonEncode({
+          'driver_txt': openListLoginDrivers[driver],
+          'access_token': 'access',
+          'refresh_token': 'refresh',
+        }),
+      ),
+    );
+    controller.page = {'url': 'https://api.oplist.org/#$payload', 'body': null};
+  }
+  if (Platform.isLinux) {
+    await tester.pump(const Duration(seconds: 2));
+  } else {
+    tester.widget<AppWebview>(find.byType(AppWebview)).onLoadStop!(controller);
+  }
+  await tester.pumpAndSettle();
+}
+
 class _WebviewController extends Fake implements InAppWebViewController {
   Object? page;
+  var initialUrl = '';
+  var closed = false;
   final scripts = <String>[];
+
+  @override
+  final PlatformInAppWebViewController platform = _PlatformController();
 
   @override
   Future<dynamic> evaluateJavascript({
@@ -608,9 +722,76 @@ class _WebviewController extends Fake implements InAppWebViewController {
   }
 }
 
+class _PlatformController extends Fake
+    implements PlatformInAppWebViewController {}
+
+class _LoginPlatform extends InAppWebViewPlatform {
+  @override
+  PlatformWebViewEnvironment createPlatformWebViewEnvironmentStatic() =>
+      _Environment();
+
+  @override
+  PlatformInAppWebViewWidget createPlatformInAppWebViewWidget(
+    PlatformInAppWebViewWidgetCreationParams params,
+  ) => _View(params);
+
+  @override
+  PlatformCookieManager createPlatformCookieManager(
+    PlatformCookieManagerCreationParams params,
+  ) => _Cookies(params);
+}
+
+class _Environment extends PlatformWebViewEnvironment {
+  _Environment([WebViewEnvironmentSettings? settings])
+    : super.implementation(
+        PlatformWebViewEnvironmentCreationParams(settings: settings),
+      );
+
+  @override
+  Future<PlatformWebViewEnvironment> create({
+    WebViewEnvironmentSettings? settings,
+  }) async => _Environment(settings);
+
+  @override
+  Future<void> dispose() async {}
+}
+
+class _View extends PlatformInAppWebViewWidget {
+  _View(super.params) : super.implementation();
+
+  @override
+  Widget build(BuildContext context) => const SizedBox.expand();
+
+  @override
+  T controllerFromPlatform<T>(PlatformInAppWebViewController controller) =>
+      InAppWebViewController.fromPlatform(platform: controller) as T;
+
+  @override
+  void dispose() {
+    params.webViewEnvironment?.onBrowserProcessExited?.call(_BrowserExit());
+  }
+}
+
+class _BrowserExit extends Fake implements BrowserProcessExitedDetail {}
+
+class _Cookies extends PlatformCookieManager {
+  _Cookies(super.params) : super.implementation();
+
+  @override
+  Future<List<Cookie>> getCookies({
+    required WebUri url,
+    PlatformInAppWebViewController? iosBelow11WebViewController,
+    PlatformInAppWebViewController? webViewController,
+  }) async => [
+    Cookie(name: '__pus', value: 'session', isHttpOnly: true),
+    Cookie(name: '__puus', value: 'secret', isHttpOnly: true),
+  ];
+}
+
 class _Accounts extends RemoteStorageAccounts {
   StorageAccount? saved;
   String? saveError;
+  var saveCalls = 0;
   final rpc = _Rpc();
 
   @override
@@ -618,6 +799,7 @@ class _Accounts extends RemoteStorageAccounts {
 
   @override
   Future<StorageAccount> save(StorageAccount value) async {
+    saveCalls++;
     final result = StorageAccount(
       id: value.id.isEmpty ? 'new-account' : value.id,
       backend: value.backend,
