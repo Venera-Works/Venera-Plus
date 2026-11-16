@@ -6,22 +6,16 @@ import 'package:venera_plus/foundation/widget_utils.dart';
 import 'menu.dart';
 
 const actionButtonStyle = ButtonStyle(
-  minimumSize: WidgetStatePropertyAll(Size(88, 48)),
+  minimumSize: WidgetStatePropertyAll(Size(52, 32)),
   padding: WidgetStatePropertyAll(
-    EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+    EdgeInsets.symmetric(horizontal: 12, vertical: 6),
   ),
   textStyle: WidgetStatePropertyAll(
     TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
   ),
-  shape: WidgetStatePropertyAll(
-    RoundedRectangleBorder(borderRadius: BorderRadius.all(Radius.circular(16))),
-  ),
+  shape: WidgetStatePropertyAll(StadiumBorder()),
   visualDensity: VisualDensity.standard,
   tapTargetSize: MaterialTapTargetSize.padded,
-);
-
-final formActionButtonStyle = actionButtonStyle.copyWith(
-  minimumSize: const WidgetStatePropertyAll(Size(88, 52)),
 );
 
 class ButtonLoadingContent extends StatelessWidget {

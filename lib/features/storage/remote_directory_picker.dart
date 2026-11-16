@@ -154,7 +154,7 @@ class _RemoteDirectoryPickerState extends State<RemoteDirectoryPicker> {
                 ),
                 const SizedBox(width: 16),
                 FilledButton(
-                  style: formActionButtonStyle,
+                  style: actionButtonStyle,
                   onPressed: !widget.multiSelect && _selected.isEmpty
                       ? null
                       : () =>

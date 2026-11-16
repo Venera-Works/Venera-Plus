@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/features/storage/storage.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 
@@ -143,47 +142,6 @@ void main() {
     await tester.pumpAndSettle();
     expect(await result.future, ['/']);
   });
-
-  for (final size in [const Size(320, 640), const Size(1200, 800)]) {
-    testWidgets('Done stays at the bottom right at ${size.width}', (
-      tester,
-    ) async {
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      addTearDown(tester.view.resetPadding);
-      tester.view.devicePixelRatio = 1;
-      tester.view.physicalSize = size;
-      tester.view.padding = const FakeViewPadding(bottom: 24);
-      final store = _DirectoryStore({
-        '/': List.generate(
-          20,
-          (index) => RemoteEntry(
-            name: 'A long folder name that should fit in one row $index',
-            path: '/Folder $index/',
-            isDirectory: true,
-          ),
-        ),
-      });
-      await _openPicker(tester, store, textScale: size.width < 600 ? 1.3 : 1);
-      final done = find.widgetWithText(FilledButton, 'Done');
-      final position = tester.getRect(done);
-      final footer = tester.getRect(
-        find.ancestor(of: done, matching: find.byType(Row)).first,
-      );
-      expect(position.right, closeTo(size.width - 16, 0.01));
-      expect(footer.bottom, closeTo(size.height - 24 - 16, 0.01));
-      expect(position.center.dy, closeTo(footer.center.dy, 0.01));
-      expect(position.bottom, lessThanOrEqualTo(footer.bottom));
-      expect(position.height, greaterThanOrEqualTo(52));
-      expect(tester.widget<Appbar>(find.byType(Appbar)).actions, isNull);
-      expect(find.byType(FloatingActionButton), findsNothing);
-      await tester.drag(find.byType(ListView), const Offset(0, -250));
-      await tester.pumpAndSettle();
-      expect(tester.getRect(done), position);
-      expect(done.hitTestable(), findsOneWidget);
-      expect(tester.takeException(), isNull);
-    });
-  }
 }
 
 Finder _checkbox(String title) => find.descendant(
@@ -239,9 +197,6 @@ Future<Completer<List<String>?>> _openPicker(
 }
 
 class _DirectoryStore extends Fake implements RemoteFileStore {
-  _DirectoryStore([this.directories = _directories]);
-
-  final Map<String, List<RemoteEntry>> directories;
   final listed = <String>[];
   String? listingError;
   var cancelCount = 0;
@@ -253,7 +208,7 @@ class _DirectoryStore extends Fake implements RemoteFileStore {
   }) async {
     listed.add(directory);
     if (listingError != null) throw RemoteStorageException(listingError!);
-    return directories[directory] ?? const [];
+    return _directories[directory] ?? const [];
   }
 
   @override

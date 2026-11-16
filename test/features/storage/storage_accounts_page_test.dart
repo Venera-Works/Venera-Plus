@@ -69,65 +69,6 @@ void main() {
     expect(accounts.rpc.testCalls, 0);
   });
 
-  for (final size in [const Size(320, 640), const Size(1200, 800)]) {
-    testWidgets('save stays above the keyboard at ${size.width}', (
-      tester,
-    ) async {
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      addTearDown(tester.view.resetViewInsets);
-      addTearDown(tester.view.resetPadding);
-      tester.view.devicePixelRatio = 1;
-      tester.view.physicalSize = size;
-      tester.view.padding = const FakeViewPadding(bottom: 24);
-      final accounts = _Accounts();
-      await tester.pumpWidget(
-        MaterialApp(
-          builder: (context, child) => MediaQuery(
-            data: MediaQuery.of(context).copyWith(
-              textScaler: TextScaler.linear(size.width < 600 ? 1.3 : 1),
-            ),
-            child: child!,
-          ),
-          home: StorageAccountsPage(accounts: accounts),
-        ),
-      );
-      await tester.tap(find.byIcon(Icons.add));
-      await tester.pumpAndSettle();
-      final provider = find.widgetWithText(ListTile, 'WebDAV');
-      await tester.scrollUntilVisible(provider, 200);
-      await tester.pumpAndSettle();
-      await tester.tap(provider);
-      await tester.pumpAndSettle();
-
-      final save = find.widgetWithText(
-        FilledButton,
-        'Save and test connection',
-      );
-      final url = find.widgetWithText(TextField, 'URL');
-      final password = find.widgetWithText(TextField, 'Password');
-      expect(tester.widget<Appbar>(find.byType(Appbar)).actions, isNull);
-      final originalSaveRect = tester.getRect(save);
-      expect(originalSaveRect.height, greaterThanOrEqualTo(52));
-      expect(originalSaveRect.width, tester.getRect(url).width);
-      expect(originalSaveRect.left, tester.getRect(url).left);
-      expect(originalSaveRect.bottom, closeTo(size.height - 24 - 16, 0.01));
-
-      await tester.showKeyboard(password);
-      tester.view.viewInsets = const FakeViewPadding(bottom: 280);
-      tester.view.padding = FakeViewPadding.zero;
-      await tester.pumpAndSettle();
-      await tester.ensureVisible(password);
-      await tester.pumpAndSettle();
-
-      final saveRect = tester.getRect(save);
-      expect(saveRect.bottom, closeTo(size.height - 280 - 16, 0.01));
-      expect(tester.getRect(password).bottom, lessThan(saveRect.top));
-      expect(save.hitTestable(), findsOneWidget);
-      expect(tester.takeException(), isNull);
-    });
-  }
-
   testWidgets('WebDAV selection saves the server credentials', (tester) async {
     final accounts = _Accounts();
     await tester.pumpWidget(

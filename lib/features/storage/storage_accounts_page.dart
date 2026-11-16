@@ -427,7 +427,7 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                   child: SizedBox(
                     width: double.infinity,
                     child: FilledButton(
-                      style: formActionButtonStyle,
+                      style: actionButtonStyle,
                       onPressed: _loggingIn ? null : _save,
                       child: Text('Save and test connection'.tl),
                     ),
