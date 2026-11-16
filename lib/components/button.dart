@@ -6,9 +6,9 @@ import 'package:venera_plus/foundation/widget_utils.dart';
 import 'menu.dart';
 
 const actionButtonStyle = ButtonStyle(
-  minimumSize: WidgetStatePropertyAll(Size(52, 32)),
+  minimumSize: WidgetStatePropertyAll(Size(64, 36)),
   padding: WidgetStatePropertyAll(
-    EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+    EdgeInsets.symmetric(horizontal: 16, vertical: 8),
   ),
   textStyle: WidgetStatePropertyAll(
     TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
