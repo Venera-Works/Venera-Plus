@@ -475,9 +475,9 @@ void main() {
       await tester.tap(find.text('Add Cloud Storage Account').last);
       await tester.pumpAndSettle();
       expect(find.text('Add Cloud Storage Account'), findsOneWidget);
-      await tester.tap(find.widgetWithText(ListTile, 'BaiduNetdisk'));
+      await tester.tap(find.widgetWithText(ListTile, 'GoogleDrive'));
       await tester.pumpAndSettle();
-      expect(find.text('Add BaiduNetdisk Account'), findsOneWidget);
+      expect(find.text('Add GoogleDrive Account'), findsOneWidget);
       await tester.enterText(
         find.widgetWithText(TextField, 'Name'),
         'New Account',
