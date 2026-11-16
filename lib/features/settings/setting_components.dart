@@ -440,59 +440,99 @@ class _SliderSettingState extends State<SliderSetting> {
                 ? appdata.settings.getDeviceReaderSetting(widget.settingsIndex)
                 : appdata.settings[widget.settingsIndex])
             .toDouble();
+    final divisions = ((widget.max - widget.min) / widget.interval).toInt();
+    final decimalPlaces = widget.interval == widget.interval.truncateToDouble()
+        ? 0
+        : widget.interval.toString().split('.').last.length;
+    String formatValue(double value) =>
+        widget.valueFormatter?.call(value) ??
+        value.toStringAsFixed(decimalPlaces);
+    final valueLabels = List.generate(
+      divisions + 1,
+      (index) => formatValue(
+        widget.min + (widget.max - widget.min) * index / divisions,
+      ),
+    );
     return ListTile(
       title: Text(widget.title, softWrap: true, maxLines: 2),
-      trailing: Text(
-        widget.valueFormatter?.call(value) ?? value.toString(),
-        style: ts.s12,
-      ),
-      subtitle: Slider(
-        value: value,
-        onChanged: (value) {
-          if (value.toInt() == value) {
-            setState(() {
-              if (widget.comicId != null) {
-                appdata.settings.setReaderSetting(
-                  widget.comicId!,
-                  widget.comicSource!,
-                  widget.settingsIndex,
-                  value.toInt(),
-                );
-              } else if (widget.useDeviceSettings) {
-                appdata.settings.setDeviceReaderSetting(
-                  widget.settingsIndex,
-                  value.toInt(),
-                );
-              } else {
-                appdata.settings[widget.settingsIndex] = value.toInt();
-              }
-              appdata.saveData();
-            });
-          } else {
-            setState(() {
-              if (widget.comicId != null) {
-                appdata.settings.setReaderSetting(
-                  widget.comicId!,
-                  widget.comicSource!,
-                  widget.settingsIndex,
-                  value,
-                );
-              } else if (widget.useDeviceSettings) {
-                appdata.settings.setDeviceReaderSetting(
-                  widget.settingsIndex,
-                  value,
-                );
-              } else {
-                appdata.settings[widget.settingsIndex] = value;
-              }
-              appdata.saveData();
-            });
-          }
-          widget.onChanged?.call();
-        },
-        divisions: ((widget.max - widget.min) / widget.interval).toInt(),
-        min: widget.min,
-        max: widget.max,
+      subtitle: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(
+            child: Slider(
+              value: value,
+              onChanged: (value) {
+                if (value.toInt() == value) {
+                  setState(() {
+                    if (widget.comicId != null) {
+                      appdata.settings.setReaderSetting(
+                        widget.comicId!,
+                        widget.comicSource!,
+                        widget.settingsIndex,
+                        value.toInt(),
+                      );
+                    } else if (widget.useDeviceSettings) {
+                      appdata.settings.setDeviceReaderSetting(
+                        widget.settingsIndex,
+                        value.toInt(),
+                      );
+                    } else {
+                      appdata.settings[widget.settingsIndex] = value.toInt();
+                    }
+                    appdata.saveData();
+                  });
+                } else {
+                  setState(() {
+                    if (widget.comicId != null) {
+                      appdata.settings.setReaderSetting(
+                        widget.comicId!,
+                        widget.comicSource!,
+                        widget.settingsIndex,
+                        value,
+                      );
+                    } else if (widget.useDeviceSettings) {
+                      appdata.settings.setDeviceReaderSetting(
+                        widget.settingsIndex,
+                        value,
+                      );
+                    } else {
+                      appdata.settings[widget.settingsIndex] = value;
+                    }
+                    appdata.saveData();
+                  });
+                }
+                widget.onChanged?.call();
+              },
+              divisions: divisions,
+              min: widget.min,
+              max: widget.max,
+            ),
+          ),
+          const SizedBox(width: 16),
+          Builder(
+            builder: (context) {
+              // 一次测量所有档位，数值变化时保持占位宽度一致。
+              final painter = TextPainter(
+                text: TextSpan(
+                  text: valueLabels.join('\n'),
+                  style: DefaultTextStyle.of(context).style.merge(ts.s12),
+                ),
+                textScaler: MediaQuery.textScalerOf(context),
+                textDirection: Directionality.of(context),
+              )..layout();
+              final width = painter.width.ceilToDouble();
+              painter.dispose();
+              return SizedBox(
+                width: width,
+                child: Text(
+                  formatValue(value),
+                  style: ts.s12,
+                  textAlign: TextAlign.end,
+                ),
+              );
+            },
+          ),
+        ],
       ),
     );
   }
