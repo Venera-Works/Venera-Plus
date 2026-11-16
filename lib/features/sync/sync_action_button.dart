@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/features/sync/data_sync.dart';
 import 'package:venera_plus/foundation/context.dart';
@@ -75,11 +76,13 @@ class _SyncActionButtonState extends State<SyncActionButton>
         ),
         actions: [
           TextButton(
+            style: actionButtonStyle,
             onPressed: () =>
                 Navigator.of(dialogContext).pop(_SyncAction.download),
             child: Text('Download'.tl),
           ),
           TextButton(
+            style: actionButtonStyle,
             onPressed: () =>
                 Navigator.of(dialogContext).pop(_SyncAction.upload),
             child: Text('Upload'.tl),

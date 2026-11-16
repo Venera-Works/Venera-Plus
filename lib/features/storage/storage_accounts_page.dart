@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/foundation/app_page_route.dart';
 import 'package:venera_plus/foundation/context.dart';
@@ -349,9 +350,7 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                           SizedBox(
                             width: double.infinity,
                             child: OutlinedButton.icon(
-                              style: OutlinedButton.styleFrom(
-                                minimumSize: const Size(0, 48),
-                              ),
+                              style: actionButtonStyle,
                               onPressed: _loggingIn ? null : _login,
                               icon: const Icon(Icons.login),
                               label: Text('Log in and authorize'.tl),
@@ -393,6 +392,7 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
                             TextButton.icon(
+                              style: actionButtonStyle,
                               onPressed: () => launchUrl(
                                 Uri.parse('https://api.oplist.org/'),
                                 mode: LaunchMode.externalApplication,
@@ -427,9 +427,7 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                   child: SizedBox(
                     width: double.infinity,
                     child: FilledButton(
-                      style: FilledButton.styleFrom(
-                        minimumSize: const Size.fromHeight(52),
-                      ),
+                      style: formActionButtonStyle,
                       onPressed: _loggingIn ? null : _save,
                       child: Text('Save and test connection'.tl),
                     ),

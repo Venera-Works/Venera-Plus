@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/foundation/appdata.dart';
@@ -106,6 +107,7 @@ class _KeywordBlockingSettingsState extends State<KeywordBlockingSettings> {
           .tl,
       tailing: [
         TextButton.icon(
+          style: actionButtonStyle,
           onPressed: () =>
               showKeywordRuleEditor(context, target: target, store: store),
           icon: const Icon(Icons.add),
@@ -118,6 +120,7 @@ class _KeywordBlockingSettingsState extends State<KeywordBlockingSettings> {
             ListTile(
               title: Text('Failed to save keyword rules'.tl),
               trailing: TextButton(
+                style: actionButtonStyle,
                 onPressed: store.pending == 0
                     ? () async {
                         try {
@@ -372,6 +375,7 @@ class _KeywordRuleEditorState extends State<KeywordRuleEditor> {
           Align(
             alignment: AlignmentDirectional.centerStart,
             child: TextButton(
+              style: actionButtonStyle,
               onPressed: () => setState(() {
                 _preview = !_preview;
               }),
@@ -392,10 +396,12 @@ class _KeywordRuleEditorState extends State<KeywordRuleEditor> {
     ),
     actions: [
       TextButton(
+        style: actionButtonStyle,
         onPressed: () => Navigator.of(context).pop(),
         child: Text('Close'.tl),
       ),
       FilledButton(
+        style: actionButtonStyle,
         onPressed: _saving || _stale ? null : _save,
         child: Text(
           (_saving

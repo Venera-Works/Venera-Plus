@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/button.dart';
 import 'package:flutter/services.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/foundation/context.dart';
@@ -158,6 +159,7 @@ class _LogsPageState extends State<LogsPage> {
                     ),
                   ),
                   TextButton(
+                    style: actionButtonStyle,
                     onPressed: () {
                       Clipboard.setData(
                         ClipboardData(text: logToShow[index].content),

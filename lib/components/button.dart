@@ -5,6 +5,54 @@ import 'package:venera_plus/foundation/widget_utils.dart';
 
 import 'menu.dart';
 
+const actionButtonStyle = ButtonStyle(
+  minimumSize: WidgetStatePropertyAll(Size(88, 48)),
+  padding: WidgetStatePropertyAll(
+    EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+  ),
+  textStyle: WidgetStatePropertyAll(
+    TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+  ),
+  shape: WidgetStatePropertyAll(
+    RoundedRectangleBorder(borderRadius: BorderRadius.all(Radius.circular(16))),
+  ),
+  visualDensity: VisualDensity.standard,
+  tapTargetSize: MaterialTapTargetSize.padded,
+);
+
+final formActionButtonStyle = actionButtonStyle.copyWith(
+  minimumSize: const WidgetStatePropertyAll(Size(88, 52)),
+);
+
+class ButtonLoadingContent extends StatelessWidget {
+  const ButtonLoadingContent({
+    super.key,
+    required this.isLoading,
+    required this.child,
+  });
+
+  final bool isLoading;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!isLoading) return child;
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        Opacity(opacity: 0, alwaysIncludeSemantics: true, child: child),
+        SizedBox.square(
+          dimension: 18,
+          child: CircularProgressIndicator(
+            strokeWidth: 2,
+            color: DefaultTextStyle.of(context).style.color,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class HoverBox extends StatefulWidget {
   const HoverBox({
     super.key,

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/components/scroll.dart';
@@ -211,6 +212,7 @@ class _ProxySettingViewState extends State<_ProxySettingView> {
           ),
           const SizedBox(height: 16),
           FilledButton(
+            style: actionButtonStyle,
             onPressed: () {
               if (formKey.currentState?.validate() ?? false) {
                 appdata.settings['proxy'] = toProxyStr();
@@ -282,6 +284,7 @@ class __DNSOverridesState extends State<_DNSOverrides> {
             for (var i = 0; i < overrides.length; i++) buildOverride(i),
             const SizedBox(height: 8),
             TextButton.icon(
+              style: actionButtonStyle,
               onPressed: () {
                 setState(() {
                   overrides.add((

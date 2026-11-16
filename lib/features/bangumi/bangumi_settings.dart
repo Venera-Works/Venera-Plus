@@ -103,7 +103,8 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
             Row(
               children: [
                 Expanded(
-                  child: Button.outlined(
+                  child: OutlinedButton(
+                    style: actionButtonStyle,
                     key: const Key('bangumi-apply-token'),
                     onPressed: _applyForToken,
                     child: Text('Apply for Access Token'.tl),
@@ -167,12 +168,17 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
             Row(
               children: [
                 Expanded(
-                  child: Button.filled(
+                  child: FilledButton(
+                    style: actionButtonStyle,
                     key: const Key('bangumi-connect'),
-                    isLoading: _isConnecting,
-                    onPressed: _connect,
-                    child: Text(
-                      username.isEmpty ? 'Connect'.tl : 'Verify connection'.tl,
+                    onPressed: _isConnecting ? null : _connect,
+                    child: ButtonLoadingContent(
+                      isLoading: _isConnecting,
+                      child: Text(
+                        username.isEmpty
+                            ? 'Connect'.tl
+                            : 'Verify connection'.tl,
+                      ),
                     ),
                   ),
                 ),
@@ -183,11 +189,14 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
               Row(
                 children: [
                   Expanded(
-                    child: Button.outlined(
+                    child: OutlinedButton(
+                      style: actionButtonStyle,
                       key: const Key('bangumi-disconnect'),
-                      isLoading: _isConnecting,
-                      onPressed: _disconnect,
-                      child: Text('Disconnect'.tl),
+                      onPressed: _isConnecting ? null : _disconnect,
+                      child: ButtonLoadingContent(
+                        isLoading: _isConnecting,
+                        child: Text('Disconnect'.tl),
+                      ),
                     ),
                   ),
                 ],

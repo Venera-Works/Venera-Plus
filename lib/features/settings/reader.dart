@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/code.dart';
 import 'package:venera_plus/components/layout.dart';
@@ -155,6 +156,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
               if (isEnabledSpecificSettings)
                 Center(
                   child: TextButton(
+                    style: actionButtonStyle,
                     onPressed: () {
                       setState(() {
                         appdata.settings.resetComicReaderSettings(key);
@@ -184,6 +186,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
               if (useDeviceSpecificSettings)
                 Center(
                   child: TextButton(
+                    style: actionButtonStyle,
                     onPressed: () {
                       setState(() {
                         appdata.settings.resetDeviceReaderSettings();
@@ -731,6 +734,7 @@ class __CustomImageProcessingState extends State<_CustomImageProcessing> {
         title: Text("Custom Image Processing".tl),
         actions: [
           TextButton(
+            style: actionButtonStyle,
             onPressed: () {
               current = defaultCustomImageProcessing;
               appdata.settings['customImageProcessing'] = current;

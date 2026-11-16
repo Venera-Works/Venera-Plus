@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
@@ -91,6 +92,7 @@ class _ContentSourcesPageState extends State<ContentSourcesPage> {
                 title: Text('Content Sources'.tl),
                 actions: [
                   TextButton.icon(
+                    style: actionButtonStyle,
                     key: const Key('add-content-source'),
                     onPressed: _addSource,
                     icon: const Icon(Icons.add),

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/translations.dart';
@@ -50,6 +51,7 @@ class BangumiServerSetting extends StatelessWidget {
           ],
         ),
         OutlinedButton.icon(
+          style: actionButtonStyle,
           key: const Key('bangumi-server-list'),
           icon: const Icon(Icons.list),
           label: Text('Website list'.tl),
@@ -316,16 +318,19 @@ class _BangumiServerListState extends State<_BangumiServerList> {
     ),
     actions: [
       TextButton(
+        style: actionButtonStyle,
         key: const Key('bangumi-server-retest'),
         onPressed: _saving ? null : () => setState(_testAll),
         child: Text('Test again'.tl),
       ),
       TextButton(
+        style: actionButtonStyle,
         key: const Key('bangumi-server-add'),
         onPressed: _saving ? null : () => _edit(),
         child: Text('Add'.tl),
       ),
       TextButton(
+        style: actionButtonStyle,
         onPressed: _saving ? null : () => Navigator.of(context).pop(),
         child: Text('Close'.tl),
       ),
@@ -456,10 +461,12 @@ class _BangumiServerEditorState extends State<_BangumiServerEditor> {
     ),
     actions: [
       TextButton(
+        style: actionButtonStyle,
         onPressed: () => Navigator.of(context).pop(),
         child: Text('Cancel'.tl),
       ),
-      TextButton(
+      FilledButton(
+        style: actionButtonStyle,
         key: const Key('bangumi-server-save'),
         onPressed: _submit,
         child: Text('Save'.tl),

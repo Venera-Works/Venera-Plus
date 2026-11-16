@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/button.dart';
 import 'package:flutter/services.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/foundation/translations.dart';
@@ -91,11 +92,13 @@ class _WindowHotkeySettingState extends State<WindowHotkeySetting> {
               children: [
                 Text(config.hotkey?.label ?? 'Not set'.tl),
                 TextButton(
+                  style: actionButtonStyle,
                   onPressed: ready ? _edit : null,
                   child: Text('Set'.tl),
                 ),
                 if (config.hotkey != null)
                   TextButton(
+                    style: actionButtonStyle,
                     onPressed: ready
                         ? () => _save(const WindowHotkeyConfiguration())
                         : null,
@@ -182,6 +185,7 @@ class _HotkeyDialogState extends State<_HotkeyDialog> {
           ),
           Text('Use Ctrl or Alt with a letter, number or F1-F11.'.tl),
           TextButton(
+            style: actionButtonStyle,
             onPressed: () => setState(() {
               _hotkey = WindowHotkey.suggested;
               _valid = true;
@@ -203,10 +207,12 @@ class _HotkeyDialogState extends State<_HotkeyDialog> {
     ),
     actions: [
       TextButton(
+        style: actionButtonStyle,
         onPressed: () => Navigator.pop(context),
         child: Text('Cancel'.tl),
       ),
       FilledButton(
+        style: actionButtonStyle,
         onPressed: _valid
             ? () => Navigator.pop(
                 context,

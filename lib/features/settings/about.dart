@@ -57,20 +57,25 @@ class _AboutSettingsState extends State<AboutSettings> {
         ).toSliver(),
         ListTile(
           title: Text("Check for updates".tl),
-          trailing: Button.filled(
-            isLoading: isCheckingUpdate,
-            child: Text("Check".tl),
-            onPressed: () async {
-              setState(() {
-                isCheckingUpdate = true;
-              });
-              try {
-                await appUpdatePrompt.check();
-              } finally {
-                if (mounted) setState(() => isCheckingUpdate = false);
-              }
-            },
-          ).fixHeight(32),
+          trailing: FilledButton(
+            style: actionButtonStyle,
+            onPressed: isCheckingUpdate
+                ? null
+                : () async {
+                    setState(() {
+                      isCheckingUpdate = true;
+                    });
+                    try {
+                      await appUpdatePrompt.check();
+                    } finally {
+                      if (mounted) setState(() => isCheckingUpdate = false);
+                    }
+                  },
+            child: ButtonLoadingContent(
+              isLoading: isCheckingUpdate,
+              child: Text("Check".tl),
+            ),
+          ),
         ).toSliver(),
         ListTile(
           title: Text("Changelog".tl),

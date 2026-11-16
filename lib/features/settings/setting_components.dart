@@ -214,7 +214,8 @@ class _DoubleLineSelectSettingsState extends State<_DoubleLineSelectSettings> {
                         widget.help!,
                       ).paddingHorizontal(16).fixWidth(double.infinity),
                       actions: [
-                        Button.filled(
+                        FilledButton(
+                          style: actionButtonStyle,
                           onPressed: context.pop,
                           child: Text("OK".tl),
                         ),
@@ -345,7 +346,8 @@ class _EndSelectorSelectSettingState extends State<_EndSelectorSelectSetting> {
                         widget.help!,
                       ).paddingHorizontal(16).fixWidth(double.infinity),
                       actions: [
-                        Button.filled(
+                        FilledButton(
+                          style: actionButtonStyle,
                           onPressed: context.pop,
                           child: Text("OK".tl),
                         ),
@@ -612,6 +614,7 @@ class _MultiPagesFilterState extends State<MultiPagesFilter> {
       tailing: [
         if (keys.length < widget.pages.length)
           TextButton.icon(
+            style: actionButtonStyle,
             label: Text("Add".tl),
             icon: const Icon(Icons.add),
             onPressed: showAddDialog,
@@ -683,6 +686,7 @@ class _MultiPagesFilterState extends State<MultiPagesFilter> {
               actions: [
                 if (selected.length < canAdd.length)
                   TextButton(
+                    style: actionButtonStyle,
                     child: Text("Select All".tl),
                     onPressed: () {
                       setState(() {
@@ -692,6 +696,7 @@ class _MultiPagesFilterState extends State<MultiPagesFilter> {
                   )
                 else
                   TextButton(
+                    style: actionButtonStyle,
                     child: Text("Deselect All".tl),
                     onPressed: () {
                       setState(() {
@@ -699,8 +704,8 @@ class _MultiPagesFilterState extends State<MultiPagesFilter> {
                       });
                     },
                   ),
-                const SizedBox(width: 8),
                 FilledButton(
+                  style: actionButtonStyle,
                   onPressed: selected.isNotEmpty
                       ? () {
                           this.setState(() {
@@ -748,10 +753,11 @@ class CallbackSetting extends StatelessWidget {
     return ListTile(
       title: Text(title),
       subtitle: subtitle == null ? null : Text(subtitle!),
-      trailing: Button.normal(
+      trailing: FilledButton.tonal(
+        style: actionButtonStyle,
         onPressed: callback,
         child: Text(actionTitle),
-      ).fixHeight(28),
+      ),
       onTap: callback,
     );
   }

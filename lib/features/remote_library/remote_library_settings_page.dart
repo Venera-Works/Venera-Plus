@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/storage/storage.dart';
@@ -140,10 +141,12 @@ Future<void> showRemoteLibraryEditor(
         ),
         actions: [
           TextButton(
+            style: actionButtonStyle,
             onPressed: () => Navigator.pop(context),
             child: Text('Cancel'.tl),
           ),
           FilledButton(
+            style: actionButtonStyle,
             onPressed: () {
               final trimmed = name.trim();
               if (trimmed.isEmpty || directories.isEmpty || account == null) {

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
@@ -153,9 +154,7 @@ class _RemoteDirectoryPickerState extends State<RemoteDirectoryPicker> {
                 ),
                 const SizedBox(width: 16),
                 FilledButton(
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size(112, 52),
-                  ),
+                  style: formActionButtonStyle,
                   onPressed: !widget.multiSelect && _selected.isEmpty
                       ? null
                       : () =>

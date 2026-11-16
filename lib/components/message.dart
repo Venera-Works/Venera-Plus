@@ -231,7 +231,13 @@ void showDialogMessage(BuildContext context, String title, String message) {
     builder: (context) => ContentDialog(
       title: title,
       content: Text(message).paddingHorizontal(16),
-      actions: [FilledButton(onPressed: context.pop, child: Text("OK".tl))],
+      actions: [
+        FilledButton(
+          style: actionButtonStyle,
+          onPressed: context.pop,
+          child: Text("OK".tl),
+        ),
+      ],
     ),
   );
 }
@@ -255,7 +261,9 @@ Future<void> showConfirmDialog({
             context.pop();
             onConfirm();
           },
-          style: FilledButton.styleFrom(backgroundColor: btnColor),
+          style: actionButtonStyle.merge(
+            FilledButton.styleFrom(backgroundColor: btnColor),
+          ),
           child: Text(confirmText.tl),
         ),
       ],
@@ -396,6 +404,7 @@ class ContentDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     var content = Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -420,12 +429,32 @@ class ContentDialog extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 16),
-        OverflowBar(
-          alignment: MainAxisAlignment.end,
-          overflowAlignment: OverflowBarAlignment.end,
-          overflowSpacing: 8,
-          children: actions,
-        ).paddingRight(12),
+        Theme(
+          data: theme.copyWith(
+            filledButtonTheme: FilledButtonThemeData(
+              style:
+                  theme.filledButtonTheme.style?.merge(actionButtonStyle) ??
+                  actionButtonStyle,
+            ),
+            outlinedButtonTheme: OutlinedButtonThemeData(
+              style:
+                  theme.outlinedButtonTheme.style?.merge(actionButtonStyle) ??
+                  actionButtonStyle,
+            ),
+            textButtonTheme: TextButtonThemeData(
+              style:
+                  theme.textButtonTheme.style?.merge(actionButtonStyle) ??
+                  actionButtonStyle,
+            ),
+          ),
+          child: OverflowBar(
+            alignment: MainAxisAlignment.end,
+            overflowAlignment: OverflowBarAlignment.end,
+            spacing: 8,
+            overflowSpacing: 8,
+            children: actions,
+          ),
+        ).paddingHorizontal(16),
         const SizedBox(height: 16),
       ],
     );
@@ -506,30 +535,35 @@ Future<void> showInputDialog({
               ],
             ),
             actions: [
-              Button.filled(
-                isLoading: isLoading,
-                onPressed: () async {
-                  if (inputValidator != null &&
-                      !inputValidator.hasMatch(controller.text)) {
-                    setState(() => error = "Invalid input".tl);
-                    return;
-                  }
-                  var futureOr = onConfirm(controller.text);
-                  Object? result;
-                  if (futureOr is Future) {
-                    setState(() => isLoading = true);
-                    result = await futureOr;
-                    setState(() => isLoading = false);
-                  } else {
-                    result = futureOr;
-                  }
-                  if (result == null) {
-                    context.pop();
-                  } else {
-                    setState(() => error = result.toString());
-                  }
-                },
-                child: Text(confirmText.tl),
+              FilledButton(
+                style: actionButtonStyle,
+                onPressed: isLoading
+                    ? null
+                    : () async {
+                        if (inputValidator != null &&
+                            !inputValidator.hasMatch(controller.text)) {
+                          setState(() => error = "Invalid input".tl);
+                          return;
+                        }
+                        var futureOr = onConfirm(controller.text);
+                        Object? result;
+                        if (futureOr is Future) {
+                          setState(() => isLoading = true);
+                          result = await futureOr;
+                          setState(() => isLoading = false);
+                        } else {
+                          result = futureOr;
+                        }
+                        if (result == null) {
+                          context.pop();
+                        } else {
+                          setState(() => error = result.toString());
+                        }
+                      },
+                child: ButtonLoadingContent(
+                  isLoading: isLoading,
+                  child: Text(confirmText.tl),
+                ),
               ),
             ],
           );
@@ -552,7 +586,11 @@ void showInfoDialog({
         title: title,
         content: Text(content).paddingHorizontal(16).paddingVertical(8),
         actions: [
-          Button.filled(onPressed: context.pop, child: Text(confirmText.tl)),
+          FilledButton(
+            style: actionButtonStyle,
+            onPressed: context.pop,
+            child: Text(confirmText.tl),
+          ),
         ],
       );
     },

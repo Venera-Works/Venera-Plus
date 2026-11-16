@@ -659,52 +659,62 @@ class _WebdavSettingState extends State<_WebdavSetting> {
               Row(
                 children: [
                   Expanded(
-                    child: Button.outlined(
-                      isLoading: isTesting,
-                      onPressed: testConnection,
-                      child: Text("Test Connection".tl),
+                    child: OutlinedButton(
+                      style: actionButtonStyle,
+                      onPressed: isTesting ? null : testConnection,
+                      child: ButtonLoadingContent(
+                        isLoading: isTesting,
+                        child: Text("Test Connection".tl),
+                      ),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
-              Center(
-                child: Button.filled(
-                  isLoading: isTesting,
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  style: actionButtonStyle,
                   key: const Key('data-sync-save'),
-                  onPressed: () async {
-                    if (isTesting) return;
-                    setState(() {
-                      isTesting = true;
-                    });
-                    if (!mounted) return;
-                    final testResult = await DataSync().configure(
-                      config: const [],
-                      excludedFields: disableSync,
-                      syncMode: syncMode,
-                      minutes: syncInterval,
-                      initialUpload: initialUpload,
-                      remoteLocation: remoteAccount == null
-                          ? null
-                          : RemoteLocation(
-                              accountId: remoteAccount!.id,
-                              directory: remoteDirectory,
-                            ),
-                    );
-                    if (!mounted) return;
-                    setState(() => isTesting = false);
-                    if (testResult.error) {
-                      context.showMessage(
-                        message:
-                            testResult.errorMessage?.tl ?? 'Saved Failed'.tl,
-                      );
-                      context.showMessage(message: "Saved Failed".tl);
-                    } else {
-                      context.showMessage(message: "Saved".tl);
-                      App.rootPop();
-                    }
-                  },
-                  child: Text("Save".tl),
+                  onPressed: isTesting
+                      ? null
+                      : () async {
+                          if (isTesting) return;
+                          setState(() {
+                            isTesting = true;
+                          });
+                          if (!mounted) return;
+                          final testResult = await DataSync().configure(
+                            config: const [],
+                            excludedFields: disableSync,
+                            syncMode: syncMode,
+                            minutes: syncInterval,
+                            initialUpload: initialUpload,
+                            remoteLocation: remoteAccount == null
+                                ? null
+                                : RemoteLocation(
+                                    accountId: remoteAccount!.id,
+                                    directory: remoteDirectory,
+                                  ),
+                          );
+                          if (!mounted) return;
+                          setState(() => isTesting = false);
+                          if (testResult.error) {
+                            context.showMessage(
+                              message:
+                                  testResult.errorMessage?.tl ??
+                                  'Saved Failed'.tl,
+                            );
+                            context.showMessage(message: "Saved Failed".tl);
+                          } else {
+                            context.showMessage(message: "Saved".tl);
+                            App.rootPop();
+                          }
+                        },
+                  child: ButtonLoadingContent(
+                    isLoading: isTesting,
+                    child: Text("Save".tl),
+                  ),
                 ),
               ),
             ],
@@ -846,22 +856,28 @@ class _BackupWebdavSettingState extends State<_BackupWebdavSetting> {
             Row(
               children: [
                 Expanded(
-                  child: Button.outlined(
-                    isLoading: isTesting,
-                    onPressed: testConnection,
-                    child: Text("Test Connection".tl),
+                  child: OutlinedButton(
+                    style: actionButtonStyle,
+                    onPressed: isTesting ? null : testConnection,
+                    child: ButtonLoadingContent(
+                      isLoading: isTesting,
+                      child: Text("Test Connection".tl),
+                    ),
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
             Row(
               children: [
                 Expanded(
-                  child: Button.filled(
-                    isLoading: isTesting,
-                    onPressed: save,
-                    child: Text("Save".tl),
+                  child: FilledButton(
+                    style: actionButtonStyle,
+                    onPressed: isTesting ? null : save,
+                    child: ButtonLoadingContent(
+                      isLoading: isTesting,
+                      child: Text("Save".tl),
+                    ),
                   ),
                 ),
               ],

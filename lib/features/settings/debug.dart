@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
@@ -69,6 +70,7 @@ class AdvancedSettingsState extends State<AdvancedSettings> {
                 ),
               ),
               TextButton(
+                style: actionButtonStyle,
                 onPressed: () {
                   try {
                     var res = JsEngine().runCode(controller.text, "<debug>");
