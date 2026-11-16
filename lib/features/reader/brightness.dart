@@ -84,17 +84,23 @@ class ReaderBrightnessControl extends StatelessWidget {
               ? ListTile(
                   contentPadding: compact ? EdgeInsets.zero : null,
                   title: Text('Reader brightness'.tl),
-                  trailing: Text('${normalizedBrightness.toStringAsFixed(1)}%'),
                   subtitle: Row(
                     children: [
                       const Icon(Icons.brightness_low, size: 20),
                       Expanded(
-                        child: Slider(
-                          min: readerBrightnessMin.toDouble(),
-                          max: readerBrightnessMax.toDouble(),
-                          value: normalizedBrightness,
-                          onChanged: onBrightnessChanged,
-                          onChangeEnd: onBrightnessChangeEnd,
+                        child: SliderTheme(
+                          data: SliderTheme.of(context).copyWith(
+                            showValueIndicator: ShowValueIndicator.onDrag,
+                          ),
+                          child: Slider(
+                            min: readerBrightnessMin.toDouble(),
+                            max: readerBrightnessMax.toDouble(),
+                            value: normalizedBrightness,
+                            label:
+                                '${normalizedBrightness.toStringAsFixed(1)}%',
+                            onChanged: onBrightnessChanged,
+                            onChangeEnd: onBrightnessChangeEnd,
+                          ),
                         ),
                       ),
                       const Icon(Icons.brightness_high, size: 20),
