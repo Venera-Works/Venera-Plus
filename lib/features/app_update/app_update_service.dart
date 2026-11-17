@@ -210,6 +210,8 @@ class AppUpdateService {
         asset.url,
         partial.path,
         cancelToken: cancelToken,
+        // 由本层统一清理临时文件，避免取消时与 Dio 重复删除。
+        deleteOnError: false,
         onReceiveProgress: (received, total) {
           if (total > 0) expectedSize ??= total;
           onProgress(received, expectedSize ?? 0);
