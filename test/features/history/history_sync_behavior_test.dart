@@ -36,6 +36,38 @@ ReadingProgress _rewoundProgress({
 void main() {
   group('HistorySyncData standalone pure Dart behaviors', () {
     test(
+      '旧时长导入独立统计且重复导入不累加，删除同步历史保留统计',
+      () {
+        final db = sqlite3.openInMemory();
+        addTearDown(db.close);
+        final records = <String, Map<String, Object?>>{
+          syncRecordKey('history', ['legacy-statistics', 1]): {
+            'title': '旧漫画',
+            'subtitle': '作者',
+            'readDurationMs': 60000,
+            'progress': {'ep': 1, 'page': 2, 'time': 1000},
+          },
+        };
+        HistorySyncData.applyLegacySyncRecords(db, records);
+        HistorySyncData.applyLegacySyncRecords(db, records);
+        expect(
+          db.select('SELECT * FROM reading_stats;').single,
+          containsPair('read_duration_ms', 60000),
+        );
+
+        HistorySyncData.applySyncRecords(db, {});
+        expect(db.select('SELECT * FROM history;'), isEmpty);
+        final statistics = db.select('SELECT * FROM reading_stats;').single;
+        expect(statistics['id'], 'legacy-statistics');
+        expect(statistics['title'], '旧漫画');
+        expect(statistics['read_duration_ms'], 60000);
+      },
+      skip: isSqliteAvailable()
+          ? false
+          : 'sqlite3 native library is unavailable',
+    );
+
+    test(
       'migrates legacy id-only primary key to composite (id, type) schema',
       () {
         final db = sqlite3.openInMemory();

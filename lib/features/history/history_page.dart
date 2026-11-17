@@ -253,7 +253,9 @@ class _HistoryPageState extends State<HistoryPage> {
           flyoutBuilder: (context) {
             return FlyoutContent(
               title: 'Clear History'.tl,
-              content: Text('Are you sure you want to clear your history?'.tl),
+              content: Text(
+                'Clear reading history? Reading statistics will be kept.'.tl,
+              ),
               actions: [
                 Button.outlined(
                   onPressed: () {

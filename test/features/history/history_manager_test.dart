@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/features/history/history.dart';
@@ -102,6 +103,114 @@ void main() {
         manager.close();
         HistoryManager.cache = null;
         await directory.delete(recursive: true);
+      });
+
+      test('旧时长在过期清理前迁移，重新打开不会重复累计', () async {
+        final item = _history('legacy-statistics')
+          ..time = DateTime.now().subtract(const Duration(days: 90))
+          ..readDurationMs = 60000;
+        manager.addHistory(item);
+        manager.imageFavoritesDatabase.execute('DROP TABLE reading_stats;');
+        manager.close();
+
+        final retentionDays = appdata.settings['historyRetentionDays'];
+        appdata.settings['historyRetentionDays'] = 30;
+        try {
+          await manager.init();
+          await manager.waitForAsyncWrites();
+        } finally {
+          appdata.settings['historyRetentionDays'] = retentionDays;
+        }
+        expect(manager.getAll(), isEmpty);
+        expect(manager.getTotalReadDurationMs(), 60000);
+        expect(manager.countWithReadDuration(), 1);
+        expect(manager.getAllByReadDuration().single.title, item.title);
+
+        manager.close();
+        await manager.init();
+        expect(manager.getAll(), isEmpty);
+        expect(manager.getTotalReadDurationMs(), 60000);
+      });
+
+      test('删除历史后重读继续累计，漫画只统计一次并持久化', () async {
+        final item = _history('reread-statistics');
+        manager.addHistory(item);
+        await manager.addReadDuration(item, const Duration(minutes: 20));
+        manager.remove(item.id, item.type);
+        await manager.waitForAsyncWrites();
+        expect(manager.find(item.id, item.type), isNull);
+        expect(manager.getTotalReadDurationMs(), 1200000);
+
+        final reread = _history(item.id)..page = 1;
+        manager.addHistory(reread);
+        await manager.addReadDuration(reread, const Duration(minutes: 5));
+        expect(manager.getTotalReadDurationMs(), 1500000);
+        expect(manager.countWithReadDuration(), 1);
+        expect(manager.getAllByReadDuration().single.readDurationMs, 1500000);
+        expect(manager.find(item.id, item.type)!.page, 1);
+
+        manager.close();
+        await manager.init();
+        expect(manager.getTotalReadDurationMs(), 1500000);
+        expect(manager.countWithReadDuration(), 1);
+      });
+
+      for (final workerCompleted in [false, true]) {
+        test('删除历史保留待保存时长，不恢复历史（后台已写入=$workerCompleted）', () async {
+          final item = _history('pending-statistics');
+          manager.addHistory(item);
+          final gate = _HistoryResultGate();
+          addTearDown(gate.open);
+          if (workerCompleted) {
+            manager.debugBeforeAsyncHistoryResultApplied = gate.pause;
+          }
+          final writing = manager.addReadDuration(
+            item,
+            const Duration(seconds: 5),
+          );
+          if (workerCompleted) await gate.reached.future;
+          manager.remove(item.id, item.type);
+          gate.open();
+          await writing;
+          await manager.waitForAsyncWrites();
+
+          expect(manager.getAll(), isEmpty);
+          expect(manager.find(item.id, item.type), isNull);
+          expect(manager.getTotalReadDurationMs(), 5000);
+          expect(manager.countWithReadDuration(), 1);
+        });
+      }
+
+      test('单独清空统计保留进度，待保存数据和旧对象不会恢复旧时长', () async {
+        final item = _history('reset-statistics');
+        manager.addHistory(item);
+        await manager.addReadDuration(item, const Duration(minutes: 20));
+        manager.recordReadingProgress(
+          item,
+          position: const ReadingPosition(ep: 1, page: 7),
+          source: ReadingNavigationSource.userForward,
+        );
+        final writing = manager.addReadDuration(
+          item,
+          const Duration(seconds: 5),
+        );
+        final clearing = manager.clearReadingStatistics();
+        await writing;
+        await clearing;
+        await manager.flushReadingProgress();
+        manager.addHistory(item);
+
+        expect(manager.getTotalReadDurationMs(), 0);
+        expect(manager.countWithReadDuration(), 0);
+        expect(manager.getAllByReadDuration(), isEmpty);
+        expect(manager.find(item.id, item.type)!.page, 7);
+
+        manager.close();
+        await manager.init();
+        expect(manager.getTotalReadDurationMs(), 0);
+        await manager.addReadDuration(item, const Duration(seconds: 2));
+        expect(manager.getTotalReadDurationMs(), 2000);
+        expect(manager.countWithReadDuration(), 1);
       });
 
       test('page turns reuse the catalog without serializing it', () async {

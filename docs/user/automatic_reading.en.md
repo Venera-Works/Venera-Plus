@@ -20,6 +20,12 @@ On Android and iOS, automatic reading keeps the screen awake by default. This ca
 
 “Settings → Browsing and Favorites → Show detailed reading progress” adds chapter and page totals to history and enabled history badges on comic cards. Chapter and group names are saved during normal reading. Older records fall back to ordinal positions without extra network requests. Grouped chapter totals refer to the current group.
 
+## Reading statistics
+
+Open reading statistics from Library → Reading Records to see total reading time, the number of tracked comics, and time by comic. Deleting, clearing, or automatically expiring reading history preserves these statistics. Reading the same comic from the same source again continues its accumulated time, independently of reading progress.
+
+Use the clear action at the top right of the statistics page to reset all statistics while keeping history and progress. Upgrading migrates reading time from remaining history; previously deleted time cannot be recovered without a backup. Statistics are included in full app-data backups and synchronization. Restoring a backup restores its statistics; older backups can only provide time still present in their history.
+
 ## Reading diagnostics
 
 Choose “Reading diagnostics” from the reader menu to start a manual capture of up to 45 seconds. Browse pages and quickly revisit them, then reopen the dialog to stop, preview and copy the report. Backgrounding, changing reading modes or leaving stops capture. Reports are cleared when the reader closes; capture is off by default and nothing is uploaded.

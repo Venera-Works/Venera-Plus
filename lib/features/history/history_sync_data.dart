@@ -143,6 +143,7 @@ class HistorySyncData {
       }
     }
     _seedLegacyReadingProgress(db);
+    _ensureReadingStatsSchema(db);
 
     // 2. Ensure image_favorites table exists
     db.execute('''
@@ -170,6 +171,41 @@ class HistorySyncData {
         physical_record TEXT NOT NULL
       );
     ''');
+  }
+
+  static void _ensureReadingStatsSchema(Database db) {
+    bool exists() => db.select('''
+      SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'reading_stats';
+      ''').isNotEmpty;
+    if (exists()) return;
+
+    db.execute('BEGIN IMMEDIATE;');
+    try {
+      // 后台写入也会初始化模式，获取写锁后再次确认，迁移只执行一次。
+      if (!exists()) {
+        db.execute('''
+          CREATE TABLE reading_stats (
+            id TEXT NOT NULL,
+            type INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            subtitle TEXT NOT NULL,
+            time INTEGER NOT NULL,
+            read_duration_ms INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (id, type)
+          );
+          ''');
+        db.execute('''
+          INSERT INTO reading_stats (id, type, title, subtitle, time, read_duration_ms)
+          SELECT id, type, COALESCE(title, ''), COALESCE(subtitle, ''),
+                 COALESCE(time, 0), COALESCE(read_duration_ms, 0)
+          FROM history;
+          ''');
+      }
+      db.execute('COMMIT;');
+    } catch (_) {
+      db.execute('ROLLBACK;');
+      rethrow;
+    }
   }
 
   static void _seedLegacyReadingProgress(Database db) {
@@ -204,9 +240,13 @@ class HistorySyncData {
     final SyncRecords records = {};
 
     // 1. Export history and historyChapter domains
-    final historyRows = db.select(
-      'SELECT id, title, subtitle, cover, type, readEpisode, max_page, read_duration_ms, reading_progress, reading_metadata, sync_projection FROM history;',
-    );
+    final historyRows = db.select('''
+      SELECT h.id, h.title, h.subtitle, h.cover, h.type, h.readEpisode, h.max_page,
+             COALESCE(s.read_duration_ms, h.read_duration_ms) AS read_duration_ms,
+             h.reading_progress, h.reading_metadata, h.sync_projection
+      FROM history h
+      LEFT JOIN reading_stats s ON s.id = h.id AND s.type = h.type;
+      ''');
 
     for (final row in historyRows) {
       final id = row['id'] as String;
@@ -609,6 +649,25 @@ class HistorySyncData {
               'readingMetadata': ?readingMetadata,
             })
           : null;
+
+      // 旧记录导入的是累计值，只取较大值；历史的缺失和删除不删除统计。
+      db.execute(
+        '''
+        INSERT INTO reading_stats (id, type, title, subtitle, time, read_duration_ms)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (id, type) DO UPDATE SET
+          title = excluded.title,
+          subtitle = excluded.subtitle,
+          time = MAX(reading_stats.time, excluded.time),
+          read_duration_ms = MAX(reading_stats.read_duration_ms, excluded.read_duration_ms)
+        WHERE reading_stats.title != excluded.title
+           OR reading_stats.subtitle != excluded.subtitle
+           OR reading_stats.time < excluded.time
+           OR reading_stats.read_duration_ms < excluded.read_duration_ms;
+        ''',
+        [comicId, typeVal, title, subtitle, time, incomingDuration],
+      );
+      changed |= db.updatedRows > 0;
 
       if (localRow != null) {
         final matches =

@@ -110,8 +110,7 @@ void main() {
             manager.remove(item.id, item.type),
         'batch deletion': (manager, item) =>
             manager.batchDeleteHistories([ComicID(item.type, item.id)]),
-        'clear history and statistics': (manager, item) =>
-            manager.clearHistory(),
+        'clear history': (manager, item) => manager.clearHistory(),
         'expiration cleanup': (manager, item) =>
             manager.clearExpiredHistory(30),
         'unfavorited cleanup': (manager, item) =>
@@ -119,7 +118,7 @@ void main() {
       };
       for (final deletion in deletions.entries) {
         test(
-          '${deletion.key} marks sync pending after rows and statistics are deleted',
+          '${deletion.key} marks sync pending and preserves statistics',
           () async {
             final item = _history();
             manager.addHistory(item);
@@ -128,7 +127,8 @@ void main() {
             final counts = <int>[];
             configureHistoryDataChangedHandler(() {
               counts.add(manager.count());
-              expect(manager.getTotalReadDurationMs(), 0);
+              expect(manager.getTotalReadDurationMs(), 3000);
+              expect(manager.countWithReadDuration(), 1);
               sync.onDataChanged();
             });
 
@@ -140,6 +140,29 @@ void main() {
           },
         );
       }
+
+      test('单独清空统计持久化后触发同步，保留阅读进度', () async {
+        final item = _history();
+        manager.addHistory(item);
+        await manager.addReadDuration(item, const Duration(seconds: 3));
+        appdata.implicitData['webdavSyncPending'] = false;
+        final durations = <int>[];
+        configureHistoryDataChangedHandler(() {
+          durations.add(manager.getTotalReadDurationMs());
+          expect(manager.find(item.id, item.type)!.page, item.page);
+          sync.onDataChanged();
+        });
+
+        await manager.clearReadingStatistics();
+        expect(durations, [0]);
+        expect(sync.hasPendingChanges, isTrue);
+        expect(manager.count(), 1);
+
+        appdata.implicitData['webdavSyncPending'] = false;
+        await manager.clearReadingStatistics();
+        expect(durations, [0]);
+        expect(sync.hasPendingChanges, isFalse);
+      });
 
       test(
         'image-favorite insertions and deletion notify after committing the shared database',

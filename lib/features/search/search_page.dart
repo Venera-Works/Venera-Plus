@@ -784,15 +784,25 @@ class _SearchHistoryState extends State<_SearchHistory> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(word, style: ts.s14),
-                  if (entry != null)
+                  Chip(
+                    visualDensity: VisualDensity.compact,
+                    label: Text(word),
+                    labelStyle: Theme.of(context).textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                  if (entry != null) ...[
+                    const SizedBox(height: 4),
                     Wrap(
                       spacing: 8,
                       runSpacing: 4,
+                      crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
-                        Chip(
-                          visualDensity: VisualDensity.compact,
-                          label: Text(sourceName!),
+                        Text(
+                          sourceName!,
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(
+                                color: context.colorScheme.onSurfaceVariant,
+                              ),
                         ),
                         ...labels.map(
                           (label) => Text(
@@ -808,6 +818,7 @@ class _SearchHistoryState extends State<_SearchHistory> {
                           ),
                       ],
                     ),
+                  ],
                 ],
               ),
             ),

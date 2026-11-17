@@ -58,7 +58,7 @@ class History implements Comic {
   String? chapterTitle;
   String? groupTitle;
 
-  /// Cumulative foreground reading time for this comic.
+  /// 历史记录中的兼容时长；阅读统计独立保存在 reading_stats 表中。
   int readDurationMs;
 
   ReadingProgress? readingProgress;
@@ -265,6 +265,29 @@ ReadingProgress? _readReadingProgress(Object? value) {
   return ReadingProgress.fromJson(value is String ? jsonDecode(value) : value);
 }
 
+class ReadingStats {
+  const ReadingStats({
+    required this.id,
+    required this.type,
+    required this.title,
+    required this.subtitle,
+    required this.readDurationMs,
+  });
+
+  ReadingStats.fromRow(Row row)
+    : id = row['id'] as String,
+      type = ComicType(row['type'] as int),
+      title = row['title'] as String,
+      subtitle = row['subtitle'] as String,
+      readDurationMs = row['read_duration_ms'] as int;
+
+  final String id;
+  final ComicType type;
+  final String title;
+  final String subtitle;
+  final int readDurationMs;
+}
+
 typedef HistoryReadingProgressCatalogResolver =
     Future<bool> Function(String recordKey, ReadingCatalog catalog);
 
@@ -425,6 +448,24 @@ class HistoryManager with ChangeNotifier {
       );
       db.execute(
         '''
+        INSERT INTO reading_stats (id, type, title, subtitle, time, read_duration_ms)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (id, type) DO UPDATE SET
+          title = excluded.title,
+          subtitle = excluded.subtitle,
+          time = MAX(reading_stats.time, excluded.time);
+        ''',
+        [
+          item.id,
+          item.type.value,
+          item.title,
+          item.subtitle,
+          time,
+          _maxInt(item.readDurationMs, existing?.readDurationMs ?? 0),
+        ],
+      );
+      db.execute(
+        '''
         INSERT OR REPLACE INTO history (
           id, title, subtitle, cover, time, type, ep, page, readEpisode,
           max_page, chapter_group, read_duration_ms, reading_progress,
@@ -452,9 +493,39 @@ class HistoryManager with ChangeNotifier {
     return _readPersistedHistory(db, item)!;
   }
 
-  static History _writeReadDuration(Database db, History item, int durationMs) {
+  static History? _writeReadDuration(
+    Database db,
+    History item,
+    int durationMs, {
+    required bool writeHistory,
+  }) {
     _runWriteTransaction(db, () {
       final existing = _readPersistedHistory(db, item);
+      db.execute(
+        '''
+        INSERT INTO reading_stats (id, type, title, subtitle, time, read_duration_ms)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (id, type) DO UPDATE SET
+          title = excluded.title,
+          subtitle = excluded.subtitle,
+          time = MAX(reading_stats.time, excluded.time),
+          read_duration_ms = reading_stats.read_duration_ms + ?;
+        ''',
+        [
+          item.id,
+          item.type.value,
+          existing?.title ?? item.title,
+          existing?.subtitle ?? item.subtitle,
+          _maxInt(
+            item.time.millisecondsSinceEpoch,
+            existing?.time.millisecondsSinceEpoch ?? 0,
+          ),
+          _maxInt(item.readDurationMs, existing?.readDurationMs ?? 0) +
+              durationMs,
+          durationMs,
+        ],
+      );
+      if (!writeHistory) return;
       if (existing != null) {
         db.execute(
           '''
@@ -503,7 +574,7 @@ class HistoryManager with ChangeNotifier {
         ],
       );
     });
-    return _readPersistedHistory(db, item)!;
+    return writeHistory ? _readPersistedHistory(db, item)! : null;
   }
 
   static _HistoryWriteResult _historyWriteResult(
@@ -536,20 +607,24 @@ class HistoryManager with ChangeNotifier {
     });
   }
 
-  static Future<_HistoryWriteResult> _addReadDurationAsync(
+  static Future<_HistoryWriteResult?> _addReadDurationAsync(
     String dbPath,
     History item,
-    int durationMs,
-  ) {
+    int durationMs, {
+    required bool writeHistory,
+  }) {
     return Isolate.run(() {
       final db = openSqliteDatabase(dbPath);
       try {
         db.execute('PRAGMA busy_timeout = 5000;');
         HistorySyncData.ensureSchema(db);
-        return _historyWriteResult(
-          _writeReadDuration(db, item, durationMs),
+        final actual = _writeReadDuration(
+          db,
           item,
+          durationMs,
+          writeHistory: writeHistory,
         );
+        return actual == null ? null : _historyWriteResult(actual, item);
       } finally {
         db.dispose();
       }
@@ -692,6 +767,7 @@ class HistoryManager with ChangeNotifier {
     int epoch,
     _HistoryWriteResult? result, {
     History? durationTarget,
+    bool notifyChanges = true,
   }) async {
     final key = _historyKey(input.id, input.type);
     while (true) {
@@ -728,8 +804,10 @@ class HistoryManager with ChangeNotifier {
         _mergeHistorySnapshot(actual, queued);
       }
       _cacheHistory(actual, compareCatalogs: false);
-      notifyListeners();
-      notifyHistoryDataChanged();
+      if (notifyChanges) {
+        notifyListeners();
+        notifyHistoryDataChanged();
+      }
       return;
     }
   }
@@ -744,16 +822,26 @@ class HistoryManager with ChangeNotifier {
     final generation = _writeGeneration(key);
     _queuedHistories[key] = snapshot;
     return _enqueueAsyncWrite(() async {
-      if (_writeGeneration(key) != generation || !isInitialized) return;
+      if (!isInitialized) return;
       final epoch = _historyCacheEpoch;
-      final result = await _addReadDurationAsync(_dbPath, snapshot, durationMs);
+      final result = await _addReadDurationAsync(
+        _dbPath,
+        snapshot,
+        durationMs,
+        writeHistory: _writeGeneration(key) == generation,
+      );
       await _applyAsyncHistoryResult(
         snapshot,
         generation,
         epoch,
         result,
         durationTarget: item,
+        notifyChanges: false,
       );
+      if (isInitialized) {
+        notifyListeners();
+        notifyHistoryDataChanged();
+      }
     });
   }
 
@@ -1392,26 +1480,53 @@ class HistoryManager with ChangeNotifier {
 
   int getTotalReadDurationMs() {
     var res = _db.select("""
-      select coalesce(sum(read_duration_ms), 0) from history;
+      select coalesce(sum(read_duration_ms), 0) from reading_stats;
     """);
     return (res.first[0] as num).round();
   }
 
   int countWithReadDuration() {
     var res = _db.select("""
-      select count(*) from history where read_duration_ms > 0;
+      select count(*) from reading_stats where read_duration_ms > 0;
     """);
     return (res.first[0] as num).round();
   }
 
-  List<History> getAllByReadDuration() {
+  List<ReadingStats> getAllByReadDuration() {
     var res = _db.select("""
-      select * from history
+      select * from reading_stats
       where read_duration_ms > 0
       order by read_duration_ms desc, time desc;
     """);
-    return res.map(History.fromRow).toList();
+    return res.map(ReadingStats.fromRow).toList();
   }
+
+  Future<void> clearReadingStatistics() => _enqueueAsyncWrite(() async {
+    var changed = false;
+    _runWriteTransaction(_db, () {
+      // 保留零值身份，避免旧阅读器对象或待保存进度重新导入已清空的时长。
+      _db.execute(
+        'UPDATE reading_stats SET read_duration_ms = 0 WHERE read_duration_ms > 0;',
+      );
+      changed = _db.updatedRows > 0;
+      _db.execute('''
+        UPDATE history SET read_duration_ms = 0, sync_projection = NULL
+        WHERE read_duration_ms > 0;
+        ''');
+      changed |= _db.updatedRows > 0;
+    });
+    for (final history in [
+      ...cachedHistories.values,
+      ..._pendingReadingProgress.values,
+      ..._queuedHistories.values,
+    ]) {
+      history.readDurationMs = 0;
+    }
+    if (!changed) return;
+    _historyCacheEpoch++;
+    notifyListeners();
+    notifyHistoryDataChanged();
+  });
 
   void close() {
     _readingProgressTimer?.cancel();

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/foundation/app_page_route.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
 
 void main() {
   group('HistoryPage', () {
@@ -165,12 +166,68 @@ void main() {
       expect(tester.takeException(), isNull);
     });
   });
+
+  testWidgets('阅读统计清空需要确认，取消保留统计，确认后显示空状态', (tester) async {
+    final previousHistory = HistoryManager.cache;
+    final manager = _HistoryManager()
+      ..statistics.add(
+        const ReadingStats(
+          id: 'statistics',
+          type: ComicType.local,
+          title: '统计漫画',
+          subtitle: '作者',
+          readDurationMs: 1200000,
+        ),
+      );
+    HistoryManager.cache = manager;
+    addTearDown(() {
+      HistoryManager.cache = previousHistory;
+      manager.dispose();
+    });
+    await tester.pumpWidget(const MaterialApp(home: ReadingStatsPage()));
+    expect(find.text('统计漫画'), findsWidgets);
+    expect(find.text('20 min'), findsWidgets);
+
+    await tester.tap(find.byTooltip('Clear reading statistics'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.close));
+    await tester.pumpAndSettle();
+    expect(find.text('统计漫画'), findsWidgets);
+    expect(manager.statistics.single.readDurationMs, 1200000);
+
+    await tester.tap(find.byTooltip('Clear reading statistics'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Clear'));
+    await tester.pumpAndSettle();
+    expect(find.text('No reading time recorded'), findsNWidgets(2));
+    expect(find.text('0 min'), findsOneWidget);
+    expect(manager.statistics, isEmpty);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 }
 
 class _HistoryManager extends HistoryManager {
   _HistoryManager() : super.create();
 
   int queries = 0;
+  final statistics = <ReadingStats>[];
+
+  @override
+  List<ReadingStats> getAllByReadDuration() => statistics;
+
+  @override
+  int getTotalReadDurationMs() =>
+      statistics.fold(0, (total, item) => total + item.readDurationMs);
+
+  @override
+  int countWithReadDuration() => statistics.length;
+
+  @override
+  Future<void> clearReadingStatistics() async {
+    statistics.clear();
+    notifyListeners();
+  }
 
   @override
   List<History> getAll() {

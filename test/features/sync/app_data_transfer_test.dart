@@ -478,6 +478,31 @@ void main() {
         },
       );
 
+      test('已删除历史的统计随完整备份恢复，覆盖备份后的统计变更', () async {
+        _addHistory('deleted-history', '保留统计的漫画');
+        final manager = HistoryManager();
+        final item = manager.find('deleted-history', ComicType.local)!;
+        await manager.addReadDuration(item, const Duration(minutes: 20));
+        manager.remove(item.id, item.type);
+        await manager.waitForAsyncWrites();
+        final archive = await exportAppData(false);
+
+        await manager.clearReadingStatistics();
+        _addHistory('later-history', '之后阅读的漫画');
+        await manager.addReadDuration(
+          manager.find('later-history', ComicType.local)!,
+          const Duration(minutes: 2),
+        );
+        await importAppData(archive);
+
+        final restored = HistoryManager();
+        expect(restored.getAll(), isEmpty);
+        expect(restored.getTotalReadDurationMs(), 1200000);
+        expect(restored.countWithReadDuration(), 1);
+        expect(restored.getAllByReadDuration().single.id, item.id);
+        expect(restored.getAllByReadDuration().single.title, item.title);
+      });
+
       test(
         'restores detailed search history and keyword options from a native backup',
         () async {

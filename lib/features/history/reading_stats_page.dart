@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/appbar.dart';
+import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/history/history_manager.dart';
 import 'package:venera_plus/foundation/context.dart';
@@ -41,7 +42,29 @@ class _ReadingStatsPageState extends State<ReadingStatsPage> {
     return Scaffold(
       body: SmoothCustomScrollView(
         slivers: [
-          SliverAppbar(title: Text('Reading statistics'.tl)),
+          SliverAppbar(
+            title: Text('Reading statistics'.tl),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.clear_all),
+                tooltip: 'Clear reading statistics'.tl,
+                onPressed: histories.isEmpty
+                    ? null
+                    : () => showConfirmDialog(
+                        context: context,
+                        title: 'Clear reading statistics'.tl,
+                        content:
+                            'Clear all reading statistics? Reading history and progress will be kept.'
+                                .tl,
+                        confirmText: 'Clear',
+                        btnColor: context.colorScheme.error,
+                        onConfirm: () async {
+                          await manager.clearReadingStatistics();
+                        },
+                      ),
+              ),
+            ],
+          ),
           SliverToBoxAdapter(
             child: ReadingStatsSummary(
               totalDuration: totalDuration,
