@@ -814,7 +814,10 @@ class _Accounts extends RemoteStorageAccounts {
   }
 
   @override
-  RemoteFileStore storeFor(String accountId) => OpenListFileStore(saved!, rpc);
+  RemoteFileStore storeFor(
+    String accountId, {
+    bool optimizeWebDavTransfers = false,
+  }) => OpenListFileStore(saved!, rpc);
 
   @override
   Future<void> updateStatus(StorageAccount value) async => saved = value;
