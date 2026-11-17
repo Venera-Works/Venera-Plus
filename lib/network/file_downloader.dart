@@ -128,7 +128,15 @@ class FileDownloader {
   void _download(StreamController<DownloadingStatus> resultStream) async {
     Timer? statusTimer;
     try {
-      var proxy = await getProxy();
+      String? proxy;
+      _dio.interceptors.add(
+        InterceptorsWrapper(
+          onRequest: (options, handler) async {
+            proxy = await getProxy();
+            handler.next(options);
+          },
+        ),
+      );
       _dio.httpClientAdapter = IOHttpClientAdapter(
         createHttpClient: () {
           return HttpClient()
@@ -214,6 +222,7 @@ class FileDownloader {
       resultStream.close();
     } finally {
       statusTimer?.cancel();
+      _dio.close();
     }
   }
 

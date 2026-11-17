@@ -7,14 +7,19 @@ String? _cachedProxy;
 
 DateTime? _cachedProxyTime;
 
+String? _cachedProxySetting;
+
 Future<String?> getProxy() async {
-  if (_cachedProxyTime != null &&
+  final setting = appdata.settings['proxy'] as String;
+  if (_cachedProxySetting == setting &&
+      _cachedProxyTime != null &&
       DateTime.now().difference(_cachedProxyTime!).inSeconds < 1) {
     return _cachedProxy;
   }
   String? proxy = await _getProxy();
   _cachedProxy = proxy;
   _cachedProxyTime = DateTime.now();
+  _cachedProxySetting = setting;
   return proxy;
 }
 

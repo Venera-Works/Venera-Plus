@@ -15,6 +15,51 @@ void main() {
     appdata.settings['proxy'] = 'system';
   });
 
+  test('下载中关闭代理后后续分块直连且文件完整', () async {
+    final dir = Directory.systemTemp.createTempSync('venera-proxy-download-');
+    final bytes = List<int>.generate(24 * 1024, (index) => index % 251);
+    final directRanges = <String>[];
+    final proxiedRequests = <String>[];
+    final origin = await _serveBytes(
+      bytes,
+      onRequest: (request) {
+        if (request.method == 'GET') {
+          directRanges.add(request.headers.value(HttpHeaders.rangeHeader)!);
+        }
+      },
+    );
+    final proxy = await _serveBytes(
+      bytes,
+      onRequest: (request) {
+        proxiedRequests.add(
+          request.headers.value(HttpHeaders.rangeHeader) ?? request.method,
+        );
+        if (request.method == 'GET') appdata.settings['proxy'] = 'direct';
+      },
+    );
+    addTearDown(() async {
+      await origin.close(force: true);
+      await proxy.close(force: true);
+      await dir.delete(recursive: true);
+    });
+
+    appdata.settings['proxy'] = '127.0.0.1:${proxy.port}';
+    final savePath = '${dir.path}/download.bin';
+    final downloader = FileDownloader(
+      'http://127.0.0.1:${origin.port}/download.bin',
+      savePath,
+      maxConcurrent: 1,
+      chunkSize: 8 * 1024,
+    );
+    final statuses = await downloader.start().toList();
+
+    expect(proxiedRequests, ['HEAD', 'bytes=0-8191']);
+    expect(directRanges, ['bytes=8192-16383', 'bytes=16384-24575']);
+    expect(statuses.last.isFinished, isTrue);
+    expect(await File(savePath).readAsBytes(), bytes);
+    expect(File('$savePath.download').existsSync(), isFalse);
+  });
+
   test('FileDownloader writes concurrent range blocks sequentially', () async {
     final dir = Directory.systemTemp.createTempSync('venera-downloader-');
     final bytes = List<int>.generate(96 * 1024, (index) => index % 251);
@@ -199,6 +244,7 @@ void main() {
 
 Future<HttpServer> _serveBytes(
   List<int> data, {
+  void Function(HttpRequest request)? onRequest,
   Set<int> failRangeStarts = const {},
   Future<void>? beforeHeadResponse,
   Set<int> pausedRangeStarts = const {},
@@ -208,6 +254,7 @@ Future<HttpServer> _serveBytes(
   final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
   unawaited(() async {
     await for (final request in server) {
+      onRequest?.call(request);
       await _handleRequest(
         request,
         data,

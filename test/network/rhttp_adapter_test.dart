@@ -41,14 +41,17 @@ class _Adapter extends RHttpAdapter {
 }
 
 class _ReusableAdapter extends RHttpAdapter {
-  _ReusableAdapter(this.clientReady) : super(reuseConnections: true);
+  _ReusableAdapter(this.clientReady, {this.onCreate})
+    : super(reuseConnections: true);
 
   final Future<rhttp.RhttpClient> clientReady;
+  final Future<rhttp.RhttpClient> Function(rhttp.ClientSettings)? onCreate;
+  rhttp.ProxySettings? proxy;
   var creations = 0;
 
   @override
   Future<rhttp.ClientSettings> get settings async =>
-      const rhttp.ClientSettings();
+      rhttp.ClientSettings(proxySettings: proxy);
 
   @override
   rhttp.CancelToken createCancelToken() => _CancelToken();
@@ -58,7 +61,7 @@ class _ReusableAdapter extends RHttpAdapter {
     rhttp.ClientSettings configured,
   ) {
     creations++;
-    return clientReady;
+    return onCreate?.call(configured) ?? clientReady;
   }
 }
 
@@ -66,6 +69,7 @@ class _ReusableClient implements rhttp.RhttpClient {
   var requests = 0;
   var disposed = false;
   bool? cancelRunning;
+  Future<void>? beforeResponse;
 
   @override
   Future<rhttp.HttpResponse> request({
@@ -82,6 +86,7 @@ class _ReusableClient implements rhttp.RhttpClient {
   }) async {
     if (disposed) throw StateError('会话已关闭');
     requests++;
+    await beforeResponse;
     return _response(Stream.value(Uint8List.fromList([requests])));
   }
 
@@ -186,6 +191,135 @@ Future<List<Object>> _uncaughtDuring(Future<void> Function() action) async {
 }
 
 void main() {
+  test('代理开关和端口变化重建会话，相同代理继续复用', () async {
+    final clients = <_ReusableClient>[];
+    final adapter = _ReusableAdapter(
+      Future.value(_ReusableClient()),
+      onCreate: (_) async {
+        final client = _ReusableClient();
+        clients.add(client);
+        return client;
+      },
+    );
+    for (final proxy in [
+      rhttp.ProxySettings.proxy('127.0.0.1:7890'),
+      rhttp.ProxySettings.proxy('127.0.0.1:7890'),
+      const rhttp.ProxySettings.noProxy(),
+      rhttp.ProxySettings.proxy('127.0.0.1:7891'),
+      rhttp.ProxySettings.proxy('127.0.0.1:7890'),
+    ]) {
+      adapter.proxy = proxy;
+      final response = await adapter.fetch(
+        RequestOptions(path: _url),
+        null,
+        null,
+      );
+      await response.stream.drain<void>();
+    }
+    expect(adapter.creations, 4);
+    expect(clients.map((client) => client.requests), [2, 1, 1, 1]);
+    for (final client in clients.take(3)) {
+      expect(client.disposed, isTrue);
+      expect(client.cancelRunning, isFalse);
+    }
+    adapter.close(force: true);
+    expect(clients.last.cancelRunning, isTrue);
+  });
+
+  test('切换代理不会取消已开始的请求', () async {
+    final gate = Completer<void>();
+    final old = _ReusableClient()..beforeResponse = gate.future;
+    final current = _ReusableClient();
+    final adapter = _ReusableAdapter(
+      Future.value(current),
+      onCreate: (settings) async =>
+          settings.proxySettings is rhttp.StaticProxy ? old : current,
+    )..proxy = const rhttp.ProxySettings.proxy('127.0.0.1:7890');
+    final oldResponse = adapter.fetch(RequestOptions(path: _url), null, null);
+    await pumpEventQueue();
+    expect(old.requests, 1);
+
+    adapter.proxy = const rhttp.ProxySettings.noProxy();
+    final response = await adapter.fetch(
+      RequestOptions(path: _url),
+      null,
+      null,
+    );
+    await response.stream.drain<void>();
+    expect(old.disposed, isTrue);
+    expect(old.cancelRunning, isFalse);
+    gate.complete();
+    await (await oldResponse).stream.drain<void>();
+    adapter.close(force: true);
+    expect(current.cancelRunning, isTrue);
+  });
+
+  test('初始化中切换代理时迟到的旧会话不会覆盖新会话', () async {
+    final oldReady = Completer<rhttp.RhttpClient>();
+    final currentReady = Completer<rhttp.RhttpClient>();
+    final old = _ReusableClient();
+    final current = _ReusableClient();
+    final adapter = _ReusableAdapter(
+      currentReady.future,
+      onCreate: (settings) => settings.proxySettings is rhttp.StaticProxy
+          ? oldReady.future
+          : currentReady.future,
+    )..proxy = const rhttp.ProxySettings.proxy('127.0.0.1:7890');
+    final oldResponse = adapter.fetch(RequestOptions(path: _url), null, null);
+    await pumpEventQueue();
+
+    adapter.proxy = const rhttp.ProxySettings.noProxy();
+    final responses = [
+      adapter.fetch(RequestOptions(path: _url), null, null),
+      adapter.fetch(RequestOptions(path: _url), null, null),
+    ];
+    await pumpEventQueue();
+    expect(adapter.creations, 2);
+    currentReady.complete(current);
+    for (final response in await Future.wait(responses)) {
+      await response.stream.drain<void>();
+    }
+    oldReady.complete(old);
+    await (await oldResponse).stream.drain<void>();
+    expect(old.disposed, isTrue);
+    expect(old.cancelRunning, isFalse);
+    adapter.close(force: true);
+    expect(current.cancelRunning, isTrue);
+  });
+
+  test('切换代理后的初始化尚未完成时关闭会释放两个客户端', () async {
+    final oldReady = Completer<rhttp.RhttpClient>();
+    final currentReady = Completer<rhttp.RhttpClient>();
+    final old = _ReusableClient();
+    final current = _ReusableClient();
+    final adapter = _ReusableAdapter(
+      currentReady.future,
+      onCreate: (settings) => settings.proxySettings is rhttp.StaticProxy
+          ? oldReady.future
+          : currentReady.future,
+    )..proxy = const rhttp.ProxySettings.proxy('127.0.0.1:7890');
+    final oldCheck = expectLater(
+      adapter.fetch(RequestOptions(path: _url), null, null),
+      throwsStateError,
+    );
+    await pumpEventQueue();
+    adapter.proxy = const rhttp.ProxySettings.noProxy();
+    final currentCheck = expectLater(
+      adapter.fetch(RequestOptions(path: _url), null, null),
+      throwsStateError,
+    );
+    await pumpEventQueue();
+    adapter.close(force: true);
+    oldReady.complete(old);
+    currentReady.complete(current);
+    await Future.wait([oldCheck, currentCheck]);
+    for (final client in [old, current]) {
+      expect(client.disposed, isTrue);
+      expect(client.cancelRunning, isTrue);
+      expect(client.requests, 0);
+    }
+  });
+
   test('复用会话依次返回响应，关闭后拒绝继续请求', () async {
     final client = _ReusableClient();
     final adapter = _ReusableAdapter(Future.value(client));

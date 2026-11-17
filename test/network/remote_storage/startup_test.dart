@@ -27,6 +27,92 @@ void main() {
     await dataDir.delete(recursive: true);
   });
 
+  test('内核初始化前重新解析代理，不沿用应用启动时的地址', () async {
+    String? proxy = '127.0.0.1:7890';
+    storage.configureOpenList(
+      rpc,
+      dataDir: dataDir.path,
+      proxy: proxy,
+      proxyResolver: () async => proxy,
+    );
+    proxy = null;
+    rpc.ready.complete(const {
+      'data': {'ready': true},
+    });
+    await storage.ensureInitialized();
+    expect(rpc.configurations.single.containsKey('proxy'), isFalse);
+  });
+
+  test('系统代理变化后网盘操作等待更新，并发操作共享代理更新', () async {
+    String? proxy = '127.0.0.1:7890';
+    storage.configureOpenList(
+      rpc,
+      dataDir: dataDir.path,
+      proxyResolver: () async => proxy,
+    );
+    rpc.ready.complete(const {
+      'data': {'ready': true},
+    });
+    await storage.ensureInitialized();
+    expect(rpc.configurations.single['proxy'], 'http://127.0.0.1:7890');
+    final store = storage.storeFor(_account.id);
+
+    proxy = null;
+    rpc.ready = Completer<Map<String, dynamic>>();
+    final ready = storage.ensureInitialized();
+    final listing = store.list('/');
+    await pumpEventQueue();
+    expect(rpc.configurations, hasLength(2));
+    expect(rpc.configurations.last.containsKey('proxy'), isFalse);
+    expect(rpc.calls, isNot(contains('list')));
+    rpc.ready.complete(const {
+      'data': {'ready': true},
+    });
+    await ready;
+    expect(await listing, isEmpty);
+    expect(rpc.configurations, hasLength(2));
+    expect(
+      rpc.calls.lastIndexOf('initialize'),
+      lessThan(rpc.calls.indexOf('list')),
+    );
+
+    proxy = '127.0.0.1:7891';
+    expect(await store.list('/other/'), isEmpty);
+    expect(rpc.configurations, hasLength(3));
+    expect(rpc.configurations.last['proxy'], 'http://127.0.0.1:7891');
+    expect(rpc.calls.where((method) => method == 'accounts'), hasLength(1));
+  });
+
+  test('代理更新失败后保留账号并允许下次操作重试', () async {
+    String? proxy = '127.0.0.1:7890';
+    storage.configureOpenList(
+      rpc,
+      dataDir: dataDir.path,
+      proxyResolver: () async => proxy,
+    );
+    rpc.ready.complete(const {
+      'data': {'ready': true},
+    });
+    await storage.ensureInitialized();
+    proxy = null;
+    rpc.ready = Completer<Map<String, dynamic>>()
+      ..complete(const {
+        'error': {'code': 'unavailable', 'message': 'Offline'},
+      });
+    final store = storage.storeFor(_account.id);
+    await expectLater(store.list('/'), throwsA(isA<RemoteStorageException>()));
+    expect(rpc.calls, isNot(contains('list')));
+    expect(storage.accounts.single.authorization['refresh_token'], 'rotated');
+
+    rpc.ready = Completer<Map<String, dynamic>>()
+      ..complete(const {
+        'data': {'ready': true},
+      });
+    expect(await store.list('/'), isEmpty);
+    expect(rpc.configurations, hasLength(3));
+    expect(rpc.configurations.last.containsKey('proxy'), isFalse);
+  });
+
   test(
     'concurrent operations share initialization and keep rotated tokens',
     () async {
@@ -221,6 +307,7 @@ class _StartupRpc implements OpenListRpcClient {
   var ready = Completer<Map<String, dynamic>>();
   final calls = <String>[];
   final saved = <Map<String, dynamic>>[];
+  final configurations = <Map<String, dynamic>>[];
 
   @override
   Future<Map<String, dynamic>> invoke(
@@ -229,6 +316,7 @@ class _StartupRpc implements OpenListRpcClient {
   ) async {
     calls.add(method);
     if (method == 'initialize') {
+      configurations.add(Map.of(request));
       if (!started.isCompleted) started.complete();
       return ready.future;
     }

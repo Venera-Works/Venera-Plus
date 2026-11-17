@@ -526,6 +526,7 @@ class RHttpAdapter implements HttpClientAdapter {
   final bool reuseConnections;
   Future<rhttp.RhttpClient>? _clientInitialization;
   rhttp.RhttpClient? _client;
+  rhttp.ProxySettings? _clientProxySettings;
   bool _closed = false;
 
   Future<rhttp.ClientSettings> get settings async {
@@ -599,30 +600,50 @@ class RHttpAdapter implements HttpClientAdapter {
   ) async {
     if (reuseConnections) {
       if (_closed) throw StateError('HTTP 会话已关闭');
-      final client = await (_clientInitialization ??= createReusableClient(
+      final proxy = configured.proxySettings;
+      final previousProxy = _clientProxySettings;
+      final sameProxy =
+          proxy == previousProxy ||
+          (proxy is rhttp.StaticProxy &&
+              previousProxy is rhttp.StaticProxy &&
+              proxy.url == previousProxy.url &&
+              proxy.condition == previousProxy.condition);
+      if (!sameProxy) {
+        _client?.dispose();
+        _client = null;
+        _clientInitialization = null;
+        _clientProxySettings = proxy;
+      }
+      final initialization = _clientInitialization ??= createReusableClient(
         configured,
-      ));
+      );
+      final client = await initialization;
       if (_closed) {
         client.dispose(cancelRunningRequests: true);
         throw StateError('HTTP 会话已关闭');
       }
-      _client = client;
-      return client.request(
-        cancelToken: cancelToken,
-        method: rhttp.HttpMethod(options.method),
-        url: options.uri.toString(),
-        expectBody: rhttp.HttpExpectBody.stream,
-        body: requestStream == null
-            ? null
-            : rhttp.HttpBody.stream(requestStream),
-        headers: rhttp.HttpHeaders.rawMap(
-          Map.fromEntries(
-            options.headers.entries.map(
-              (e) => MapEntry(e.key, e.value.toString().trim()),
+      if (identical(initialization, _clientInitialization)) _client = client;
+      try {
+        return await client.request(
+          cancelToken: cancelToken,
+          method: rhttp.HttpMethod(options.method),
+          url: options.uri.toString(),
+          expectBody: rhttp.HttpExpectBody.stream,
+          body: requestStream == null
+              ? null
+              : rhttp.HttpBody.stream(requestStream),
+          headers: rhttp.HttpHeaders.rawMap(
+            Map.fromEntries(
+              options.headers.entries.map(
+                (e) => MapEntry(e.key, e.value.toString().trim()),
+              ),
             ),
           ),
-        ),
-      );
+        );
+      } finally {
+        // 初始化期间代理变化时，迟到的旧客户端仍需释放。
+        if (!identical(initialization, _clientInitialization)) client.dispose();
+      }
     }
     return rhttp.Rhttp.request(
       cancelToken: cancelToken,

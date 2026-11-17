@@ -21,8 +21,10 @@ class RemoteStorageAccounts with ChangeNotifier {
   static final instance = RemoteStorageAccounts();
   OpenListRpcClient? _openListRpc;
   Future<void>? _initialization;
+  Future<void>? _proxyUpdate;
   String? _dataDir;
   String? _proxy;
+  Future<String?> Function()? _proxyResolver;
   final _uuid = const Uuid();
   final _activeStores = <String, Set<RemoteFileStore>>{};
   final _readSchedulers = <String, RemoteReadScheduler>{};
@@ -55,19 +57,22 @@ class RemoteStorageAccounts with ChangeNotifier {
     OpenListRpcClient rpc, {
     String? dataDir,
     String? proxy,
+    Future<String?> Function()? proxyResolver,
   }) {
     _openListRpc = rpc;
     _dataDir = dataDir;
     _proxy = proxy;
+    _proxyResolver = proxyResolver;
   }
 
-  /// Shared by background startup and operations requested before it completes.
-  Future<void> ensureInitialized() {
-    final pending = _initialization;
-    if (pending != null) return pending;
+  /// 后台启动和网盘操作共享初始化，并在操作前应用当前代理。
+  Future<void> ensureInitialized() async {
     final dataDir = _dataDir;
-    if (dataDir == null) return Future.value();
-    return initialize(dataDir: dataDir, proxy: _proxy);
+    if (dataDir == null) return;
+    final resolver = _proxyResolver;
+    final proxy = resolver == null ? _proxy : await resolver();
+    await (_initialization ?? initialize(dataDir: dataDir, proxy: proxy));
+    await updateProxy(proxy);
   }
 
   Future<void> initialize({required String dataDir, String? proxy}) {
@@ -99,18 +104,28 @@ class RemoteStorageAccounts with ChangeNotifier {
   }
 
   Future<void> updateProxy(String? proxy) async {
-    _proxy = proxy;
     final rpc = _openListRpc;
     final dataDir = _dataDir;
     if (rpc == null || dataDir == null) return;
-    await ensureInitialized();
-    _throwRpcError(
-      await rpc.invoke('initialize', {
-        'dataDir': dataDir,
-        if (proxy != null && proxy.isNotEmpty)
-          'proxy': proxy.contains('://') ? proxy : 'http://$proxy',
-      }),
-    );
+    await (_initialization ?? initialize(dataDir: dataDir, proxy: proxy));
+    while (_proxyUpdate != null) {
+      await _proxyUpdate;
+    }
+    if (_proxy == proxy) return;
+    final update = rpc
+        .invoke('initialize', {
+          'dataDir': dataDir,
+          if (proxy != null && proxy.isNotEmpty)
+            'proxy': proxy.contains('://') ? proxy : 'http://$proxy',
+        })
+        .then(_throwRpcError);
+    _proxyUpdate = update;
+    try {
+      await update;
+      _proxy = proxy;
+    } finally {
+      _proxyUpdate = null;
+    }
   }
 
   List<StorageAccount> get accounts => _readAccounts();
@@ -418,6 +433,7 @@ class RemoteStorageAccounts with ChangeNotifier {
       try {
         try {
           await _initialization;
+          await _proxyUpdate;
         } on RemoteStorageException {
           // A failed initialization still needs its native resources closed.
         }

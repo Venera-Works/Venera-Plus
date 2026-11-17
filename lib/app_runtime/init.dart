@@ -239,7 +239,7 @@ Future<void> init({bool deferBackgroundTasks = false}) async {
   remoteStorage.configureOpenList(
     EmbeddedOpenListRpc(),
     dataDir: '${App.dataPath}/openlist',
-    proxy: await getProxy(),
+    proxyResolver: getProxy,
   );
   await StartupTiming.measure('Storage migrations', () async {
     await RemoteComicLibraryRegistry.migrateLegacyRemoteLibrary();
@@ -399,17 +399,6 @@ void startBackgroundTasks() {
   _backgroundTasksStarted = true;
   final remoteStorage = RemoteStorageAccounts.instance;
   _watchRemoteLibraryConfiguration(remoteStorage);
-  var proxySetting = appdata.settings['proxy'];
-  appdata.settings.addListener(() {
-    final current = appdata.settings['proxy'];
-    if (current == proxySetting) return;
-    proxySetting = current;
-    unawaited(
-      () async {
-        await remoteStorage.updateProxy(await getProxy());
-      }().wait(),
-    );
-  });
   if (remoteStorage.accounts.any(
     (account) => account.backend == StorageBackend.openlist,
   )) {
