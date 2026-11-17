@@ -198,7 +198,7 @@ class _RemoteLibrariesSliverState extends State<RemoteLibrariesSliver> {
           return SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.all(24),
-              child: Text('No Remote Comic Libraries'.tl),
+              child: Text('No Cloud Comic Libraries'.tl),
             ),
           );
         }

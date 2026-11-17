@@ -180,14 +180,18 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
             _group([
               ListTile(
                 key: const Key('comic-libraries-entry'),
-                title: Text('Online Comic Libraries'.tl),
+                title: Text('Cloud Comic Libraries'.tl),
                 subtitle: Text(
                   '@count comic libraries'.tlParams({
                     'count': libraries.length,
                   }),
                 ),
                 trailing: const Icon(Icons.arrow_right),
-                onTap: () => context.to(() => const ContentSourcesPage()),
+                onTap: () => context.to(
+                  () => const ContentSourcesPage(
+                    initialSection: ContentSourceSection.cloudLibraries,
+                  ),
+                ),
               ),
               ListTile(
                 key: const Key('data-sync-entry'),

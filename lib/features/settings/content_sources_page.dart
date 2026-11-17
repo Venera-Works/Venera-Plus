@@ -8,21 +8,36 @@ import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 
-import 'setting_components.dart';
+enum ContentSourceSection { websites, cloudLibraries }
 
 class ContentSourcesPage extends StatefulWidget {
-  const ContentSourcesPage({super.key, this.initialAccountId});
+  const ContentSourcesPage({
+    super.key,
+    this.initialAccountId,
+    this.initialSection = ContentSourceSection.websites,
+  });
 
   final String? initialAccountId;
+  final ContentSourceSection initialSection;
 
   @override
   State<ContentSourcesPage> createState() => _ContentSourcesPageState();
 }
 
-class _ContentSourcesPageState extends State<ContentSourcesPage> {
+class _ContentSourcesPageState extends State<ContentSourcesPage>
+    with SingleTickerProviderStateMixin {
+  late final TabController _tabController;
+
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(
+      length: 2,
+      initialIndex: widget.initialAccountId == null
+          ? widget.initialSection.index
+          : ContentSourceSection.cloudLibraries.index,
+      vsync: this,
+    );
     if (widget.initialAccountId != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
@@ -35,40 +50,17 @@ class _ContentSourcesPageState extends State<ContentSourcesPage> {
     }
   }
 
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
   Future<void> _addSource() async {
-    final isRemoteLibrary = await showDialog<bool>(
-      context: context,
-      builder: (context) => SimpleDialog(
-        title: Text('Add Content Source'.tl),
-        children: [
-          SimpleDialogOption(
-            key: const Key('add-website-source'),
-            onPressed: () => Navigator.pop(context, false),
-            child: ListTile(
-              leading: const Icon(Icons.extension_outlined),
-              title: Text('Website Source'.tl),
-              subtitle: Text('Install from a repository, link or file.'.tl),
-            ),
-          ),
-          SimpleDialogOption(
-            key: const Key('add-remote-library'),
-            onPressed: () => Navigator.pop(context, true),
-            child: ListTile(
-              leading: const Icon(Icons.folder_open_outlined),
-              title: Text('Remote Comic Library'.tl),
-              subtitle: Text(
-                'Choose a cloud account and comic directories.'.tl,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-    if (isRemoteLibrary == null || !mounted) return;
-    if (isRemoteLibrary) {
-      await showRemoteLibraryEditor(context);
-    } else {
+    if (_tabController.index == 0) {
       await showAddWebsiteSource(context);
+    } else {
+      await showRemoteLibraryEditor(context);
     }
   }
 
@@ -76,49 +68,67 @@ class _ContentSourcesPageState extends State<ContentSourcesPage> {
   Widget build(BuildContext context) {
     final storage = RemoteStorageAccounts.instance;
     return Scaffold(
-      body: ListenableBuilder(
-        listenable: Listenable.merge([
-          ComicSourceManager(),
-          storage,
-          appdata.settings,
-        ]),
-        builder: (context, _) {
-          final websiteCount = ComicSource.all()
-              .where((source) => source.filePath.isNotEmpty)
-              .length;
-          return SmoothCustomScrollView(
-            slivers: [
-              SliverAppbar(
-                title: Text('Content Sources'.tl),
-                actions: [
-                  TextButton.icon(
-                    style: actionButtonStyle,
-                    key: const Key('add-content-source'),
-                    onPressed: _addSource,
-                    icon: const Icon(Icons.add),
-                    label: Text('Add'.tl),
-                  ),
-                ],
-              ),
-              SettingPartTitle(
-                title: '${'Website Sources'.tl} · $websiteCount',
-                icon: Icons.extension_outlined,
-              ),
-              const ComicSourcesSliverList(),
-              SettingPartTitle(
-                title:
-                    '${'Remote Comic Libraries'.tl} · ${storage.libraries.length}',
-                icon: Icons.folder_open_outlined,
-              ),
-              const RemoteLibrariesSliver(),
-              SliverPadding(
-                padding: EdgeInsets.only(
-                  bottom: MediaQuery.paddingOf(context).bottom + 16,
+      appBar: Appbar(
+        title: Text('Content Sources'.tl),
+        actions: [
+          TextButton.icon(
+            style: actionButtonStyle,
+            key: const Key('add-content-source'),
+            onPressed: _addSource,
+            icon: const Icon(Icons.add),
+            label: Text('Add'.tl),
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          ListenableBuilder(
+            listenable: Listenable.merge([
+              ComicSourceManager(),
+              storage,
+              appdata.settings,
+            ]),
+            builder: (context, _) {
+              final websiteCount = ComicSource.all()
+                  .where((source) => source.filePath.isNotEmpty)
+                  .length;
+              return Material(
+                child: AppTabBar(
+                  key: const PageStorageKey('content_sources_tabs'),
+                  controller: _tabController,
+                  tabs: [
+                    Tab(text: '${'Website Sources'.tl} · $websiteCount'),
+                    Tab(
+                      text:
+                          '${'Cloud Comic Libraries'.tl} · ${storage.libraries.length}',
+                    ),
+                  ],
                 ),
-              ),
-            ],
-          );
-        },
+              );
+            },
+          ),
+          Expanded(
+            child: TabBarView(
+              controller: _tabController,
+              children: const [
+                SmoothCustomScrollView(
+                  key: PageStorageKey('content_sources_websites'),
+                  slivers: [
+                    ComicSourcesSliverList(),
+                    SliverPadding(padding: EdgeInsets.only(bottom: 16)),
+                  ],
+                ),
+                SmoothCustomScrollView(
+                  key: PageStorageKey('content_sources_remote_libraries'),
+                  slivers: [
+                    RemoteLibrariesSliver(),
+                    SliverPadding(padding: EdgeInsets.only(bottom: 16)),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

@@ -311,9 +311,20 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Cloud Storage Uses'), findsOneWidget);
       expect(find.byKey(const Key('bangumi-settings-entry')), findsNothing);
-      expect(find.text('Online Comic Libraries'), findsOneWidget);
+      expect(find.text('Cloud Comic Libraries'), findsOneWidget);
       expect(find.textContaining('Personal Drive · /Sync/'), findsOneWidget);
       expect(find.textContaining('Personal Drive · /Backups/'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('comic-libraries-entry')));
+      await tester.pumpAndSettle();
+      expect(find.byType(ContentSourcesPage), findsOneWidget);
+      expect(
+        tester.widget<TabBarView>(find.byType(TabBarView)).controller!.index,
+        1,
+      );
+      expect(find.text('Add Comic Library'), findsNothing);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byType(ContentSourcesPage), findsNothing);
       await tester.tap(find.byKey(const Key('data-sync-entry')));
       await tester.pumpAndSettle();
       expect(find.byType(RemoteLocationFields), findsOneWidget);
@@ -430,8 +441,17 @@ void main() {
       await tester.pumpWidget(const MaterialApp(home: ContentSourcesPage()));
       await tester.pumpAndSettle();
       expect(find.text(website.name), findsOneWidget);
-      expect(find.text('Cloud Comics'), findsOneWidget);
-      expect(find.textContaining('My Drive'), findsOneWidget);
+      expect(find.text('Cloud Comics').hitTestable(), findsNothing);
+      expect(find.text('Website Sources · 1'), findsOneWidget);
+      expect(find.text('Cloud Comic Libraries · 1'), findsOneWidget);
+      await tester.ensureVisible(find.byType(Tab).at(1));
+      await tester.tap(find.byType(Tab).at(1));
+      await tester.pumpAndSettle();
+      expect(find.text('Cloud Comics').hitTestable(), findsOneWidget);
+      expect(find.textContaining('My Drive').hitTestable(), findsOneWidget);
+      await tester.ensureVisible(find.byType(Tab).first);
+      await tester.tap(find.byType(Tab).first);
+      await tester.pumpAndSettle();
       expect(find.byTooltip('Source actions'), findsOneWidget);
       expect(tester.takeException(), isNull);
 
@@ -441,8 +461,6 @@ void main() {
       await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('add-content-source')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('add-website-source')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Import Link or File').last);
       await tester.pumpAndSettle();
@@ -456,6 +474,121 @@ void main() {
     },
   );
 
+  testWidgets('内容来源标签支持点击和左右滑动并分别恢复列表滚动位置', (tester) async {
+    _setupTestView(tester, const Size(600, 600));
+    final manager = ComicSourceManager();
+    final websites = List.generate(
+      25,
+      (index) => _SettingsSource(
+        name: 'Website $index',
+        key: 'tab-website-$index',
+        filePath: '${App.dataPath}/website-$index.js',
+      ),
+    );
+    for (final source in websites) {
+      manager.add(source);
+    }
+    addTearDown(() {
+      for (final source in websites) {
+        manager.remove(source.key);
+      }
+    });
+    appdata.settings[remoteStorageAccountsSetting] = [
+      const StorageAccount(
+        id: 'tab-drive',
+        backend: StorageBackend.webdav,
+        driver: 'webdav',
+        name: 'Tab Drive',
+        authorization: {},
+      ).toJson(),
+    ];
+    appdata.settings[remoteLibrariesSetting] = List.generate(
+      25,
+      (index) => RemoteComicLibraryRegistry.create(
+        accountId: 'tab-drive',
+        directories: ['/Comics/$index/'],
+        name: 'Library $index',
+      ).toJson(),
+    );
+    await tester.pumpWidget(const MaterialApp(home: ContentSourcesPage()));
+    await tester.pumpAndSettle();
+
+    final websitesView = find.byKey(
+      const PageStorageKey('content_sources_websites'),
+    );
+    final librariesView = find.byKey(
+      const PageStorageKey('content_sources_remote_libraries'),
+    );
+    final tabController = tester
+        .widget<TabBarView>(find.byType(TabBarView))
+        .controller!;
+    ScrollPosition positionOf(Finder view) => tester
+        .state<ScrollableState>(
+          find.descendant(of: view, matching: find.byType(Scrollable)).first,
+        )
+        .position;
+
+    expect(tabController.index, 0);
+    positionOf(websitesView).jumpTo(320);
+    await tester.pumpAndSettle();
+    await tester.drag(find.byType(TabBarView), const Offset(-520, 0));
+    await tester.pumpAndSettle();
+    expect(tabController.index, 1);
+    expect(positionOf(librariesView).pixels, 0);
+    positionOf(librariesView).jumpTo(640);
+    await tester.pumpAndSettle();
+
+    await tester.drag(find.byType(TabBarView), const Offset(520, 0));
+    await tester.pumpAndSettle();
+    expect(tabController.index, 0);
+    expect(positionOf(websitesView).pixels, closeTo(320, 0.1));
+    await tester.tap(find.byType(Tab).at(1));
+    await tester.pumpAndSettle();
+    expect(tabController.index, 1);
+    expect(positionOf(librariesView).pixels, closeTo(640, 0.1));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('携带账号进入内容来源页时选中云端漫画库并预选账号', (tester) async {
+    _setupTestView(tester, const Size(600, 1000));
+    appdata.settings[remoteStorageAccountsSetting] = [
+      for (final id in ['other-drive', 'selected-drive'])
+        StorageAccount(
+          id: id,
+          backend: StorageBackend.webdav,
+          driver: 'webdav',
+          name: id,
+          authorization: const {},
+        ).toJson(),
+    ];
+    appdata.settings[remoteLibrariesSetting] = [];
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: ContentSourcesPage(initialAccountId: 'selected-drive'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      tester
+          .widget<TabBarView>(find.byType(TabBarView, skipOffstage: false))
+          .controller!
+          .index,
+      1,
+    );
+    expect(find.text('Add Comic Library'), findsOneWidget);
+    expect(
+      tester
+          .widget<DropdownButton<String>>(find.byType(DropdownButton<String>))
+          .value,
+      'selected-drive',
+    );
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(find.text('No Cloud Comic Libraries').hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'empty comic libraries allow adding an account without losing the library name',
     (tester) async {
@@ -465,9 +598,11 @@ void main() {
       appdata.settings[remoteStorageAccountsSetting] = [];
       appdata.settings[remoteLibrariesSetting] = [];
       await tester.pumpWidget(const MaterialApp(home: ContentSourcesPage()));
-      await tester.tap(find.byKey(const Key('add-content-source')));
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('add-remote-library')));
+      await tester.ensureVisible(find.byType(Tab).at(1));
+      await tester.tap(find.byType(Tab).at(1));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('add-content-source')));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), 'My library');
       await tester.tap(find.byType(DropdownButton<String>));
@@ -585,7 +720,7 @@ void main() {
         const MaterialApp(home: Scaffold(body: StorageAndSyncSettings())),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Online Comic Libraries'));
+      await tester.tap(find.text('Cloud Comic Libraries'));
       await tester.pumpAndSettle();
 
       Future<void> selectDirectories() async {
@@ -635,8 +770,6 @@ void main() {
 
       Future<void> addLibrary(String name) async {
         await tester.tap(find.byKey(const Key('add-content-source')));
-        await tester.pumpAndSettle();
-        await tester.tap(find.byKey(const Key('add-remote-library')));
         await tester.pumpAndSettle();
         await tester.enterText(find.byType(TextField), name);
         await selectDirectories();
