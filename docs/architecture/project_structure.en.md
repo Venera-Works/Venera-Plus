@@ -35,7 +35,7 @@ This document is the English companion for the repository structure rules. The C
 - `search/`: search page, result page, aggregate search, and search query filters.
 - `settings/`: settings pages, reader settings, reusable setting controls, and structured setting destinations (grouped by Reading & Browsing, Sources & Data, and System; personal content moved to Library, obsolete standalone setting classes cleaned up).
 - `storage/`: shared cloud and WebDAV account management, credential import, web authorization, and remote directory-selection UI.
-- `sync/`: app data synchronization through a shared cloud or WebDAV account, top-bar `SyncActionButton`, app data import/export, and local comic backup/restore. Comic update discoveries and confirmations merge through per-device state files; other data retains full-snapshot restore behavior.
+- `sync/`: app data synchronization through a shared cloud or WebDAV account, top-bar `SyncActionButton`, app data import/export, and local comic backup/restore. All synchronized data travels in complete snapshots. Cloud restores merge snapshot comic update state with local state without separate per-device files.
 - `remote_library/` provides online comic libraries for cloud accounts and WebDAV, including directory discovery, work aggregation, metadata, on-demand reading, and local indexes.
 
 New domains should generally follow this shape:

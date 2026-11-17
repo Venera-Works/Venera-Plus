@@ -521,6 +521,13 @@ class AppDio with DioMixin {
 }
 
 class RHttpAdapter implements HttpClientAdapter {
+  RHttpAdapter({this.reuseConnections = false});
+
+  final bool reuseConnections;
+  Future<rhttp.RhttpClient>? _clientInitialization;
+  rhttp.RhttpClient? _client;
+  bool _closed = false;
+
   Future<rhttp.ClientSettings> get settings async {
     var proxy = await getProxy();
 
@@ -560,7 +567,16 @@ class RHttpAdapter implements HttpClientAdapter {
   }
 
   @override
-  void close({bool force = false}) {}
+  void close({bool force = false}) {
+    _closed = true;
+    _client?.dispose(cancelRunningRequests: force);
+    _client = null;
+  }
+
+  @protected
+  Future<rhttp.RhttpClient> createReusableClient(
+    rhttp.ClientSettings configured,
+  ) => rhttp.RhttpClient.create(settings: configured);
 
   @protected
   rhttp.CancelToken createCancelToken() => rhttp.CancelToken();
@@ -581,6 +597,33 @@ class RHttpAdapter implements HttpClientAdapter {
     rhttp.CancelToken cancelToken,
     rhttp.ClientSettings configured,
   ) async {
+    if (reuseConnections) {
+      if (_closed) throw StateError('HTTP 会话已关闭');
+      final client = await (_clientInitialization ??= createReusableClient(
+        configured,
+      ));
+      if (_closed) {
+        client.dispose(cancelRunningRequests: true);
+        throw StateError('HTTP 会话已关闭');
+      }
+      _client = client;
+      return client.request(
+        cancelToken: cancelToken,
+        method: rhttp.HttpMethod(options.method),
+        url: options.uri.toString(),
+        expectBody: rhttp.HttpExpectBody.stream,
+        body: requestStream == null
+            ? null
+            : rhttp.HttpBody.stream(requestStream),
+        headers: rhttp.HttpHeaders.rawMap(
+          Map.fromEntries(
+            options.headers.entries.map(
+              (e) => MapEntry(e.key, e.value.toString().trim()),
+            ),
+          ),
+        ),
+      );
+    }
     return rhttp.Rhttp.request(
       cancelToken: cancelToken,
       method: rhttp.HttpMethod(options.method),

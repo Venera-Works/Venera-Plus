@@ -26,12 +26,15 @@ class WebDavEndpoint {
     return {'authorization': 'Basic $token'};
   }
 
-  Client createClient({bool logRequests = false}) {
+  Client createClient({
+    bool logRequests = false,
+    bool reuseConnections = false,
+  }) {
     final client = newClient(
       url,
       user: user,
       password: password,
-      adapter: RHttpAdapter(),
+      adapter: RHttpAdapter(reuseConnections: reuseConnections),
     );
     if (logRequests) {
       client.c.interceptors.add(_WebDavDiagnostics());

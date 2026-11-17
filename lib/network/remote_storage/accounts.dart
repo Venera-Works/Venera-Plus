@@ -384,7 +384,10 @@ class RemoteStorageAccounts with ChangeNotifier {
     notifyListeners();
   }
 
-  RemoteFileStore storeFor(String accountId) {
+  RemoteFileStore storeFor(
+    String accountId, {
+    bool optimizeWebDavTransfers = false,
+  }) {
     final value = account(accountId);
     if (value == null) {
       throw ArgumentError.value(
@@ -393,13 +396,14 @@ class RemoteStorageAccounts with ChangeNotifier {
         'Unknown storage account',
       );
     }
-    final store = open(value);
+    final store = open(value, optimizeWebDavTransfers: optimizeWebDavTransfers);
     (_activeStores[accountId] ??= {}).add(store);
     return store;
   }
 
   void release(RemoteFileStore store) {
     _activeStores[store.account.id]?.remove(store);
+    if (store is _StatusTrackingStore) store.close();
   }
 
   /// Stops outstanding transfers and releases native OpenList drivers. The
@@ -444,9 +448,15 @@ class RemoteStorageAccounts with ChangeNotifier {
     notifyListeners();
   }
 
-  RemoteFileStore open(StorageAccount account) {
+  RemoteFileStore open(
+    StorageAccount account, {
+    bool optimizeWebDavTransfers = false,
+  }) {
     final delegate = switch (account.backend) {
-      StorageBackend.webdav => WebDavFileStore(account),
+      StorageBackend.webdav => WebDavFileStore(
+        account,
+        optimizeTransfers: optimizeWebDavTransfers,
+      ),
       StorageBackend.openlist => OpenListFileStore(
         account,
         _openListRpc ?? _UnavailableOpenListRpc(),
@@ -893,6 +903,12 @@ class _StatusTrackingStore implements RemoteFileStore {
   final RemoteFileStore _delegate;
   final Future<void> Function(StorageAccount account, Object? error) _record;
   final RemoteReadScheduler _scheduler;
+
+  void close() {
+    final delegate = _delegate;
+    if (delegate is WebDavFileStore) delegate.close();
+  }
+
   @override
   StorageAccount get account => _delegate.account;
   Future<T> _run<T>(Future<T> Function() operation) async {

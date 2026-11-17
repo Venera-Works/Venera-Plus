@@ -18,7 +18,7 @@ import 'package:venera_plus/foundation/extensions.dart';
 import 'package:venera_plus/foundation/file_system.dart';
 import 'package:zip_flutter/zip_flutter.dart';
 
-import 'package:venera_plus/features/sync/comic_update_sync.dart';
+import 'package:venera_plus/foundation/appdata_sync_policy.dart';
 
 FutureOr<void> Function()? _appDataSettingsChangedHandler;
 bool _appDataImportInProgress = false;
@@ -139,13 +139,13 @@ Future<void> importAppData(
           ? importedSettings["dataVersion"]
           : null;
       if (version is int && version <= appdata.settings["dataVersion"]) {
-        if (localFavoriteFile.existsSync() && isComicUpdateSyncEnabled()) {
+        if (localFavoriteFile.existsSync() && _shouldMergeComicUpdates) {
           final db = sqlite3.open(localFavoriteFile.path);
           try {
             FavoriteSyncData.ensureComicUpdateSchema(db);
             final archiveStates = FavoriteSyncData.readComicUpdateStates(db);
             if (archiveStates.isNotEmpty) {
-              applyComicUpdateStatesLocally(archiveStates, notify: true);
+              _applyImportedComicUpdates(archiveStates);
             }
           } finally {
             db.close();
@@ -218,7 +218,7 @@ Future<void> importAppData(
         try {
           FavoriteSyncData.ensureComicUpdateSchema(db);
           db.execute('UPDATE comic_update_state SET last_check_time = NULL;');
-          if (isComicUpdateSyncEnabled() &&
+          if (_shouldMergeComicUpdates &&
               preservedUpdateStates != null &&
               preservedUpdateStates.isNotEmpty) {
             FavoriteSyncData.mergeComicUpdateStates(db, preservedUpdateStates);
@@ -280,7 +280,7 @@ Future<void> importAppData(
     if (reloadLocalFavorites) {
       await LocalFavoritesManager().init();
       if (checkVersion &&
-          isComicUpdateSyncEnabled() &&
+          _shouldMergeComicUpdates &&
           preservedUpdateStates != null &&
           preservedUpdateStates.isNotEmpty) {
         LocalFavoritesManager().mergeComicUpdateStates(
@@ -361,6 +361,26 @@ Future<void> importAppData(
   }
   if (success) {
     await notifyAppDataSettingsChanged();
+  }
+}
+
+bool get _shouldMergeComicUpdates =>
+    isAppDataSyncDomainEnabled(appdata.implicitData, 'comicUpdate');
+
+void _applyImportedComicUpdates(Map<(String, int), ComicUpdateState> states) {
+  final manager = LocalFavoritesManager.cache;
+  if (manager != null && manager.isCurrentGeneration(manager.generation)) {
+    manager.mergeComicUpdateStates(states, notify: true);
+    return;
+  }
+  final file = File(FilePath.join(App.dataPath, 'local_favorite.db'));
+  if (!file.existsSync()) return;
+  final db = sqlite3.open(file.path);
+  try {
+    FavoriteSyncData.ensureComicUpdateSchema(db);
+    FavoriteSyncData.mergeComicUpdateStates(db, states);
+  } finally {
+    db.close();
   }
 }
 

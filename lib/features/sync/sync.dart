@@ -5,4 +5,3 @@ export 'comic_archive_batch.dart';
 export 'comic_archive_transfer_dialog.dart';
 export 'data_sync.dart';
 export 'sync_action_button.dart';
-export 'comic_update_sync.dart';

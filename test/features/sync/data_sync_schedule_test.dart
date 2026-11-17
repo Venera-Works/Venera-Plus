@@ -250,23 +250,22 @@ void main() {
     },
   );
 
-  scheduleTest(
-    'manual mode has no automatic transfer; realtime preserves immediate uploads',
-    (clock, calls) async {
-      appdata.implicitData['webdavSyncMode'] = 'manual';
-      final sync = DataSync()..onDataChanged();
-      sync.checkForAutomaticSync();
-      await clock.elapse(const Duration(hours: 2));
-      expect(calls.uploads + calls.downloads, 0);
-      expect(sync.statusSnapshot.shouldShow, isTrue);
-      await sync.uploadData();
-      expect(calls.uploads, 1);
-      appdata.implicitData['webdavSyncMode'] = 'realtime';
-      sync.onDataChanged();
-      await clock.elapse();
-      expect(calls.uploads, 2);
-    },
-  );
+  scheduleTest('手动模式立即上传，实时模式合并三秒内的修改', (clock, calls) async {
+    appdata.implicitData['webdavSyncMode'] = 'manual';
+    final sync = DataSync()..onDataChanged();
+    sync.checkForAutomaticSync();
+    await clock.elapse(const Duration(hours: 2));
+    expect(calls.uploads + calls.downloads, 0);
+    expect(sync.statusSnapshot.shouldShow, isTrue);
+    await sync.uploadData();
+    expect(calls.uploads, 1);
+    appdata.implicitData['webdavSyncMode'] = 'realtime';
+    sync.onDataChanged();
+    await clock.elapse(const Duration(seconds: 2));
+    expect(calls.uploads, 1);
+    await clock.elapse(const Duration(seconds: 1));
+    expect(calls.uploads, 2);
+  });
 
   scheduleTest(
     'configuration rollback retains endpoint, mode, fields and schedule',
@@ -374,7 +373,7 @@ void main() {
       uploadCompleter.complete(const Res(true));
       final result = await configureFuture;
       expect(result.success, isTrue);
-      await clock.elapse();
+      await clock.elapse(const Duration(seconds: 3));
       expect(calls.uploads, 2);
       expect(sync.hasPendingChanges, isFalse);
     },
@@ -412,11 +411,84 @@ void main() {
       uploadCompleter.complete(const Res.error('network failure'));
       final result = await configureFuture;
       expect(result.error, isTrue);
-      await clock.elapse();
+      await clock.elapse(const Duration(seconds: 3));
       expect(calls.uploads, 2);
       expect(sync.hasPendingChanges, isFalse);
     },
   );
+
+  scheduleTest('持续修改最多等待三十秒再上传', (clock, calls) async {
+    appdata.implicitData['webdavSyncMode'] = 'realtime';
+    final sync = DataSync();
+    await clock.elapse();
+    calls.downloads = 0;
+    for (var i = 0; i < 15; i++) {
+      sync.onDataChanged();
+      await clock.elapse(const Duration(seconds: 2));
+      expect(calls.uploads, i == 14 ? 1 : 0);
+    }
+    expect(sync.hasPendingChanges, isFalse);
+  });
+
+  scheduleTest('退出前立即上传尚在合并等待的修改', (clock, calls) async {
+    appdata.implicitData['webdavSyncMode'] = 'realtime';
+    final sync = DataSync();
+    await clock.elapse();
+    sync.onDataChanged();
+    expect(calls.uploads, 0);
+    await sync.debugWaitForUploadBeforeClose();
+    expect(calls.uploads, 1);
+    expect(sync.hasPendingChanges, isFalse);
+    await clock.elapse(const Duration(seconds: 30));
+    expect(calls.uploads, 1);
+  });
+
+  scheduleTest('上传中积累的修改在结束后合并上传', (clock, calls) async {
+    appdata.implicitData['webdavSyncMode'] = 'realtime';
+    final sync = DataSync();
+    await clock.elapse();
+    final gate = Completer<Res<bool>>();
+    DataSync.debugUploadOverride = () {
+      calls.uploads++;
+      return gate.future;
+    };
+    final upload = sync.uploadData();
+    for (var i = 0; i < 5; i++) {
+      sync.onDataChanged();
+    }
+    calls.install();
+    gate.complete(const Res(true));
+    await upload;
+    expect(calls.uploads, 1);
+    expect(sync.hasPendingChanges, isTrue);
+    await clock.elapse(const Duration(seconds: 3));
+    expect(calls.uploads, 2);
+    expect(sync.hasPendingChanges, isFalse);
+  });
+
+  scheduleTest('失败后再次修改重新合并等待，不沿用已过期的上传期限', (clock, calls) async {
+    appdata.implicitData['webdavSyncMode'] = 'realtime';
+    final sync = DataSync();
+    await clock.elapse();
+    final gate = Completer<Res<bool>>();
+    DataSync.debugUploadOverride = () {
+      calls.uploads++;
+      return gate.future;
+    };
+    final upload = sync.uploadData();
+    sync.onDataChanged();
+    await clock.elapse(const Duration(seconds: 31));
+    gate.complete(const Res.error('network failure'));
+    await upload;
+    calls.install();
+    sync.onDataChanged();
+    await clock.elapse(const Duration(seconds: 2));
+    expect(calls.uploads, 1);
+    expect(sync.hasPendingChanges, isTrue);
+    await clock.elapse(const Duration(seconds: 1));
+    expect(calls.uploads, 2);
+    expect(sync.hasPendingChanges, isFalse);
+  });
 
   scheduleTest(
     'storage save failure during configure and rollback releases configuring flag',

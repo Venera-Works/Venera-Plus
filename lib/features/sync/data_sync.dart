@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
-import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import 'package:venera_plus/components/message.dart';
@@ -22,7 +21,6 @@ import 'package:webdav_client/webdav_client.dart' as dav;
 import 'package:venera_plus/foundation/extensions.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/file_system.dart';
-import 'package:venera_plus/features/sync/comic_update_sync.dart';
 
 enum _DataSyncTask { upload, download }
 
@@ -64,6 +62,10 @@ class DataSyncStatusSnapshot {
 class DataSync with ChangeNotifier {
   static const _remoteDirectory = '/VeneraPlus/';
   static const _remoteLocationSetting = 'syncRemoteLocation';
+  static const _realtimeDelay = Duration(seconds: 3);
+  static const _realtimeMaxWait = Duration(seconds: 30);
+  static const _cleanupInterval = Duration(minutes: 15);
+  static const _cleanupSnapshotLimit = 20;
 
   DataSync._() {
     appdata.registerSyncDataRequestHandler(({domains}) => onDataChanged());
@@ -84,7 +86,6 @@ class DataSync with ChangeNotifier {
     if (_disposed ||
         _isDownloading ||
         isAppDataImporting ||
-        isComicUpdateSyncMerging ||
         !hasConfiguration) {
       return;
     }
@@ -94,8 +95,34 @@ class DataSync with ChangeNotifier {
       appdata.writeImplicitData();
     }
     if (isEnabled && mode == DataSyncMode.realtime && !_configuring) {
-      unawaited(uploadData());
+      _scheduleRealtimeUpload();
     }
+  }
+
+  void _scheduleRealtimeUpload() {
+    if (_disposed ||
+        _configuring ||
+        !isEnabled ||
+        mode != DataSyncMode.realtime) {
+      return;
+    }
+    _firstRealtimeChange ??= _now;
+    if (_activeTask != null) return;
+    final elapsed = _now.difference(_firstRealtimeChange!);
+    final remaining =
+        _realtimeMaxWait - (elapsed.isNegative ? Duration.zero : elapsed);
+    final delay = remaining < _realtimeDelay ? remaining : _realtimeDelay;
+    _realtimeTimer?.cancel();
+    _realtimeTimer = Timer(delay.isNegative ? Duration.zero : delay, () {
+      _realtimeTimer = null;
+      unawaited(uploadData());
+    });
+  }
+
+  void _cancelRealtimeUpload() {
+    _realtimeTimer?.cancel();
+    _realtimeTimer = null;
+    _firstRealtimeChange = null;
   }
 
   static DataSyncMode get mode {
@@ -133,6 +160,8 @@ class DataSync with ChangeNotifier {
       appdata.implicitData['webdavSyncPending'] == true;
 
   Timer? _scheduleTimer;
+  Timer? _realtimeTimer;
+  DateTime? _firstRealtimeChange;
   bool _disposed = false;
   bool _configuring = false;
   int _changeGeneration = 0;
@@ -188,6 +217,7 @@ class DataSync with ChangeNotifier {
     if (_configuring) return const Res.error('Sync configuration is busy');
     _configuring = true;
     _scheduleTimer?.cancel();
+    _cancelRealtimeUpload();
     _taskEpoch++;
     final oldLocation = _remoteLocation;
     if (remoteLocation?.normalized().toJson().toString() !=
@@ -291,7 +321,7 @@ class DataSync with ChangeNotifier {
         } else if (mode == DataSyncMode.realtime &&
             hasPendingChanges &&
             isEnabled) {
-          unawaited(uploadData());
+          _scheduleRealtimeUpload();
         }
         if (!_disposed) notifyListeners();
       }
@@ -301,7 +331,7 @@ class DataSync with ChangeNotifier {
   bool _windowCloseDialogOpen = false;
 
   bool _handleWindowClose() {
-    if (_isUploading || _windowCloseDialogOpen) {
+    if (_isUploading || _windowCloseDialogOpen || _realtimeTimer != null) {
       _showWindowCloseDialog();
       return false;
     }
@@ -338,7 +368,19 @@ class DataSync with ChangeNotifier {
   }
 
   Future<void> _waitForUploadBeforeClose() async {
-    return _waitForTask(_DataSyncTask.upload);
+    do {
+      if (isEnabled &&
+          mode == DataSyncMode.realtime &&
+          hasPendingChanges &&
+          !_isDownloading) {
+        await uploadData();
+      }
+      await _waitForTask(_DataSyncTask.upload);
+    } while (isEnabled &&
+        mode == DataSyncMode.realtime &&
+        hasPendingChanges &&
+        !_isDownloading &&
+        _lastError == null);
   }
 
   Future<void> waitForDownload() async {
@@ -417,6 +459,7 @@ class DataSync with ChangeNotifier {
   Future<Res<bool>>? _pendingTask;
 
   _DataSyncTask? _activeTaskType;
+  int? _activeGeneration;
 
   _DataSyncTask? _pendingTaskType;
 
@@ -430,6 +473,7 @@ class DataSync with ChangeNotifier {
   void dispose() {
     _disposed = true;
     _scheduleTimer?.cancel();
+    _cancelRealtimeUpload();
     appdata.registerSyncDataRequestHandler(null);
     LocalFavoritesManager().removeListener(onDataChanged);
     ComicSourceManager().removeListener(onDataChanged);
@@ -467,10 +511,15 @@ class DataSync with ChangeNotifier {
   }
 
   Future<Res<bool>> uploadData() async {
+    _cancelRealtimeUpload();
     if (_activeTaskType == _DataSyncTask.download) {
       return const Res(true);
     }
     if (_activeTask != null) {
+      if (_activeTaskType == _DataSyncTask.upload &&
+          _activeGeneration == _changeGeneration) {
+        return _activeTask!;
+      }
       return _schedulePendingTask(_DataSyncTask.upload, _uploadDataNow);
     }
     return _startTask(_DataSyncTask.upload, _uploadDataNow);
@@ -479,6 +528,7 @@ class DataSync with ChangeNotifier {
   /// Explicit downloads restore the latest remote snapshot, including an older
   /// or already restored backup. Automatic checks pass [force] as false.
   Future<Res<bool>> downloadData({bool force = true}) async {
+    _cancelRealtimeUpload();
     Future<Res<bool>> run() => _downloadDataNow(force: force);
     if (_activeTask != null) {
       return _schedulePendingTask(_DataSyncTask.download, run);
@@ -526,8 +576,13 @@ class DataSync with ChangeNotifier {
     activeTask = _runTask(task, run).whenComplete(() {
       if (identical(_activeTask, activeTask)) {
         _activeTask = null;
+        if (_lastError != null) _cancelRealtimeUpload();
         if (mode == DataSyncMode.scheduled && _pendingTask == null) {
           checkForAutomaticSync();
+        } else if (_pendingTask == null &&
+            hasPendingChanges &&
+            _lastError == null) {
+          _scheduleRealtimeUpload();
         }
       }
     });
@@ -545,6 +600,8 @@ class DataSync with ChangeNotifier {
     _downloadApplied = false;
     _lastError = null;
     final generation = _changeGeneration;
+    _activeGeneration = generation;
+    final stopwatch = Stopwatch()..start();
     if (hasConfiguration && !_configuring) {
       appdata.implicitData['webdavSyncLastAttempt'] =
           _now.millisecondsSinceEpoch;
@@ -567,6 +624,7 @@ class DataSync with ChangeNotifier {
       return Res.error(e.toString());
     } finally {
       _activeTaskType = null;
+      _activeGeneration = null;
       _isUploading = false;
       _isDownloading = false;
       if (hasConfiguration && !_configuring && !_disposed) {
@@ -575,6 +633,10 @@ class DataSync with ChangeNotifier {
         appdata.writeImplicitData();
       }
       if (!_disposed) notifyListeners();
+      Log.info(
+        _taskLogTag(task),
+        '同步结束，耗时 ${stopwatch.elapsedMilliseconds} ms',
+      );
     }
   }
 
@@ -588,335 +650,192 @@ class DataSync with ChangeNotifier {
 
   bool _isTaskCurrent(int epoch) => !_disposed && epoch == _taskEpoch;
 
-  Future<Res<bool>> _uploadDataNow() async {
-    var debugUpload = debugUploadOverride;
-    if (debugUpload != null) {
-      return debugUpload();
-    }
+  Future<Res<bool>> _uploadDataNow() => _transferSnapshot(_DataSyncTask.upload);
+
+  Future<Res<bool>> _downloadDataNow({required bool force}) =>
+      _transferSnapshot(_DataSyncTask.download, force: force);
+
+  Future<Res<bool>> _transferSnapshot(
+    _DataSyncTask task, {
+    bool force = true,
+  }) async {
+    final debugTransfer = task == _DataSyncTask.upload
+        ? debugUploadOverride
+        : debugDownloadOverride;
+    if (debugTransfer != null) return debugTransfer();
     final epoch = _taskEpoch;
-    final location = _remoteLocation;
-    if (location != null) return _uploadToStore(location, epoch);
-    var config = _validateConfig();
-    if (config == null) {
-      _lastError = 'Invalid WebDAV configuration';
-      return const Res.error('Invalid WebDAV configuration');
-    }
-    if (!config.isValid) {
-      return const Res(true);
-    }
-    var client =
-        debugClientFactory?.call(config) ??
-        config.createClient(logRequests: true);
-
-    File? data;
-    final previousVersion = appdata.settings['dataVersion'] as int;
-    int? uploadingVersion;
-    var uploaded = false;
-    try {
-      late List<dav.File> files;
-      try {
-        files = await client.readDir(_remoteDirectory);
-      } on DioException catch (error) {
-        if (error.response?.statusCode != 404) rethrow;
-        await client.mkdir(_remoteDirectory);
-        files = await client.readDir(_remoteDirectory);
-      }
-      files =
-          files
-              .where(
-                (e) =>
-                    e.name != null &&
-                    e.isDir != true &&
-                    _snapshotVersion(e.name!) != null,
-              )
-              .toList()
-            ..sort((a, b) => _compareSnapshotNames(a.name!, b.name!));
-      if (!_isTaskCurrent(epoch)) return const Res(true);
-      uploadingVersion = _nextSnapshotVersion(
-        previousVersion,
-        files.map((file) => file.name!),
-      );
-      appdata.settings['dataVersion'] = uploadingVersion;
-      await appdata.saveData(false);
-      data = await _exportSnapshot();
-      if (!_isTaskCurrent(epoch)) return const Res(true);
-      final filename = _snapshotName(uploadingVersion);
-      final remotePath = '$_remoteDirectory$filename';
-      final options = await client.c.wdOptions(client, remotePath);
-      if (options.statusCode == null || options.statusCode! >= 400) {
-        throw DioException(
-          requestOptions: options.requestOptions,
-          response: options,
-          type: DioExceptionType.badResponse,
-          error: options.statusMessage,
-        );
-      }
-      // The directory was verified above; writeFromFile would recreate it.
-      final length = await data.length();
-      final response = await client.c.req<Object?>(
-        client,
-        'PUT',
-        remotePath,
-        data: data.openRead(),
-        optionsHandler: (options) {
-          options.headers ??= {};
-          options.headers!['content-length'] = length;
-          options.headers!['content-type'] = 'application/octet-stream';
-        },
-      );
-      if (response.statusCode != 200 &&
-          response.statusCode != 201 &&
-          response.statusCode != 204) {
-        throw DioException(
-          requestOptions: response.requestOptions,
-          response: response,
-          type: DioExceptionType.badResponse,
-          error: response.statusMessage,
-        );
-      }
-      uploaded = true;
-      if (!_isTaskCurrent(epoch)) return const Res(true);
-      await _rememberSnapshot(
-        _webDavTarget(config),
-        filename,
-        _snapshotIdentity(filename),
-      );
-      try {
-        final names = (await client.readDir(_remoteDirectory))
-            .where((file) => file.isDir != true && file.name != null)
-            .map((file) => file.name!);
-        for (final name in _snapshotsToPrune(names, filename)) {
-          if (!_isTaskCurrent(epoch)) return const Res(true);
-          await client.remove('$_remoteDirectory$name');
-        }
-      } catch (error, stack) {
-        Log.error('Upload Data', 'Failed to prune old backups: $error', stack);
-      }
-      if (!_isTaskCurrent(epoch)) return const Res(true);
-      await syncComicUpdatesWithWebDav(
-        client,
-        remoteBaseDirectory: _remoteDirectory,
-        uploadSelf: true,
-        isCurrent: () => _isTaskCurrent(epoch),
-      );
-      if (!_isTaskCurrent(epoch)) return const Res(true);
-      appdata.settings['lastSyncTime'] = DateTime.now().millisecondsSinceEpoch;
-      await appdata.saveData(false);
-      Log.info("Upload Data", "Data uploaded successfully");
-      return const Res(true);
-    } catch (e, s) {
-      Log.error("Upload Data", e, s);
-      _lastError = e.toString();
-      return Res.error(e.toString());
-    } finally {
-      if (!uploaded &&
-          uploadingVersion != null &&
-          appdata.settings['dataVersion'] == uploadingVersion) {
-        appdata.settings['dataVersion'] = previousVersion;
-        await appdata.saveData(false);
-      }
-      if (data != null) await data.deleteIgnoreError();
-    }
-  }
-
-  Future<Res<bool>> _downloadDataNow({required bool force}) async {
-    var debugDownload = debugDownloadOverride;
-    if (debugDownload != null) {
-      return debugDownload();
-    }
-    final epoch = _taskEpoch;
-    final location = _remoteLocation;
-    if (location != null) {
-      return _downloadFromStore(location, epoch, force: force);
-    }
-    var config = _validateConfig();
-    if (config == null) {
-      _lastError = 'Invalid WebDAV configuration';
-      return const Res.error('Invalid WebDAV configuration');
-    }
-    if (!config.isValid) {
-      return const Res(true);
-    }
-    var client =
-        debugClientFactory?.call(config) ??
-        config.createClient(logRequests: true);
-
-    File? localFile;
-    try {
-      var files = await client.readDir(_remoteDirectory);
-      if (!_isTaskCurrent(epoch)) return const Res(true);
-      files =
-          files
-              .where(
-                (e) =>
-                    e.name != null &&
-                    e.isDir != true &&
-                    _snapshotVersion(e.name!) != null,
-              )
-              .toList()
-            ..sort((a, b) => _compareSnapshotNames(b.name!, a.name!));
-      var file = files.firstOrNull;
-      if (file == null) {
-        if (!_isTaskCurrent(epoch)) return const Res(true);
-        await syncComicUpdatesWithWebDav(
-          client,
-          remoteBaseDirectory: _remoteDirectory,
-          uploadSelf: false,
-          isCurrent: () => _isTaskCurrent(epoch),
-        );
-        throw 'No data file found';
-      }
-      final target = _webDavTarget(config);
-      final identity = _snapshotIdentity(
-        file.name!,
-        eTag: file.eTag,
-        modifiedAt: file.mTime?.millisecondsSinceEpoch,
-        size: file.size,
-      );
-      if (!force &&
-          _shouldSkipSnapshot(
-            target,
-            file.name!,
-            identity,
-            hasMetadata: file.eTag?.isNotEmpty == true || file.mTime != null,
-          )) {
-        Log.info("Data Sync", 'No new data to download');
-        if (!_isTaskCurrent(epoch)) return const Res(true);
-        await syncComicUpdatesWithWebDav(
-          client,
-          remoteBaseDirectory: _remoteDirectory,
-          uploadSelf: false,
-          isCurrent: () => _isTaskCurrent(epoch),
-        );
-        return const Res(true);
-      }
-      Log.info("Data Sync", "Downloading data from WebDAV server");
-      localFile = File(FilePath.join(App.cachePath, file.name!));
-      await client.read2File('$_remoteDirectory${file.name!}', localFile.path);
-      if (!_isTaskCurrent(epoch)) return const Res(true);
-      await importAppData(
-        localFile,
-        checkVersion: true,
-        allowSameOrOlderVersion: true,
-      );
-      _downloadApplied = true;
-      if (!_isTaskCurrent(epoch)) return const Res(true);
-      await _rememberSnapshot(target, file.name!, identity);
-      await syncComicUpdatesWithWebDav(
-        client,
-        remoteBaseDirectory: _remoteDirectory,
-        uploadSelf: false,
-        isCurrent: () => _isTaskCurrent(epoch),
-      );
-      HistoryManager().notifyChanges();
-      LocalFavoritesManager().notifyChanges();
-      ImageFavoriteManager().notifyChanges();
-      appdata.settings['lastSyncTime'] = DateTime.now().millisecondsSinceEpoch;
-      await appdata.saveData(false);
-      Log.info("Data Sync", "Data downloaded successfully");
-      return const Res(true);
-    } catch (e, s) {
-      Log.error("Data Sync", e, s);
-      _lastError = e.toString();
-      return Res.error(e.toString());
-    } finally {
-      if (localFile != null) await localFile.deleteIgnoreError();
-    }
-  }
-
-  Future<Res<bool>> _uploadToStore(RemoteLocation location, int epoch) async {
     RemoteFileStore? store;
-    File? data;
-    final directory = location.directory;
-    final previousVersion = appdata.settings['dataVersion'] as int;
-    int? uploadingVersion;
-    var uploaded = false;
     try {
-      store = RemoteStorageAccounts.instance.storeFor(location.accountId);
-      _activeStore = store;
-      late List<RemoteEntry> files;
-      try {
-        files = await store.list(directory);
-      } on RemoteStorageException catch (error) {
-        if (error.code != 'not_found') rethrow;
-        await store.mkdir(directory);
-        files = await store.list(directory);
-      }
-      if (!_isTaskCurrent(epoch)) return const Res(true);
-      uploadingVersion = _nextSnapshotVersion(
-        previousVersion,
-        files.where((file) => !file.isDirectory).map((file) => file.name),
-      );
-      appdata.settings['dataVersion'] = uploadingVersion;
-      await appdata.saveData(false);
-      data = await _exportSnapshot();
-      if (!_isTaskCurrent(epoch)) return const Res(true);
-      final filename = _snapshotName(uploadingVersion);
-      final path = '${normalizeRemoteDirectory(directory)}$filename';
-      if (!_isTaskCurrent(epoch)) return const Res(true);
-      await store.upload(data.path, path);
-      uploaded = true;
-      if (!_isTaskCurrent(epoch)) return const Res(true);
-      await _rememberSnapshot(
-        _storeTarget(location),
-        filename,
-        _snapshotIdentity(filename),
-      );
-      try {
-        final snapshots = (await store.list(
-          directory,
-        )).where((file) => !file.isDirectory).toList();
-        final obsolete = _snapshotsToPrune(
-          snapshots.map((file) => file.name),
-          filename,
+      final location = _remoteLocation;
+      late String directory;
+      late String target;
+      if (location != null) {
+        store = RemoteStorageAccounts.instance.storeFor(
+          location.accountId,
+          optimizeWebDavTransfers: true,
         );
-        for (final file in snapshots.where(
-          (file) => obsolete.contains(file.name),
-        )) {
-          if (!_isTaskCurrent(epoch)) return const Res(true);
-          await store.delete(file.path);
+        directory = location.directory;
+        target = _storeTarget(location);
+      } else {
+        final config = _validateConfig();
+        if (config == null) {
+          return const Res.error('Invalid WebDAV configuration');
         }
-      } catch (error, stack) {
-        Log.error('Upload Data', 'Failed to prune old backups: $error', stack);
+        if (!config.isValid) return const Res(true);
+        store = WebDavFileStore(
+          StorageAccount(
+            id: 'legacy-sync',
+            backend: StorageBackend.webdav,
+            driver: 'webdav',
+            name: 'WebDAV',
+            authorization: {
+              'url': config.url,
+              'user': config.user,
+              'password': config.password,
+            },
+          ),
+          client: debugClientFactory?.call(config),
+          optimizeTransfers: true,
+        );
+        directory = _remoteDirectory;
+        target = _webDavTarget(config);
       }
-      if (!_isTaskCurrent(epoch)) return const Res(true);
-      await syncComicUpdatesWithStore(
-        store,
-        remoteBaseDirectory: directory,
-        uploadSelf: true,
-        isCurrent: () => _isTaskCurrent(epoch),
-      );
-      if (!_isTaskCurrent(epoch)) return const Res(true);
-      appdata.settings['lastSyncTime'] = DateTime.now().millisecondsSinceEpoch;
-      await appdata.saveData(false);
-      return const Res(true);
+      _activeStore = store;
+      return task == _DataSyncTask.upload
+          ? await _uploadToStore(store, directory, target, epoch)
+          : await _downloadFromStore(
+              store,
+              directory,
+              target,
+              epoch,
+              force: force,
+            );
     } catch (error, stack) {
-      Log.error('Upload Data', error, stack);
+      Log.error(_taskLogTag(task), error, stack);
       return Res.error(error.toString());
     } finally {
-      if (!uploaded &&
-          uploadingVersion != null &&
-          appdata.settings['dataVersion'] == uploadingVersion) {
-        appdata.settings['dataVersion'] = previousVersion;
-        await appdata.saveData(false);
-      }
-      if (data != null) await data.deleteIgnoreError();
       if (identical(_activeStore, store)) _activeStore = null;
+      if (store is WebDavFileStore) store.close();
       if (store != null) RemoteStorageAccounts.instance.release(store);
     }
   }
 
+  Future<Res<bool>> _uploadToStore(
+    RemoteFileStore store,
+    String directory,
+    String target,
+    int epoch,
+  ) async {
+    File? data;
+    final previousVersion = appdata.settings['dataVersion'] as int;
+    int? uploadingVersion;
+    var uploaded = false;
+    final stopwatch = Stopwatch()..start();
+    try {
+      late List<RemoteEntry> files;
+      try {
+        files = await store.list(directory, refresh: true);
+      } on RemoteStorageException catch (error) {
+        if (error.code != 'not_found') rethrow;
+        await store.mkdir(directory);
+        files = await store.list(directory, refresh: true);
+      }
+      Log.info('Upload Data', '读取目录耗时 ${stopwatch.elapsedMilliseconds} ms');
+      if (!_isTaskCurrent(epoch)) return const Res(true);
+      final names = files
+          .where((file) => !file.isDirectory)
+          .map((file) => file.name)
+          .toList();
+      uploadingVersion = _nextSnapshotVersion(previousVersion, names);
+      appdata.settings['dataVersion'] = uploadingVersion;
+      await appdata.saveData(false);
+      stopwatch.reset();
+      data = await _exportSnapshot();
+      final length = await data.length();
+      Log.info(
+        'Upload Data',
+        '生成快照耗时 ${stopwatch.elapsedMilliseconds} ms，大小 $length 字节',
+      );
+      if (!_isTaskCurrent(epoch)) return const Res(true);
+      final filename = _snapshotName(uploadingVersion);
+      final path = '${normalizeRemoteDirectory(directory)}$filename';
+      stopwatch.reset();
+      await store.upload(data.path, path);
+      uploaded = true;
+      Log.info('Upload Data', '上传快照耗时 ${stopwatch.elapsedMilliseconds} ms');
+      if (!_isTaskCurrent(epoch)) return const Res(true);
+      await _rememberSnapshot(target, filename, _snapshotIdentity(filename));
+      appdata.settings['lastSyncTime'] = _now.millisecondsSinceEpoch;
+      await appdata.saveData(false);
+      await _cleanupSnapshots(store, directory, target, names, filename, epoch);
+      return const Res(true);
+    } finally {
+      if (!uploaded &&
+          uploadingVersion != null &&
+          appdata.settings['dataVersion'] == uploadingVersion) {
+        appdata.settings['dataVersion'] = previousVersion;
+        await appdata.saveData(false);
+      }
+      if (data != null) await data.deleteIgnoreError();
+    }
+  }
+
+  Future<void> _cleanupSnapshots(
+    RemoteFileStore store,
+    String directory,
+    String target,
+    List<String> names,
+    String uploaded,
+    int epoch,
+  ) async {
+    final previous = appdata.implicitData['webdavLastCleanup'];
+    final lastTime = previous is Map && previous['target'] == target
+        ? previous['time']
+        : null;
+    final elapsed = lastTime is int
+        ? _now.difference(DateTime.fromMillisecondsSinceEpoch(lastTime))
+        : null;
+    final count =
+        names.where((name) => _snapshotVersion(name) != null).length + 1;
+    if (elapsed != null &&
+        !elapsed.isNegative &&
+        elapsed < _cleanupInterval &&
+        count < _cleanupSnapshotLimit) {
+      return;
+    }
+    final stopwatch = Stopwatch()..start();
+    try {
+      // 只清理本次上传前已看到的旧快照，不再次列目录或触碰并发新快照。
+      final obsolete = _snapshotsToPrune(names, uploaded);
+      for (final name in obsolete) {
+        if (!_isTaskCurrent(epoch)) return;
+        await store.delete('${normalizeRemoteDirectory(directory)}$name');
+      }
+      if (!_isTaskCurrent(epoch)) return;
+      appdata.implicitData['webdavLastCleanup'] = {
+        'target': target,
+        'time': _now.millisecondsSinceEpoch,
+      };
+      await appdata.writeImplicitData();
+      Log.info(
+        'Upload Data',
+        '清理 ${obsolete.length} 份旧快照，耗时 ${stopwatch.elapsedMilliseconds} ms',
+      );
+    } catch (error, stack) {
+      Log.error('Upload Data', '清理旧快照失败：$error', stack);
+    }
+  }
+
   Future<Res<bool>> _downloadFromStore(
-    RemoteLocation location,
+    RemoteFileStore store,
+    String directory,
+    String target,
     int epoch, {
     required bool force,
   }) async {
-    RemoteFileStore? store;
     File? localFile;
     try {
-      store = RemoteStorageAccounts.instance.storeFor(location.accountId);
-      _activeStore = store;
-      final files = await store.list(location.directory);
+      final files = await store.list(directory, refresh: true);
       if (!_isTaskCurrent(epoch)) return const Res(true);
       final snapshots =
           files
@@ -927,17 +846,7 @@ class DataSync with ChangeNotifier {
               .toList()
             ..sort((a, b) => _compareSnapshotNames(b.name, a.name));
       final file = snapshots.firstOrNull;
-      if (file == null) {
-        if (!_isTaskCurrent(epoch)) return const Res(true);
-        await syncComicUpdatesWithStore(
-          store,
-          remoteBaseDirectory: location.directory,
-          uploadSelf: false,
-          isCurrent: () => _isTaskCurrent(epoch),
-        );
-        return const Res.error('No data file found');
-      }
-      final target = _storeTarget(location);
+      if (file == null) return const Res.error('No data file found');
       final identity = _snapshotIdentity(
         file.name,
         eTag: file.eTag,
@@ -952,13 +861,6 @@ class DataSync with ChangeNotifier {
             hasMetadata:
                 file.eTag?.isNotEmpty == true || file.modifiedAt != null,
           )) {
-        if (!_isTaskCurrent(epoch)) return const Res(true);
-        await syncComicUpdatesWithStore(
-          store,
-          remoteBaseDirectory: location.directory,
-          uploadSelf: false,
-          isCurrent: () => _isTaskCurrent(epoch),
-        );
         return const Res(true);
       }
       localFile = File(FilePath.join(App.cachePath, file.name));
@@ -972,25 +874,14 @@ class DataSync with ChangeNotifier {
       _downloadApplied = true;
       if (!_isTaskCurrent(epoch)) return const Res(true);
       await _rememberSnapshot(target, file.name, identity);
-      await syncComicUpdatesWithStore(
-        store,
-        remoteBaseDirectory: location.directory,
-        uploadSelf: false,
-        isCurrent: () => _isTaskCurrent(epoch),
-      );
       HistoryManager().notifyChanges();
       LocalFavoritesManager().notifyChanges();
       ImageFavoriteManager().notifyChanges();
-      appdata.settings['lastSyncTime'] = DateTime.now().millisecondsSinceEpoch;
+      appdata.settings['lastSyncTime'] = _now.millisecondsSinceEpoch;
       await appdata.saveData(false);
       return const Res(true);
-    } catch (error, stack) {
-      Log.error('Data Sync', error, stack);
-      return Res.error(error.toString());
     } finally {
       if (localFile != null) await localFile.deleteIgnoreError();
-      if (identical(_activeStore, store)) _activeStore = null;
-      if (store != null) RemoteStorageAccounts.instance.release(store);
     }
   }
 

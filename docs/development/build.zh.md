@@ -146,7 +146,7 @@ WebDAV 测试夹具的目录和文件键统一使用解码后的逻辑路径；�
 
 | 模块 | 需保持的行为 | 测试入口 |
 |---|---|---|
-| 应用数据同步 | 唯一快照文件名、按数值版本排序、同版本快照识别、上传失败还原版本 | [data_sync_transfer_test.dart](../../test/features/sync/data_sync_transfer_test.dart)、[app_data_transfer_test.dart](../../test/features/sync/app_data_transfer_test.dart)、[comic_update_sync_test.dart](../../test/features/sync/comic_update_sync_test.dart) |
+| 应用数据同步 | 唯一快照文件名、按数值版本排序、同版本快照识别、上传失败还原版本、实时修改合并及旧快照清理间隔 | [data_sync_transfer_test.dart](../../test/features/sync/data_sync_transfer_test.dart)、[app_data_transfer_test.dart](../../test/features/sync/app_data_transfer_test.dart)、[data_sync_schedule_test.dart](../../test/features/sync/data_sync_schedule_test.dart) |
 | 历史与图片收藏 | 数据持久化后通知同步，导入快照不触发重复上传 | [history_sync_notifications_test.dart](../../test/features/history/history_sync_notifications_test.dart)、[data_sync_transfer_test.dart](../../test/features/sync/data_sync_transfer_test.dart) |
 | 阅读器 | 连续／反向输入累计目标，跨页与评论边界正确，瀑布流减少刷新并在退出时取消延迟回调 | [gallery_coordinator_test.dart](../../test/features/reader/gallery_coordinator_test.dart)、[gallery_lifecycle_widget_test.dart](../../test/features/reader/gallery_lifecycle_widget_test.dart) |
 | 本地收藏筛选 | 全部列表跳过历史查询并复用结果，筛选条件变化后维护可见选择 | [local_favorites_filter_test.dart](../../test/features/favorites/local_favorites_filter_test.dart) |

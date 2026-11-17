@@ -1,10 +1,88 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/storage/token_import.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
+import 'package:venera_plus/network/webdav.dart';
 
 void main() {
+  test('快照传输仅列目录、上传和下载，内容保持完整', () async {
+    final directory = await Directory.systemTemp.createTemp('snapshot-webdav-');
+    final adapter = _SnapshotDavAdapter();
+    final client = WebDavEndpoint(
+      url: 'https://example.com',
+      user: '',
+      password: '',
+    ).createClient();
+    client.c.httpClientAdapter = adapter;
+    final store = WebDavFileStore(
+      _webdavAccount,
+      client: client,
+      optimizeTransfers: true,
+    );
+    try {
+      final input = File('${directory.path}/input');
+      final output = File('${directory.path}/output');
+      final bytes = List<int>.generate(100000, (i) => i % 251);
+      await input.writeAsBytes(bytes);
+      await store.list('/sync/');
+      await store.upload(input.path, '/sync/data.venera');
+      final progress = <RemoteTransferProgress>[];
+      await store.download(
+        '/sync/data.venera',
+        output.path,
+        onProgress: progress.add,
+      );
+      expect(await output.readAsBytes(), bytes);
+      expect(adapter.methods, ['PROPFIND', 'PUT', 'GET']);
+      expect(progress.last.completed, bytes.length);
+      expect(progress.last.total, bytes.length);
+    } finally {
+      store.close();
+      await directory.delete(recursive: true);
+    }
+    expect(adapter.closed, isTrue);
+  });
+
+  for (final digest in [false, true]) {
+    test('快照上传在 ${digest ? 'Digest' : 'Basic'} 质询后重新发送完整文件流', () async {
+      final directory = await Directory.systemTemp.createTemp('snapshot-auth-');
+      final adapter = _SnapshotDavAdapter(
+        challenge: digest ? 'Digest' : 'Basic',
+      );
+      final client = WebDavEndpoint(
+        url: 'https://example.com',
+        user: 'user',
+        password: 'pass',
+      ).createClient();
+      client.c.httpClientAdapter = adapter;
+      final store = WebDavFileStore(
+        _webdavAccount,
+        client: client,
+        optimizeTransfers: true,
+      );
+      try {
+        final input = File('${directory.path}/input');
+        final bytes = utf8.encode('完整快照内容');
+        await input.writeAsBytes(bytes);
+        await store.upload(input.path, '/sync/data.venera');
+        expect(adapter.methods, ['PUT', 'PUT']);
+        expect(adapter.uploadBodies, [bytes, bytes]);
+        expect(
+          adapter.authorizations.last,
+          startsWith(digest ? 'Digest ' : 'Basic '),
+        );
+      } finally {
+        store.close();
+        await directory.delete(recursive: true);
+      }
+    });
+  }
+
   test('normalizes roots without collapsing parent child or case', () {
     expect(normalizeRemoteDirectories(['/A', '/B/C/', '/A/', '/a', '/封面%/']), [
       '/A/',
@@ -375,6 +453,77 @@ const _account = StorageAccount(
   name: 'Drive',
   authorization: {},
 );
+
+const _webdavAccount = StorageAccount(
+  id: 'webdav',
+  backend: StorageBackend.webdav,
+  driver: 'webdav',
+  name: 'WebDAV',
+  authorization: {'url': 'https://example.com'},
+);
+
+class _SnapshotDavAdapter implements HttpClientAdapter {
+  _SnapshotDavAdapter({this.challenge});
+  final String? challenge;
+  final methods = <String>[];
+  final uploadBodies = <List<int>>[];
+  final authorizations = <String>[];
+  var closed = false;
+  List<int> content = [];
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    methods.add(options.method);
+    final bytes = requestStream == null
+        ? <int>[]
+        : await requestStream.expand((bytes) => bytes).toList();
+    if (options.method == 'PUT') {
+      uploadBodies.add(bytes);
+      authorizations.add(options.headers['authorization'] as String? ?? '');
+      if (challenge != null && uploadBodies.length == 1) {
+        return ResponseBody.fromString(
+          '',
+          401,
+          headers: {
+            'www-authenticate': [
+              challenge == 'Digest'
+                  ? 'Digest realm="backup", nonce="nonce", qop="auth", algorithm=MD5'
+                  : 'Basic realm="backup"',
+            ],
+          },
+        );
+      }
+      content = bytes;
+      return ResponseBody.fromString('', 201);
+    }
+    if (options.method == 'GET') {
+      return ResponseBody(
+        Stream.value(Uint8List.fromList(content)),
+        200,
+        headers: {
+          'content-length': ['${content.length}'],
+        },
+      );
+    }
+    return ResponseBody.fromString(
+      '<D:multistatus xmlns:D="DAV:"><D:response><D:href>/sync/</D:href>'
+      '<D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype>'
+      '</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>'
+      '</D:response></D:multistatus>',
+      207,
+      headers: {
+        'content-type': ['application/xml'],
+      },
+    );
+  }
+
+  @override
+  void close({bool force = false}) => closed = true;
+}
 
 class _Rpc implements OpenListRpcClient {
   String? transferTaskId;

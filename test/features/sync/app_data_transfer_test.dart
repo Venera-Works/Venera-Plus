@@ -650,6 +650,8 @@ void main() {
       test(
         'WebDAV writes VeneraPlus snapshots, creates the directory and retains ten',
         () async {
+          var now = DateTime.now();
+          DataSync.debugNow = () => now;
           final server = await _SyncWebDav.start();
           addTearDown(server.close);
           final clients = <dav.Client>[];
@@ -670,8 +672,7 @@ void main() {
           appdata.settings['disableSyncFields'] =
               'cacheSize, webdavComicLibrary';
           await appdata.saveData(false);
-          final day = (DateTime.now().millisecondsSinceEpoch ~/ 86400000)
-              .toString();
+          final day = (now.millisecondsSinceEpoch ~/ 86400000).toString();
           server.rootFiles['$day-0.venera'] = Uint8List(1);
           server.rootFiles['999999-999.venera'] = Uint8List(1);
 
@@ -710,9 +711,9 @@ void main() {
           ]);
 
           expect((await sync.uploadData()).success, isTrue);
-          expect(server.snapshotNames, hasLength(1));
+          expect(server.snapshotNames, hasLength(2));
           expect(
-            server.snapshotNames.single,
+            server.snapshotNames.firstWhere((name) => name != firstName),
             matches(RegExp(r'^\d+-2-\d{20}-[0-9a-f]{32}\.venera$')),
           );
           expect(
@@ -723,14 +724,19 @@ void main() {
           );
           expect(
             server.requests.where((request) => request.startsWith('DELETE ')),
-            isNotEmpty,
+            isEmpty,
           );
 
+          now = now.add(const Duration(minutes: 15));
+          expect((await sync.uploadData()).success, isTrue);
+          expect(server.snapshotNames, hasLength(1));
+          expect(server.snapshotNames, isNot(contains(firstName)));
           server.files.remove(server.snapshotNames.single);
           for (var day = 0; day < 10; day++) {
             server.files['$day-1.venera'] = Uint8List(1);
           }
           server.files['keep.txt'] = Uint8List(1);
+          now = now.add(const Duration(minutes: 15));
           expect((await sync.uploadData()).success, isTrue);
           expect(server.snapshotNames, hasLength(10));
           expect(server.files.containsKey('0-1.venera'), isFalse);

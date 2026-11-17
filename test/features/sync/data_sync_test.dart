@@ -157,46 +157,38 @@ void main() {
     DataSync.resetForTesting();
   });
 
-  test(
-    'uploadData coalesces concurrent uploads into one pending task',
-    () async {
-      final uploads = <Completer<Res<bool>>>[];
-      DataSync.debugUploadOverride = () {
-        final completer = Completer<Res<bool>>();
-        uploads.add(completer);
-        return completer.future;
-      };
+  test('重复上传共用进行中的快照任务', () async {
+    final uploads = <Completer<Res<bool>>>[];
+    DataSync.debugUploadOverride = () {
+      final completer = Completer<Res<bool>>();
+      uploads.add(completer);
+      return completer.future;
+    };
 
-      final sync = DataSync();
-      final first = sync.uploadData();
-      final second = sync.uploadData();
-      final third = sync.uploadData();
-      var waitCompleted = false;
-      final waitFuture = sync.debugWaitForUploadBeforeClose().then((_) {
-        waitCompleted = true;
-      });
+    final sync = DataSync();
+    final first = sync.uploadData();
+    final second = sync.uploadData();
+    final third = sync.uploadData();
+    var waitCompleted = false;
+    final waitFuture = sync.debugWaitForUploadBeforeClose().then((_) {
+      waitCompleted = true;
+    });
 
-      expect(sync.isUploading, isTrue);
-      expect(uploads, hasLength(1));
-      expect(waitCompleted, isFalse);
+    expect(sync.isUploading, isTrue);
+    expect(uploads, hasLength(1));
+    expect(waitCompleted, isFalse);
 
-      uploads.first.complete(const Res(true));
-      await pumpEventQueue();
+    uploads.first.complete(const Res(true));
+    await pumpEventQueue();
 
-      expect(sync.isUploading, isTrue);
-      expect(uploads, hasLength(2));
-      expect(waitCompleted, isFalse);
+    final results = await Future.wait([first, second, third]);
+    await waitFuture;
 
-      uploads[1].complete(const Res(true));
-      final results = await Future.wait([first, second, third]);
-      await waitFuture;
-
-      expect(results.every((result) => result.success), isTrue);
-      expect(uploads, hasLength(2));
-      expect(sync.isUploading, isFalse);
-      expect(waitCompleted, isTrue);
-    },
-  );
+    expect(results.every((result) => result.success), isTrue);
+    expect(uploads, hasLength(1));
+    expect(sync.isUploading, isFalse);
+    expect(waitCompleted, isTrue);
+  });
 
   test('downloadData waits for an active upload before starting', () async {
     final upload = Completer<Res<bool>>();

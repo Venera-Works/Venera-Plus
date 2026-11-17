@@ -40,6 +40,61 @@ class _Adapter extends RHttpAdapter {
   ) => respond(options);
 }
 
+class _ReusableAdapter extends RHttpAdapter {
+  _ReusableAdapter(this.clientReady) : super(reuseConnections: true);
+
+  final Future<rhttp.RhttpClient> clientReady;
+  var creations = 0;
+
+  @override
+  Future<rhttp.ClientSettings> get settings async =>
+      const rhttp.ClientSettings();
+
+  @override
+  rhttp.CancelToken createCancelToken() => _CancelToken();
+
+  @override
+  Future<rhttp.RhttpClient> createReusableClient(
+    rhttp.ClientSettings configured,
+  ) {
+    creations++;
+    return clientReady;
+  }
+}
+
+class _ReusableClient implements rhttp.RhttpClient {
+  var requests = 0;
+  var disposed = false;
+  bool? cancelRunning;
+
+  @override
+  Future<rhttp.HttpResponse> request({
+    required rhttp.HttpMethod method,
+    required String url,
+    Map<String, String>? query,
+    List<(String, String)>? queryRaw,
+    rhttp.HttpHeaders? headers,
+    rhttp.HttpBody? body,
+    required rhttp.HttpExpectBody expectBody,
+    rhttp.CancelToken? cancelToken,
+    rhttp.ProgressCallback? onSendProgress,
+    rhttp.ProgressCallback? onReceiveProgress,
+  }) async {
+    if (disposed) throw StateError('会话已关闭');
+    requests++;
+    return _response(Stream.value(Uint8List.fromList([requests])));
+  }
+
+  @override
+  void dispose({bool cancelRunningRequests = false}) {
+    disposed = true;
+    cancelRunning = cancelRunningRequests;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
 rhttp.HttpStreamResponse _response(
   Stream<Uint8List> body, {
   int statusCode = 206,
@@ -131,6 +186,43 @@ Future<List<Object>> _uncaughtDuring(Future<void> Function() action) async {
 }
 
 void main() {
+  test('复用会话依次返回响应，关闭后拒绝继续请求', () async {
+    final client = _ReusableClient();
+    final adapter = _ReusableAdapter(Future.value(client));
+    for (var i = 1; i <= 2; i++) {
+      final response = await adapter.fetch(
+        RequestOptions(path: _url),
+        null,
+        null,
+      );
+      expect((await response.stream.toList()).single, [i]);
+    }
+    expect(adapter.creations, 1);
+    adapter.close(force: true);
+    expect(client.disposed, isTrue);
+    expect(client.cancelRunning, isTrue);
+    await expectLater(
+      adapter.fetch(RequestOptions(path: _url), null, null),
+      throwsStateError,
+    );
+    expect(client.requests, 2);
+  });
+
+  test('初始化期间关闭会话会释放迟到的客户端且不发送请求', () async {
+    final ready = Completer<rhttp.RhttpClient>();
+    final client = _ReusableClient();
+    final adapter = _ReusableAdapter(ready.future);
+    final response = adapter.fetch(RequestOptions(path: _url), null, null);
+    final check = expectLater(response, throwsStateError);
+    await pumpEventQueue();
+    adapter.close(force: true);
+    ready.complete(client);
+    await check;
+    expect(client.disposed, isTrue);
+    expect(client.cancelRunning, isTrue);
+    expect(client.requests, 0);
+  });
+
   test(
     'native body is listened to before delivery and pauses until consumption',
     () async {

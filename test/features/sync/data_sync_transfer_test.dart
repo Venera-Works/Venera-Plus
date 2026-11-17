@@ -167,6 +167,36 @@ void main() {
     );
   });
 
+  test('清理在十五分钟内合并执行', () async {
+    var now = DateTime(2026, 11, 17, 12);
+    DataSync.debugNow = () => now;
+    final sync = DataSync();
+    expect((await sync.uploadData()).success, isTrue);
+    expect((await sync.uploadData()).success, isTrue);
+    expect(rpc.snapshotPaths, hasLength(2));
+    expect(rpc.deleted, isEmpty);
+    now = now.add(const Duration(minutes: 15));
+    expect((await sync.uploadData()).success, isTrue);
+    expect(rpc.snapshotPaths, hasLength(1));
+    expect(rpc.deleted, hasLength(2));
+    expect(rpc.listed, ['/sync/', '/sync/', '/sync/']);
+  });
+
+  test('达到二十份快照时提前清理', () async {
+    final now = DateTime(2026, 11, 17, 12);
+    DataSync.debugNow = () => now;
+    final sync = DataSync();
+    expect((await sync.uploadData()).success, isTrue);
+    final day = now.millisecondsSinceEpoch ~/ 86400000;
+    rpc.files.addAll([
+      for (var version = 2; version <= 19; version++)
+        '/sync/$day-$version.venera',
+    ]);
+    expect((await sync.uploadData()).success, isTrue);
+    expect(rpc.snapshotPaths, hasLength(1));
+    expect(rpc.deleted, hasLength(19));
+  });
+
   test('cloud download selects version ten after version nine', () async {
     rpc.files.addAll(['/sync/100-9.venera', '/sync/100-10.venera']);
 
@@ -272,6 +302,19 @@ void main() {
           LocalFavoritesManager().close();
           HistoryManager.cache = null;
           LocalFavoritesManager.cache = null;
+        });
+
+        test('完整快照上传和重复检查均不访问独立追更目录', () async {
+          rpc.files.add('/sync/comic_updates/old-device.json');
+          expect((await sync.uploadData()).success, isTrue);
+          expect((await sync.downloadData(force: false)).success, isTrue);
+          expect(rpc.listed, ['/sync/', '/sync/']);
+          expect(
+            rpc.requestedPaths.any((path) => path.contains('comic_updates')),
+            isFalse,
+          );
+          expect(rpc.files, contains('/sync/comic_updates/old-device.json'));
+          expect(rpc.downloaded, isEmpty);
         });
 
         test(
@@ -517,6 +560,8 @@ void main() {
 }
 
 class _SyncRpc implements OpenListRpcClient {
+  final listed = <String>[];
+  final requestedPaths = <String>[];
   final files = <String>{};
   final contents = <String, String>{};
   final deleted = <String>[];
@@ -544,9 +589,11 @@ class _SyncRpc implements OpenListRpcClient {
     String method,
     Map<String, dynamic> request,
   ) async {
+    if (request['path'] case final String path) requestedPaths.add(path);
     switch (method) {
       case 'list':
         final directory = request['path'] as String;
+        listed.add(directory);
         return {
           'data': {
             'entries': [
@@ -637,14 +684,10 @@ class _SyncDavAdapter implements HttpClientAdapter {
     if (requestStream != null) await requestStream.drain<void>();
     final path = options.uri.path;
     final logicalPath = path.replaceFirst('/dav/VeneraPlus/', '/sync/');
-    if (path.contains('comic_updates')) {
-      return ResponseBody.fromString(
-        '',
-        options.method == 'PROPFIND' ? 404 : 201,
-      );
-    }
+    rpc.requestedPaths.add(logicalPath);
     switch (options.method) {
       case 'PROPFIND':
+        rpc.listed.add(logicalPath);
         final entries = rpc.files.map((file) {
           final name = file.substring(file.lastIndexOf('/') + 1);
           final eTag = rpc.eTag == null
