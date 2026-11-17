@@ -18,6 +18,7 @@ import 'fixtures.dart';
 class _Updater extends AppUpdateService {
   final downloads = <AppReleaseAsset>[];
   final installs = <File>[];
+  final channels = <bool>[];
   bool permission = true;
   Completer<File>? transfer;
   Completer<bool>? permissionResult;
@@ -26,8 +27,12 @@ class _Updater extends AppUpdateService {
   int checks = 0;
 
   @override
-  Future<AppRelease?> check(String currentVersion) async {
+  Future<AppRelease?> check(
+    String currentVersion, {
+    required bool includePrerelease,
+  }) async {
     checks++;
+    channels.add(includePrerelease);
     if (checkError != null) throw checkError!;
     return checkResult?.future;
   }
@@ -69,6 +74,7 @@ void main() {
   late List<String> urls;
   late List<String> messages;
   late Object? language;
+  late Object? updateChannel;
   late String version;
   late bool muted;
 
@@ -130,6 +136,8 @@ void main() {
     registerShowMessageHandler((_, message) => messages.add(message));
     language = appdata.settings['language'];
     appdata.settings['language'] = 'en-US';
+    updateChannel = appdata.settings['appUpdateChannel'];
+    appdata.settings['appUpdateChannel'] = 'stable';
     version = App.version;
     App.version = '3.2.0';
     muted = Log.isMuted;
@@ -146,6 +154,7 @@ void main() {
   tearDown(() {
     registerShowMessageHandler((_, _) {});
     appdata.settings['language'] = language;
+    appdata.settings['appUpdateChannel'] = updateChannel;
     App.version = version;
     Log.isMuted = muted;
     messenger.setMockMethodCallHandler(urlChannel, null);
@@ -296,24 +305,80 @@ void main() {
     variant: TargetPlatformVariant.only(TargetPlatform.android),
   );
 
+  for (final channel in ['stable', 'beta']) {
+    testWidgets(
+      '$channel 渠道的自动与手动检查共用请求及更新弹窗',
+      (tester) async {
+        appdata.settings['appUpdateChannel'] = channel;
+        updater.checkResult = Completer<AppRelease?>();
+        final prompt = AppUpdatePrompt(service: updater);
+        await tester.pumpWidget(harness());
+        final automatic = prompt.check(manual: false, delay: true);
+        final manual = prompt.check();
+        expect(updater.checks, 1);
+        expect(updater.channels, [channel == 'beta']);
+        updater.checkResult!.complete(release());
+        await tester.pump();
+        expect(find.byType(AppUpdateDialog), findsNothing);
+        await tester.pump(const Duration(seconds: 2));
+        await tester.pumpAndSettle();
+        expect(find.byType(AppUpdateDialog), findsOneWidget);
+        await tester.tap(find.byType(CloseButton));
+        await tester.pumpAndSettle();
+        await Future.wait([automatic, manual]);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+  }
+
   testWidgets(
-    'automatic and manual checks share the request and display one update dialog',
+    '切换渠道后不复用旧渠道的检查或提示',
     (tester) async {
-      updater.checkResult = Completer<AppRelease?>();
-      final prompt = AppUpdatePrompt(service: updater);
       await tester.pumpWidget(harness());
-      final automatic = prompt.check(manual: false, delay: true);
-      final manual = prompt.check();
-      expect(updater.checks, 1);
-      updater.checkResult!.complete(release());
+      final prompt = AppUpdatePrompt(service: updater);
+      final stableResult = Completer<AppRelease?>();
+      updater.checkResult = stableResult;
+      final stable = prompt.check(manual: false);
+      appdata.settings['appUpdateChannel'] = 'beta';
+      final betaResult = Completer<AppRelease?>();
+      updater.checkResult = betaResult;
+      final beta = prompt.check();
+      expect(updater.channels, [false, true]);
+      stableResult.complete(release(notes: 'Stable release'));
       await tester.pump();
       expect(find.byType(AppUpdateDialog), findsNothing);
-      await tester.pump(const Duration(seconds: 2));
+      betaResult.complete(release(notes: 'Beta release'));
       await tester.pumpAndSettle();
-      expect(find.byType(AppUpdateDialog), findsOneWidget);
+      expect(find.text('Beta release'), findsOneWidget);
+      expect(find.text('Stable release'), findsNothing);
       await tester.tap(find.byType(CloseButton));
       await tester.pumpAndSettle();
-      await Future.wait([automatic, manual]);
+      await Future.wait([stable, beta]);
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.android),
+  );
+
+  testWidgets(
+    '等待启动提示期间切换渠道，只显示新渠道的一个弹窗',
+    (tester) async {
+      await tester.pumpWidget(harness());
+      final prompt = AppUpdatePrompt(service: updater);
+      updater.checkResult = Completer<AppRelease?>()..complete(release());
+      final stable = prompt.check(manual: false, delay: true);
+      await tester.pump();
+      appdata.settings['appUpdateChannel'] = 'beta';
+      updater.checkResult = Completer<AppRelease?>()
+        ..complete(release(notes: 'Beta release'));
+      final beta = prompt.check();
+      final another = prompt.check();
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pumpAndSettle();
+      expect(updater.channels, [false, true]);
+      expect(find.byType(AppUpdateDialog), findsOneWidget);
+      expect(find.text('Beta release'), findsOneWidget);
+      await tester.tap(find.byType(CloseButton));
+      await tester.pumpAndSettle();
+      await Future.wait([stable, beta, another]);
     },
     variant: TargetPlatformVariant.only(TargetPlatform.android),
   );

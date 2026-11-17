@@ -85,17 +85,71 @@ void main() {
         ),
       );
       final updater = service(adapter);
-      expect((await updater.check('3.2.0'))!.version, '3.3.0');
+      expect(
+        (await updater.check('3.2.0', includePrerelease: false))!.version,
+        '3.3.0',
+      );
       expect(adapter.requests.last.uri.path, endsWith('/releases/latest'));
-      expect(await updater.check('3.3.0'), isNull);
-      expect((await updater.check('3.2.0-beta1'))!.version, '3.3.0');
+      expect(await updater.check('3.3.0', includePrerelease: false), isNull);
+      expect(
+        (await updater.check('3.2.0-beta1', includePrerelease: true))!.version,
+        '3.3.0',
+      );
       expect(adapter.requests.last.uri.query, 'per_page=20');
       client.httpClientAdapter = _Adapter(
         (_) async => ResponseBody.fromString('Unavailable', 503),
       );
-      await expectLater(updater.check('3.2.0'), throwsA(isA<DioException>()));
+      await expectLater(
+        updater.check('3.2.0', includePrerelease: false),
+        throwsA(isA<DioException>()),
+      );
     },
   );
+
+  test('更新渠道独立于安装版本，切回稳定版不会降级', () async {
+    var stableTag = 'v3.3.0';
+    final adapter = _Adapter(
+      (request) async => ResponseBody.fromString(
+        jsonEncode(
+          request.uri.path.endsWith('/latest')
+              ? releaseJson(stableTag)
+              : [
+                  releaseJson(stableTag),
+                  releaseJson('v3.4.0-beta1', prerelease: true),
+                ],
+        ),
+        200,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      ),
+    );
+    final updater = service(adapter);
+    for (final installed in ['3.2.0', '3.2.0-beta1']) {
+      expect(
+        (await updater.check(installed, includePrerelease: false))!.version,
+        '3.3.0',
+      );
+      expect(
+        (await updater.check(installed, includePrerelease: true))!.version,
+        '3.4.0-beta1',
+      );
+    }
+    expect(
+      await updater.check('3.4.0-beta1', includePrerelease: false),
+      isNull,
+    );
+    stableTag = 'v3.4.0';
+    for (final includePrerelease in [false, true]) {
+      expect(
+        (await updater.check(
+          '3.4.0-beta1',
+          includePrerelease: includePrerelease,
+        ))!.version,
+        '3.4.0',
+      );
+    }
+  });
 
   test(
     'startup removes installed APKs while keeping newer downloads and other files',
@@ -260,7 +314,10 @@ void main() {
           return body(bytes);
         });
         final updater = service(adapter);
-        final release = (await updater.check('3.2.0-beta1'))!;
+        final release = (await updater.check(
+          '3.2.0',
+          includePrerelease: true,
+        ))!;
         expect(release.tag, 'v3.4.0-beta1');
         expect(release.notes, contains('## Important changes'));
         expect(release.notes, contains('**Read before updating**'));
@@ -286,7 +343,10 @@ void main() {
         );
         expect(await file.readAsBytes(), bytes);
         expect(progress.last, bytes.length);
-        expect(await updater.check('3.4.0-beta1'), isNull);
+        expect(
+          await updater.check('3.4.0-beta1', includePrerelease: true),
+          isNull,
+        );
         expect(
           adapter.requests.where(
             (request) => request.uri.host == 'api.github.com',
@@ -322,7 +382,9 @@ void main() {
           200,
         );
       });
-      final release = (await service(adapter).check('3.2.0'))!;
+      final release = (await service(
+        adapter,
+      ).check('3.2.0-beta1', includePrerelease: false))!;
       expect(release.version, '3.3.0');
       expect(release.pageUrl, endsWith('/releases/tag/v3.3.0'));
       expect(adapter.requests[1].uri.path, endsWith('/releases/latest'));
@@ -336,7 +398,7 @@ void main() {
         (_) async => ResponseBody.fromString('Access denied', 403),
       );
       await expectLater(
-        service(adapter).check('3.2.0'),
+        service(adapter).check('3.2.0', includePrerelease: false),
         throwsA(isA<DioException>()),
       );
       expect(adapter.requests, hasLength(1));
@@ -354,7 +416,10 @@ void main() {
                 200,
               ),
       );
-      await expectLater(service(adapter).check('3.2.0'), throwsFormatException);
+      await expectLater(
+        service(adapter).check('3.2.0', includePrerelease: false),
+        throwsFormatException,
+      );
     },
   );
 

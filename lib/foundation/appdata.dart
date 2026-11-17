@@ -855,6 +855,7 @@ class Settings with ChangeNotifier {
     'enableLongPressToZoom': true,
     'longPressZoomPosition': "press", // press, center
     'checkUpdateOnStart': false,
+    'appUpdateChannel': null,
     'limitImageWidth': true,
     'readerSideMargin': 0, // Percent on each side of the limited flow width.
     'webdav': [], // empty means not configured
@@ -919,6 +920,8 @@ class Settings with ChangeNotifier {
     final bool valid;
     if (defaultValue == null) {
       valid = switch (key) {
+        'appUpdateChannel' =>
+          value == null || value == 'stable' || value == 'beta',
         'searchSources' => value == null || value is List,
         'defaultSearchTarget' ||
         'quickFavorite' => value == null || value is String,

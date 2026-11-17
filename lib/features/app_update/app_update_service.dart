@@ -31,8 +31,10 @@ class AppUpdateService {
   Future<void> _downloadTail = Future<void>.value();
   DateTime? _apiRetryAt;
 
-  Future<AppRelease?> check(String currentVersion) async {
-    final includePrerelease = allowsPrereleaseAppUpdates(currentVersion);
+  Future<AppRelease?> check(
+    String currentVersion, {
+    required bool includePrerelease,
+  }) async {
     if (_apiRetryAt?.isAfter(DateTime.now()) ?? false) {
       return _checkReleasePage(currentVersion, includePrerelease);
     }
@@ -86,7 +88,12 @@ class AppUpdateService {
       data,
       includePrerelease: includePrerelease,
     );
-    return release != null && isNewerAppVersion(release.version, currentVersion)
+    return release != null &&
+            isNewerAppVersion(
+              release.version,
+              currentVersion,
+              includePrerelease: includePrerelease,
+            )
         ? release
         : null;
   }
@@ -108,7 +115,11 @@ class AppUpdateService {
       includePrerelease: includePrerelease,
     );
     if (release == null ||
-        !isNewerAppVersion(release.version, currentVersion)) {
+        !isNewerAppVersion(
+          release.version,
+          currentVersion,
+          includePrerelease: includePrerelease,
+        )) {
       return null;
     }
     final assets = await _client.get<String>(

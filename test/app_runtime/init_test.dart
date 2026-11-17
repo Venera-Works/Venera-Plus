@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -88,6 +89,66 @@ void main() {
       );
     });
   });
+  group('更新渠道初始化', () {
+    late Directory directory;
+    late String previousVersion;
+    late String previousDataPath;
+    late Map<String, dynamic> previousSettings;
+    late Map<String, dynamic> previousImplicit;
+
+    setUp(() {
+      directory = Directory.systemTemp.createTempSync('update-channel-');
+      previousVersion = App.version;
+      try {
+        previousDataPath = App.dataPath;
+      } catch (_) {
+        previousDataPath = Directory.systemTemp.path;
+      }
+      previousSettings = Map<String, dynamic>.from(
+        appdata.toJson()['settings'],
+      );
+      previousImplicit = Map<String, dynamic>.from(appdata.implicitData);
+      App.dataPath = directory.path;
+      appdata.settings.remove('appUpdateChannel');
+    });
+
+    tearDown(() {
+      App.version = previousVersion;
+      App.dataPath = previousDataPath;
+      appdata.settings.replaceAll(previousSettings);
+      appdata.implicitData
+        ..clear()
+        ..addAll(previousImplicit);
+      directory.deleteSync(recursive: true);
+    });
+
+    for (final (version, channel) in [
+      ('3.3.0', 'stable'),
+      ('3.3.0-beta1', 'beta'),
+      ('3.3.0-rc.1', 'beta'),
+    ]) {
+      test('$version 首次初始化为 $channel 并保存', () async {
+        App.version = version;
+        await checkOldConfigsForTesting();
+        expect(appdata.settings['appUpdateChannel'], channel);
+        final saved = jsonDecode(
+          await File('${directory.path}/appdata.json').readAsString(),
+        );
+        expect(saved['settings']['appUpdateChannel'], channel);
+        App.version = channel == 'stable' ? '3.4.0-beta1' : '3.4.0';
+        await checkOldConfigsForTesting();
+        expect(appdata.settings['appUpdateChannel'], channel);
+      });
+    }
+
+    test('首次初始化保留已有的渠道选择', () async {
+      App.version = '3.3.0';
+      appdata.settings['appUpdateChannel'] = 'beta';
+      await checkOldConfigsForTesting();
+      expect(appdata.settings['appUpdateChannel'], 'beta');
+    });
+  });
+
   group('sync preference migration', () {
     late Directory tempDir;
     late String originalDataPath;

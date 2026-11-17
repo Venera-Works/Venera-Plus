@@ -517,6 +517,11 @@ Future<Uint8List?> _loadLocalCoverFallback(String sourceKey, String id) async {
 }
 
 Future<void> _checkOldConfigs() async {
+  if (appdata.settings['appUpdateChannel'] == null) {
+    appdata.settings['appUpdateChannel'] =
+        allowsPrereleaseAppUpdates(App.version) ? 'beta' : 'stable';
+    await appdata.saveData(false);
+  }
   final implicit = appdata.implicitData;
   final timing = implicit['webdavSyncTiming'];
   final config = appdata.settings['webdav'];

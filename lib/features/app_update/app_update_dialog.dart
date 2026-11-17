@@ -6,6 +6,7 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/file_system.dart'
     show bytesToReadableString;
 import 'package:venera_plus/foundation/log.dart';
@@ -23,34 +24,51 @@ class AppUpdatePrompt {
     : service = service ?? AppUpdateService();
 
   final AppUpdateService service;
-  Future<AppRelease?>? _checking;
-  Future<void>? _dialog;
+  ({bool includePrerelease, Future<AppRelease?> result})? _checking;
+  ({bool includePrerelease, Future<void> result})? _dialog;
 
   Future<void> check({bool manual = true, bool delay = false}) async {
-    final checking = _checking ??= service.check(App.version);
+    final includePrerelease = appdata.settings['appUpdateChannel'] == 'beta';
+    if (_checking?.includePrerelease != includePrerelease) {
+      _checking = (
+        includePrerelease: includePrerelease,
+        result: service.check(
+          App.version,
+          includePrerelease: includePrerelease,
+        ),
+      );
+    }
+    final checking = _checking!;
     try {
-      final release = await checking;
+      final release = await checking.result;
+      if (includePrerelease !=
+          (appdata.settings['appUpdateChannel'] == 'beta')) {
+        return;
+      }
       if (release == null) {
         if (manual) _message('No new version available'.tl);
         return;
       }
-      final existing = _dialog;
-      if (existing != null) {
-        await existing;
-        return;
+      while (_dialog != null) {
+        final existing = _dialog!;
+        await existing.result;
+        if (existing.includePrerelease == includePrerelease) return;
       }
-      final dialog = _show(release, delay);
+      final dialog = (
+        includePrerelease: includePrerelease,
+        result: _show(release, delay, includePrerelease),
+      );
       _dialog = dialog;
       try {
-        await dialog;
+        await dialog.result;
       } finally {
-        _dialog = null;
+        if (identical(_dialog?.result, dialog.result)) _dialog = null;
       }
     } catch (error, stack) {
       Log.error('Check Update', error.toString(), stack);
       if (manual) _message('Failed to check for updates'.tl);
     } finally {
-      if (identical(_checking, checking)) _checking = null;
+      if (identical(_checking?.result, checking.result)) _checking = null;
     }
   }
 
@@ -61,8 +79,15 @@ class AppUpdatePrompt {
     }
   }
 
-  Future<void> _show(AppRelease release, bool delay) async {
+  Future<void> _show(
+    AppRelease release,
+    bool delay,
+    bool includePrerelease,
+  ) async {
     if (delay) await Future<void>.delayed(const Duration(seconds: 2));
+    if (includePrerelease != (appdata.settings['appUpdateChannel'] == 'beta')) {
+      return;
+    }
     final context = App.rootNavigatorKey.currentContext;
     if (context == null || !context.mounted) return;
     await showDialog<void>(

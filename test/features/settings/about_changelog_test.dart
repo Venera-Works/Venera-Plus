@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -6,9 +7,102 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/settings/settings.dart';
+import 'package:venera_plus/features/settings/setting_components.dart';
+import 'package:venera_plus/foundation/app.dart';
+import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/translations.dart';
 
 void main() {
+  testWidgets('启动更新开关联动显示渠道，并保存和保留所选渠道', (tester) async {
+    final directory = Directory.systemTemp.createTempSync('about-updates-');
+    final previousSettings = Map<String, dynamic>.from(
+      appdata.toJson()['settings'],
+    );
+    String previousDataPath;
+    try {
+      previousDataPath = App.dataPath;
+    } catch (_) {
+      previousDataPath = Directory.systemTemp.path;
+    }
+    App.dataPath = directory.path;
+    appdata.settings['language'] = 'zh-CN';
+    await AppTranslation.init();
+    addTearDown(() {
+      appdata.settings.replaceAll(previousSettings);
+      App.dataPath = previousDataPath;
+      directory.deleteSync(recursive: true);
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    Future<void> flushWrites() async {
+      var completed = false;
+      final saved = appdata
+          .saveData(false)
+          .whenComplete(() => completed = true);
+      // 同时推进真实文件 IO 与 Widget 测试的虚拟时钟。
+      for (var i = 0; i < 500 && !completed; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+        await tester.pump();
+      }
+      expect(completed, isTrue);
+      await saved;
+    }
+
+    final channelSetting = find.byWidgetPredicate(
+      (widget) =>
+          widget is SelectSetting && widget.settingKey == 'appUpdateChannel',
+    );
+    for (final size in [const Size(360, 720), const Size(800, 720)]) {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      appdata.settings['checkUpdateOnStart'] = false;
+      appdata.settings['appUpdateChannel'] = 'stable';
+      await tester.pumpWidget(
+        const MaterialApp(home: Scaffold(body: AboutSettings())),
+      );
+      await tester.pumpAndSettle();
+      expect(channelSetting, findsNothing);
+
+      await tester.tap(find.byType(Switch));
+      await flushWrites();
+      await tester.pumpAndSettle();
+      expect(channelSetting, findsOneWidget);
+      expect(
+        tester.getTopLeft(channelSetting).dy,
+        greaterThan(tester.getTopLeft(find.byType(SwitchSetting)).dy),
+      );
+      await tester.tap(
+        find.descendant(of: channelSetting, matching: find.text('稳定版')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Beta 版').last);
+      await flushWrites();
+      await tester.pumpAndSettle();
+      expect(appdata.settings['appUpdateChannel'], 'beta');
+      final saved = jsonDecode(
+        File('${directory.path}/appdata.json').readAsStringSync(),
+      );
+      expect(saved['settings']['appUpdateChannel'], 'beta');
+
+      await tester.tap(find.byType(Switch));
+      await flushWrites();
+      await tester.pumpAndSettle();
+      expect(channelSetting, findsNothing);
+      expect(appdata.settings['appUpdateChannel'], 'beta');
+      await tester.tap(find.byType(Switch));
+      await flushWrites();
+      await tester.pumpAndSettle();
+      expect(channelSetting, findsOneWidget);
+      expect(find.text('Beta 版'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+    }
+  });
+
   group('Changelog Markdown rendering', () {
     setUpAll(() async {
       await AppTranslation.init();
