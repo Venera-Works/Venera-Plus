@@ -20,24 +20,26 @@ Future<StorageAccount?> showStorageAccountEditor(
   BuildContext context, {
   StorageAccount? initial,
   RemoteStorageAccounts? accounts,
+  bool useRootNavigator = true,
 }) async {
   final storage = accounts ?? RemoteStorageAccounts.instance;
-  final result = await Navigator.of(context, rootNavigator: true)
-      .push<StorageAccount>(
-        AppPageRoute(
-          builder: (_) => initial == null
-              ? _StorageProviderPage(accounts: storage)
-              : _StorageAccountPage(
-                  initial: initial,
-                  accounts: storage,
-                  driver: initial.backend == StorageBackend.webdav
-                      ? 'WebDAV'
-                      : initial.driver == 'QuarkOpen'
-                      ? 'Quark'
-                      : initial.driver,
-                ),
-        ),
-      );
+  final page = initial == null
+      ? _StorageProviderPage(accounts: storage)
+      : _StorageAccountPage(
+          initial: initial,
+          accounts: storage,
+          driver: initial.backend == StorageBackend.webdav
+              ? 'WebDAV'
+              : initial.driver == 'QuarkOpen'
+              ? 'Quark'
+              : initial.driver,
+        );
+  final result = useRootNavigator
+      ? await Navigator.of(
+          context,
+          rootNavigator: true,
+        ).push<StorageAccount>(AppPageRoute(builder: (_) => page))
+      : await context.to<StorageAccount>(() => page);
   if (result == null) return null;
   var saved = await storage.save(result);
   if (saved.statusMessage != null) return saved;
@@ -121,6 +123,7 @@ class _StorageAccountsPageState extends State<StorageAccountsPage> {
       context,
       initial: initial,
       accounts: widget.accounts,
+      useRootNavigator: initial != null,
     );
     if (mounted) setState(() {});
     if (!mounted ||
