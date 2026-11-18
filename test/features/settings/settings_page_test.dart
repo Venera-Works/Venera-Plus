@@ -618,6 +618,14 @@ void main() {
         'New Account',
       );
       await tester.enterText(
+        find.widgetWithText(TextField, 'Client ID'),
+        'test-client-id',
+      );
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Client Secret'),
+        'test-client-secret',
+      );
+      await tester.enterText(
         find.widgetWithText(TextField, 'Refresh Token'),
         'refresh',
       );
