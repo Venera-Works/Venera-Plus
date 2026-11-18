@@ -21,10 +21,16 @@ extension Navigation on BuildContext {
     return Navigator.of(this).canPop();
   }
 
-  Future<T?> to<T>(Widget Function() builder) {
-    return Navigator.of(
-      this,
-    ).push<T>(AppPageRoute(builder: (context) => builder()));
+  Future<T?> to<T>(
+    Widget Function() builder, {
+    bool animatePreviousPage = true,
+  }) {
+    return Navigator.of(this).push<T>(
+      AppPageRoute(
+        builder: (context) => builder(),
+        animatePreviousPage: animatePreviousPage,
+      ),
+    );
   }
 
   Future<void> toReplacement<T>(Widget Function() builder) {
