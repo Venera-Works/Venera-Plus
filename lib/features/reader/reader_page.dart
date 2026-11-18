@@ -1930,10 +1930,6 @@ abstract interface class ReaderImageViewController
 
   void handleDoubleTap(Offset location);
 
-  void handleLongPressDown(Offset location);
-
-  void handleLongPressUp(Offset location);
-
   void handleKeyEvent(KeyEvent event);
 
   /// Returns true if the event is handled.

@@ -568,31 +568,6 @@ class _ReaderSettingsState extends State<ReaderSettings> {
           useDeviceSettings: useDeviceSpecificSettings,
         ).toSliver(),
         SwitchSetting(
-          title: 'Long press to zoom'.tl,
-          settingKey: 'enableLongPressToZoom',
-          onChanged: () {
-            setState(() {});
-            widget.onChanged?.call('enableLongPressToZoom');
-          },
-          comicId: isEnabledSpecificSettings ? widget.comicId : null,
-          comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
-          useDeviceSettings: useDeviceSpecificSettings,
-        ).toSliver(),
-        SliverAnimatedVisibility(
-          visible: appdata.settings['enableLongPressToZoom'] == true,
-          child: SelectSetting(
-            title: "Long press zoom position".tl,
-            settingKey: "longPressZoomPosition",
-            optionTranslation: {
-              "press": "Press position".tl,
-              "center": "Screen center".tl,
-            },
-            comicId: isEnabledSpecificSettings ? widget.comicId : null,
-            comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
-            useDeviceSettings: useDeviceSpecificSettings,
-          ),
-        ),
-        SwitchSetting(
           title: 'Limit image width'.tl,
           subtitle: 'When using Continuous(Top to Bottom) mode'.tl,
           settingKey: 'limitImageWidth',

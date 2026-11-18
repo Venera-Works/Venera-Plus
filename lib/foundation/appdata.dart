@@ -852,8 +852,6 @@ class Settings with ChangeNotifier {
     'historyRetentionDays': 0, // 0 means disabled
     'downloadThreads': 5,
     'skipUnavailableDownloadImages': false,
-    'enableLongPressToZoom': true,
-    'longPressZoomPosition': "press", // press, center
     'checkUpdateOnStart': false,
     'appUpdateChannel': null,
     'limitImageWidth': true,

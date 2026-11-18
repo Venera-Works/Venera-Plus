@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
@@ -22,6 +23,7 @@ import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/image_provider/reader_image.dart';
 import '../../support/sqlite.dart';
+import '../../widget_test_io.dart';
 
 void main() {
   for (final mode in ReaderMode.values) {
@@ -185,8 +187,6 @@ void main() {
             imagesState.retryImage(retryChapter, 1);
             await waitForImages();
           }
-          settings['longPressAction'] = null;
-          settings['enableLongPressToZoom'] = true;
           if (!mode.isGallery) {
             PhotoView flowPhoto() => tester.widget<PhotoView>(
               find.byWidgetPredicate(
@@ -223,22 +223,57 @@ void main() {
             expect(reader.chapter, chapter);
             expect(reader.page, page);
           }
-          await tester.longPressAt(const Offset(400, 250));
-          await pumpFrames(20);
+          const location = Offset(400, 250);
+          final labels = [
+            'Settings',
+            'Chapters',
+            'Fullscreen',
+            'Exit',
+            'View Original Image',
+            if (App.isDesktop) 'Copy Image',
+            'Save Image',
+          ];
+          void expectImageMenu() {
+            final positions = labels
+                .map((label) => tester.getCenter(find.text(label)).dy)
+                .toList();
+            expect(positions, orderedEquals([...positions]..sort()));
+          }
+
+          final pageBeforeMenu = reader.page;
+          await tester.longPressAt(location);
+          await pumpFrames(15);
+          expectImageMenu();
           expect(reader.autoReading.isActive, isFalse);
-          expect(
-            (reader.imageViewController as AutoReadingViewport)
-                .autoReadingReady,
-            isTrue,
+          expect(reader.page, pageBeforeMenu);
+          App.rootNavigatorKey.currentState!.pop();
+          await pumpFrames(15);
+
+          await tester.tapAt(
+            location,
+            kind: PointerDeviceKind.mouse,
+            buttons: kSecondaryButton,
           );
-          settings['longPressAction'] = 'autoReading';
-          await tester.longPressAt(const Offset(400, 250));
-          expect(reader.autoReading.isActive, isTrue);
-          await tester.longPressAt(const Offset(400, 250));
-          expect(reader.autoReading.isActive, isFalse);
-          settings['longPressAction'] = 'none';
-          await tester.longPressAt(const Offset(400, 250));
-          expect(reader.autoReading.isActive, isFalse);
+          await pumpFrames(15);
+          expectImageMenu();
+          await tester.tap(find.text('View Original Image'));
+          final originalImage = find.descendant(
+            of: find.byWidgetPredicate(
+              (widget) =>
+                  widget is PhotoView && widget.imageProvider is MemoryImage,
+            ),
+            matching: find.byType(RawImage),
+          );
+          for (var i = 0; i < 30 && originalImage.evaluate().isEmpty; i++) {
+            await pumpFrames(5);
+          }
+          final image = tester.widget<RawImage>(originalImage).image!;
+          expect(image.width, mode.isTopToBottom ? 100 : 400);
+          expect(image.height, mode.isTopToBottom ? 400 : 100);
+          App.rootNavigatorKey.currentState!.pop();
+          await pumpFrames(20);
+          expect(reader.page, pageBeforeMenu);
+          await waitForImages();
           settings['autoReadingAcrossChapters'] = false;
           if (!mode.isGallery) {
             final flow = reader.imageViewController as ContinuousModeState;
@@ -276,9 +311,14 @@ void main() {
           key.currentState?.autoReading.stop();
           await tester.pumpWidget(const SizedBox.shrink());
           await tester.pump(const Duration(seconds: 3));
-          await tester.runAsync(
-            () => Future<void>.delayed(const Duration(milliseconds: 30)),
-          );
+          await runWidgetIo(tester, () async {
+            while (PaintingBinding.instance.imageCache.pendingImageCount > 0) {
+              await Future<void>.delayed(const Duration(milliseconds: 10));
+            }
+            if (HistoryManager.cache?.isInitialized == true) {
+              await HistoryManager().flushReadingProgress();
+            }
+          });
           LocalManager.resetForTesting();
           if (HistoryManager.cache?.isInitialized == true) {
             HistoryManager().close();

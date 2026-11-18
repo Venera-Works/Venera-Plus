@@ -374,7 +374,6 @@ class GalleryModeState extends State<_GalleryMode>
   bool get autoReadingReady {
     if (!controller.hasClients ||
         fingers > 0 ||
-        isLongPressing ||
         _isAnimatingVisualPage ||
         reader.isPageAnimating ||
         controller.position.isScrollingNotifier.value) {
@@ -484,8 +483,6 @@ class GalleryModeState extends State<_GalleryMode>
   }
 
   var imageStates = <State<ComicImage>>{};
-
-  bool isLongPressing = false;
 
   int fingers = 0;
 
@@ -863,21 +860,6 @@ class GalleryModeState extends State<_GalleryMode>
       },
       onPointerCancel: (event) {
         fingers--;
-      },
-      onPointerMove: (event) {
-        if (isLongPressing) {
-          final currentIndex = controller.hasClients && controller.page != null
-              ? controller.page!.round()
-              : _currentControllerIndex;
-          final key = _controllerKeyForIndex(currentIndex);
-          var currentController = _pool[key];
-          Offset value = event.delta;
-          if (isLongPressing) {
-            currentController?.updateMultiple(
-              position: currentController.position + value,
-            );
-          }
-        }
       },
       child: NotificationListener<ScrollNotification>(
         onNotification: (notification) {
@@ -1385,47 +1367,6 @@ class GalleryModeState extends State<_GalleryMode>
     );
   }
 
-  @override
-  void handleLongPressDown(Offset location) {
-    if (fingers != 1) {
-      return;
-    }
-    isLongPressing = true;
-    final currentIndex = controller.hasClients && controller.page != null
-        ? controller.page!.round()
-        : _currentControllerIndex;
-    final key = _controllerKeyForIndex(currentIndex);
-    var photoViewController = _pool[key];
-    if (photoViewController == null) return;
-    double target = (photoViewController.getInitialScale?.call() ?? 1.0) * 1.75;
-    var size = reader.size;
-    Offset zoomPosition;
-    if (reader.readerSetting('longPressZoomPosition') != 'center') {
-      zoomPosition = Offset(
-        size.width / 2 - location.dx,
-        size.height / 2 - location.dy,
-      );
-    } else {
-      zoomPosition = Offset.zero;
-    }
-    photoViewController.animateScale?.call(target, zoomPosition);
-  }
-
-  @override
-  void handleLongPressUp(Offset location) {
-    if (!isLongPressing) {
-      return;
-    }
-    final currentIndex = controller.hasClients && controller.page != null
-        ? controller.page!.round()
-        : _currentControllerIndex;
-    final key = _controllerKeyForIndex(currentIndex);
-    var photoViewController = _pool[key];
-    double target = photoViewController?.getInitialScale?.call() ?? 1.0;
-    photoViewController?.animateScale?.call(target);
-    isLongPressing = false;
-  }
-
   Timer? keyRepeatTimer;
 
   @override
@@ -1725,8 +1666,6 @@ class ContinuousModeState extends State<_ContinuousMode>
   bool jumpToPrevChapter = false;
 
   bool isZoomedIn = false;
-  bool isLongPressing = false;
-
   bool get crossChapter => widget.crossChapter;
 
   bool get _splitWideImages =>
@@ -2604,9 +2543,6 @@ class ContinuousModeState extends State<_ContinuousMode>
             offset = Offset(0, value.dy);
           }
         }
-        if (isLongPressing) {
-          offset += value;
-        }
         photoViewController.updateMultiple(
           position: photoViewController.position + offset,
         );
@@ -2770,38 +2706,6 @@ class ContinuousModeState extends State<_ContinuousMode>
   }
 
   @override
-  void handleLongPressDown(Offset location) {
-    if (delayedIsScrolling) {
-      return;
-    }
-    double target = photoViewController.getInitialScale!.call()! * 1.75;
-    var size = reader.size;
-    Offset zoomPosition;
-    if (reader.readerSetting('longPressZoomPosition') != 'center') {
-      zoomPosition = Offset(
-        size.width / 2 - location.dx,
-        size.height / 2 - location.dy,
-      );
-    } else {
-      zoomPosition = Offset(0, 0);
-    }
-    photoViewController.animateScale?.call(target, zoomPosition);
-    onScaleUpdate(target);
-    isLongPressing = true;
-  }
-
-  @override
-  void handleLongPressUp(Offset location) {
-    if (!isLongPressing) {
-      return;
-    }
-    double target = photoViewController.getInitialScale!.call()!;
-    photoViewController.animateScale?.call(target);
-    onScaleUpdate(target);
-    isLongPressing = false;
-  }
-
-  @override
   void toPage(int page) {
     _invalidateWaterfallRequests();
     var index = _waterfallIndexOfChapterPage(reader.chapter, page) ?? page;
@@ -2843,7 +2747,6 @@ class ContinuousModeState extends State<_ContinuousMode>
     final controller = _scrollController;
     if (controller == null ||
         !controller.hasClients ||
-        isLongPressing ||
         fingers > 0 ||
         _isRestoringPrependedSegmentPosition ||
         _isNavigatingWaterfallLocation ||

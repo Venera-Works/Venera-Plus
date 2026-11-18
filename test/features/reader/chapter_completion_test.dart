@@ -663,12 +663,6 @@ class _FakeReaderImageViewController implements ReaderImageViewController {
   void handleKeyEvent(dynamic event) {}
 
   @override
-  void handleLongPressDown(dynamic location) {}
-
-  @override
-  void handleLongPressUp(dynamic location) {}
-
-  @override
   bool handleOnTap(dynamic location) => false;
 
   @override

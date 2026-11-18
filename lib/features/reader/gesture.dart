@@ -1,6 +1,9 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:photo_view/photo_view.dart';
+import 'package:venera_plus/components/appbar.dart';
+import 'package:venera_plus/components/loading.dart';
 import 'package:venera_plus/components/menu.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/reader/clipboard_image.dart';
@@ -27,6 +30,7 @@ class ReaderGestureDetectorState
     extends AutomaticGlobalState<ReaderGestureDetector>
     with SingleTickerProviderStateMixin {
   late TapGestureRecognizer _tapGestureRecognizer;
+  late LongPressGestureRecognizer _longPressGestureRecognizer;
 
   static const _kDoubleTapMaxTime = Duration(milliseconds: 200);
 
@@ -39,6 +43,7 @@ class ReaderGestureDetectorState
   static const _kPullToCollectDistance = 100.0;
 
   late final AnimationController _pullReturnController;
+  int? _primaryPointer;
   ReaderImageReference? _pullImage;
   Offset _pullDistance = Offset.zero;
   double _pullOffset = 0;
@@ -64,8 +69,15 @@ class ReaderGestureDetectorState
     _tapGestureRecognizer = TapGestureRecognizer()
       ..onTapUp = onTapUp
       ..onSecondaryTapUp = (details) {
-        onSecondaryTapUp(details.globalPosition);
+        _showContextMenu(details.globalPosition);
       };
+    _longPressGestureRecognizer =
+        LongPressGestureRecognizer(duration: _kLongPressMinTime)
+          ..onLongPressStart = (details) {
+            if (_primaryPointer == null) return;
+            _returnPull();
+            _showContextMenu(details.globalPosition);
+          };
     super.initState();
     _pullReturnController = AnimationController(vsync: this, value: 1);
     context.readerScaffold.gestureDetectorState = this;
@@ -88,6 +100,7 @@ class ReaderGestureDetectorState
   void dispose() {
     _pullReturnController.dispose();
     _tapGestureRecognizer.dispose();
+    _longPressGestureRecognizer.dispose();
     super.dispose();
   }
 
@@ -96,23 +109,24 @@ class ReaderGestureDetectorState
     return Listener(
       behavior: HitTestBehavior.translucent,
       onPointerDown: (event) {
-        if (event.position == Offset.zero) {
-          _previousEvent = null;
-          return;
-        }
         fingers++;
         reader.autoReading.pause('pointer', true);
         if (fingers > 1) {
+          _primaryPointer = null;
           _returnPull();
+        }
+        if (event.position == Offset.zero) {
+          _previousEvent = null;
+          return;
         }
         if (ignoreNextTag) {
           ignoreNextTag = false;
           return;
         }
-        _lastTapPointer = event.pointer;
-        _lastTapMoveDistance = Offset.zero;
         _tapGestureRecognizer.addPointer(event);
-        if (fingers == 1) {
+        if (fingers == 1 && event.buttons == kPrimaryButton) {
+          _primaryPointer = event.pointer;
+          _longPressGestureRecognizer.addPointer(event);
           _pullImage = _canPullToCollect
               ? reader.imageViewController?.getImageReferenceByOffset(
                   event.position,
@@ -125,23 +139,9 @@ class ReaderGestureDetectorState
               _pullImage != null && context.readerScaffold.isLiked(_pullImage);
           _pullReturnController.value = 0;
         }
-        Future.delayed(_kLongPressMinTime, () {
-          if (mounted && _lastTapPointer == event.pointer && fingers == 1) {
-            if (_lastTapMoveDistance!.distanceSquared < 20.0 * 20.0) {
-              onLongPressedDown(event.position);
-              _longPressInProgress = true;
-              _returnPull();
-            }
-          }
-        });
       },
       onPointerMove: (event) {
-        if (event.pointer == _lastTapPointer) {
-          _lastTapMoveDistance = event.delta + _lastTapMoveDistance!;
-        }
-        if (fingers == 1 &&
-            event.pointer == _lastTapPointer &&
-            _pullImage != null) {
+        if (event.pointer == _primaryPointer && _pullImage != null) {
           _pullDistance += event.delta;
           if (!_canPullToCollect ||
               (_pullDistance.dx.abs() > 24 &&
@@ -163,31 +163,22 @@ class ReaderGestureDetectorState
       onPointerUp: (event) {
         fingers--;
         if (fingers <= 0) reader.autoReading.pause('pointer', false);
-        if (_longPressInProgress) {
-          onLongPressedUp(event.position);
-        }
         final pullImage = _pullImage;
         bool? result;
         if (pullImage != null &&
             fingers == 0 &&
-            !_longPressInProgress &&
             _canPullToCollect &&
             _isPullReady) {
           result = context.readerScaffold.toggleImageFavorite(pullImage);
         }
         _returnPull(result: result);
-        _lastTapPointer = null;
-        _lastTapMoveDistance = null;
+        _primaryPointer = null;
       },
       onPointerCancel: (event) {
         fingers--;
         if (fingers <= 0) reader.autoReading.pause('pointer', false);
-        if (_longPressInProgress) {
-          onLongPressedUp(event.position);
-        }
         _returnPull();
-        _lastTapPointer = null;
-        _lastTapMoveDistance = null;
+        _primaryPointer = null;
       },
       onPointerSignal: (event) {
         reader.autoReading.stop();
@@ -314,18 +305,11 @@ class ReaderGestureDetectorState
 
   TapUpDetails? _previousEvent;
 
-  int? _lastTapPointer;
-
-  Offset? _lastTapMoveDistance;
-
-  bool _longPressInProgress = false;
-
   bool get _canPullToCollect {
     if (context.readerScaffold.isOpen ||
         reader.isLoading ||
         reader.isPageAnimating ||
-        reader.isOnChapterCommentsPage ||
-        _longPressInProgress) {
+        reader.isOnChapterCommentsPage) {
       return false;
     }
     if (reader.mode != ReaderMode.galleryLeftToRight &&
@@ -350,10 +334,6 @@ class ReaderGestureDetectorState
     if (event.globalPosition == Offset.zero &&
         event.localPosition == Offset.zero) {
       _previousEvent = null;
-      return;
-    }
-    if (_longPressInProgress) {
-      _longPressInProgress = false;
       return;
     }
     final location = event.globalPosition;
@@ -492,74 +472,92 @@ class ReaderGestureDetectorState
     context.reader.imageViewController?.handleDoubleTap(location);
   }
 
-  void onSecondaryTapUp(Offset location) {
+  void _showContextMenu(Offset location) {
+    final compact = App.isMobile && context.width < 600;
+    final ref = reader.isLoading || reader.isOnChapterCommentsPage
+        ? null
+        : reader.imageViewController?.getImageReferenceByOffset(location);
+    if (compact && ref == null) return;
+    _previousEvent = null;
     showMenuX(context, location, [
-      MenuEntry(
-        icon: Icons.settings,
-        text: "Settings".tl,
-        onClick: () {
-          context.readerScaffold.openSetting();
-        },
-      ),
-      MenuEntry(
-        icon: Icons.menu,
-        text: "Chapters".tl,
-        onClick: () {
-          context.readerScaffold.openChapterDrawer();
-        },
-      ),
-      MenuEntry(
-        icon: Icons.fullscreen,
-        text: "Fullscreen".tl,
-        onClick: () {
-          context.reader.fullscreen();
-        },
-      ),
-      MenuEntry(
-        icon: Icons.exit_to_app,
-        text: "Exit".tl,
-        onClick: () {
-          context.pop();
-        },
-      ),
-      if (App.isDesktop && !reader.isLoading)
+      if (!compact) ...[
         MenuEntry(
-          icon: Icons.copy,
-          text: "Copy Image".tl,
-          onClick: () => copyImage(location),
+          icon: Icons.settings,
+          text: "Settings".tl,
+          onClick: () => context.readerScaffold.openSetting(),
         ),
-      if (!reader.isLoading)
+        MenuEntry(
+          icon: Icons.menu,
+          text: "Chapters".tl,
+          onClick: () => context.readerScaffold.openChapterDrawer(),
+        ),
+        MenuEntry(
+          icon: Icons.fullscreen,
+          text: "Fullscreen".tl,
+          onClick: () => context.reader.fullscreen(),
+        ),
+        MenuEntry(
+          icon: Icons.exit_to_app,
+          text: "Exit".tl,
+          onClick: () => context.pop(),
+        ),
+      ],
+      if (ref != null) ...[
+        MenuEntry(
+          icon: Icons.image_outlined,
+          text: "View Original Image".tl,
+          onClick: () => _viewOriginalImage(ref),
+        ),
+        if (App.isDesktop)
+          MenuEntry(
+            icon: Icons.copy,
+            text: "Copy Image".tl,
+            onClick: () => _copyImage(ref),
+          ),
         MenuEntry(
           icon: Icons.download_outlined,
           text: "Save Image".tl,
-          onClick: () => saveImage(location),
+          onClick: () => _saveImage(ref),
         ),
+      ],
     ]);
   }
 
-  String? _longPressAction;
-
-  void onLongPressedUp(Offset location) {
-    if (_longPressAction == 'zoom') {
-      reader.imageViewController?.handleLongPressUp(location);
-    }
-    _longPressAction = null;
-  }
-
-  void onLongPressedDown(Offset location) {
-    _longPressAction =
-        (reader.readerSetting('longPressAction') as String?) ??
-        (reader.readerSetting('enableLongPressToZoom') == true
-            ? 'zoom'
-            : 'none');
-    switch (_longPressAction) {
-      case 'zoom':
-        reader.imageViewController?.handleLongPressDown(location);
-      case 'autoReading':
-        reader.autoReading.toggle();
-      default:
-        break;
-    }
+  void _viewOriginalImage(ReaderImageReference ref) {
+    final sourceKey = reader.type.sourceKey;
+    context.to<void>(
+      () => Scaffold(
+        appBar: Appbar(title: Text("View Original Image".tl)),
+        body: FutureBuilder<Uint8List>(
+          future: loadReaderOriginalImageBytes(
+            ref,
+            fallbackSourceKey: sourceKey,
+          ),
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return NetworkError(
+                message: snapshot.error.toString(),
+                withAppbar: false,
+              );
+            }
+            final bytes = snapshot.data;
+            if (bytes == null) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            return PhotoView(
+              imageProvider: MemoryImage(bytes),
+              backgroundDecoration: BoxDecoration(
+                color: context.colorScheme.surface,
+              ),
+              minScale: PhotoViewComputedScale.contained,
+              maxScale: PhotoViewComputedScale.covered * 3,
+              errorBuilder: (context, error, _, _) =>
+                  NetworkError(message: error.toString(), withAppbar: false),
+            );
+          },
+        ),
+      ),
+    );
   }
 
   @override
@@ -574,45 +572,32 @@ class ReaderGestureDetectorState
         fallbackSourceKey: reader.type.sourceKey,
       );
     } catch (e) {
-      context.showMessage(message: e.toString());
+      if (mounted) context.showMessage(message: e.toString());
       return null;
     }
   }
 
-  void copyImage(Offset location) async {
-    var controller = reader.imageViewController;
-    if (controller == null) return;
-    final ref = controller.getImageReferenceByOffset(location);
-    if (ref == null) {
-      context.showMessage(message: "No Image".tl);
-      return;
-    }
-    var image = await _loadImageBytesFromReference(ref);
+  Future<void> _copyImage(ReaderImageReference ref) async {
+    final image = await _loadImageBytesFromReference(ref);
     if (image != null) {
-      writeImageToClipboard(image);
+      await writeImageToClipboard(image);
     }
   }
 
-  void saveImage(Offset location) async {
-    var controller = reader.imageViewController;
-    if (controller == null) return;
-    final ref = controller.getImageReferenceByOffset(location);
-    if (ref == null) {
-      context.showMessage(message: "No Image".tl);
-      return;
-    }
-    var image = await _loadImageBytesFromReference(ref);
+  Future<void> _saveImage(ReaderImageReference ref) async {
+    final page = ref.page ?? reader.page;
+    final chapter = ref.chapter ?? reader.chapter;
+    final title = reader.widget.name;
+    final image = await _loadImageBytesFromReference(ref);
     if (image != null) {
-      var filetype = detectFileType(image);
-      var page = ref.page ?? reader.page;
-      var chapter = ref.chapter ?? reader.chapter;
+      final filetype = detectFileType(image);
       final filename = buildReaderImageFileName(
-        reader.widget.name,
+        title,
         chapter,
         page,
         filetype.ext,
       );
-      saveFile(filename: filename, data: image);
+      await saveFile(filename: filename, data: image);
     }
   }
 }
