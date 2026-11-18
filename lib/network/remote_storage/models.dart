@@ -11,6 +11,7 @@ class StorageAccount {
     required this.driver,
     required this.name,
     required this.authorization,
+    this.oauthCallbackUrl = '',
     this.status = StorageAuthorizationStatus.unknown,
     this.statusMessage,
   });
@@ -20,6 +21,7 @@ class StorageAccount {
   final String driver;
   final String name;
   final Map<String, dynamic> authorization;
+  final String oauthCallbackUrl;
   final StorageAuthorizationStatus status;
   final String? statusMessage;
 
@@ -31,6 +33,7 @@ class StorageAccount {
     String? id,
     String? name,
     Map<String, dynamic>? authorization,
+    String? oauthCallbackUrl,
     StorageAuthorizationStatus? status,
     String? statusMessage,
     bool clearStatusMessage = false,
@@ -40,6 +43,7 @@ class StorageAccount {
     driver: driver,
     name: name ?? this.name,
     authorization: authorization ?? this.authorization,
+    oauthCallbackUrl: oauthCallbackUrl ?? this.oauthCallbackUrl,
     status: status ?? this.status,
     statusMessage: clearStatusMessage
         ? null
@@ -52,6 +56,7 @@ class StorageAccount {
     'driver': driver,
     'name': name,
     'authorization': authorization,
+    if (oauthCallbackUrl.isNotEmpty) 'oauthCallbackUrl': oauthCallbackUrl,
     'status': status.name,
     if (statusMessage != null) 'statusMessage': statusMessage,
   };
@@ -71,6 +76,7 @@ class StorageAccount {
       driver: json['driver'] as String? ?? '',
       name: json['name'] as String? ?? '',
       authorization: _jsonMap(json['authorization']),
+      oauthCallbackUrl: json['oauthCallbackUrl'] as String? ?? '',
       status: status ?? StorageAuthorizationStatus.unknown,
       statusMessage: json['statusMessage'] as String?,
     );

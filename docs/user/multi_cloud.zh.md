@@ -10,7 +10,7 @@ VeneraPlus 可通过内置 OpenList 内核连接百度网盘、夸克网盘、11
 
 在“存储与同步”的网盘账号管理页点击“添加”，先进入网盘来源列表，再点击来源打开对应账号配置页。添加百度网盘、夸克网盘、115 网盘、123 云盘和 OneDrive 时，页面只保留名称和“登录并授权”按钮；取得有效授权后自动保存并测试连接，无需手动填写令牌或 Cookie，也无需再点击保存。名称留空时使用网盘名称，重名时会在授权前提示修改。取消授权或授权失败不会保存账号，已填写的名称会保留。编辑已有账号时直接进入对应配置页，仍可修改名称及授权信息并点击“保存并测试连接”。从配置页返回可重新选择来源，从来源列表返回则取消添加。百度网盘、115 网盘、123 云盘和 OneDrive 的授权及在线令牌刷新继续使用 OpenList 官方 API；应用不会把 OpenList HTTP 服务暴露到网络。
 
-令牌自动授权统一使用“OpenList 提供的参数”，分别对应 115 验证登录（OAuth App）、123 验证登录（OAuth官方）、百度验证登录（OAuth App）和 OneDrive 个人版本（OAuth App）。无需填写客户端 ID 或应用密钥。
+115、123、百度和 OneDrive 的令牌自动授权使用 OpenList 提供的参数，分别对应 115 验证登录（OAuth App）、123 验证登录（OAuth官方）、百度验证登录（OAuth App）和 OneDrive 个人版本（OAuth App）。无需填写客户端 ID 或应用密钥。
 
 夸克改用 `Quark` Cookie 驱动。点击“登录并授权”后在应用 WebView 中登录夸克官网，应用确认能读取网盘目录后，通过原生 Cookie 存储提取包括 HttpOnly 在内的完整 Cookie；新增账号随即自动保存并测试连接。已有 `QuarkOpen` 账号需重新登录，编辑保存时保留账号标识及已配置的目录，不再使用旧令牌、AppID 或 SignKey。
 
@@ -18,9 +18,23 @@ WebDAV 填写服务器地址、用户名和密码后保存。编辑其他已有�
 
 ### Google Drive 自建 OAuth 授权
 
-1. 在 Google Cloud 控制台为自己的项目启用 Google Drive API，配置 OAuth 同意屏幕，并创建“Web 应用”类型的 OAuth 客户端。将 `https://developers.google.com/oauthplayground` 添加为已获授权的重定向 URI。[Google Cloud 控制台](https://console.cloud.google.com/)
-2. 打开 Google OAuth Playground，在右上角设置中勾选 **Use your own OAuth credentials**，填写该客户端的 ID 和密钥。选择 `https://www.googleapis.com/auth/drive.readonly` 可浏览和阅读。需要写回元数据、同步或备份文件时，选择 `https://www.googleapis.com/auth/drive`。[Google OAuth Playground](https://developers.google.com/oauthplayground/)
-3. 授权后点击 **Exchange authorization code for tokens**。在 VeneraPlus 新增或编辑 Google Drive 账号，填写该客户端的 ID、密钥及其签发的 Refresh Token，点击“保存并测试连接”。应用后续直接向 Google 刷新令牌。
+在 Google Cloud 控制台启用 Google Drive API，配置 OAuth 同意屏幕，创建“Web 应用”类型的 OAuth 客户端。将所选的回调地址完整添加到“获授权的重定向 URI”。在 VeneraPlus 新增或编辑 Google Drive 账号时，填写该客户端的 `Client ID` 和 `Client Secret`。后续刷新直接请求 Google。[Google Cloud 控制台](https://console.cloud.google.com/)
+
+- **默认 OpenList 回调**。将“OAuth 回调地址”设置项显示的默认地址登记到 Google Cloud。在应用中保留默认值，点击“打开 OpenList 获取刷新令牌”。在网页选择 Google Drive，填写同一组客户端凭据，完成 Google 授权后，把网页生成的 `Refresh Token` 粘贴回应用，再点击“保存并测试连接”。[OpenList 官方步骤](https://doc.oplist.org/guide/drivers/google_drive)
+- **自建回调**。打开“OAuth 回调地址”，填写支持 VeneraPlus 回传的完整 HTTPS 地址，确认后点击“登录并授权”。应用在系统浏览器打开 Google 授权页。完成后返回应用，应用取得刷新令牌并自动保存、测试连接。清空回调地址可恢复默认值。
+
+#### 部署自建回调
+
+1. 在服务器上使用 Node.js 22.1 或更新版本运行 [回调脚本](../examples/google_drive_callback.mjs)。
+
+   ```sh
+   node google_drive_callback.mjs
+   ```
+
+2. 将自己的 HTTPS 域名上的 `/googleui/callback` 反向代理到 `http://127.0.0.1:8787`，转发该路径的 GET（含查询参数）和 POST 请求，并关闭该路径的缓存和访问日志。脚本使用单进程的内存保存会话，有效期为五分钟。
+3. 将完整地址（例如 `https://drive.example.com/googleui/callback`）同时填入 Google Cloud 控制台和应用。回调服务只传递一次性授权码，应用直接向 Google 交换令牌。使用普通自建 OpenList APIPages 时，可在其网页授权后手动填写刷新令牌。
+
+已有刷新令牌时，可以直接填写并保存。也可继续使用 [Google OAuth Playground](https://developers.google.com/oauthplayground/) 获取令牌，将 `https://developers.google.com/oauthplayground` 登记为重定向 URI，并启用 **Use your own OAuth credentials**。`https://www.googleapis.com/auth/drive.readonly` 可用于浏览和阅读，写回元数据、同步或备份需要 `https://www.googleapis.com/auth/drive`。
 
 原先使用 OpenList 公共凭据的用户应编辑原账号，并用相同的 Google 账号重新授权。原账号及其漫画库、同步和备份目录的关联会保留。外部 OAuth 应用处于 **Testing** 状态时，需先添加测试用户，Drive 刷新令牌会在 7 天后过期。
 

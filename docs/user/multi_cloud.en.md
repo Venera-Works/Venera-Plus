@@ -10,7 +10,7 @@ The embedded core is built independently by Venera-OpenList-Core and packaged wi
 
 Choose Add on the cloud account management page in Storage & Sync, then select a provider to open its account form. When adding Baidu Netdisk, Quark, 115, 123 Cloud, or OneDrive, the form contains only the name and "Log in and authorize" button. Successful authorization automatically saves the account and tests the connection, without manual token or Cookie entry or another Save action. A blank name uses the provider name; duplicate names must be changed before authorization starts. Canceling or failing authorization does not save an account and keeps the entered name. Editing an existing account opens its form directly, where you can still change its name and credentials and choose "Save and test connection". Go back from the form to choose another provider, or go back from the provider list to cancel adding an account. Baidu Netdisk, 115, 123 Cloud, and OneDrive authorization and online token refresh continue to use the official OpenList API. The app does not expose an OpenList HTTP server.
 
-Automatic token authorization always uses the parameters provided by OpenList: OAuth App verification for 115 and Baidu; official OAuth verification for 123 Cloud; and personal OAuth App authorization for OneDrive. No client ID or application secret is required from the user.
+Automatic token authorization for 115, 123 Cloud, Baidu, and OneDrive uses the parameters provided by OpenList. This covers OAuth App verification for 115 and Baidu, official OAuth verification for 123 Cloud, and personal OAuth App authorization for OneDrive. No client ID or application secret is required from the user.
 
 Quark uses the `Quark` Cookie driver. Choose "Log in and authorize" to sign in on Quark's official website inside the app's WebView. After confirming that the session can list drive files, the app reads the native cookie store, including HttpOnly cookies. New accounts are then saved and tested automatically. Existing `QuarkOpen` accounts require a new login; saving an edited account retains its ID and configured directories, without the old tokens, AppID, or SignKey.
 
@@ -18,9 +18,23 @@ Enter a server address, username, and password to save a WebDAV account. You can
 
 ### Google Drive authorization with your own OAuth client
 
-1. In the Google Cloud console, enable the Google Drive API for your project, configure the OAuth consent screen, and create an OAuth client of type **Web application**. Add `https://developers.google.com/oauthplayground` as an authorized redirect URI. [Google Cloud console](https://console.cloud.google.com/)
-2. In Google OAuth Playground settings, select **Use your own OAuth credentials** and enter the client ID and secret. Use `https://www.googleapis.com/auth/drive.readonly` for browsing and reading. Use `https://www.googleapis.com/auth/drive` to write metadata, sync, or back up files. [Google OAuth Playground](https://developers.google.com/oauthplayground/)
-3. After authorizing, select **Exchange authorization code for tokens**. Add or edit the Google Drive account in VeneraPlus, enter the client ID, client secret, and refresh token issued to that client, and choose **Save and test connection**. VeneraPlus refreshes tokens directly with Google.
+In the Google Cloud console, enable the Google Drive API, configure the OAuth consent screen, and create a **Web application** OAuth client. Register your chosen callback as an authorized redirect URI. When adding or editing a Google Drive account in VeneraPlus, enter its `Client ID` and `Client Secret`. VeneraPlus refreshes tokens directly with Google. [Google Cloud console](https://console.cloud.google.com/)
+
+- **Default OpenList callback.** Register the default address shown in the VeneraPlus callback setting in Google Cloud. Keep the default in VeneraPlus and choose **Open OpenList to get a refresh token**. On the OpenList page, select Google Drive and enter the same client credentials. After authorizing with Google, paste the `Refresh Token` back into VeneraPlus and choose **Save and test connection**. [OpenList instructions](https://doc.oplist.org/guide/drivers/google_drive)
+- **Self-hosted callback.** Open **OAuth callback address**, enter the full HTTPS address of a callback that can return the authorization result to VeneraPlus, and confirm. Choose **Log in and authorize** to open Google in the system browser. After granting access, return to VeneraPlus. It obtains the refresh token, saves the account, and tests the connection automatically. Clear the callback field to restore the default.
+
+#### Deploy a self-hosted callback
+
+1. Run the [callback script](../examples/google_drive_callback.mjs) on your server with Node.js 22.1 or newer.
+
+   ```sh
+   node google_drive_callback.mjs
+   ```
+
+2. Reverse-proxy `/googleui/callback` on your HTTPS domain to `http://127.0.0.1:8787`. Forward GET requests with their query parameters and POST requests, and disable caching and access logging for this path. The script stores sessions in memory in a single process. Sessions expire after five minutes.
+3. Enter the full address (for example, `https://drive.example.com/googleui/callback`) in both the Google Cloud console and VeneraPlus. The callback service relays a one-time authorization code. VeneraPlus exchanges it directly with Google. For a standard self-hosted OpenList APIPages instance, authorize in its web interface and paste its refresh token into VeneraPlus manually.
+
+You can also enter an existing refresh token and save it. To obtain a token through [Google OAuth Playground](https://developers.google.com/oauthplayground/), register `https://developers.google.com/oauthplayground` as a redirect URI and enable **Use your own OAuth credentials**. Use `https://www.googleapis.com/auth/drive.readonly` for browsing and reading, or `https://www.googleapis.com/auth/drive` to write metadata, sync, or back up files.
 
 If the account previously used shared OpenList credentials, edit the existing account and authorize with the same Google account to keep its library, sync, and backup directories. For an external OAuth app in **Testing**, add your Google account as a test user. Drive refresh tokens issued in this state expire after seven days.
 

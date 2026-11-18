@@ -1,6 +1,9 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/appbar.dart';
+import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/foundation/app_page_route.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/translations.dart';
@@ -8,6 +11,7 @@ import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'google_drive_login.dart';
 import 'token_import.dart';
 import 'openlist_login.dart';
 import 'quark_login.dart';
@@ -286,6 +290,7 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
   late final TextEditingController _clientSecret = TextEditingController(
     text: _googleCredentials['client_secret'] as String?,
   );
+  late String _oauthCallbackUrl = widget.initial?.oauthCallbackUrl ?? '';
   late final TextEditingController _refreshToken = TextEditingController(
     text: _isGoogleDrive
         ? _googleCredentials['refresh_token'] as String?
@@ -301,8 +306,11 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
       (_driver == 'Quark' || openListLoginDrivers.containsKey(_driver));
   String? _error;
   bool _loggingIn = false;
+  CancelToken? _googleLogin;
+
   @override
   void dispose() {
+    _googleLogin?.cancel();
     _name.dispose();
     _url.dispose();
     _user.dispose();
@@ -334,147 +342,193 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
           alignment: Alignment.topCenter,
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 640),
-            child: ListView(
+            child: SingleChildScrollView(
               padding: const EdgeInsets.all(16),
-              children: [
-                TextField(
-                  controller: _name,
-                  decoration: InputDecoration(labelText: 'Name'.tl),
-                ),
-                const SizedBox(height: 16),
-                if (webdav) ...[
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
                   TextField(
-                    controller: _url,
-                    decoration: InputDecoration(labelText: 'URL'.tl),
+                    controller: _name,
+                    readOnly: _isGoogleDrive && _loggingIn,
+                    decoration: InputDecoration(labelText: 'Name'.tl),
                   ),
                   const SizedBox(height: 16),
-                  TextField(
-                    controller: _user,
-                    decoration: InputDecoration(labelText: 'Username'.tl),
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: _password,
-                    obscureText: true,
-                    decoration: InputDecoration(labelText: 'Password'.tl),
-                  ),
-                ] else ...[
-                  if (hasLogin) ...[
-                    const SizedBox(height: 16),
-                    SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton.icon(
-                        style: actionButtonStyle,
-                        onPressed: _loggingIn ? null : _login,
-                        icon: const Icon(Icons.login),
-                        label: Text('Log in and authorize'.tl),
-                      ),
+                  if (webdav) ...[
+                    TextField(
+                      controller: _url,
+                      decoration: InputDecoration(labelText: 'URL'.tl),
                     ),
                     const SizedBox(height: 16),
-                  ],
-                  if (!_autoSaveAfterLogin) ...[
-                    if (quark)
-                      TextField(
-                        controller: _cookie,
-                        obscureText: true,
-                        autocorrect: false,
-                        enableSuggestions: false,
-                        decoration: InputDecoration(labelText: 'Cookie'.tl),
-                      )
-                    else ...[
-                      if (_driver == '115 Open') ...[
-                        TextField(
-                          controller: _accessToken,
-                          decoration: InputDecoration(
-                            labelText: 'Access Token'.tl,
-                          ),
+                    TextField(
+                      controller: _user,
+                      decoration: InputDecoration(labelText: 'Username'.tl),
+                    ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: _password,
+                      obscureText: true,
+                      decoration: InputDecoration(labelText: 'Password'.tl),
+                    ),
+                  ] else ...[
+                    if (hasLogin) ...[
+                      const SizedBox(height: 16),
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          style: actionButtonStyle,
+                          onPressed: _loggingIn ? null : _login,
+                          icon: const Icon(Icons.login),
+                          label: Text('Log in and authorize'.tl),
                         ),
-                        const SizedBox(height: 16),
-                      ],
-                      if (_isGoogleDrive) ...[
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                    if (!_autoSaveAfterLogin) ...[
+                      if (quark)
                         TextField(
-                          controller: _clientId,
-                          autocorrect: false,
-                          enableSuggestions: false,
-                          onChanged: (value) {
-                            if (value.trim() !=
-                                    _googleCredentials['client_id'] &&
-                                _refreshToken.text ==
-                                    _googleCredentials['refresh_token']) {
-                              _refreshToken.clear();
-                            }
-                          },
-                          decoration: InputDecoration(
-                            labelText: 'Client ID'.tl,
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        TextField(
-                          controller: _clientSecret,
+                          controller: _cookie,
                           obscureText: true,
                           autocorrect: false,
                           enableSuggestions: false,
-                          decoration: InputDecoration(
-                            labelText: 'Client Secret'.tl,
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                      ],
-                      TextField(
-                        controller: _refreshToken,
-                        obscureText: _isGoogleDrive,
-                        autocorrect: !_isGoogleDrive,
-                        enableSuggestions: !_isGoogleDrive,
-                        onChanged: _driver == '115 Open'
-                            ? null
-                            : (_) => _accessToken.clear(),
-                        decoration: InputDecoration(
-                          labelText: 'Refresh Token'.tl,
-                        ),
-                      ),
-                      if (_isGoogleDrive) ...[
-                        Text(
-                          'Get a refresh token in Google OAuth Playground using your own Client ID and Client Secret.'
-                              .tl,
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                        TextButton.icon(
-                          style: actionButtonStyle,
-                          onPressed: () => launchUrl(
-                            Uri.https(
-                              'developers.google.com',
-                              '/oauthplayground/',
+                          decoration: InputDecoration(labelText: 'Cookie'.tl),
+                        )
+                      else ...[
+                        if (_driver == '115 Open') ...[
+                          TextField(
+                            controller: _accessToken,
+                            decoration: InputDecoration(
+                              labelText: 'Access Token'.tl,
                             ),
-                            mode: LaunchMode.externalApplication,
                           ),
-                          icon: const Icon(Icons.open_in_new),
-                          label: Text('Open Google OAuth Playground'.tl),
+                          const SizedBox(height: 16),
+                        ],
+                        if (_isGoogleDrive) ...[
+                          TextField(
+                            controller: _clientId,
+                            readOnly: _loggingIn,
+                            autocorrect: false,
+                            enableSuggestions: false,
+                            onChanged: (value) {
+                              if (value.trim() !=
+                                      _googleCredentials['client_id'] &&
+                                  _refreshToken.text ==
+                                      _googleCredentials['refresh_token']) {
+                                _refreshToken.clear();
+                              }
+                            },
+                            decoration: InputDecoration(
+                              labelText: 'Client ID'.tl,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          TextField(
+                            controller: _clientSecret,
+                            readOnly: _loggingIn,
+                            obscureText: true,
+                            autocorrect: false,
+                            enableSuggestions: false,
+                            decoration: InputDecoration(
+                              labelText: 'Client Secret'.tl,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            enabled: !_loggingIn,
+                            title: Text('OAuth callback address (optional)'.tl),
+                            subtitle: Text(
+                              _oauthCallbackUrl.isEmpty
+                                  ? googleDriveDefaultCallback.toString()
+                                  : _oauthCallbackUrl,
+                            ),
+                            trailing: const Icon(Icons.arrow_right),
+                            onTap: _loggingIn ? null : _editGoogleCallback,
+                          ),
+                          const SizedBox(height: 16),
+                          if (_googleLogin != null) ...[
+                            Text(
+                              'Finish Google authorization in the browser, then return here.'
+                                  .tl,
+                            ),
+                            TextButton(
+                              onPressed: () => _googleLogin?.cancel(),
+                              child: Text('Cancel'.tl),
+                            ),
+                          ] else
+                            OutlinedButton.icon(
+                              style: actionButtonStyle,
+                              onPressed: _loggingIn ? null : _loginGoogleDrive,
+                              icon: Icon(
+                                _oauthCallbackUrl.isEmpty
+                                    ? Icons.open_in_new
+                                    : Icons.login,
+                              ),
+                              label: Text(
+                                (_oauthCallbackUrl.isEmpty
+                                        ? 'Open OpenList to get a refresh token'
+                                        : 'Log in and authorize')
+                                    .tl,
+                              ),
+                            ),
+                          const SizedBox(height: 16),
+                        ],
+                        TextField(
+                          controller: _refreshToken,
+                          readOnly: _isGoogleDrive && _loggingIn,
+                          obscureText: _isGoogleDrive,
+                          autocorrect: !_isGoogleDrive,
+                          enableSuggestions: !_isGoogleDrive,
+                          onChanged: _driver == '115 Open'
+                              ? null
+                              : (_) => _accessToken.clear(),
+                          decoration: InputDecoration(
+                            labelText: 'Refresh Token'.tl,
+                          ),
                         ),
+                        if (_isGoogleDrive) ...[
+                          Text(
+                            'Get a refresh token in Google OAuth Playground using your own Client ID and Client Secret.'
+                                .tl,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                          TextButton.icon(
+                            style: actionButtonStyle,
+                            onPressed: () => launchUrl(
+                              Uri.https(
+                                'developers.google.com',
+                                '/oauthplayground/',
+                              ),
+                              mode: LaunchMode.externalApplication,
+                            ),
+                            icon: const Icon(Icons.open_in_new),
+                            label: Text('Open Google OAuth Playground'.tl),
+                          ),
+                        ],
                       ],
                     ],
                   ],
-                ],
-                if (_error != null) ...[
-                  const SizedBox(height: 16),
-                  Text(
-                    _error!.tl,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.error,
+                  if (_error != null) ...[
+                    const SizedBox(height: 16),
+                    Text(
+                      _error!.tl,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
                     ),
-                  ),
-                ],
-                if (!_autoSaveAfterLogin) ...[
-                  const SizedBox(height: 16),
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton(
-                      style: actionButtonStyle,
-                      onPressed: _loggingIn ? null : _save,
-                      child: Text('Save and test connection'.tl),
+                  ],
+                  if (!_autoSaveAfterLogin) ...[
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton(
+                        style: actionButtonStyle,
+                        onPressed: _loggingIn ? null : _save,
+                        child: Text('Save and test connection'.tl),
+                      ),
                     ),
-                  ),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
         ),
@@ -486,10 +540,7 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
     final webdav = _driver == 'WebDAV';
     final quark = _driver == 'Quark';
     try {
-      final name = _name.text.trim().isEmpty ? _driver.tl : _name.text.trim();
-      if (widget.accounts.isNameInUse(name, excludingId: widget.initial?.id)) {
-        throw FormatException('An account with this name already exists.'.tl);
-      }
+      final name = _validatedName();
       if (quark) {
         if (_cookie.text.trim().isEmpty) {
           throw const FormatException('Cookie is required');
@@ -534,11 +585,92 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
           backend: webdav ? StorageBackend.webdav : StorageBackend.openlist,
           driver: webdav ? widget.initial?.driver ?? 'webdav' : _driver,
           name: name,
+          oauthCallbackUrl: _isGoogleDrive ? _oauthCallbackUrl : '',
           authorization: auth,
         ),
       );
     } on FormatException catch (error) {
       setState(() => _error = error.message);
+    }
+  }
+
+  String _validatedName() {
+    final name = _name.text.trim().isEmpty ? _driver.tl : _name.text.trim();
+    if (widget.accounts.isNameInUse(name, excludingId: widget.initial?.id)) {
+      throw const FormatException('An account with this name already exists.');
+    }
+    return name;
+  }
+
+  Future<void> _editGoogleCallback() => showInputDialog(
+    context: context,
+    title: 'OAuth callback address (optional)'.tl,
+    initialValue: _oauthCallbackUrl,
+    hintText: googleDriveDefaultCallback.toString(),
+    onConfirm: (value) {
+      try {
+        final callback = googleDriveCallbackUri(value);
+        setState(() {
+          _oauthCallbackUrl = callback == googleDriveDefaultCallback
+              ? ''
+              : callback.toString();
+          _error = null;
+        });
+        return null;
+      } on FormatException catch (error) {
+        return error.message.tl;
+      }
+    },
+  );
+
+  Future<void> _loginGoogleDrive() async {
+    try {
+      _validatedName();
+      final clientId = _clientId.text.trim();
+      final clientSecret = _clientSecret.text.trim();
+      if (clientId.isEmpty || clientSecret.isEmpty) {
+        throw const FormatException('Client ID and Client Secret are required');
+      }
+      final callback = googleDriveCallbackUri(_oauthCallbackUrl);
+      final cancelToken = callback == googleDriveDefaultCallback
+          ? null
+          : CancelToken();
+      setState(() {
+        _error = null;
+        _loggingIn = true;
+        _googleLogin = cancelToken;
+      });
+      if (cancelToken == null) {
+        if (!await launchUrl(
+          callback.resolve('/'),
+          mode: LaunchMode.externalApplication,
+        )) {
+          throw const FormatException('Unable to open the browser.');
+        }
+        return;
+      }
+
+      final refreshToken = await authorizeGoogleDrive(
+        callback: callback,
+        clientId: clientId,
+        clientSecret: clientSecret,
+        cancelToken: cancelToken,
+      );
+      if (mounted && !cancelToken.isCancelled && refreshToken != null) {
+        _refreshToken.text = refreshToken;
+        if (ModalRoute.of(context)?.isCurrent == true) _save();
+      }
+    } on FormatException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } on PlatformException {
+      if (mounted) setState(() => _error = 'Unable to open the browser.');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _googleLogin = null;
+          _loggingIn = false;
+        });
+      }
     }
   }
 

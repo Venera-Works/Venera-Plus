@@ -278,6 +278,7 @@ class RemoteStorageAccounts with ChangeNotifier {
             backend: value.backend,
             driver: value.driver,
             name: value.name,
+            oauthCallbackUrl: value.oauthCallbackUrl,
             authorization: value.authorization,
             status: value.status,
             statusMessage: value.statusMessage,
@@ -316,6 +317,7 @@ class RemoteStorageAccounts with ChangeNotifier {
         previous = refreshed;
         account = refreshed.copyWith(
           name: account.name,
+          oauthCallbackUrl: account.oauthCallbackUrl,
           status: account.status,
           statusMessage: account.statusMessage,
           clearStatusMessage: account.statusMessage == null,
@@ -808,6 +810,7 @@ List<StorageAccount> mergeRemoteStorageAccounts(
       merged[index] = existing.copyWith(
         id: id,
         name: value.name.trim(),
+        oauthCallbackUrl: value.oauthCallbackUrl,
         authorization: value.authorization,
         status: value.status,
         statusMessage: value.statusMessage,
