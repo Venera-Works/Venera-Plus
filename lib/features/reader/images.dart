@@ -11,6 +11,7 @@ import 'package:photo_view/photo_view_gallery.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'package:venera_plus/components/gesture.dart';
 import 'package:venera_plus/components/loading.dart';
+import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/remote_library/remote_library.dart';
@@ -853,7 +854,7 @@ class GalleryModeState extends State<_GalleryMode>
       _lastVisibleStableIdentity = null;
     }
     _schedulePreload();
-    return Listener(
+    final gallery = Listener(
       onPointerDown: (event) {
         fingers++;
       },
@@ -1096,6 +1097,7 @@ class GalleryModeState extends State<_GalleryMode>
         ),
       ),
     );
+    return MouseDragScrollRegion(child: gallery);
   }
 
   Widget buildPageImages(

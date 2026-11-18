@@ -83,7 +83,7 @@ class _AggregatedSearchPageState extends State<AggregatedSearchPage> {
 
   @override
   Widget build(BuildContext context) {
-    return SmoothCustomScrollView(
+    final results = SmoothCustomScrollView(
       slivers: [
         SliverSearchBar(controller: controller),
         if (sources.isEmpty)
@@ -104,6 +104,7 @@ class _AggregatedSearchPageState extends State<AggregatedSearchPage> {
         ),
       ],
     );
+    return MouseDragScrollRegion(child: results);
   }
 }
 

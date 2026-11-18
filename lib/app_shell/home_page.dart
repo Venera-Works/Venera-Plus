@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 
 class HomePage extends StatelessWidget {
@@ -8,6 +9,8 @@ class HomePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ReadingFavoritesView(onOpenHistory: onOpenHistory);
+    return MouseDragScrollRegion(
+      child: ReadingFavoritesView(onOpenHistory: onOpenHistory),
+    );
   }
 }

@@ -1243,7 +1243,7 @@ class ComicListState extends State<ComicList> {
     onPopInvokedWithResult: (didPop, _) {
       if (didPop) cancelPendingLoads();
     },
-    child: _buildContent(context),
+    child: MouseDragScrollRegion(child: _buildContent(context)),
   );
 
   Widget _buildContent(BuildContext context) {

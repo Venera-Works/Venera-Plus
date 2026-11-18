@@ -221,7 +221,7 @@ class LibraryPageState extends State<LibraryPage>
 
   @override
   Widget build(BuildContext context) {
-    return NestedScrollView(
+    final libraryView = NestedScrollView(
       floatHeaderSlivers: true,
       headerSliverBuilder: (context, innerBoxIsScrolled) => [
         SliverToBoxAdapter(
@@ -259,5 +259,6 @@ class LibraryPageState extends State<LibraryPage>
         },
       ),
     );
+    return MouseDragScrollRegion(child: libraryView);
   }
 }

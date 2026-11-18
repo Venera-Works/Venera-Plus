@@ -1093,7 +1093,9 @@ class _ExplorePageState extends State<ExplorePage>
                       child: MediaQuery.removePadding(
                         context: context,
                         removeTop: true,
-                        child: buildContentBody(context),
+                        child: MouseDragScrollRegion(
+                          child: buildContentBody(context),
+                        ),
                       ),
                     ),
                   ),

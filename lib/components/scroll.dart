@@ -9,6 +9,23 @@ import 'package:venera_plus/foundation/widget_utils.dart';
 
 import 'consts.dart';
 
+class MouseDragScrollRegion extends StatelessWidget {
+  const MouseDragScrollRegion({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final behavior = ScrollConfiguration.of(context);
+    return ScrollConfiguration(
+      behavior: behavior.copyWith(
+        dragDevices: {...behavior.dragDevices, PointerDeviceKind.mouse},
+      ),
+      child: child,
+    );
+  }
+}
+
 /// Scopes one root smooth scroll view to NestedScrollView's inner controller.
 /// The root view isolates its sliver descendants from this scope.
 class NestedScrollScope extends InheritedWidget {
