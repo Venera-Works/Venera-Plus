@@ -8,6 +8,7 @@ import 'package:venera_plus/components/effects.dart';
 import 'package:venera_plus/components/gesture.dart';
 import 'package:venera_plus/components/menu.dart';
 import 'package:venera_plus/components/message.dart';
+import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/components/side_bar.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_details/comic_details.dart';
@@ -873,7 +874,7 @@ class ReaderScaffoldState extends State<ReaderScaffold>
       if (!mounted) return;
       showSideBar(
         context,
-        widget,
+        MouseDragScrollRegion(child: widget),
         width: width,
         dismissible: true,
       ).whenComplete(() {

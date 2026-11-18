@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/gesture.dart';
+import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
@@ -24,7 +25,7 @@ enum SettingsDestination {
 }
 
 Widget _buildSettingsContent(SettingsDestination destination) {
-  return switch (destination) {
+  final content = switch (destination) {
     SettingsDestination.reading => const ReaderSettings(),
     SettingsDestination.appearance => const AppearanceSettings(),
     SettingsDestination.browsing => const BrowsingAndFavoritesSettings(),
@@ -35,6 +36,7 @@ Widget _buildSettingsContent(SettingsDestination destination) {
     SettingsDestination.advanced => const AdvancedSettings(),
     SettingsDestination.about => const AboutSettings(),
   };
+  return MouseDragScrollRegion(child: content);
 }
 
 class SettingsPage extends StatefulWidget {
@@ -321,7 +323,7 @@ class _SettingsPageState extends State<SettingsPage> {
       );
     }
 
-    return ListView(
+    final categoryList = ListView(
       padding: EdgeInsets.zero,
       children: [
         for (final group in groups) ...[
@@ -342,6 +344,7 @@ class _SettingsPageState extends State<SettingsPage> {
         const SizedBox(height: 16),
       ],
     );
+    return MouseDragScrollRegion(child: categoryList);
   }
 
   Widget buildRight() {
