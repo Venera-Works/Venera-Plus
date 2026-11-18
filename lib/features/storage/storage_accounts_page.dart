@@ -126,7 +126,7 @@ class _StorageAccountsPageState extends State<StorageAccountsPage> {
       context,
       initial: initial,
       accounts: widget.accounts,
-      useRootNavigator: initial != null,
+      useRootNavigator: false,
     );
     if (mounted) setState(() {});
     if (!mounted ||
