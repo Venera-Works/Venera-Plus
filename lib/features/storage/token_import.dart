@@ -14,21 +14,30 @@ const openListLoginDrivers = <String, String>{
   '123 Open': '123cloud_oa',
   'BaiduNetdisk': 'baiduyun_go',
   'Onedrive': 'onedrive_pr',
+  'GoogleDrive': 'googleui_go',
 };
 
-Uri openListLoginUri(String driver) {
+Uri openListLoginUri(
+  String driver, {
+  String clientId = '',
+  String clientSecret = '',
+}) {
   final loginDriver = openListLoginDrivers[driver];
   if (loginDriver == null) {
     throw ArgumentError.value(driver, 'driver', 'Unsupported login provider');
+  }
+  final usesOwnClient = driver == 'GoogleDrive';
+  if (usesOwnClient && (clientId.isEmpty || clientSecret.isEmpty)) {
+    throw const FormatException('Client ID and Client Secret are required');
   }
   return Uri.https(
     'api.oplist.org',
     '/${loginDriver.split('_').first}/requests',
     {
       'driver_txt': loginDriver,
-      'server_use': 'true',
-      'client_uid': '',
-      'client_key': '',
+      'server_use': usesOwnClient ? 'false' : 'true',
+      'client_uid': usesOwnClient ? clientId : '',
+      'client_key': usesOwnClient ? clientSecret : '',
     },
   );
 }
@@ -36,6 +45,8 @@ Uri openListLoginUri(String driver) {
 Map<String, dynamic>? parseOpenListLoginCallback(
   String url, {
   required String driver,
+  String clientId = '',
+  String clientSecret = '',
 }) {
   final uri = Uri.tryParse(url);
   if (uri == null ||
@@ -57,8 +68,17 @@ Map<String, dynamic>? parseOpenListLoginCallback(
     );
   }
   final refreshKey = driver == '123 Open' ? 'RefreshToken' : 'refresh_token';
-  if ((value[refreshKey] as String? ?? '').isEmpty) {
+  final refreshToken = value[refreshKey];
+  if (refreshToken is! String || refreshToken.trim().isEmpty) {
     throw const FormatException('Refresh Token is required');
+  }
+  if (driver == 'GoogleDrive') {
+    if (value['server_use'] != 'false' ||
+        value['client_id'] != clientId ||
+        value['client_secret'] != clientSecret) {
+      throw const FormatException('Invalid authorization response');
+    }
+    return {'refresh_token': refreshToken};
   }
   if (driver == '115 Open' &&
       (value['access_token'] as String? ?? '').isEmpty) {

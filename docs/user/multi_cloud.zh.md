@@ -20,7 +20,8 @@ WebDAV 填写服务器地址、用户名和密码后保存。编辑其他已有�
 
 在 Google Cloud 控制台启用 Google Drive API，配置 OAuth 同意屏幕，创建“Web 应用”类型的 OAuth 客户端。将所选的回调地址完整添加到“获授权的重定向 URI”。在 VeneraPlus 新增或编辑 Google Drive 账号时，填写该客户端的 `Client ID` 和 `Client Secret`。后续刷新直接请求 Google。[Google Cloud 控制台](https://console.cloud.google.com/)
 
-- **默认 OpenList 回调**。将“OAuth 回调地址”设置项显示的默认地址登记到 Google Cloud。在应用中保留默认值，点击“打开 OpenList 获取刷新令牌”。在网页选择 Google Drive，填写同一组客户端凭据，完成 Google 授权后，把网页生成的 `Refresh Token` 粘贴回应用，再点击“保存并测试连接”。[OpenList 官方步骤](https://doc.oplist.org/guide/drivers/google_drive)
+- **默认 OpenList 回调**。将“OAuth 回调地址”设置项显示的默认地址登记到 Google Cloud。在应用中保留默认值，点击“试用 WebView 通过 OpenList 授权”。此流程会将客户端凭据发送给 OpenList 换取令牌。授权成功后，应用会读取刷新令牌、保存账号并测试连接。
+- **浏览器手动授权**。如果 Google 在 WebView 显示 `disallowed_useragent`，返回账号页，点击“打开 OpenList 获取刷新令牌”。在网页选择 Google Drive，填写同一组客户端凭据，完成 Google 授权后，把 `Refresh Token` 粘贴回应用，再点击“保存并测试连接”。[OpenList 官方步骤](https://doc.oplist.org/guide/drivers/google_drive)
 - **自建回调**。打开“OAuth 回调地址”，填写支持 VeneraPlus 回传的完整 HTTPS 地址，确认后点击“登录并授权”。应用在系统浏览器打开 Google 授权页。完成后返回应用，应用取得刷新令牌并自动保存、测试连接。清空回调地址可恢复默认值。
 
 #### 部署自建回调

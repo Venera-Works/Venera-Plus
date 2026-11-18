@@ -66,12 +66,15 @@ class AppWebview extends StatefulWidget {
     this.onLoadStop,
     this.initialScripts = const [],
     this.userAgent,
+    this.allowUrlSharing = true,
     super.key,
   });
 
   final String initialUrl;
 
   final String? userAgent;
+
+  final bool allowUrlSharing;
 
   final void Function(String title, InAppWebViewController controller)?
   onTitleChange;
@@ -164,19 +167,23 @@ class _AppWebviewState extends State<AppWebview> {
           icon: const Icon(Icons.more_horiz),
           onPressed: () {
             showMenuX(context, Offset(context.width, context.padding.top), [
-              MenuEntry(
-                icon: Icons.open_in_browser,
-                text: "Open in Browser".tl,
-                onClick: () async =>
-                    launchUrlString((await controller?.getUrl())!.toString()),
-              ),
-              MenuEntry(
-                icon: Icons.copy,
-                text: "Copy link".tl,
-                onClick: () async => Clipboard.setData(
-                  ClipboardData(text: (await controller?.getUrl())!.toString()),
+              if (widget.allowUrlSharing) ...[
+                MenuEntry(
+                  icon: Icons.open_in_browser,
+                  text: "Open in Browser".tl,
+                  onClick: () async =>
+                      launchUrlString((await controller?.getUrl())!.toString()),
                 ),
-              ),
+                MenuEntry(
+                  icon: Icons.copy,
+                  text: "Copy link".tl,
+                  onClick: () async => Clipboard.setData(
+                    ClipboardData(
+                      text: (await controller?.getUrl())!.toString(),
+                    ),
+                  ),
+                ),
+              ],
               MenuEntry(
                 icon: Icons.refresh,
                 text: "Reload".tl,

@@ -301,9 +301,10 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
   );
   String get _driver => widget.driver;
   bool get _isGoogleDrive => _driver == 'GoogleDrive';
-  bool get _autoSaveAfterLogin =>
-      widget.initial == null &&
+  bool get _hasProviderLogin =>
+      !_isGoogleDrive &&
       (_driver == 'Quark' || openListLoginDrivers.containsKey(_driver));
+  bool get _autoSaveAfterLogin => widget.initial == null && _hasProviderLogin;
   String? _error;
   bool _loggingIn = false;
   CancelToken? _googleLogin;
@@ -327,7 +328,6 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
   Widget build(BuildContext context) {
     final webdav = _driver == 'WebDAV';
     final quark = _driver == 'Quark';
-    final hasLogin = quark || openListLoginDrivers.containsKey(_driver);
     return Scaffold(
       appBar: Appbar(
         title: Text(
@@ -370,7 +370,7 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                       decoration: InputDecoration(labelText: 'Password'.tl),
                     ),
                   ] else ...[
-                    if (hasLogin) ...[
+                    if (_hasProviderLogin) ...[
                       const SizedBox(height: 16),
                       SizedBox(
                         width: double.infinity,
@@ -458,14 +458,10 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                             OutlinedButton.icon(
                               style: actionButtonStyle,
                               onPressed: _loggingIn ? null : _loginGoogleDrive,
-                              icon: Icon(
-                                _oauthCallbackUrl.isEmpty
-                                    ? Icons.open_in_new
-                                    : Icons.login,
-                              ),
+                              icon: const Icon(Icons.login),
                               label: Text(
                                 (_oauthCallbackUrl.isEmpty
-                                        ? 'Open OpenList to get a refresh token'
+                                        ? 'Try OpenList authorization in WebView'
                                         : 'Log in and authorize')
                                     .tl,
                               ),
@@ -486,6 +482,20 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                           ),
                         ),
                         if (_isGoogleDrive) ...[
+                          if (_oauthCallbackUrl.isEmpty)
+                            TextButton.icon(
+                              style: actionButtonStyle,
+                              onPressed: _loggingIn
+                                  ? null
+                                  : () => launchUrl(
+                                      googleDriveDefaultCallback.resolve('/'),
+                                      mode: LaunchMode.externalApplication,
+                                    ),
+                              icon: const Icon(Icons.open_in_new),
+                              label: Text(
+                                'Open OpenList to get a refresh token'.tl,
+                              ),
+                            ),
                           Text(
                             'Get a refresh token in Google OAuth Playground using your own Client ID and Client Secret.'
                                 .tl,
@@ -640,30 +650,37 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
         _loggingIn = true;
         _googleLogin = cancelToken;
       });
+      final String? refreshToken;
       if (cancelToken == null) {
-        if (!await launchUrl(
-          callback.resolve('/'),
-          mode: LaunchMode.externalApplication,
-        )) {
-          throw const FormatException('Unable to open the browser.');
-        }
-        return;
+        final authorization = await showOpenListLogin(
+          context,
+          driver: _driver,
+          clientId: clientId,
+          clientSecret: clientSecret,
+        );
+        refreshToken = authorization?['refresh_token'] as String?;
+      } else {
+        refreshToken = await authorizeGoogleDrive(
+          callback: callback,
+          clientId: clientId,
+          clientSecret: clientSecret,
+          cancelToken: cancelToken,
+        );
       }
-
-      final refreshToken = await authorizeGoogleDrive(
-        callback: callback,
-        clientId: clientId,
-        clientSecret: clientSecret,
-        cancelToken: cancelToken,
-      );
-      if (mounted && !cancelToken.isCancelled && refreshToken != null) {
+      if (mounted && cancelToken?.isCancelled != true && refreshToken != null) {
         _refreshToken.text = refreshToken;
         if (ModalRoute.of(context)?.isCurrent == true) _save();
       }
     } on FormatException catch (error) {
       if (mounted) setState(() => _error = error.message);
     } on PlatformException {
-      if (mounted) setState(() => _error = 'Unable to open the browser.');
+      if (mounted) {
+        setState(
+          () => _error = _oauthCallbackUrl.isEmpty
+              ? 'Unable to start authorization'
+              : 'Unable to open the browser.',
+        );
+      }
     } finally {
       if (mounted) {
         setState(() {

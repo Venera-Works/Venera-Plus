@@ -21,8 +21,14 @@ if (window.top === window &&
 Future<Map<String, dynamic>?> showOpenListLogin(
   BuildContext context, {
   required String driver,
+  String clientId = '',
+  String clientSecret = '',
 }) async {
-  final requestUri = openListLoginUri(driver);
+  final requestUri = openListLoginUri(
+    driver,
+    clientId: clientId,
+    clientSecret: clientSecret,
+  );
   final requestUrl = requestUri.toString();
   Map<String, dynamic>? authorization;
   String? failure;
@@ -33,7 +39,12 @@ Future<Map<String, dynamic>?> showOpenListLogin(
   bool receiveCallback(String url, VoidCallback close) {
     if (finished) return true;
     try {
-      final value = parseOpenListLoginCallback(url, driver: driver);
+      final value = parseOpenListLoginCallback(
+        url,
+        driver: driver,
+        clientId: clientId,
+        clientSecret: clientSecret,
+      );
       if (value == null) return false;
       authorization = value;
     } on FormatException catch (error) {
@@ -56,7 +67,7 @@ Future<Map<String, dynamic>?> showOpenListLogin(
   if (location.origin !== 'https://api.oplist.org') return null;
   return {
     url: window.__veneraOpenListCallback || location.href,
-    body: location.href === ${jsonEncode(requestUrl)}
+    body: location.pathname === ${jsonEncode(requestUri.path)}
       ? document.body.textContent : null
   };
 })()
@@ -75,9 +86,13 @@ Future<Map<String, dynamic>?> showOpenListLogin(
       final loginUri = target is String ? Uri.tryParse(target) : null;
       if (loginUri == null ||
           loginUri.scheme != 'https' ||
-          loginUri.host.isEmpty) {
+          loginUri.host.isEmpty ||
+          (driver == 'GoogleDrive' &&
+              loginUri.origin != 'https://accounts.google.com')) {
         throw FormatException(
-          target is String ? target : 'Unable to start authorization',
+          driver != 'GoogleDrive' && target is String
+              ? target
+              : 'Unable to start authorization',
         );
       }
       redirected = true;
@@ -116,6 +131,7 @@ Future<Map<String, dynamic>?> showOpenListLogin(
       void close() => context.pop();
       return AppWebview(
         initialUrl: requestUrl,
+        allowUrlSharing: driver != 'GoogleDrive',
         initialScripts: const [_captureCallbackScript],
         onLoadStart: (url, _) => receiveCallback(url, close),
         onLoadStop: (controller) => readPage(
