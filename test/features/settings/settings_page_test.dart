@@ -18,6 +18,8 @@ import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 
 import '../../widget_test_io.dart';
+import '../storage/storage_accounts_page_test.dart'
+    show authorizeGoogleDriveForTest;
 
 class _SettingsSource extends Fake implements ComicSource {
   _SettingsSource({
@@ -625,10 +627,6 @@ void main() {
         find.widgetWithText(TextField, 'Client Secret'),
         'test-client-secret',
       );
-      await tester.enterText(
-        find.widgetWithText(TextField, 'Refresh Token'),
-        'refresh',
-      );
       final connected = Completer<void>();
       void onSaved() {
         if (storage.accounts.any(
@@ -641,8 +639,11 @@ void main() {
 
       storage.addListener(onSaved);
       try {
-        await tester.tap(
-          find.widgetWithText(FilledButton, 'Save and test connection'),
+        await authorizeGoogleDriveForTest(
+          tester,
+          clientId: 'test-client-id',
+          clientSecret: 'test-client-secret',
+          dataPath: App.dataPath,
         );
         await runWidgetIo(tester, () => connected.future);
         await tester.pumpAndSettle();

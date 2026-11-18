@@ -18,24 +18,11 @@ WebDAV 填写服务器地址、用户名和密码后保存。编辑其他已有�
 
 ### Google Drive 自建 OAuth 授权
 
-在 Google Cloud 控制台启用 Google Drive API，配置 OAuth 同意屏幕，创建“Web 应用”类型的 OAuth 客户端。将所选的回调地址完整添加到“获授权的重定向 URI”。在 VeneraPlus 新增或编辑 Google Drive 账号时，填写该客户端的 `Client ID` 和 `Client Secret`。后续刷新直接请求 Google。[Google Cloud 控制台](https://console.cloud.google.com/)
+在 Google Cloud 控制台启用 Google Drive API，配置 OAuth 同意屏幕，创建“Web 应用”类型的 OAuth 客户端。将 OpenList 官方步骤中的默认回调地址添加到“获授权的重定向 URI”。[Google Cloud 控制台](https://console.cloud.google.com/) · [OpenList 官方步骤](https://doc.oplist.org/guide/drivers/google_drive)
 
-- **默认 OpenList 回调**。将“OAuth 回调地址”设置项显示的默认地址登记到 Google Cloud。在应用中保留默认值，点击“试用 WebView 通过 OpenList 授权”。此流程会将客户端凭据发送给 OpenList 换取令牌。授权成功后，应用会读取刷新令牌、保存账号并测试连接。
-- **浏览器手动授权**。如果 Google 在 WebView 显示 `disallowed_useragent`，返回账号页，点击“打开 OpenList 获取刷新令牌”。在网页选择 Google Drive，填写同一组客户端凭据，完成 Google 授权后，把 `Refresh Token` 粘贴回应用，再点击“保存并测试连接”。[OpenList 官方步骤](https://doc.oplist.org/guide/drivers/google_drive)
-- **自建回调**。打开“OAuth 回调地址”，填写支持 VeneraPlus 回传的完整 HTTPS 地址，确认后点击“登录并授权”。应用在系统浏览器打开 Google 授权页。完成后返回应用，应用取得刷新令牌并自动保存、测试连接。清空回调地址可恢复默认值。
+在 VeneraPlus 新增或编辑 Google Drive 账号时，填写 `Client ID` 和 `Client Secret`，然后点击“登录并授权”。应用使用这组凭据通过 OpenList 换取令牌。在应用内完成 Google 授权后，账号会自动保存并测试连接。后续令牌刷新由应用直接向 Google 发起。
 
-#### 部署自建回调
-
-1. 在服务器上使用 Node.js 22.1 或更新版本运行 [回调脚本](../examples/google_drive_callback.mjs)。
-
-   ```sh
-   node google_drive_callback.mjs
-   ```
-
-2. 将自己的 HTTPS 域名上的 `/googleui/callback` 反向代理到 `http://127.0.0.1:8787`，转发该路径的 GET（含查询参数）和 POST 请求，并关闭该路径的缓存和访问日志。脚本使用单进程的内存保存会话，有效期为五分钟。
-3. 将完整地址（例如 `https://drive.example.com/googleui/callback`）同时填入 Google Cloud 控制台和应用。回调服务只传递一次性授权码，应用直接向 Google 交换令牌。使用普通自建 OpenList APIPages 时，可在其网页授权后手动填写刷新令牌。
-
-已有刷新令牌时，可以直接填写并保存。也可继续使用 [Google OAuth Playground](https://developers.google.com/oauthplayground/) 获取令牌，将 `https://developers.google.com/oauthplayground` 登记为重定向 URI，并启用 **Use your own OAuth credentials**。`https://www.googleapis.com/auth/drive.readonly` 可用于浏览和阅读，写回元数据、同步或备份需要 `https://www.googleapis.com/auth/drive`。
+已有自建回调的账号使用已保存的地址。点击“登录并授权”后，在系统浏览器完成授权，再返回应用。[自建回调脚本](../examples/google_drive_callback.mjs)
 
 原先使用 OpenList 公共凭据的用户应编辑原账号，并用相同的 Google 账号重新授权。原账号及其漫画库、同步和备份目录的关联会保留。外部 OAuth 应用处于 **Testing** 状态时，需先添加测试用户，Drive 刷新令牌会在 7 天后过期。
 

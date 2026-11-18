@@ -3,13 +3,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/appbar.dart';
-import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/foundation/app_page_route.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import 'google_drive_login.dart';
 import 'token_import.dart';
@@ -290,11 +288,8 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
   late final TextEditingController _clientSecret = TextEditingController(
     text: _googleCredentials['client_secret'] as String?,
   );
-  late String _oauthCallbackUrl = widget.initial?.oauthCallbackUrl ?? '';
   late final TextEditingController _refreshToken = TextEditingController(
-    text: _isGoogleDrive
-        ? _googleCredentials['refresh_token'] as String?
-        : _tokenValue('refresh_token', 'RefreshToken'),
+    text: _tokenValue('refresh_token', 'RefreshToken'),
   );
   late final TextEditingController _cookie = TextEditingController(
     text: widget.initial?.authorization['cookie'] as String?,
@@ -302,9 +297,9 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
   String get _driver => widget.driver;
   bool get _isGoogleDrive => _driver == 'GoogleDrive';
   bool get _hasProviderLogin =>
-      !_isGoogleDrive &&
-      (_driver == 'Quark' || openListLoginDrivers.containsKey(_driver));
-  bool get _autoSaveAfterLogin => widget.initial == null && _hasProviderLogin;
+      _driver == 'Quark' || openListLoginDrivers.containsKey(_driver);
+  bool get _autoSaveAfterLogin =>
+      _isGoogleDrive || (widget.initial == null && _hasProviderLogin);
   String? _error;
   bool _loggingIn = false;
   CancelToken? _googleLogin;
@@ -370,17 +365,48 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                       decoration: InputDecoration(labelText: 'Password'.tl),
                     ),
                   ] else ...[
+                    if (_isGoogleDrive) ...[
+                      TextField(
+                        controller: _clientId,
+                        readOnly: _loggingIn,
+                        autocorrect: false,
+                        enableSuggestions: false,
+                        decoration: InputDecoration(labelText: 'Client ID'.tl),
+                      ),
+                      const SizedBox(height: 16),
+                      TextField(
+                        controller: _clientSecret,
+                        readOnly: _loggingIn,
+                        obscureText: true,
+                        autocorrect: false,
+                        enableSuggestions: false,
+                        decoration: InputDecoration(
+                          labelText: 'Client Secret'.tl,
+                        ),
+                      ),
+                    ],
                     if (_hasProviderLogin) ...[
                       const SizedBox(height: 16),
-                      SizedBox(
-                        width: double.infinity,
-                        child: OutlinedButton.icon(
+                      if (_googleLogin != null) ...[
+                        Text(
+                          'Finish Google authorization in the browser, then return here.'
+                              .tl,
+                        ),
+                        TextButton(
+                          onPressed: () => _googleLogin?.cancel(),
+                          child: Text('Cancel'.tl),
+                        ),
+                      ] else
+                        OutlinedButton.icon(
                           style: actionButtonStyle,
-                          onPressed: _loggingIn ? null : _login,
+                          onPressed: _loggingIn
+                              ? null
+                              : _isGoogleDrive
+                              ? _loginGoogleDrive
+                              : _login,
                           icon: const Icon(Icons.login),
                           label: Text('Log in and authorize'.tl),
                         ),
-                      ),
                       const SizedBox(height: 16),
                     ],
                     if (!_autoSaveAfterLogin) ...[
@@ -402,78 +428,8 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                           ),
                           const SizedBox(height: 16),
                         ],
-                        if (_isGoogleDrive) ...[
-                          TextField(
-                            controller: _clientId,
-                            readOnly: _loggingIn,
-                            autocorrect: false,
-                            enableSuggestions: false,
-                            onChanged: (value) {
-                              if (value.trim() !=
-                                      _googleCredentials['client_id'] &&
-                                  _refreshToken.text ==
-                                      _googleCredentials['refresh_token']) {
-                                _refreshToken.clear();
-                              }
-                            },
-                            decoration: InputDecoration(
-                              labelText: 'Client ID'.tl,
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          TextField(
-                            controller: _clientSecret,
-                            readOnly: _loggingIn,
-                            obscureText: true,
-                            autocorrect: false,
-                            enableSuggestions: false,
-                            decoration: InputDecoration(
-                              labelText: 'Client Secret'.tl,
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          ListTile(
-                            contentPadding: EdgeInsets.zero,
-                            enabled: !_loggingIn,
-                            title: Text('OAuth callback address (optional)'.tl),
-                            subtitle: Text(
-                              _oauthCallbackUrl.isEmpty
-                                  ? googleDriveDefaultCallback.toString()
-                                  : _oauthCallbackUrl,
-                            ),
-                            trailing: const Icon(Icons.arrow_right),
-                            onTap: _loggingIn ? null : _editGoogleCallback,
-                          ),
-                          const SizedBox(height: 16),
-                          if (_googleLogin != null) ...[
-                            Text(
-                              'Finish Google authorization in the browser, then return here.'
-                                  .tl,
-                            ),
-                            TextButton(
-                              onPressed: () => _googleLogin?.cancel(),
-                              child: Text('Cancel'.tl),
-                            ),
-                          ] else
-                            OutlinedButton.icon(
-                              style: actionButtonStyle,
-                              onPressed: _loggingIn ? null : _loginGoogleDrive,
-                              icon: const Icon(Icons.login),
-                              label: Text(
-                                (_oauthCallbackUrl.isEmpty
-                                        ? 'Try OpenList authorization in WebView'
-                                        : 'Log in and authorize')
-                                    .tl,
-                              ),
-                            ),
-                          const SizedBox(height: 16),
-                        ],
                         TextField(
                           controller: _refreshToken,
-                          readOnly: _isGoogleDrive && _loggingIn,
-                          obscureText: _isGoogleDrive,
-                          autocorrect: !_isGoogleDrive,
-                          enableSuggestions: !_isGoogleDrive,
                           onChanged: _driver == '115 Open'
                               ? null
                               : (_) => _accessToken.clear(),
@@ -481,39 +437,6 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                             labelText: 'Refresh Token'.tl,
                           ),
                         ),
-                        if (_isGoogleDrive) ...[
-                          if (_oauthCallbackUrl.isEmpty)
-                            TextButton.icon(
-                              style: actionButtonStyle,
-                              onPressed: _loggingIn
-                                  ? null
-                                  : () => launchUrl(
-                                      googleDriveDefaultCallback.resolve('/'),
-                                      mode: LaunchMode.externalApplication,
-                                    ),
-                              icon: const Icon(Icons.open_in_new),
-                              label: Text(
-                                'Open OpenList to get a refresh token'.tl,
-                              ),
-                            ),
-                          Text(
-                            'Get a refresh token in Google OAuth Playground using your own Client ID and Client Secret.'
-                                .tl,
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                          TextButton.icon(
-                            style: actionButtonStyle,
-                            onPressed: () => launchUrl(
-                              Uri.https(
-                                'developers.google.com',
-                                '/oauthplayground/',
-                              ),
-                              mode: LaunchMode.externalApplication,
-                            ),
-                            icon: const Icon(Icons.open_in_new),
-                            label: Text('Open Google OAuth Playground'.tl),
-                          ),
-                        ],
                       ],
                     ],
                   ],
@@ -546,7 +469,7 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
     );
   }
 
-  void _save() {
+  void _save({String? refreshToken}) {
     final webdav = _driver == 'WebDAV';
     final quark = _driver == 'Quark';
     try {
@@ -582,7 +505,7 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
           : buildOpenListAuthorization(
               driver: _driver,
               accessToken: _accessToken.text,
-              refreshToken: _refreshToken.text,
+              refreshToken: refreshToken ?? _refreshToken.text,
               clientId: _isGoogleDrive ? _clientId.text : '',
               clientSecret: _isGoogleDrive ? _clientSecret.text : '',
               cookie: _cookie.text,
@@ -595,7 +518,7 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
           backend: webdav ? StorageBackend.webdav : StorageBackend.openlist,
           driver: webdav ? widget.initial?.driver ?? 'webdav' : _driver,
           name: name,
-          oauthCallbackUrl: _isGoogleDrive ? _oauthCallbackUrl : '',
+          oauthCallbackUrl: widget.initial?.oauthCallbackUrl ?? '',
           authorization: auth,
         ),
       );
@@ -612,27 +535,6 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
     return name;
   }
 
-  Future<void> _editGoogleCallback() => showInputDialog(
-    context: context,
-    title: 'OAuth callback address (optional)'.tl,
-    initialValue: _oauthCallbackUrl,
-    hintText: googleDriveDefaultCallback.toString(),
-    onConfirm: (value) {
-      try {
-        final callback = googleDriveCallbackUri(value);
-        setState(() {
-          _oauthCallbackUrl = callback == googleDriveDefaultCallback
-              ? ''
-              : callback.toString();
-          _error = null;
-        });
-        return null;
-      } on FormatException catch (error) {
-        return error.message.tl;
-      }
-    },
-  );
-
   Future<void> _loginGoogleDrive() async {
     try {
       _validatedName();
@@ -641,7 +543,9 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
       if (clientId.isEmpty || clientSecret.isEmpty) {
         throw const FormatException('Client ID and Client Secret are required');
       }
-      final callback = googleDriveCallbackUri(_oauthCallbackUrl);
+      final callback = googleDriveCallbackUri(
+        widget.initial?.oauthCallbackUrl ?? '',
+      );
       final cancelToken = callback == googleDriveDefaultCallback
           ? null
           : CancelToken();
@@ -667,16 +571,18 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
           cancelToken: cancelToken,
         );
       }
-      if (mounted && cancelToken?.isCancelled != true && refreshToken != null) {
-        _refreshToken.text = refreshToken;
-        if (ModalRoute.of(context)?.isCurrent == true) _save();
+      if (mounted &&
+          cancelToken?.isCancelled != true &&
+          refreshToken != null &&
+          ModalRoute.of(context)?.isCurrent == true) {
+        _save(refreshToken: refreshToken);
       }
     } on FormatException catch (error) {
       if (mounted) setState(() => _error = error.message);
     } on PlatformException {
       if (mounted) {
         setState(
-          () => _error = _oauthCallbackUrl.isEmpty
+          () => _error = _googleLogin == null
               ? 'Unable to start authorization'
               : 'Unable to open the browser.',
         );

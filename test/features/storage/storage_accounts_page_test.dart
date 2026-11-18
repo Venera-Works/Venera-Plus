@@ -33,7 +33,7 @@ void main() {
       ('BaiduNetdisk', <String>[]),
       ('123 Open', <String>[]),
       ('Onedrive', <String>[]),
-      ('GoogleDrive', ['Client ID', 'Client Secret', 'Refresh Token']),
+      ('GoogleDrive', ['Client ID', 'Client Secret']),
     ]) {
       final provider = find.widgetWithText(ListTile, driver);
       await tester.ensureVisible(provider);
@@ -47,20 +47,17 @@ void main() {
       }
       expect(
         find.widgetWithText(OutlinedButton, 'Log in and authorize'),
-        driver == 'WebDAV' || driver == 'GoogleDrive'
-            ? findsNothing
-            : findsOneWidget,
-      );
-      expect(
-        find.text('Open Google OAuth Playground'),
-        driver == 'GoogleDrive' ? findsOneWidget : findsNothing,
+        driver == 'WebDAV' ? findsNothing : findsOneWidget,
       );
       expect(
         find.text('Save and test connection'),
-        driver == 'WebDAV' || driver == 'GoogleDrive'
-            ? findsOneWidget
-            : findsNothing,
+        driver == 'WebDAV' ? findsOneWidget : findsNothing,
       );
+      if (driver == 'GoogleDrive') {
+        expect(find.text('OAuth callback address (optional)'), findsNothing);
+        expect(find.text('Open OpenList to get a refresh token'), findsNothing);
+        expect(find.text('Open Google OAuth Playground'), findsNothing);
+      }
 
       await tester.pageBack();
       await tester.pumpAndSettle();
@@ -439,36 +436,31 @@ void main() {
     await tester.pumpAndSettle();
     final clientId = find.widgetWithText(TextField, 'Client ID');
     final clientSecret = find.widgetWithText(TextField, 'Client Secret');
-    final refreshToken = find.widgetWithText(TextField, 'Refresh Token');
-    final save = find.text('Save and test connection');
+    final login = find.widgetWithText(OutlinedButton, 'Log in and authorize');
     expect(tester.widget<TextField>(clientSecret).obscureText, isTrue);
-    expect(tester.widget<TextField>(refreshToken).obscureText, isTrue);
-    expect(tester.widget<TextField>(refreshToken).controller!.text, isEmpty);
 
     await tester.enterText(clientId, 'local-id');
-    await tester.ensureVisible(save);
-    await tester.tap(save);
+    await tester.tap(login);
     await tester.pumpAndSettle();
     expect(
       find.text('Client ID and Client Secret are required'),
       findsOneWidget,
     );
     expect(accounts.saveCalls, 0);
+    expect(accounts.rpc.testCalls, 0);
 
     await tester.enterText(clientSecret, 'local-secret');
-    await tester.ensureVisible(save);
-    await tester.tap(save);
-    await tester.pumpAndSettle();
-    expect(find.text('Refresh Token is required'), findsOneWidget);
-    expect(accounts.saveCalls, 0);
-
-    await tester.enterText(refreshToken, 'local-refresh');
-    await tester.ensureVisible(save);
-    await tester.tap(save);
-    await tester.pumpAndSettle();
+    await authorizeGoogleDriveForTest(
+      tester,
+      clientId: 'local-id',
+      clientSecret: 'local-secret',
+    );
+    expect(accounts.saveCalls, 1);
     expect(accounts.saved!.id, 'existing-google');
     expect(accounts.saved!.authorization['root_folder_id'], 'comics');
+    expect(accounts.saved!.authorization['refresh_token'], 'refresh');
     expect(accounts.saved!.authorization['use_online_api'], isFalse);
+    expect(accounts.saved!.status, StorageAuthorizationStatus.valid);
     expect(accounts.rpc.testCalls, 1);
 
     await tester.tap(find.text('Google Drive'));
@@ -478,12 +470,6 @@ void main() {
       tester.widget<TextField>(clientSecret).controller!.text,
       'local-secret',
     );
-    expect(
-      tester.widget<TextField>(refreshToken).controller!.text,
-      'local-refresh',
-    );
-    await tester.enterText(clientId, 'different-id');
-    expect(tester.widget<TextField>(refreshToken).controller!.text, isEmpty);
   });
 
   testWidgets('123 client credentials remain editable without refresh tokens', (
@@ -670,10 +656,13 @@ void main() {
   });
 }
 
-Future<_WebviewController> _openLogin(WidgetTester tester) async {
+Future<_WebviewController> _openLogin(
+  WidgetTester tester, {
+  String? dataPath,
+}) async {
+  App.dataPath = dataPath ?? Directory.systemTemp.path;
   final controller = _WebviewController();
   if (Platform.isLinux) {
-    App.dataPath = Directory.systemTemp.path;
     const channel = MethodChannel('webview_window');
     const codec = StandardMethodCodec();
     final messenger = tester.binding.defaultBinaryMessenger;
@@ -724,7 +713,6 @@ Future<_WebviewController> _openLogin(WidgetTester tester) async {
     });
     addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
   } else {
-    App.dataPath = Directory.systemTemp.path;
     final previous = InAppWebViewPlatform.instance;
     InAppWebViewPlatform.instance = _LoginPlatform();
     addTearDown(() {
@@ -745,20 +733,48 @@ Future<_WebviewController> _openLogin(WidgetTester tester) async {
   return controller;
 }
 
+Future<void> authorizeGoogleDriveForTest(
+  WidgetTester tester, {
+  required String clientId,
+  required String clientSecret,
+  String? dataPath,
+}) => _authorize(
+  tester,
+  driver: 'GoogleDrive',
+  clientParameters: {
+    'server_use': 'false',
+    'client_uid': clientId,
+    'client_key': clientSecret,
+  },
+  dataPath: dataPath,
+);
+
 Future<void> _authorize(
   WidgetTester tester, {
   String driver = 'BaiduNetdisk',
+  Map<String, String> clientParameters = const {},
+  String? dataPath,
 }) async {
-  final controller = await _openLogin(tester);
+  final controller = await _openLogin(tester, dataPath: dataPath);
   if (driver == 'Quark') {
     controller.page = true;
   } else {
+    if (driver == 'GoogleDrive') {
+      final request = Uri.parse(controller.initialUrl);
+      expect(request.origin, 'https://api.oplist.org');
+      expect(request.path, '/googleui/requests');
+      expect(request.queryParameters, {
+        'driver_txt': 'googleui_go',
+        ...clientParameters,
+      });
+    }
     final payload = base64Encode(
       utf8.encode(
         jsonEncode({
           'driver_txt': openListLoginDrivers[driver],
           'access_token': 'access',
           'refresh_token': 'refresh',
+          ...clientParameters,
         }),
       ),
     );
