@@ -49,9 +49,7 @@ Future<void> notifyAppDataSettingsChanged() async {
 Future<File> exportAppData([bool sync = true]) async {
   await HistoryManager().flushReadingProgress();
   await HistoryManager().waitForAsyncWrites();
-  // Native drivers may rotate refresh tokens. Persist the latest additions
-  // before placing settings into a snapshot; core failures are isolated by the
-  // account manager so local and WebDAV export still work.
+  // 导出前读取已就绪内核保存的网盘授权。内核准备期间使用本机设置中的授权。
   await RemoteStorageAccounts.instance.beforeExportSettings();
   var time = DateTime.now().millisecondsSinceEpoch ~/ 1000;
   var cacheFilePath = FilePath.join(App.cachePath, '$time.venera');
@@ -107,7 +105,6 @@ Future<void> importAppData(
   await RemoteStorageAccounts.instance.beforeExportSettings();
   final previousAppData =
       jsonDecode(jsonEncode(appdata.toJson())) as Map<String, dynamic>;
-  final localAccounts = RemoteStorageAccounts.instance.captureLocalAccounts();
   final localSyncLocation = appdata.settings['syncRemoteLocation'];
   var rolledBack = false;
   if (cacheDir.existsSync()) {
@@ -304,17 +301,19 @@ Future<void> importAppData(
           importedSettings['webdavComicLibrary'] is List) {
         appdata.settings.remove(RemoteComicLibraryRegistry.legacyMigrationKey);
       }
+      // 合并前保留当前网盘授权，避免后台初始化读取尚未合并的快照账号。
+      final importedAccounts = importedSettings is Map
+          ? importedSettings.remove(remoteStorageAccountsSetting)
+          : null;
       await appdata.syncData(importedAppdata);
       if (localSyncLocation == null) {
         appdata.settings.remove('syncRemoteLocation');
       } else {
         appdata.settings['syncRemoteLocation'] = localSyncLocation;
       }
-      final settings = importedAppdata['settings'];
-      if (settings is Map) {
+      if (importedAccounts != null) {
         await RemoteStorageAccounts.instance.mergeImportedSettings(
-          settings['remoteStorageAccounts'],
-          localBeforeImport: localAccounts,
+          importedAccounts,
         );
       }
     }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'models.dart';
 import 'remote_file_store.dart';
 
@@ -59,6 +61,7 @@ class OpenListFileStore implements RemoteFileStore {
   final _activeTasks = <String>{};
   final _submittedTasks = <String>{};
   final _cancelledTasks = <String>{};
+  final _initializationWaits = <String, Completer<void>>{};
 
   @override
   Future<void> test() async => _operation('test', const {});
@@ -168,7 +171,7 @@ class OpenListFileStore implements RemoteFileStore {
     final taskId = _newTaskId();
     _activeTasks.add(taskId);
     try {
-      await waitForInitialization?.call();
+      await _waitForInitialization(taskId);
       _throwIfCancelled(taskId);
       _submittedTasks.add(taskId);
       final data = await _data(method, {...request, 'taskId': taskId});
@@ -188,7 +191,7 @@ class OpenListFileStore implements RemoteFileStore {
     _activeTasks.add(taskId);
     try {
       onProgress?.call(RemoteTransferProgress(taskId: taskId, completed: 0));
-      await waitForInitialization?.call();
+      await _waitForInitialization(taskId);
       _throwIfCancelled(taskId);
       _submittedTasks.add(taskId);
       await _data(method, {...request, 'taskId': taskId});
@@ -216,8 +219,23 @@ class OpenListFileStore implements RemoteFileStore {
   String _newTaskId() =>
       '${DateTime.now().microsecondsSinceEpoch}-${_nextTransfer++}';
 
+  Future<void> _waitForInitialization(String taskId) async {
+    final initialize = waitForInitialization;
+    if (initialize == null) return;
+    _throwIfCancelled(taskId);
+    // 取消当前操作时立即结束等待，共享初始化继续由内核完成。
+    final cancelled = Completer<void>();
+    _initializationWaits[taskId] = cancelled;
+    try {
+      await Future.any([initialize(), cancelled.future]);
+    } finally {
+      _initializationWaits.remove(taskId);
+    }
+  }
+
   Future<void> _requestCancel(String taskId) async {
     _cancelledTasks.add(taskId);
+    _initializationWaits.remove(taskId)?.complete();
     if (!_submittedTasks.contains(taskId)) return;
     final response = await _rpc.invoke('cancel', {
       'accountId': account.id,

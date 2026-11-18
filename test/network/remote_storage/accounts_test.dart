@@ -256,26 +256,35 @@ void main() {
     );
   }
 
-  test(
-    'native name merge registers retained authorization and removes duplicate mounts',
-    () async {
-      final local = _account.copyWith(id: 'z-local');
-      final incoming = local.copyWith(
-        id: 'a-remote',
-        authorization: {'refresh_token': 'remote'},
-      );
-      final rpc = _MergeRpc()..values[local.id] = local.authorization;
-      storage.configureOpenList(rpc, dataDir: dataDir.path);
-      appdata.settings[remoteStorageAccountsSetting] = [incoming.toJson()];
-      await storage.mergeImportedSettings(
-        [incoming.toJson()],
-        localBeforeImport: [local],
-      );
-      expect(storage.accounts.single.id, incoming.id);
-      expect(rpc.values, {incoming.id: local.authorization});
-      expect(rpc.cancelled, contains(local.id));
-    },
-  );
+  test('恢复后的账号在首次使用时应用最新授权并清理旧挂载', () async {
+    const local = StorageAccount(
+      id: 'z-local',
+      backend: StorageBackend.openlist,
+      driver: '123 Open',
+      name: '123 Drive',
+      authorization: {'refresh_token': 'local', 'token_updated_at': 1},
+    );
+    final incoming = local.copyWith(
+      id: 'a-remote',
+      authorization: {'refresh_token': 'remote', 'token_updated_at': 2},
+    );
+    final rotated = {'refresh_token': 'rotated', 'token_updated_at': 3};
+    final rpc = _MergeRpc()..values[local.id] = rotated;
+    storage.configureOpenList(rpc, dataDir: dataDir.path);
+    appdata.settings[remoteStorageAccountsSetting] = [incoming.toJson()];
+    await storage.mergeImportedSettings(
+      [incoming.toJson()],
+      localBeforeImport: [local],
+    );
+    expect(storage.accounts.single.id, incoming.id);
+    expect(storage.accounts.single.authorization, incoming.authorization);
+    expect(rpc.values, {local.id: rotated});
+
+    await appdata.loadDataForTesting(dataDir.path);
+    expect(await storage.storeFor(incoming.id).list('/'), isEmpty);
+    expect(rpc.values, {incoming.id: rotated});
+    expect(storage.accounts.single.authorization, rotated);
+  });
 
   test(
     'replacing QuarkOpen keeps account references and requires the same provider',
@@ -575,7 +584,6 @@ class _CachedDirectoryRpc implements OpenListRpcClient {
 
 class _MergeRpc implements OpenListRpcClient {
   final values = <String, Map<String, dynamic>>{};
-  final cancelled = <String>[];
 
   @override
   Future<Map<String, dynamic>> invoke(
@@ -598,8 +606,6 @@ class _MergeRpc implements OpenListRpcClient {
       );
     } else if (method == 'deleteAccount') {
       values.remove(request['id']);
-    } else if (method == 'cancelAccount') {
-      cancelled.add(request['accountId'] as String);
     }
     return const {'data': {}};
   }

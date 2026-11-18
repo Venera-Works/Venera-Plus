@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/appdata_sync_policy.dart';
 
 import 'models.dart';
 import 'openlist_rpc.dart';
@@ -21,6 +22,7 @@ class RemoteStorageAccounts with ChangeNotifier {
   static final instance = RemoteStorageAccounts();
   OpenListRpcClient? _openListRpc;
   Future<void>? _initialization;
+  bool _openListReady = false;
   Future<void>? _proxyUpdate;
   String? _dataDir;
   String? _proxy;
@@ -28,6 +30,7 @@ class RemoteStorageAccounts with ChangeNotifier {
   final _uuid = const Uuid();
   final _activeStores = <String, Set<RemoteFileStore>>{};
   final _readSchedulers = <String, RemoteReadScheduler>{};
+  final _pendingNativeWrites = <String, Future<void>>{};
 
   RemoteReadScheduler readSchedulerFor(StorageAccount account) =>
       _readSchedulers.putIfAbsent('${App.dataPath}:${account.id}', () {
@@ -101,6 +104,7 @@ class RemoteStorageAccounts with ChangeNotifier {
       }),
     );
     await _refreshNativeAccounts();
+    _openListReady = true;
   }
 
   Future<void> updateProxy(String? proxy) async {
@@ -341,28 +345,19 @@ class RemoteStorageAccounts with ChangeNotifier {
     if (account.backend == StorageBackend.openlist && rpc != null) {
       try {
         if (initializationError != null) throw initializationError;
-        final response = await rpc.invoke('saveAccount', {
-          'id': account.id,
-          'driver': account.driver,
-          'name': account.name,
-          'addition': account.authorization,
-        });
-        _throwRpcError(response, driver: account.driver);
+        if (_pendingNativeAccounts.containsKey(account.id)) {
+          await _registerPendingNativeAccount(rpc, account.id);
+        } else {
+          await _saveNativeAccount(rpc, account);
+        }
       } on RemoteStorageException catch (error) {
-        final pending = account.copyWith(
+        final pending = (this.account(account.id) ?? account).copyWith(
           status: error.isAuthorizationFailure
               ? StorageAuthorizationStatus.invalid
               : StorageAuthorizationStatus.unknown,
           statusMessage: error.message,
         );
-        appdata.settings[remoteStorageAccountsSetting] = [
-          ...values
-              .where((item) => item.id != pending.id)
-              .map((item) => item.toJson()),
-          pending.toJson(),
-        ];
-        await appdata.saveData(false);
-        notifyListeners();
+        await updateStatus(pending);
         return pending;
       }
     }
@@ -383,10 +378,17 @@ class RemoteStorageAccounts with ChangeNotifier {
     final rpc = _openListRpc;
     if (previous?.backend == StorageBackend.openlist && rpc != null) {
       try {
+        await _pendingNativeWrites[id];
+      } on RemoteStorageException {
+        // 即使应用待更新授权失败，仍可删除网盘账号。
+      }
+      try {
         _throwRpcError(await rpc.invoke('cancelAccount', {'accountId': id}));
         _throwRpcError(await rpc.invoke('deleteAccount', {'id': id}));
       } catch (_) {}
     }
+    final pending = _pendingNativeAccounts;
+    if (pending.remove(id) != null) _writePendingNativeAccounts(pending);
     appdata.settings[remoteStorageAccountsSetting] = accounts
         .where((item) => item.id != id)
         .map((item) => item.toJson())
@@ -426,6 +428,7 @@ class RemoteStorageAccounts with ChangeNotifier {
   /// Stops outstanding transfers and releases native OpenList drivers. The
   /// account manager remains reusable if this process later initializes again.
   Future<void> close() async {
+    _openListReady = false;
     final stores = _activeStores.values.expand((items) => items).toList();
     _activeStores.clear();
     try {
@@ -442,6 +445,7 @@ class RemoteStorageAccounts with ChangeNotifier {
         if (rpc != null) _throwRpcError(await rpc.invoke('close', const {}));
       } finally {
         _initialization = null;
+        _openListReady = false;
         _dataDir = null;
         _proxy = null;
       }
@@ -478,7 +482,7 @@ class RemoteStorageAccounts with ChangeNotifier {
       StorageBackend.openlist => OpenListFileStore(
         account,
         _openListRpc ?? _UnavailableOpenListRpc(),
-        waitForInitialization: ensureInitialized,
+        waitForInitialization: () => _ensureAccountInitialized(account.id),
       ),
     };
     return _StatusTrackingStore(
@@ -513,18 +517,16 @@ class RemoteStorageAccounts with ChangeNotifier {
     await Future.wait(stores.map((store) => store.cancelAll()));
   }
 
-  /// Called by app-data export plumbing. It obtains rotated native additions,
-  /// then exports only account credentials rather than OpenList's database.
+  /// 快照使用本机授权，并在内核就绪时读取它已保存的最新令牌。
   Future<List<Map<String, dynamic>>> beforeExportSettings() async {
-    if (!accounts.any((item) => item.backend == StorageBackend.openlist)) {
-      return accounts.map((item) => item.toJson()).toList();
-    }
-    try {
-      await ensureInitialized();
-      await _refreshNativeAccounts();
-    } on RemoteStorageException {
-      // Keep ordinary local/WebDAV backup export available while a pending
-      // OpenList account cannot be reached.
+    if (_openListReady &&
+        accounts.any((item) => item.backend == StorageBackend.openlist)) {
+      try {
+        final additions = await _readNativeAdditions();
+        if (additions != null) await _cacheNativeAuthorizations(additions);
+      } on RemoteStorageException {
+        // 读取失败时使用本机已有授权。
+      }
     }
     return accounts.map((item) => item.toJson()).toList();
   }
@@ -551,8 +553,11 @@ class RemoteStorageAccounts with ChangeNotifier {
     if (rpc == null) return;
     final additions = await _readNativeAdditions();
     if (additions == null) return;
-    final current = accounts;
-    final localIds = current.map((item) => item.id).toSet();
+    final pending = _pendingNativeAccounts;
+    final localIds = {
+      ...accounts.map((item) => item.id),
+      ...pending.values.expand((ids) => ids),
+    };
     for (final nativeId in additions.keys.where(
       (id) => !localIds.contains(id),
     )) {
@@ -561,36 +566,37 @@ class RemoteStorageAccounts with ChangeNotifier {
       } catch (_) {}
     }
     var saved = false;
-    for (final account in current.where((item) {
+    for (final account in accounts.where((item) {
       final addition = additions[item.id];
       return item.backend == StorageBackend.openlist &&
+          !_pendingNativeAccounts.containsKey(item.id) &&
           (addition == null ||
               (item.driver == '123 Open' &&
                   _tokenUpdatedAt(item.authorization) >
                       _tokenUpdatedAt(addition)));
     })) {
       try {
-        _throwRpcError(
-          await rpc.invoke('saveAccount', {
-            'id': account.id,
-            'driver': account.driver,
-            'name': account.name,
-            'addition': account.authorization,
-          }),
-        );
+        await _saveNativeAccount(rpc, account);
         saved = true;
       } on RemoteStorageException {
-        // A pending native account must not make local or WebDAV snapshots
-        // impossible to export. Its stored authorization remains available for
-        // a later core initialization.
+        // 保留本机授权，供下次初始化重试。
       }
     }
     final latest = saved
         ? await _readNativeAdditions() ?? additions
         : additions;
-    final updated = current.map((account) {
-      final addition = latest[account.id];
-      return addition == null
+    await _cacheNativeAuthorizations(latest);
+  }
+
+  Future<void> _cacheNativeAuthorizations(
+    Map<String, Map<String, dynamic>> additions,
+  ) async {
+    final pending = _pendingNativeAccounts;
+    final updated = accounts.map((account) {
+      final addition = additions[account.id];
+      return addition == null ||
+              account.backend != StorageBackend.openlist ||
+              pending.containsKey(account.id)
           ? account
           : applyNativeAuthorization(account, addition);
     }).toList();
@@ -604,8 +610,115 @@ class RemoteStorageAccounts with ChangeNotifier {
   /// the current value before credentials are merged.
   List<StorageAccount> captureLocalAccounts() => List.unmodifiable(accounts);
 
-  /// Retains local credentials, except for newer synchronized 123 authorizations
-  /// and replacements for explicitly invalid accounts.
+  Map<String, Set<String>> get _pendingNativeAccounts {
+    final raw = appdata.settings[appdataPendingOpenListAccountsKey];
+    if (raw is! Map) return {};
+    return {
+      for (final entry in raw.entries)
+        if (entry.key is String && entry.value is List)
+          entry.key as String: (entry.value as List)
+              .whereType<String>()
+              .toSet(),
+    };
+  }
+
+  void _writePendingNativeAccounts(Map<String, Set<String>> pending) {
+    if (pending.isEmpty) {
+      appdata.settings.remove(appdataPendingOpenListAccountsKey);
+    } else {
+      appdata.settings[appdataPendingOpenListAccountsKey] = {
+        for (final entry in pending.entries) entry.key: entry.value.toList(),
+      };
+    }
+  }
+
+  Future<void> _saveNativeAccount(
+    OpenListRpcClient rpc,
+    StorageAccount account,
+  ) async {
+    _throwRpcError(
+      await rpc.invoke('saveAccount', {
+        'id': account.id,
+        'driver': account.driver,
+        'name': account.name,
+        'addition': account.authorization,
+      }),
+      driver: account.driver,
+    );
+  }
+
+  Future<void> _ensureAccountInitialized(String id) async {
+    await ensureInitialized();
+    final rpc = _openListRpc;
+    if (rpc != null && _pendingNativeAccounts.containsKey(id)) {
+      await _registerPendingNativeAccount(rpc, id);
+    }
+  }
+
+  Future<void> _registerPendingNativeAccount(OpenListRpcClient rpc, String id) {
+    return _pendingNativeWrites[id] ??= _applyPendingNativeAccount(rpc, id)
+        .whenComplete(() {
+          _pendingNativeWrites.remove(id);
+        });
+  }
+
+  Future<void> _applyPendingNativeAccount(
+    OpenListRpcClient rpc,
+    String id,
+  ) async {
+    while (true) {
+      final pendingAliases = _pendingNativeAccounts[id];
+      final value = account(id);
+      if (pendingAliases == null || value == null) return;
+
+      // 内核载入旧挂载时可能已轮换 123 云盘授权，合并时仍取最新的一组。
+      var registered = value;
+      if (value.driver == '123 Open') {
+        final additions = await _readNativeAdditions();
+        for (final sourceId in [id, ...pendingAliases]) {
+          final latest = additions?[sourceId];
+          if (latest != null &&
+              _tokenUpdatedAt(latest) >
+                  _tokenUpdatedAt(registered.authorization)) {
+            registered = applyNativeAuthorization(registered, latest);
+          }
+        }
+      }
+      await _saveNativeAccount(rpc, registered);
+      final addition = (await _readNativeAdditions())?[id];
+      for (final alias in pendingAliases) {
+        if (account(alias) != null) continue;
+        try {
+          await _cancelStores(alias);
+          await rpc.invoke('deleteAccount', {'id': alias});
+        } on RemoteStorageException {
+          // 未能清理的旧挂载在下次初始化时重试。
+        }
+      }
+
+      final pending = _pendingNativeAccounts;
+      final current = account(id);
+      if (current == null || !pending.containsKey(id)) return;
+      if (!setEquals(pending[id], pendingAliases) ||
+          current.name != value.name ||
+          jsonEncode(current.authorization) !=
+              jsonEncode(value.authorization)) {
+        continue;
+      }
+      final updated = applyNativeAuthorization(
+        current,
+        addition ?? registered.authorization,
+      );
+      appdata.settings[remoteStorageAccountsSetting] = [
+        for (final item in accounts) (item.id == id ? updated : item).toJson(),
+      ];
+      pending.remove(id);
+      _writePendingNativeAccounts(pending);
+      await appdata.saveData(false);
+    }
+  }
+
+  /// 合并并保存本机授权，在使用对应网盘时将变更应用到内核。
   Future<void> mergeImportedSettings(
     Object? raw, {
     List<StorageAccount>? localBeforeImport,
@@ -616,13 +729,6 @@ class RemoteStorageAccounts with ChangeNotifier {
         .map((item) => StorageAccount.fromJson(item))
         .where((item) => item.isConfigured)
         .toList();
-    if (incoming.any((item) => item.backend == StorageBackend.openlist)) {
-      try {
-        await ensureInitialized();
-      } on RemoteStorageException {
-        // Imported credentials are retained for a later initialization.
-      }
-    }
     final local = localBeforeImport ?? accounts;
     final aliases = <String, String>{};
     final merged = mergeRemoteStorageAccounts(
@@ -630,65 +736,38 @@ class RemoteStorageAccounts with ChangeNotifier {
       incoming,
       idAliases: aliases,
     );
-    final replacedIds = aliases.entries
-        .where((entry) => entry.key != entry.value)
-        .map((entry) => entry.value)
-        .toSet();
-    final nativeUpdates = merged.where((value) {
-      final existing = _accountById(local, value.id);
-      return existing == null ||
-          replacedIds.contains(value.id) ||
-          (existing.backend == value.backend &&
-              existing.driver == value.driver &&
-              (existing.authorizationIsKnownInvalid ||
-                  (value.driver == '123 Open' &&
-                      jsonEncode(existing.authorization) !=
-                          jsonEncode(value.authorization))));
-    }).toList();
-    for (final entry in aliases.entries.where(
-      (entry) => entry.key != entry.value,
-    )) {
-      await _cancelStores(entry.key);
+    final remapped = aliases.entries.where((entry) => entry.key != entry.value);
+    final replacedIds = remapped.map((entry) => entry.value).toSet();
+    final openListAccounts = merged.where(
+      (item) => item.backend == StorageBackend.openlist,
+    );
+    final openListIds = openListAccounts.map((item) => item.id).toSet();
+    for (final entry in remapped) {
+      if (!openListIds.contains(entry.value)) await _cancelStores(entry.key);
     }
+    final pending = _pendingNativeAccounts;
+    for (final value in openListAccounts) {
+      final existing = _accountById(local, value.id);
+      if (existing == null ||
+          replacedIds.contains(value.id) ||
+          jsonEncode(existing.authorization) !=
+              jsonEncode(value.authorization)) {
+        pending.putIfAbsent(value.id, () => {});
+      }
+    }
+    for (final entry in remapped) {
+      if (openListIds.contains(entry.value)) {
+        final oldAliases = pending.remove(entry.key);
+        pending[entry.value]!.addAll({entry.key, ...?oldAliases});
+      }
+    }
+    pending.removeWhere((id, _) => !openListIds.contains(id));
     _remapAccountReferences(aliases);
     appdata.settings[remoteStorageAccountsSetting] = merged
         .map((item) => item.toJson())
         .toList();
+    _writePendingNativeAccounts(pending);
     await appdata.saveData(false);
-    final rpc = _openListRpc;
-    if (rpc != null) {
-      for (final value in nativeUpdates.where(
-        (item) => item.backend == StorageBackend.openlist,
-      )) {
-        try {
-          await _cancelStores(value.id);
-          _throwRpcError(
-            await rpc.invoke('saveAccount', {
-              'id': value.id,
-              'driver': value.driver,
-              'name': value.name,
-              'addition': value.authorization,
-            }),
-          );
-        } catch (_) {
-          // An unavailable core must not roll back the remaining app-data import.
-        }
-      }
-      for (final entry in aliases.entries.where(
-        (entry) => entry.key != entry.value,
-      )) {
-        final previous = _accountById([...local, ...incoming], entry.key);
-        if (previous?.backend != StorageBackend.openlist) continue;
-        try {
-          _throwRpcError(
-            await rpc.invoke('cancelAccount', {'accountId': entry.key}),
-          );
-          _throwRpcError(await rpc.invoke('deleteAccount', {'id': entry.key}));
-        } catch (_) {
-          // Local references remain valid while the core is unavailable.
-        }
-      }
-    }
   }
 
   void _remapAccountReferences(Map<String, String> aliases) {

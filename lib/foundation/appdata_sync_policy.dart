@@ -1,3 +1,5 @@
+const appdataPendingOpenListAccountsKey = 'pendingOpenListAccounts';
+
 /// Setting roots that stay on this device unless an explicit opt-in policy
 /// enables their synchronization.
 // Bangumi account credentials sync with bindings; pending retries remain in
@@ -28,6 +30,7 @@ const appdataDefaultDisabledSyncFields = <String>{
   'deviceId',
   'deviceSpecificSettings',
   'lastSyncTime',
+  appdataPendingOpenListAccountsKey,
 };
 
 const appdataArchiveSyncFields = {

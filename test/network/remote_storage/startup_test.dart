@@ -135,8 +135,61 @@ void main() {
     },
   );
 
-  test('export and account removal wait for native initialization', () async {
-    final export = storage.beforeExportSettings();
+  test('快照授权读取和合并在内核初始化期间完成', () async {
+    final previous = _account.copyWith(
+      status: StorageAuthorizationStatus.invalid,
+    );
+    appdata.settings[remoteStorageAccountsSetting] = [previous.toJson()];
+    final imported = _account.copyWith(
+      authorization: {'refresh_token': 'imported'},
+    );
+    final ready = storage.ensureInitialized();
+    await rpc.started.future;
+    try {
+      final exported = await storage.beforeExportSettings().timeout(
+        const Duration(seconds: 3),
+      );
+      expect(exported, [previous.toJson()]);
+      await storage
+          .mergeImportedSettings([imported.toJson()])
+          .timeout(const Duration(seconds: 3));
+      expect(storage.accounts.single.authorization, imported.authorization);
+      expect(rpc.calls, ['initialize']);
+    } finally {
+      rpc.ready.complete(const {
+        'data': {'ready': true},
+      });
+      await ready;
+    }
+    expect(await storage.beforeExportSettings(), [imported.toJson()]);
+    expect(rpc.saved, isEmpty);
+  });
+
+  test('快照读取就绪内核已轮换的令牌', () async {
+    rpc.ready.complete(const {
+      'data': {'ready': true},
+    });
+    await storage.ensureInitialized();
+    rpc.nativeRefreshToken = 'rotated-again';
+    final unregistered = _account.copyWith(id: 'unregistered');
+    appdata.settings[remoteStorageAccountsSetting] = [
+      storage.accounts.single.toJson(),
+      unregistered.toJson(),
+    ];
+    rpc.calls.clear();
+    await storage.beforeExportSettings();
+    expect(
+      storage.account(_account.id)!.authorization['refresh_token'],
+      'rotated-again',
+    );
+    expect(
+      storage.account(unregistered.id)!.authorization,
+      unregistered.authorization,
+    );
+    expect(rpc.calls, ['accounts']);
+  });
+
+  test('删除账号会等待内核初始化', () async {
     final removal = storage.remove(_account.id);
     await rpc.started.future;
     expect(rpc.calls, ['initialize']);
@@ -144,7 +197,6 @@ void main() {
     rpc.ready.complete(const {
       'data': {'ready': true},
     });
-    await export;
     await removal;
     expect(storage.accounts, isEmpty);
     expect(rpc.calls, contains('deleteAccount'));
@@ -240,6 +292,7 @@ void main() {
         'data': {'ready': true},
       });
       await cancelled;
+      await storage.ensureInitialized();
       expect(rpc.calls, isNot(contains('list')));
       expect(rpc.calls, isNot(contains('cancel')));
       expect(rpc.calls, isNot(contains('releaseTask')));
@@ -308,6 +361,7 @@ class _StartupRpc implements OpenListRpcClient {
   final calls = <String>[];
   final saved = <Map<String, dynamic>>[];
   final configurations = <Map<String, dynamic>>[];
+  var nativeRefreshToken = 'rotated';
 
   @override
   Future<Map<String, dynamic>> invoke(
@@ -326,7 +380,7 @@ class _StartupRpc implements OpenListRpcClient {
           'accounts': [
             {
               'id': _account.id,
-              'addition': {'refresh_token': 'rotated'},
+              'addition': {'refresh_token': nativeRefreshToken},
             },
           ],
         },
