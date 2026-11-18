@@ -179,6 +179,23 @@ jobs:
               --latest
           fi
 
+      - name: 触发官网更新
+        if: ${{ !contains(github.ref_name, '-') }}
+        continue-on-error: true
+        env:
+          VENERA_WEB_DEPLOY_HOOK: ${{ secrets.VENERA_WEB_DEPLOY_HOOK }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${VENERA_WEB_DEPLOY_HOOK}" ]]; then
+            echo "::notice::未配置 VENERA_WEB_DEPLOY_HOOK，跳过官网自动更新。"
+            exit 0
+          fi
+          # 官网更新失败不改变已经完成的应用发布状态。
+          curl --fail --silent --show-error \
+            --connect-timeout 10 --max-time 30 \
+            --request POST --output /dev/null \
+            "${VENERA_WEB_DEPLOY_HOOK}"
+
       - name: 清理 jsDelivr CDN 缓存
         run: |
           set -u

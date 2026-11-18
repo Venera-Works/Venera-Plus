@@ -129,12 +129,7 @@ void main() {
   });
 
   test('official online API accounts only need a refresh token', () {
-    for (final driver in [
-      'BaiduNetdisk',
-      '123 Open',
-      'Onedrive',
-      'GoogleDrive',
-    ]) {
+    for (final driver in ['BaiduNetdisk', '123 Open', 'Onedrive']) {
       final value = buildOpenListAuthorization(
         driver: driver,
         accessToken: '',
@@ -148,6 +143,35 @@ void main() {
       expect(value.containsKey('client_id'), isFalse);
       expect(value.containsKey('ClientID'), isFalse);
     }
+  });
+
+  test('Google Drive replaces shared authorization with direct OAuth', () {
+    final value = buildOpenListAuthorization(
+      driver: 'GoogleDrive',
+      accessToken: 'old-access',
+      refreshToken: ' local-refresh ',
+      clientId: ' local-id ',
+      clientSecret: ' local-secret ',
+      authorization: {
+        'root_folder_id': 'comics',
+        'use_online_api': true,
+        'api_url_address': 'https://api.oplist.org/googleui/renewapi',
+        'server_use': true,
+        'driver_txt': 'googleui_go',
+        'client_uid': 'old-client',
+        'client_key': 'old-secret',
+        'AccessToken': 'old-access',
+        'RefreshToken': 'old-refresh',
+      },
+    );
+    expect(value, {
+      'root_folder_id': 'comics',
+      'use_online_api': false,
+      'api_url_address': '',
+      'client_id': 'local-id',
+      'client_secret': 'local-secret',
+      'refresh_token': 'local-refresh',
+    });
   });
 
   test('Quark uses Cookie authorization and preserves the root folder', () {

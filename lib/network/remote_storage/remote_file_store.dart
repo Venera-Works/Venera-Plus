@@ -106,6 +106,7 @@ class RemoteStorageException implements Exception {
   bool get isAuthorizationFailure =>
       code == 'unauthorized' ||
       code == 'invalid_token' ||
+      code == 'invalid_client' ||
       code == 'invalid_grant' ||
       code == '401';
   @override

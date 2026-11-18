@@ -164,7 +164,7 @@ class _StorageAccountsPageState extends State<StorageAccountsPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  account.statusMessage ??
+                  account.statusMessage?.tl ??
                       '${account.driver.tl} · ${switch (account.status) {
                         StorageAuthorizationStatus.valid => 'Connected'.tl,
                         StorageAuthorizationStatus.invalid => 'Authorization invalid'.tl,
@@ -216,7 +216,7 @@ class _StorageProviderPage extends StatelessWidget {
                       'Connect with a server address, username and password.'
                           .tl,
                     'GoogleDrive' =>
-                      'Get a token from OpenList, then enter it manually.'.tl,
+                      'Connect with your own Google OAuth credentials.'.tl,
                     _ => 'Log in to authorize and save automatically.'.tl,
                   }),
                   trailing: const Icon(Icons.arrow_right),
@@ -276,13 +276,26 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
   late final TextEditingController _accessToken = TextEditingController(
     text: _tokenValue('access_token', 'AccessToken'),
   );
+  late final Map<String, dynamic> _googleCredentials =
+      _isGoogleDrive && _authorization['use_online_api'] == false
+      ? normalizeOpenListAuthorization(_authorization, driver: _driver)
+      : const {};
+  late final TextEditingController _clientId = TextEditingController(
+    text: _googleCredentials['client_id'] as String?,
+  );
+  late final TextEditingController _clientSecret = TextEditingController(
+    text: _googleCredentials['client_secret'] as String?,
+  );
   late final TextEditingController _refreshToken = TextEditingController(
-    text: _tokenValue('refresh_token', 'RefreshToken'),
+    text: _isGoogleDrive
+        ? _googleCredentials['refresh_token'] as String?
+        : _tokenValue('refresh_token', 'RefreshToken'),
   );
   late final TextEditingController _cookie = TextEditingController(
     text: widget.initial?.authorization['cookie'] as String?,
   );
   String get _driver => widget.driver;
+  bool get _isGoogleDrive => _driver == 'GoogleDrive';
   bool get _autoSaveAfterLogin =>
       widget.initial == null &&
       (_driver == 'Quark' || openListLoginDrivers.containsKey(_driver));
@@ -295,6 +308,8 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
     _user.dispose();
     _password.dispose();
     _accessToken.dispose();
+    _clientId.dispose();
+    _clientSecret.dispose();
     _refreshToken.dispose();
     _cookie.dispose();
     super.dispose();
@@ -376,8 +391,40 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                         ),
                         const SizedBox(height: 16),
                       ],
+                      if (_isGoogleDrive) ...[
+                        TextField(
+                          controller: _clientId,
+                          autocorrect: false,
+                          enableSuggestions: false,
+                          onChanged: (value) {
+                            if (value.trim() !=
+                                    _googleCredentials['client_id'] &&
+                                _refreshToken.text ==
+                                    _googleCredentials['refresh_token']) {
+                              _refreshToken.clear();
+                            }
+                          },
+                          decoration: InputDecoration(
+                            labelText: 'Client ID'.tl,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        TextField(
+                          controller: _clientSecret,
+                          obscureText: true,
+                          autocorrect: false,
+                          enableSuggestions: false,
+                          decoration: InputDecoration(
+                            labelText: 'Client Secret'.tl,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                      ],
                       TextField(
                         controller: _refreshToken,
+                        obscureText: _isGoogleDrive,
+                        autocorrect: !_isGoogleDrive,
+                        enableSuggestions: !_isGoogleDrive,
                         onChanged: _driver == '115 Open'
                             ? null
                             : (_) => _accessToken.clear(),
@@ -385,20 +432,23 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                           labelText: 'Refresh Token'.tl,
                         ),
                       ),
-                      if (!hasLogin) ...[
+                      if (_isGoogleDrive) ...[
                         Text(
-                          'Use parameters provided by OpenList on the token page, then fill in the required tokens.'
+                          'Get a refresh token in Google OAuth Playground using your own Client ID and Client Secret.'
                               .tl,
                           style: Theme.of(context).textTheme.bodySmall,
                         ),
                         TextButton.icon(
                           style: actionButtonStyle,
                           onPressed: () => launchUrl(
-                            Uri.parse('https://api.oplist.org/'),
+                            Uri.https(
+                              'developers.google.com',
+                              '/oauthplayground/',
+                            ),
                             mode: LaunchMode.externalApplication,
                           ),
                           icon: const Icon(Icons.open_in_new),
-                          label: Text('Open OpenList token page'.tl),
+                          label: Text('Open Google OAuth Playground'.tl),
                         ),
                       ],
                     ],
@@ -444,7 +494,7 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
         if (_cookie.text.trim().isEmpty) {
           throw const FormatException('Cookie is required');
         }
-      } else if (!webdav) {
+      } else if (!webdav && !_isGoogleDrive) {
         final clientId =
             _authorization['ClientID'] ?? _authorization['client_id'];
         final clientSecret =
@@ -472,6 +522,8 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
               driver: _driver,
               accessToken: _accessToken.text,
               refreshToken: _refreshToken.text,
+              clientId: _isGoogleDrive ? _clientId.text : '',
+              clientSecret: _isGoogleDrive ? _clientSecret.text : '',
               cookie: _cookie.text,
               authorization: _authorization,
             );

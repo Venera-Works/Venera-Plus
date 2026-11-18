@@ -8,6 +8,45 @@ abstract class OpenListRpcClient {
   );
 }
 
+RemoteStorageException openListRpcError(
+  Map<Object?, Object?> error, {
+  String? driver,
+}) {
+  final message = error['message'] as String? ?? 'OpenList operation failed';
+  final code = error['code']?.toString();
+  if (driver == 'GoogleDrive') {
+    final oauthCode = code == 'operation_failed'
+        ? message.split(': ').last
+        : code;
+    switch (oauthCode) {
+      case 'invalid_client':
+        return const RemoteStorageException(
+          'Google rejected the OAuth client. Check the Client ID and Client Secret.',
+          code: 'invalid_client',
+        );
+      case 'invalid_grant':
+        return const RemoteStorageException(
+          'Get a new Google Drive refresh token using the same Client ID.',
+          code: 'invalid_grant',
+        );
+    }
+    if (code == 'operation_failed' &&
+        RegExp(
+          r'\b(?:Get|Post) "https://(?:www\.googleapis\.com|oauth2\.googleapis\.com)/[^"]+": ',
+        ).hasMatch(message)) {
+      return const RemoteStorageException(
+        'Could not reach Google Drive. Check your connection and try again.',
+        code: 'operation_failed',
+      );
+    }
+  }
+  return RemoteStorageException(
+    message,
+    code: code,
+    retryAfter: error['retryAfter']?.toString(),
+  );
+}
+
 /// Native adapters provide this bridge. All messages deliberately use JSON-safe
 /// values so Android/iOS channels and desktop C ABI have the same contract.
 class OpenListFileStore implements RemoteFileStore {
@@ -221,11 +260,7 @@ class OpenListFileStore implements RemoteFileStore {
   }
 
   RemoteStorageException _error(Map<Object?, Object?> error) =>
-      RemoteStorageException(
-        error['message'] as String? ?? 'OpenList operation failed',
-        code: error['code']?.toString(),
-        retryAfter: error['retryAfter']?.toString(),
-      );
+      openListRpcError(error, driver: account.driver);
   RemoteEntry _entry(Map<Object?, Object?> item) => RemoteEntry(
     name: item['name'] as String? ?? '',
     path: item['path'] as String? ?? '',

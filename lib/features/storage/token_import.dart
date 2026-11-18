@@ -110,6 +110,8 @@ Map<String, dynamic> buildOpenListAuthorization({
   required String driver,
   required String accessToken,
   required String refreshToken,
+  String clientId = '',
+  String clientSecret = '',
   String cookie = '',
   Map<String, dynamic> authorization = const {},
 }) {
@@ -118,6 +120,28 @@ Map<String, dynamic> buildOpenListAuthorization({
       ...authorization,
       'cookie': cookie.trim(),
     }, driver: driver);
+  }
+  if (driver == 'GoogleDrive') {
+    final localClientId = clientId.trim();
+    final localClientSecret = clientSecret.trim();
+    final localRefreshToken = refreshToken.trim();
+    if (localClientId.isEmpty || localClientSecret.isEmpty) {
+      throw const FormatException('Client ID and Client Secret are required');
+    }
+    if (localRefreshToken.isEmpty) {
+      throw const FormatException('Refresh Token is required');
+    }
+    return {
+        ...normalizeOpenListAuthorization(authorization, driver: driver),
+        'client_id': localClientId,
+        'client_secret': localClientSecret,
+        'refresh_token': localRefreshToken,
+        'use_online_api': false,
+        'api_url_address': '',
+      }
+      ..remove('access_token')
+      ..remove('server_use')
+      ..remove('driver_txt');
   }
   final value = <String, dynamic>{...authorization}
     ..remove('AccessToken')

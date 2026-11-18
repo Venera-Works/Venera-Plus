@@ -33,7 +33,7 @@ void main() {
       ('BaiduNetdisk', <String>[]),
       ('123 Open', <String>[]),
       ('Onedrive', <String>[]),
-      ('GoogleDrive', ['Refresh Token']),
+      ('GoogleDrive', ['Client ID', 'Client Secret', 'Refresh Token']),
     ]) {
       final provider = find.widgetWithText(ListTile, driver);
       await tester.ensureVisible(provider);
@@ -52,7 +52,7 @@ void main() {
             : findsOneWidget,
       );
       expect(
-        find.text('Open OpenList token page'),
+        find.text('Open Google OAuth Playground'),
         driver == 'GoogleDrive' ? findsOneWidget : findsNothing,
       );
       expect(
@@ -415,6 +415,75 @@ void main() {
     await tester.pumpAndSettle();
     expect(accounts.saved!.authorization['refresh_token'], 'edited-again');
     expect(accounts.saved!.authorization['root_folder_path'], '/Comics');
+  });
+
+  testWidgets('Google Drive reauthorizes the existing account in place', (
+    tester,
+  ) async {
+    final accounts = _Accounts()
+      ..saved = const StorageAccount(
+        id: 'existing-google',
+        backend: StorageBackend.openlist,
+        driver: 'GoogleDrive',
+        name: 'Google Drive',
+        authorization: {
+          'root_folder_id': 'comics',
+          'refresh_token': 'old-refresh',
+          'use_online_api': true,
+        },
+      );
+    await tester.pumpWidget(
+      MaterialApp(home: StorageAccountsPage(accounts: accounts)),
+    );
+    await tester.tap(find.text('Google Drive'));
+    await tester.pumpAndSettle();
+    final clientId = find.widgetWithText(TextField, 'Client ID');
+    final clientSecret = find.widgetWithText(TextField, 'Client Secret');
+    final refreshToken = find.widgetWithText(TextField, 'Refresh Token');
+    final save = find.text('Save and test connection');
+    expect(tester.widget<TextField>(clientSecret).obscureText, isTrue);
+    expect(tester.widget<TextField>(refreshToken).obscureText, isTrue);
+    expect(tester.widget<TextField>(refreshToken).controller!.text, isEmpty);
+
+    await tester.enterText(clientId, 'local-id');
+    await tester.ensureVisible(save);
+    await tester.tap(save);
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Client ID and Client Secret are required'),
+      findsOneWidget,
+    );
+    expect(accounts.saveCalls, 0);
+
+    await tester.enterText(clientSecret, 'local-secret');
+    await tester.ensureVisible(save);
+    await tester.tap(save);
+    await tester.pumpAndSettle();
+    expect(find.text('Refresh Token is required'), findsOneWidget);
+    expect(accounts.saveCalls, 0);
+
+    await tester.enterText(refreshToken, 'local-refresh');
+    await tester.ensureVisible(save);
+    await tester.tap(save);
+    await tester.pumpAndSettle();
+    expect(accounts.saved!.id, 'existing-google');
+    expect(accounts.saved!.authorization['root_folder_id'], 'comics');
+    expect(accounts.saved!.authorization['use_online_api'], isFalse);
+    expect(accounts.rpc.testCalls, 1);
+
+    await tester.tap(find.text('Google Drive'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(clientId).controller!.text, 'local-id');
+    expect(
+      tester.widget<TextField>(clientSecret).controller!.text,
+      'local-secret',
+    );
+    expect(
+      tester.widget<TextField>(refreshToken).controller!.text,
+      'local-refresh',
+    );
+    await tester.enterText(clientId, 'different-id');
+    expect(tester.widget<TextField>(refreshToken).controller!.text, isEmpty);
   });
 
   testWidgets('123 client credentials remain editable without refresh tokens', (

@@ -14,7 +14,15 @@ Automatic token authorization always uses the parameters provided by OpenList: O
 
 Quark uses the `Quark` Cookie driver. Choose "Log in and authorize" to sign in on Quark's official website inside the app's WebView. After confirming that the session can list drive files, the app reads the native cookie store, including HttpOnly cookies. New accounts are then saved and tested automatically. Existing `QuarkOpen` accounts require a new login; saving an edited account retains its ID and configured directories, without the old tokens, AppID, or SignKey.
 
-Google Drive still requires manual authorization on the [OpenList Token page](https://api.oplist.org/). Enter its refresh token, then choose "Save and test connection". WebDAV still requires the server address, username, and password before saving. Existing cloud accounts still allow manual token or Cookie updates when edited. Baidu, 123 Cloud, OneDrive, and Google Drive require a refresh token; 115 requires both access and refresh tokens.
+Enter a server address, username, and password to save a WebDAV account. You can manually update tokens or Cookies when editing other cloud accounts. Baidu, 123 Cloud, and OneDrive require a refresh token. 115 requires both an access token and a refresh token.
+
+### Google Drive authorization with your own OAuth client
+
+1. In the Google Cloud console, enable the Google Drive API for your project, configure the OAuth consent screen, and create an OAuth client of type **Web application**. Add `https://developers.google.com/oauthplayground` as an authorized redirect URI. [Google Cloud console](https://console.cloud.google.com/)
+2. In Google OAuth Playground settings, select **Use your own OAuth credentials** and enter the client ID and secret. Use `https://www.googleapis.com/auth/drive.readonly` for browsing and reading. Use `https://www.googleapis.com/auth/drive` to write metadata, sync, or back up files. [Google OAuth Playground](https://developers.google.com/oauthplayground/)
+3. After authorizing, select **Exchange authorization code for tokens**. Add or edit the Google Drive account in VeneraPlus, enter the client ID, client secret, and refresh token issued to that client, and choose **Save and test connection**. VeneraPlus refreshes tokens directly with Google.
+
+If the account previously used shared OpenList credentials, edit the existing account and authorize with the same Google account to keep its library, sync, and backup directories. For an external OAuth app in **Testing**, add your Google account as a test user. Drive refresh tokens issued in this state expire after seven days.
 
 ## Configure uses and comic directories
 
@@ -46,7 +54,7 @@ On-demand cloud file reading requires HTTP Range support from the actual file se
 
 Existing WebDAV sync and archive settings are automatically added to the shared accounts while retaining their remote directories. Local comic paths, cache settings, and download threads are under Local Storage and Downloads; manual data transfer is under App Data Import and Export.
 
-All saved cloud accounts and their credentials are included in app-data snapshots, including accounts not yet used by a comic library. For 123 Cloud, the access token, refresh token, absolute expiration time, and token update time are synchronized together. The newer authorization is used for the same account, and older snapshots cannot replace newer local tokens. New devices and restarts reuse the existing access token until it expires or the API rejects it. Legacy tokens without an expiration time are tried first; importing them does not restart their lifetime. Other providers retain a still-valid local authorization during restore. The data-sync destination stays local; archive-backup configuration is synchronized only when its opt-in is enabled.
+App-data snapshots include all saved cloud accounts and their credentials, including Google Drive client secrets and accounts not yet used by a comic library. For 123 Cloud, the access token, refresh token, absolute expiration time, and token update time are synchronized together. The newer authorization is used for the same account, and older snapshots cannot replace newer local tokens. New devices and restarts reuse the existing access token until it expires or the API rejects it. Legacy tokens without an expiration time are tried first. Importing them does not restart their lifetime. Other providers retain a still-valid local authorization during restore. The data-sync destination stays local. Archive-backup configuration is synchronized only when its opt-in is enabled.
 
 123 Cloud refreshes can be retried after temporary network or service failures. An explicit `invalid_grant` retains the original error and marks the authorization invalid; sign in again or synchronize a newer authorization to recover. If the provider revokes old refresh tokens after rotation, devices that have not synchronized the new authorization may still need to sign in again.
 

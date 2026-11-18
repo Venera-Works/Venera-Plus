@@ -101,7 +101,7 @@ class _RemoteLocationFieldsState extends State<RemoteLocationFields> {
         ),
         if (account?.statusMessage != null)
           Text(
-            account!.statusMessage!,
+            account!.statusMessage!.tl,
             style: TextStyle(color: Theme.of(context).colorScheme.error),
           ),
         ListTile(

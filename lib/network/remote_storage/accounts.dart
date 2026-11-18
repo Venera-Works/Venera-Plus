@@ -345,7 +345,7 @@ class RemoteStorageAccounts with ChangeNotifier {
           'name': account.name,
           'addition': account.authorization,
         });
-        _throwRpcError(response);
+        _throwRpcError(response, driver: account.driver);
       } on RemoteStorageException catch (error) {
         final pending = account.copyWith(
           status: error.isAuthorizationFailure
@@ -1008,12 +1008,9 @@ class _UnavailableOpenListRpc implements OpenListRpcClient {
   };
 }
 
-void _throwRpcError(Map<String, dynamic> response) {
+void _throwRpcError(Map<String, dynamic> response, {String? driver}) {
   final error = response['error'];
   if (error is Map) {
-    throw RemoteStorageException(
-      error['message'] as String? ?? 'OpenList operation failed',
-      code: error['code']?.toString(),
-    );
+    throw openListRpcError(error, driver: driver);
   }
 }

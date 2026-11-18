@@ -14,7 +14,15 @@ VeneraPlus 可通过内置 OpenList 内核连接百度网盘、夸克网盘、11
 
 夸克改用 `Quark` Cookie 驱动。点击“登录并授权”后在应用 WebView 中登录夸克官网，应用确认能读取网盘目录后，通过原生 Cookie 存储提取包括 HttpOnly 在内的完整 Cookie；新增账号随即自动保存并测试连接。已有 `QuarkOpen` 账号需重新登录，编辑保存时保留账号标识及已配置的目录，不再使用旧令牌、AppID 或 SignKey。
 
-Google Drive 仍使用 [OpenList Token 页面](https://api.oplist.org/) 手动获取授权，填写刷新令牌后点击“保存并测试连接”。WebDAV 仍填写服务器地址、用户名和密码后保存。编辑已有网盘账号时可手动更新令牌或 Cookie；百度、123、OneDrive 和 Google Drive 需要刷新令牌，115 需要访问令牌与刷新令牌。
+WebDAV 填写服务器地址、用户名和密码后保存。编辑其他已有网盘账号时可手动更新令牌或 Cookie。百度、123 和 OneDrive 需要刷新令牌，115 需要访问令牌与刷新令牌。
+
+### Google Drive 自建 OAuth 授权
+
+1. 在 Google Cloud 控制台为自己的项目启用 Google Drive API，配置 OAuth 同意屏幕，并创建“Web 应用”类型的 OAuth 客户端。将 `https://developers.google.com/oauthplayground` 添加为已获授权的重定向 URI。[Google Cloud 控制台](https://console.cloud.google.com/)
+2. 打开 Google OAuth Playground，在右上角设置中勾选 **Use your own OAuth credentials**，填写该客户端的 ID 和密钥。选择 `https://www.googleapis.com/auth/drive.readonly` 可浏览和阅读。需要写回元数据、同步或备份文件时，选择 `https://www.googleapis.com/auth/drive`。[Google OAuth Playground](https://developers.google.com/oauthplayground/)
+3. 授权后点击 **Exchange authorization code for tokens**。在 VeneraPlus 新增或编辑 Google Drive 账号，填写该客户端的 ID、密钥及其签发的 Refresh Token，点击“保存并测试连接”。应用后续直接向 Google 刷新令牌。
+
+原先使用 OpenList 公共凭据的用户应编辑原账号，并用相同的 Google 账号重新授权。原账号及其漫画库、同步和备份目录的关联会保留。外部 OAuth 应用处于 **Testing** 状态时，需先添加测试用户，Drive 刷新令牌会在 7 天后过期。
 
 ## 配置用途和漫画目录
 
@@ -46,7 +54,7 @@ Google Drive 仍使用 [OpenList Token 页面](https://api.oplist.org/) 手动�
 
 旧 WebDAV 同步和归档配置会自动接入统一账号，保留原同步目录和归档目录。本地漫画位置、缓存与下载线程归入“本地存储与下载”，手动数据导入和导出归入“应用数据导入与导出”。
 
-所有已保存的网盘账号及授权信息都会随应用数据快照同步，包括尚未用于漫画库的账号。123 云盘的访问令牌、刷新令牌、绝对过期时间与授权更新时间整组同步，同一账号采用较新的授权，旧快照不会覆盖较新的本机令牌。新设备和重启后优先使用已有访问令牌，到期或接口明确拒绝后才刷新；旧授权没有过期时间时先尝试访问，不在导入时重新计算有效期。其他网盘恢复快照时仍优先保留本机有效授权；数据同步目标始终保留在本机。漫画备份配置是否同步由“同步备份配置”选项决定。
+所有已保存的网盘账号及授权信息都会随应用数据快照同步，包括尚未用于漫画库的账号和 Google Drive 客户端密钥。123 云盘的访问令牌、刷新令牌、绝对过期时间与授权更新时间整组同步，同一账号采用较新的授权，旧快照不会覆盖较新的本机令牌。新设备和重启后优先使用已有访问令牌，到期或接口明确拒绝后才刷新；旧授权没有过期时间时先尝试访问，不在导入时重新计算有效期。其他网盘恢复快照时仍优先保留本机有效授权；数据同步目标始终保留在本机。漫画备份配置是否同步由“同步备份配置”选项决定。
 
 123 云盘刷新遇到临时网络或服务异常后可再次重试；明确的 `invalid_grant` 会保留原始错误并标记授权失效，需要重新登录或同步更新的授权。若网盘在刷新后废弃旧刷新令牌，尚未同步新授权的设备仍可能需要重新授权。
 
