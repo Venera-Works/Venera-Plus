@@ -20,6 +20,7 @@ class AppPageRoute<T> extends PageRoute<T> with _AppRouteTransitionMixin {
     super.barrierDismissible = false,
     this.enableIOSGesture = true,
     this.preventRebuild = true,
+    this.animatePreviousPage = true,
   }) {
     assert(opaque);
   }
@@ -50,6 +51,13 @@ class AppPageRoute<T> extends PageRoute<T> with _AppRouteTransitionMixin {
 
   @override
   final bool preventRebuild;
+
+  final bool animatePreviousPage;
+
+  @override
+  bool canTransitionFrom(TransitionRoute<dynamic> previousRoute) {
+    return animatePreviousPage && super.canTransitionFrom(previousRoute);
+  }
 }
 
 mixin _AppRouteTransitionMixin<T> on PageRoute<T> {

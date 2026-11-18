@@ -879,6 +879,7 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
             final size = _sourceSize ?? cacheSize ?? imageSize;
             final dimensions = '${size.width.round()} × ${size.height.round()}';
             result = Stack(
+              fit: StackFit.passthrough,
               children: [
                 result,
                 Positioned(

@@ -39,7 +39,10 @@ Future<StorageAccount?> showStorageAccountEditor(
           context,
           rootNavigator: true,
         ).push<StorageAccount>(AppPageRoute(builder: (_) => page))
-      : await context.to<StorageAccount>(() => page);
+      : await context.to<StorageAccount>(
+          () => page,
+          animatePreviousPage: false,
+        );
   if (result == null) return null;
   var saved = await storage.save(result);
   if (saved.statusMessage != null) return saved;
@@ -123,7 +126,7 @@ class _StorageAccountsPageState extends State<StorageAccountsPage> {
       context,
       initial: initial,
       accounts: widget.accounts,
-      useRootNavigator: initial != null,
+      useRootNavigator: false,
     );
     if (mounted) setState(() {});
     if (!mounted ||
@@ -231,6 +234,7 @@ class _StorageProviderPage extends StatelessWidget {
                         accounts: accounts,
                         driver: driver,
                       ),
+                      animatePreviousPage: false,
                     );
                     if (context.mounted && result != null) {
                       Navigator.pop(context, result);
