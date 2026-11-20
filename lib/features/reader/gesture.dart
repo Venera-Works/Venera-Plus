@@ -583,6 +583,7 @@ class ReaderGestureDetectorState
           } else {
             body = PhotoView(
               imageProvider: MemoryImage(bytes),
+              filterQuality: FilterQuality.medium,
               backgroundDecoration: BoxDecoration(
                 color: context.colorScheme.surface,
               ),
