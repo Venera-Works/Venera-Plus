@@ -2682,7 +2682,7 @@ class ContinuousModeState extends State<_ContinuousMode>
     );
   }
 
-  bool get canPullToCollect => (photoViewController.scale ?? 1) <= 1.01;
+  bool get canPullToCollect => photoViewController.scale == 1;
 
   @override
   void handleDoubleTap(Offset location) {

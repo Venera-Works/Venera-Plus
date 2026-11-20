@@ -28,7 +28,8 @@ class ReaderGestureDetector extends StatefulWidget {
 
 class ReaderGestureDetectorState
     extends AutomaticGlobalState<ReaderGestureDetector>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin
+    implements GestureArenaMember {
   late TapGestureRecognizer _tapGestureRecognizer;
   late LongPressGestureRecognizer _longPressGestureRecognizer;
 
@@ -42,6 +43,7 @@ class ReaderGestureDetectorState
 
   late final AnimationController _pullReturnController;
   int? _primaryPointer;
+  GestureArenaEntry? _pendingPullGesture;
   ReaderImageReference? _pullImage;
   Offset _pullDistance = Offset.zero;
   double _pullOffset = 0;
@@ -89,7 +91,7 @@ class ReaderGestureDetectorState
     super.didUpdateWidget(oldWidget);
     if (oldWidget.child.key != widget.child.key ||
         (_pullImage != null && !_canPullToCollect)) {
-      _pullImage = null;
+      _releasePullGesture();
       _pullOffset = 0;
       _pullResult = null;
       _pullReturnController.value = 1;
@@ -98,6 +100,7 @@ class ReaderGestureDetectorState
 
   @override
   void dispose() {
+    _releasePullGesture();
     _pullReturnController.dispose();
     _tapGestureRecognizer.dispose();
     _longPressGestureRecognizer.dispose();
@@ -132,6 +135,12 @@ class ReaderGestureDetectorState
                   event.position,
                 )
               : null;
+          if (_pullImage != null) {
+            _pendingPullGesture = GestureBinding.instance.gestureArena.add(
+              event.pointer,
+              this,
+            );
+          }
           _pullDistance = Offset.zero;
           _pullOffset = 0;
           _pullResult = null;
@@ -140,26 +149,7 @@ class ReaderGestureDetectorState
           _pullReturnController.value = 0;
         }
       },
-      onPointerMove: (event) {
-        if (event.pointer == _primaryPointer && _pullImage != null) {
-          _pullDistance += event.delta;
-          if (!_canPullToCollect ||
-              (_pullDistance.dx.abs() > 24 &&
-                  _pullDistance.dx.abs() > _pullDistance.dy.abs()) ||
-              (_pullOffset == 0 && _pullDistance.dy < -24)) {
-            _returnPull();
-          } else if (_pullOffset > 0 ||
-              (_pullDistance.dy > kTouchSlop &&
-                  _pullDistance.dy > _pullDistance.dx.abs() * 1.5)) {
-            final distance = _pullDistance.dy.clamp(0.0, double.infinity);
-            setState(() {
-              _pullOffset = distance <= 80
-                  ? distance
-                  : (80 + (distance - 80) * 0.35).clamp(0.0, 160.0);
-            });
-          }
-        }
-      },
+      onPointerMove: _updatePull,
       onPointerUp: (event) {
         fingers--;
         if (fingers <= 0) reader.autoReading.pause('pointer', false);
@@ -258,13 +248,65 @@ class ReaderGestureDetectorState
     );
   }
 
+  void _updatePull(PointerMoveEvent event) {
+    if (event.pointer != _primaryPointer || _pullImage == null) return;
+    if (!_canPullToCollect) {
+      _returnPull();
+      return;
+    }
+
+    _pullDistance += event.delta;
+    final pending = _pendingPullGesture;
+    if (pending != null) {
+      final horizontal = _pullDistance.dx.abs();
+      final vertical = _pullDistance.dy;
+      final slop = computeHitSlop(
+        event.kind,
+        MediaQuery.maybeGestureSettingsOf(context),
+      );
+      if (vertical <= slop || vertical <= horizontal * 1.5) {
+        if (horizontal > slop || vertical < -slop) _returnPull();
+        return;
+      }
+      // Listener 先于滚动识别器处理本次移动，可在斜下拉时直接锁定方向。
+      _pendingPullGesture = null;
+      pending.resolve(GestureDisposition.accepted);
+    }
+
+    final distance = _pullDistance.dy.clamp(0.0, double.infinity);
+    setState(() {
+      _pullOffset = distance <= 80
+          ? distance
+          : (80 + (distance - 80) * 0.35).clamp(0.0, 160.0);
+    });
+  }
+
+  @override
+  void acceptGesture(int pointer) {
+    // 即使提前赢得手势竞争，也要等到确认下拉方向后才移动页面。
+  }
+
+  @override
+  void rejectGesture(int pointer) {
+    if (pointer != _primaryPointer) return;
+    _pendingPullGesture = null;
+    _pullImage = null;
+  }
+
   bool get _isPullReady =>
-      _pullDistance.dy >= _kPullToCollectDistance &&
-      _pullDistance.dy > _pullDistance.dx.abs() * 1.5;
+      _pendingPullGesture == null &&
+      _pullDistance.dy >= _kPullToCollectDistance;
+
+  void _releasePullGesture() {
+    final pending = _pendingPullGesture;
+    _pendingPullGesture = null;
+    _pullImage = null;
+    pending?.resolve(GestureDisposition.rejected);
+  }
 
   void _returnPull({bool? result}) {
     if (_pullImage == null) return;
-    _pullImage = null;
+    _releasePullGesture();
     _pullResult = result;
     if (_pullOffset == 0) return;
     _pullReturnController
