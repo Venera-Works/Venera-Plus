@@ -34,8 +34,6 @@ class ReaderGestureDetectorState
 
   static const _kDoubleTapMaxTime = Duration(milliseconds: 200);
 
-  static const _kLongPressMinTime = Duration(milliseconds: 250);
-
   static const _kDoubleTapMaxDistanceSquared = 20.0 * 20.0;
 
   static const _kTapToTurnPagePercent = 0.3;
@@ -72,7 +70,9 @@ class ReaderGestureDetectorState
         _showContextMenu(details.globalPosition);
       };
     _longPressGestureRecognizer =
-        LongPressGestureRecognizer(duration: _kLongPressMinTime)
+        LongPressGestureRecognizer(
+            supportedDevices: const {PointerDeviceKind.touch},
+          )
           ..onLongPressStart = (details) {
             if (_primaryPointer == null) return;
             _returnPull();
