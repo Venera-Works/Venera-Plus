@@ -568,25 +568,20 @@ class ReaderGestureDetectorState
   void _viewOriginalImage(ReaderImageReference ref) {
     final sourceKey = reader.type.sourceKey;
     context.to<void>(
-      () => Scaffold(
-        appBar: Appbar(title: Text("View Original Image".tl)),
-        body: FutureBuilder<Uint8List>(
-          future: loadReaderOriginalImageBytes(
-            ref,
-            fallbackSourceKey: sourceKey,
-          ),
-          builder: (context, snapshot) {
-            if (snapshot.hasError) {
-              return NetworkError(
-                message: snapshot.error.toString(),
-                withAppbar: false,
-              );
-            }
-            final bytes = snapshot.data;
-            if (bytes == null) {
-              return const Center(child: CircularProgressIndicator());
-            }
-            return PhotoView(
+      () => FutureBuilder<Uint8List>(
+        future: loadReaderOriginalImageBytes(ref, fallbackSourceKey: sourceKey),
+        builder: (context, snapshot) {
+          final bytes = snapshot.data;
+          final Widget body;
+          if (snapshot.hasError) {
+            body = NetworkError(
+              message: snapshot.error.toString(),
+              withAppbar: false,
+            );
+          } else if (bytes == null) {
+            body = const Center(child: CircularProgressIndicator());
+          } else {
+            body = PhotoView(
               imageProvider: MemoryImage(bytes),
               backgroundDecoration: BoxDecoration(
                 color: context.colorScheme.surface,
@@ -596,8 +591,23 @@ class ReaderGestureDetectorState
               errorBuilder: (context, error, _, _) =>
                   NetworkError(message: error.toString(), withAppbar: false),
             );
-          },
-        ),
+          }
+          return Scaffold(
+            appBar: Appbar(
+              title: Text("View Original Image".tl),
+              actions: [
+                IconButton(
+                  icon: const Icon(Icons.save_alt),
+                  tooltip: "Save Image".tl,
+                  onPressed: bytes == null
+                      ? null
+                      : () => _saveImage(ref, bytes: bytes),
+                ),
+              ],
+            ),
+            body: body,
+          );
+        },
       ),
     );
   }
@@ -626,20 +636,23 @@ class ReaderGestureDetectorState
     }
   }
 
-  Future<void> _saveImage(ReaderImageReference ref) async {
+  Future<void> _saveImage(ReaderImageReference ref, {Uint8List? bytes}) async {
     final page = ref.page ?? reader.page;
     final chapter = ref.chapter ?? reader.chapter;
     final title = reader.widget.name;
-    final image = await _loadImageBytesFromReference(ref);
-    if (image != null) {
-      final filetype = detectFileType(image);
-      final filename = buildReaderImageFileName(
-        title,
-        chapter,
-        page,
-        filetype.ext,
-      );
+    final image = bytes ?? await _loadImageBytesFromReference(ref);
+    if (image == null || IO.isSelectingFiles) return;
+    final filetype = detectFileType(image);
+    final filename = buildReaderImageFileName(
+      title,
+      chapter,
+      page,
+      filetype.ext,
+    );
+    try {
       await saveFile(filename: filename, data: image);
+    } catch (e) {
+      if (mounted) context.showMessage(message: e.toString());
     }
   }
 }

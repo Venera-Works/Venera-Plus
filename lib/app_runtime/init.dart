@@ -561,22 +561,22 @@ Future<void> _checkOldConfigs() async {
 @visibleForTesting
 Future<void> checkOldConfigsForTesting() => _checkOldConfigs();
 
-Future<void> _checkAppUpdates() async {
-  var lastCheck = appdata.implicitData['lastCheckUpdate'] ?? 0;
-  var now = DateTime.now().millisecondsSinceEpoch;
+Future<void> _checkComicSourceUpdates() async {
+  final lastCheck = appdata.implicitData['lastCheckUpdate'] ?? 0;
+  final now = DateTime.now().millisecondsSinceEpoch;
   if (now - lastCheck < 24 * 60 * 60 * 1000) {
     return;
   }
   appdata.implicitData['lastCheckUpdate'] = now;
-  appdata.writeImplicitData();
-  ComicSourcePage.checkComicSourceUpdate();
-  if (appdata.settings['checkUpdateOnStart']) {
-    await appUpdatePrompt.check(manual: false, delay: true);
-  }
+  unawaited(appdata.writeImplicitData());
+  await ComicSourcePage.checkComicSourceUpdate();
 }
 
 void checkUpdates() {
-  _checkAppUpdates();
+  unawaited(_checkComicSourceUpdates());
+  if (appdata.settings['checkUpdateOnStart']) {
+    unawaited(appUpdatePrompt.check(manual: false, delay: true));
+  }
   unawaited(
     () async {
       await DataSync().waitForDownload();
