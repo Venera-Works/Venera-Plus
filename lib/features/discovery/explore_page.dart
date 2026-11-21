@@ -9,8 +9,8 @@ import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
-import 'package:venera_plus/features/remote_library/remote_library_engine.dart';
-import 'package:venera_plus/features/remote_library/remote_library_search_page.dart';
+import 'package:venera_plus/features/remote_library/remote_library.dart'
+    show RemoteLibraryEngines, RemoteLibrarySearchPage;
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/context.dart';

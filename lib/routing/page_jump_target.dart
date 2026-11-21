@@ -4,7 +4,8 @@ import 'package:flutter/widgets.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/discovery/discovery.dart';
-import 'package:venera_plus/features/remote_library/remote_library_search_page.dart';
+import 'package:venera_plus/features/remote_library/remote_library.dart'
+    show RemoteLibrarySearchPage;
 import 'package:venera_plus/features/search/search.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/log.dart';

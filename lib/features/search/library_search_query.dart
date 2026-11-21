@@ -1,4 +1,5 @@
-import 'package:venera_plus/features/comic_source/models.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart'
+    show comicAuthorNamespaces, isAuthorNamespace;
 
 const _tagNamespaces = {
   'tag',
