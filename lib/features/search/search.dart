@@ -3,3 +3,4 @@ export 'search_filter.dart';
 export 'search_page.dart';
 export 'search_result_page.dart';
 export 'search_shortcuts.dart';
+export 'search_targets.dart';

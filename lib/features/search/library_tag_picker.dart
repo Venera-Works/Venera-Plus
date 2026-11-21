@@ -1,9 +1,62 @@
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/pop_up_widget.dart';
+import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/foundation/sqlite_connection.dart';
 import 'package:venera_plus/foundation/translations.dart';
 
 import 'library_search_query.dart';
+
+class LibrarySearchTagFilter extends StatefulWidget {
+  const LibrarySearchTagFilter({
+    super.key,
+    required this.loadTags,
+    required this.selected,
+    required this.onChanged,
+  });
+
+  final Future<Res<List<String>>> Function() loadTags;
+  final List<String> selected;
+  final ValueChanged<List<String>> onChanged;
+
+  @override
+  State<LibrarySearchTagFilter> createState() => _LibrarySearchTagFilterState();
+}
+
+class _LibrarySearchTagFilterState extends State<LibrarySearchTagFilter> {
+  bool _picking = false;
+
+  Future<void> _pickTags() async {
+    setState(() => _picking = true);
+    try {
+      final result = await widget.loadTags();
+      if (!mounted) return;
+      if (result.error) {
+        context.showMessage(message: result.errorMessage!.tl);
+        return;
+      }
+      final tags = await showLibraryTagPicker(
+        context,
+        availableTags: result.data,
+        selectedTags: widget.selected.toSet(),
+      );
+      if (mounted && tags != null) widget.onChanged(tags.toList());
+    } finally {
+      if (mounted) setState(() => _picking = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => ListTile(
+    leading: const Icon(Icons.filter_alt_outlined),
+    title: Text('Filter by tags'.tl),
+    subtitle: widget.selected.isEmpty
+        ? null
+        : Text(widget.selected.join(' · ')),
+    trailing: const Icon(Icons.arrow_right),
+    onTap: _picking ? null : _pickTags,
+  );
+}
 
 Future<Set<String>?> showLibraryTagPicker(
   BuildContext context, {

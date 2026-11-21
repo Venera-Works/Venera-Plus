@@ -814,6 +814,7 @@ class Settings with ChangeNotifier {
     'categories': [],
     'favorites': [],
     'searchSources': null,
+    'disabledLibrarySearchSources': <String>[],
     'searchShortcuts': [],
     'showFavoriteStatusOnTile': true,
     'showHistoryStatusOnTile': false,

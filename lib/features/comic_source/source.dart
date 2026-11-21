@@ -470,7 +470,18 @@ class SearchPageData {
 
   final SearchNextFunction? loadNext;
 
-  const SearchPageData(this.searchOptions, this.loadPage, this.loadNext);
+  /// 书库按完整标签筛选时，分页回调的第三个参数用于传递选中的标签。
+  final Future<Res<List<String>>> Function()? loadTags;
+
+  final Listenable? changeListenable;
+
+  const SearchPageData(
+    this.searchOptions,
+    this.loadPage,
+    this.loadNext, {
+    this.loadTags,
+    this.changeListenable,
+  });
 }
 
 class SearchOptions {

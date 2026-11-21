@@ -25,9 +25,11 @@ import 'package:venera_plus/foundation/search_history.dart';
 
 import 'package:venera_plus/features/comic_details/comic_details.dart';
 import 'aggregated_search_page.dart';
+import 'library_tag_picker.dart';
 import 'search_result_page.dart';
 import 'search_shortcuts.dart';
 import 'search_options.dart';
+import 'search_targets.dart';
 
 class SearchPage extends StatefulWidget {
   const SearchPage({super.key});
@@ -44,7 +46,7 @@ class _SearchPageState extends State<SearchPage> {
   String searchTarget = "";
 
   SearchPageData get currentSearchPageData =>
-      ComicSource.find(searchTarget)!.searchPageData!;
+      findSearchTarget(searchTarget)!.searchPageData;
 
   bool aggregatedSearch = false;
 
@@ -77,11 +79,15 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   Future<void> openHistory(SearchHistoryEntry entry) async {
+    if (searchSources.isEmpty) {
+      manageSearchSources();
+      return;
+    }
     if (entry.sourceKey == SearchHistoryEntry.aggregatedSourceKey) {
       await context.to(() => AggregatedSearchPage(keyword: entry.keyword));
     } else {
       var key = entry.sourceKey;
-      final unavailable = ComicSource.find(key)?.searchPageData == null;
+      final unavailable = !searchSources.contains(key);
       if (unavailable) {
         final replacement = await showDialog<String>(
           context: context,
@@ -90,9 +96,7 @@ class _SearchPageState extends State<SearchPage> {
               'This search source is unavailable. Choose another source.'.tl,
             ),
             children: [
-              for (final source in ComicSource.all().where(
-                (source) => source.searchPageData != null,
-              ))
+              for (final source in enabledSearchTargets())
                 SimpleDialogOption(
                   onPressed: () => Navigator.pop(context, source.key),
                   child: Text(source.name),
@@ -206,7 +210,7 @@ class _SearchPageState extends State<SearchPage> {
     }
     controller = SearchBarController(onSearch: search);
     appdata.settings.addListener(updateSearchSourcesIfNeeded);
-    ComicSourceManager().addListener(updateSearchSourcesIfNeeded);
+    ComicSourceManager().addListener(sourcesChanged);
     super.initState();
   }
 
@@ -214,26 +218,21 @@ class _SearchPageState extends State<SearchPage> {
   void dispose() {
     focusNode.dispose();
     appdata.settings.removeListener(updateSearchSourcesIfNeeded);
-    ComicSourceManager().removeListener(updateSearchSourcesIfNeeded);
+    ComicSourceManager().removeListener(sourcesChanged);
     super.dispose();
   }
 
   void findSearchSources() {
-    var all = ComicSource.all()
-        .where((e) => e.searchPageData != null)
-        .map((e) => e.key)
-        .toList();
-    final settings = (appdata.settings['searchSources'] as List?) ?? all;
-    var sources = <String>[];
-    for (var source in settings) {
-      if (all.contains(source)) {
-        sources.add(source);
-      }
-    }
-    searchSources = sources;
+    searchSources = [for (final target in enabledSearchTargets()) target.key];
     if (!searchSources.contains(searchTarget)) {
       searchTarget = searchSources.firstOrNull ?? "";
+      options = [];
     }
+  }
+
+  void sourcesChanged() {
+    findSearchSources();
+    update();
   }
 
   void updateSearchSourcesIfNeeded() {
@@ -253,7 +252,7 @@ class _SearchPageState extends State<SearchPage> {
     var msg = "No Search Sources".tl;
     msg += '\n';
     VoidCallback onTap;
-    if (ComicSource.isEmpty) {
+    if (allSearchTargets().isEmpty) {
       msg += "Please add some sources".tl;
       onTap = () {
         context.to(() => const ContentSourcesPage());
@@ -311,7 +310,7 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   Widget buildSearchTarget() {
-    var sources = searchSources.map((e) => ComicSource.find(e)!).toList();
+    final sources = enabledSearchTargets();
     return SliverToBoxAdapter(
       child: Container(
         width: double.infinity,
@@ -374,6 +373,18 @@ class _SearchPageState extends State<SearchPage> {
     }
 
     var children = <Widget>[];
+
+    final loadTags = currentSearchPageData.loadTags;
+    if (loadTags != null) {
+      return SliverToBoxAdapter(
+        child: LibrarySearchTagFilter(
+          key: ValueKey(searchTarget),
+          loadTags: loadTags,
+          selected: options,
+          onChanged: (tags) => setState(() => options = tags),
+        ),
+      );
+    }
 
     final searchOptions = currentSearchPageData.searchOptions ?? [];
     if (validatedSearchOptions(searchOptions, options) == null) {
@@ -739,7 +750,7 @@ class _SearchHistoryState extends State<_SearchHistory> {
   }
 
   Widget buildItem(String word, SearchHistoryEntry? entry) {
-    final source = entry == null ? null : ComicSource.find(entry.sourceKey);
+    final source = entry == null ? null : findSearchTarget(entry.sourceKey);
     final sourceName =
         entry?.sourceKey == SearchHistoryEntry.aggregatedSourceKey
         ? 'Aggregated Search'.tl
@@ -747,7 +758,7 @@ class _SearchHistoryState extends State<_SearchHistory> {
     final labels = entry == null
         ? <String>[]
         : searchOptionLabels(
-            source?.searchPageData?.searchOptions ?? [],
+            source?.searchPageData.searchOptions ?? [],
             entry.options,
             entry.sourceKey,
           );

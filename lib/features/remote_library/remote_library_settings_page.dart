@@ -49,6 +49,14 @@ void _updatePageVisibility(RemoteLibrary library, RemoteLibrary? previous) {
 }
 
 void _removePageVisibility(RemoteLibrary library) {
+  for (final setting in ['searchSources', 'disabledLibrarySearchSources']) {
+    final keys = appdata.settings[setting] as List?;
+    if (keys != null && keys.contains(library.sourceKey)) {
+      appdata.settings[setting] = keys
+          .where((key) => key != library.sourceKey)
+          .toList();
+    }
+  }
   if (_isPageTitleUsedElsewhere(library.name, library)) return;
   final pages = _explorePages()..removeWhere((item) => item == library.name);
   appdata.settings['explore_pages'] = pages;

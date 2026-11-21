@@ -6,6 +6,7 @@ import "package:venera_plus/components/appbar.dart";
 import "package:venera_plus/components/gesture.dart";
 import "package:venera_plus/components/scroll.dart";
 import "package:venera_plus/features/comic_widgets/comic_widgets.dart";
+import "package:venera_plus/features/local_comics/local_comics.dart";
 import "package:venera_plus/foundation/appdata.dart";
 import "package:venera_plus/foundation/context.dart";
 import "package:venera_plus/features/comic_source/comic_source.dart";
@@ -14,6 +15,7 @@ import "package:venera_plus/foundation/widget_utils.dart";
 import 'package:venera_plus/foundation/search_history.dart';
 
 import "search_result_page.dart";
+import "search_targets.dart";
 
 class AggregatedSearchPage extends StatefulWidget {
   const AggregatedSearchPage({
@@ -30,8 +32,6 @@ class AggregatedSearchPage extends StatefulWidget {
 }
 
 class _AggregatedSearchPageState extends State<AggregatedSearchPage> {
-  late final List<ComicSource> sources;
-
   late final SearchBarController controller;
 
   var _keyword = "";
@@ -55,18 +55,7 @@ class _AggregatedSearchPageState extends State<AggregatedSearchPage> {
 
   @override
   void initState() {
-    var all = ComicSource.all()
-        .where((e) => e.searchPageData != null)
-        .map((e) => e.key)
-        .toList();
-    final settings = (appdata.settings['searchSources'] as List?) ?? all;
-    var sources = <String>[];
-    for (var source in settings) {
-      if (all.contains(source)) {
-        sources.add(source);
-      }
-    }
-    this.sources = sources.map((e) => ComicSource.find(e)!).toList();
+    super.initState();
     _keyword = widget.keyword;
     _remember();
     controller = SearchBarController(
@@ -78,11 +67,28 @@ class _AggregatedSearchPageState extends State<AggregatedSearchPage> {
         _remember();
       },
     );
-    super.initState();
+    appdata.settings.addListener(_sourcesChanged);
+    ComicSourceManager().addListener(_sourcesChanged);
+  }
+
+  @override
+  void dispose() {
+    appdata.settings.removeListener(_sourcesChanged);
+    ComicSourceManager().removeListener(_sourcesChanged);
+    super.dispose();
+  }
+
+  void _sourcesChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   Widget build(BuildContext context) {
+    final sources = <SearchTarget>[
+      for (final target in enabledSearchTargets())
+        if (widget.onComicTap == null || target.key != localSearchTargetKey)
+          target,
+    ];
     final results = SmoothCustomScrollView(
       slivers: [
         SliverSearchBar(controller: controller),
@@ -116,7 +122,7 @@ class _SliverSearchResult extends StatefulWidget {
     super.key,
   });
 
-  final ComicSource source;
+  final SearchTarget source;
 
   final String keyword;
   final ValueChanged<Comic>? onComicTap;
@@ -138,38 +144,81 @@ class _SliverSearchResultState extends State<_SliverSearchResult>
   List<Comic>? comics;
 
   String? error;
+  Object? _activeRequest;
+  bool _refreshQueued = false;
 
   Future<void> load() async {
-    final data = widget.source.searchPageData!;
-    final options = (data.searchOptions ?? [])
-        .map((option) => option.defaultValue)
-        .toList();
+    if (_activeRequest != null) {
+      // 每个来源只保留一次待刷新，避免扫描期间重复查询同一书库。
+      _refreshQueued = true;
+      return;
+    }
+    final request = Object();
+    _activeRequest = request;
     try {
+      final data = widget.source.searchPageData;
+      final options = (data.searchOptions ?? [])
+          .map((option) => option.defaultValue)
+          .toList();
       final result = data.loadPage != null
           ? await data.loadPage!(widget.keyword, 1, options)
           : await data.loadNext!(widget.keyword, null, options);
-      if (!mounted) return;
+      if (!mounted || !identical(_activeRequest, request)) return;
       setState(() {
         isLoading = false;
-        if (result.error) {
-          error = result.errorMessage ?? 'Unknown error'.tl;
-        } else {
-          comics = result.data;
-        }
+        error = result.error ? result.errorMessage ?? 'Unknown error'.tl : null;
+        comics = result.error ? null : result.data;
       });
     } catch (exception) {
-      if (!mounted) return;
+      if (!mounted || !identical(_activeRequest, request)) return;
       setState(() {
         isLoading = false;
         error = '$exception';
       });
+    } finally {
+      if (mounted && identical(_activeRequest, request)) {
+        _activeRequest = null;
+        if (_refreshQueued) {
+          _refreshQueued = false;
+          _onContentChanged();
+        }
+      }
     }
   }
+
+  void _onContentChanged() => unawaited(load());
 
   @override
   void initState() {
     super.initState();
-    load();
+    widget.source.searchPageData.changeListenable?.addListener(
+      _onContentChanged,
+    );
+    _onContentChanged();
+  }
+
+  @override
+  void didUpdateWidget(covariant _SliverSearchResult oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final oldChanges = oldWidget.source.searchPageData.changeListenable;
+    final changes = widget.source.searchPageData.changeListenable;
+    if (identical(oldChanges, changes)) return;
+    oldChanges?.removeListener(_onContentChanged);
+    changes?.addListener(_onContentChanged);
+    _activeRequest = null;
+    _refreshQueued = false;
+    comics = null;
+    error = null;
+    isLoading = true;
+    _onContentChanged();
+  }
+
+  @override
+  void dispose() {
+    widget.source.searchPageData.changeListenable?.removeListener(
+      _onContentChanged,
+    );
+    super.dispose();
   }
 
   Widget buildPlaceHolder() {
@@ -185,9 +234,14 @@ class _SliverSearchResultState extends State<_SliverSearchResult>
   }
 
   Widget buildComic(Comic c) {
+    final onComicTap = widget.onComicTap;
     return SimpleComicTile(
       comic: c,
-      onTap: widget.onComicTap == null ? null : () => widget.onComicTap!(c),
+      onTap: onComicTap != null
+          ? () => onComicTap(c)
+          : c is LocalComic
+          ? c.read
+          : null,
       withTitle: true,
     ).paddingLeft(_kLeftPadding).paddingBottom(2);
   }
@@ -198,6 +252,14 @@ class _SliverSearchResultState extends State<_SliverSearchResult>
       error = "Cloudflare verification required".tl;
     }
     super.build(context);
+    var visibleComics = comics;
+    if (visibleComics != null &&
+        widget.source.searchPageData.loadTags != null) {
+      final filter = comicKeywordFilter();
+      visibleComics = visibleComics
+          .where((comic) => matchComicKeyword(comic, filter: filter) == null)
+          .toList();
+    }
     return ClickInkWell(
       onTap: () {
         context.to(
@@ -242,7 +304,9 @@ class _SliverSearchResultState extends State<_SliverSearchResult>
                 ),
               ),
             )
-          else if (error != null || comics == null || comics!.isEmpty)
+          else if (error != null ||
+              visibleComics == null ||
+              visibleComics.isEmpty)
             SizedBox(
               height: _kComicHeight,
               child: Column(
@@ -269,7 +333,9 @@ class _SliverSearchResultState extends State<_SliverSearchResult>
               height: _kComicHeight,
               child: ListView(
                 scrollDirection: Axis.horizontal,
-                children: [for (var c in comics!) buildComic(c)],
+                children: [
+                  for (final comic in visibleComics) buildComic(comic),
+                ],
               ),
             ),
         ],

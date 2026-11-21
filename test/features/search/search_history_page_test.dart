@@ -7,6 +7,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/components/gesture.dart';
+import 'package:venera_plus/components/pop_up_widget.dart';
+import 'package:venera_plus/components/select.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/features/search/search.dart';
@@ -757,6 +759,150 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testSearchPage('主搜索按启用设置查询本地漫画、云端库和网站源', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(800, 900));
+    const websiteKey = 'website';
+    const cloudKey = 'cloud-library';
+    const localRecordKey = 'local-download';
+    const localName = 'Local Comics';
+    final requests = <(String, String, List<String>)>[];
+    SearchPageData data(String key, {bool isLibrary = false}) => SearchPageData(
+      isLibrary ? const [] : _options(),
+      (word, page, options) async {
+        requests.add((key, word, List.of(options)));
+        return Res(_comics(key, page, count: 1), subData: 1);
+      },
+      null,
+      loadTags: isLibrary ? () async => const Res(['Campus']) : null,
+    );
+
+    final previousDisabled = appdata.settings['disabledLibrarySearchSources'];
+    addTearDown(() async {
+      configureLocalLibrarySearch(null);
+      appdata.settings['disabledLibrarySearchSources'] = previousDisabled;
+      await tester.binding.setSurfaceSize(null);
+    });
+    install(websiteKey, data(websiteKey));
+    install(cloudKey, data(cloudKey, isLibrary: true));
+    configureLocalLibrarySearch(data(localRecordKey, isLibrary: true));
+    appdata.settings['searchSources'] = [websiteKey];
+    appdata.settings['disabledLibrarySearchSources'] = <String>[];
+
+    final searchSourcesPopup = find.ancestor(
+      of: find.text('Search Sources'),
+      matching: find.byType(PopUpWidgetScaffold),
+    );
+    Finder sourceChip(String name) => find.widgetWithText(OptionChip, name);
+    Finder sourceRow(String key) => find.descendant(
+      of: searchSourcesPopup,
+      matching: find.byKey(ValueKey(key)),
+    );
+
+    Future<void> settings() async {
+      await tester.tap(
+        find.descendant(
+          of: find.widgetWithText(ListTile, 'Search in'),
+          matching: find.byIcon(Icons.settings),
+        ),
+      );
+      await _frames(tester);
+    }
+
+    Future<void> search(String keyword) async {
+      requests.clear();
+      await tester.enterText(find.byType(TextField).first, keyword);
+      await tester.testTextInput.receiveAction(TextInputAction.search);
+      await _frames(tester);
+    }
+
+    Future<void> back() async {
+      App.rootNavigatorKey.currentState!.pop();
+      await tester.pumpAndSettle();
+      await tester.pump();
+    }
+
+    await mount(tester, const SearchPage());
+    expect(enabledSearchTargets().map((target) => target.key), [
+      websiteKey,
+      cloudKey,
+      localSearchTargetKey,
+    ]);
+    for (final (name, key) in [
+      (localName, localRecordKey),
+      (cloudKey, cloudKey),
+    ]) {
+      await tester.tap(sourceChip(name));
+      await _frames(tester);
+      await search('library query');
+      expect(find.text('$key page 1 comic 0'), findsOneWidget);
+      expect(requests.map((request) => request.$1), [key]);
+      await back();
+    }
+
+    await settings();
+    for (final key in [localSearchTargetKey, cloudKey]) {
+      await tester.tap(
+        find.descendant(
+          of: sourceRow(key),
+          matching: find.byIcon(Icons.delete_outline),
+        ),
+      );
+      await _frames(tester);
+    }
+    await back();
+    expect(sourceChip(localName), findsNothing);
+    expect(sourceChip(cloudKey), findsNothing);
+    expect(sourceChip(websiteKey), findsOneWidget);
+    expect(enabledSearchTargets().map((target) => target.key), [websiteKey]);
+
+    await tester.tap(sourceChip('Second'));
+    await search('ordered website');
+    expect(find.text('$websiteKey page 1 comic 0'), findsOneWidget);
+    expect(requests.single.$3, ['b']);
+    await back();
+    await tester.tap(
+      find.descendant(
+        of: find.widgetWithText(ListTile, 'Aggregated Search'),
+        matching: find.byType(Checkbox),
+      ),
+    );
+    await search('disabled libraries');
+    expect(find.byType(AggregatedSearchPage), findsOneWidget);
+    expect(requests.map((request) => request.$1), [websiteKey]);
+    expect(find.text('$localRecordKey page 1 comic 0'), findsNothing);
+    expect(find.text('$cloudKey page 1 comic 0'), findsNothing);
+    await back();
+
+    await settings();
+    await tester.tap(
+      find.descendant(of: searchSourcesPopup, matching: find.text('Add')),
+    );
+    await _frames(tester);
+    for (final key in [cloudKey, localSearchTargetKey]) {
+      await tester.tap(find.byKey(ValueKey(key)));
+      await _frames(tester);
+    }
+    await tester.tap(find.widgetWithText(FilledButton, 'Add'));
+    await _frames(tester);
+    await back();
+    expect(sourceChip(localName), findsOneWidget);
+    expect(sourceChip(cloudKey), findsOneWidget);
+    expect(enabledSearchTargets().map((target) => target.key), [
+      websiteKey,
+      cloudKey,
+      localSearchTargetKey,
+    ]);
+
+    await search('restored libraries');
+    expect(find.byType(AggregatedSearchPage), findsOneWidget);
+    expect(
+      requests.map((request) => request.$1),
+      unorderedEquals([websiteKey, cloudKey, localRecordKey]),
+    );
+    expect(find.text('$localRecordKey page 1 comic 0'), findsOneWidget);
+    expect(find.text('$cloudKey page 1 comic 0'), findsOneWidget);
+  });
 }
 
 List<SearchOptions> _options() => [

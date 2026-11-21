@@ -1077,6 +1077,53 @@ void main() {
     expect(ops.readPaths, isEmpty);
   });
 
+  test('云端源注册的搜索回调按关键词和精确标签查缓存', () async {
+    final search = RemoteLibrarySource.create().searchPageData!;
+    final loadPage = search.loadPage!;
+    final loadTags = search.loadTags!;
+    final cache = RemoteLibraryRepository.instance;
+    final key = RemoteLibraryConfig.fromSettings().cacheKey;
+
+    expect((await loadPage('夜游', 1, const [])).data, isEmpty);
+    expect((await loadTags()).data, isEmpty);
+    expect(await cache.hasDirectoryIndex(key), isFalse);
+    expect(ops.readPaths, isEmpty);
+
+    const books = {
+      'Book A': ComicMetaData(
+        title: '夜游记',
+        author: '林青',
+        tags: ['标签:悬疑', '校园'],
+      ),
+      'Book B': ComicMetaData(title: '夜游短篇', author: '林青', tags: ['轻悬疑', '校园']),
+      'Book C': ComicMetaData(title: '夜游前传', author: '林青', tags: ['悬疑']),
+    };
+    ops.dirs['/manga/'] = [
+      for (final id in books.keys)
+        RemoteLibraryEntry(name: id, isDirectory: true),
+    ];
+    for (final entry in books.entries) {
+      final path = '/manga/${entry.key}/';
+      ops.dirs[path] = const [
+        RemoteLibraryEntry(name: '001.jpg', isDirectory: false),
+        RemoteLibraryEntry(name: 'metadata.json', isDirectory: false),
+      ];
+      ops.textFiles['${path}metadata.json'] = jsonEncode(entry.value);
+    }
+    expect((await _synchronizeAndComplete()).success, isTrue);
+    ops.readPaths.clear();
+
+    final byKeyword = await loadPage('夜游', 1, const []);
+    expect(
+      byKeyword.data.map((comic) => comic.id),
+      unorderedEquals(books.keys),
+    );
+    final byTags = await loadPage('夜游', 1, const ['悬疑', '校园']);
+    expect(byTags.data.single.id, 'Book A');
+    expect((await loadTags()).data, unorderedEquals(['悬疑', '轻悬疑', '校园']));
+    expect(ops.readPaths, isEmpty);
+  });
+
   test(
     'incremental sync fingerprints child entries before refreshing',
     () async {

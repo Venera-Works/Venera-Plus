@@ -19,12 +19,14 @@ import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
+import 'package:venera_plus/features/search/search.dart';
 import 'package:venera_plus/features/app_update/app_update.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/features/remote_library/remote_library.dart';
 import 'package:venera_plus/foundation/image_provider/cached_image.dart';
 import 'package:venera_plus/foundation/js_engine.dart';
 import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/foundation/startup_timing.dart';
 import 'package:venera_plus/network/cookie_jar.dart';
 import 'package:venera_plus/network/proxy.dart';
@@ -380,6 +382,18 @@ Future<void> init({bool deferBackgroundTasks = false}) async {
     Log.error("init", "$e\n$s");
     rethrow;
   }
+  final local = LocalManager();
+  configureLocalLibrarySearch(
+    SearchPageData(
+      null,
+      (keyword, page, tags) =>
+          local.searchPage(page, keyword: keyword, tags: tags),
+      null,
+      loadTags: () async =>
+          Res(local.availableTags(LocalManager.allCategories)),
+      changeListenable: local,
+    ),
+  );
   configureAppExitPreparation(prepareReadingDataForExit);
   await _checkOldConfigs();
   CacheManager().setLimitSize(appdata.settings['cacheSize']);

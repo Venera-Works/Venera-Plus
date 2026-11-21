@@ -278,6 +278,47 @@ void main() {
         );
       });
 
+      test('分页标签查询保留跨页的同 ID 不同来源漫画', () async {
+        const secondType = ComicType(9002);
+        const tags = ['悬疑', '校园'];
+        for (final comic in [
+          for (var index = 0; index < 19; index++)
+            _localComic('book-$index', subtitle: '朝仓', tags: tags),
+          _localComic('shared', subtitle: '朝仓', tags: ['标签:悬疑', '校园']),
+          _localComic(
+            'shared',
+            comicType: secondType,
+            subtitle: '朝仓',
+            tags: [...tags, '短篇'],
+          ),
+          _localComic('partial-tag', subtitle: '朝仓', tags: ['轻悬疑', '校园']),
+          _localComic('missing-tag', subtitle: '朝仓', tags: ['悬疑']),
+          _localComic('another-author', subtitle: '相泽', tags: tags),
+        ]) {
+          await manager.add(comic);
+        }
+
+        final first = await manager.searchPage(1, keyword: '朝仓', tags: tags);
+        final second = await manager.searchPage(2, keyword: '朝仓', tags: tags);
+        expect(first.subData, 2);
+        expect(second.subData, 2);
+        expect(first.data, hasLength(20));
+        final lastOfFirstPage = first.data.last;
+        final firstOfSecondPage = second.data.single;
+        expect(
+          (lastOfFirstPage.id, lastOfFirstPage.comicType),
+          ('shared', _testComicType),
+        );
+        expect(
+          (firstOfSecondPage.id, firstOfSecondPage.comicType),
+          ('shared', secondType),
+        );
+
+        final narrowed = await manager.searchPage(2, tags: [...tags, '短篇']);
+        expect(narrowed.subData, 1);
+        expect(narrowed.data, isEmpty);
+      });
+
       test('重复刮削替换上次的 Bangumi 标签并保留导入元数据', () async {
         final comic = _localComic(
           'imported',

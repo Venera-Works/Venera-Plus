@@ -4,7 +4,9 @@ import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
+import 'package:venera_plus/features/search/search.dart';
 import 'package:venera_plus/features/settings/setting_components.dart';
+import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
@@ -47,19 +49,20 @@ class _BrowsingAndFavoritesSettingsState
           title: "Search Sources".tl,
           builder: setSearchSourcesWidget,
         ).toSliver(),
-        SelectSetting(
-          title: "Default Search Target".tl,
-          settingKey: "defaultSearchTarget",
-          optionTranslation: {
-            '_aggregated_': "Aggregated".tl,
-            ...(() {
-              var map = <String, String>{};
-              for (var c in ComicSource.all()) {
-                map[c.key] = c.name;
-              }
-              return map;
-            }()),
-          },
+        ListenableBuilder(
+          listenable: Listenable.merge([
+            appdata.settings,
+            ComicSourceManager(),
+          ]),
+          builder: (context, _) => SelectSetting(
+            title: "Default Search Target".tl,
+            settingKey: "defaultSearchTarget",
+            optionTranslation: {
+              '_aggregated_': "Aggregated".tl,
+              for (final target in enabledSearchTargets())
+                target.key: target.name,
+            },
+          ),
         ).toSliver(),
         SelectSetting(
           title: "Auto Language Filters".tl,
@@ -182,15 +185,12 @@ Widget setFavoritesPagesWidget() {
 }
 
 Widget setSearchSourcesWidget() {
-  var pages = <String, String>{};
-  for (var c in ComicSource.all()) {
-    if (c.searchPageData != null) {
-      pages[c.key] = c.name;
-    }
-  }
+  final targets = allSearchTargets();
   return MultiPagesFilter(
     title: "Search Sources".tl,
     settingsIndex: "searchSources",
-    pages: pages,
+    pages: {for (final target in targets) target.key: target.name},
+    initialKeys: searchSourceOrder(targets),
+    onSelectionChanged: (keys) => saveLibrarySearchSelection(targets, keys),
   );
 }

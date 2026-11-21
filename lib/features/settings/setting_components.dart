@@ -567,6 +567,8 @@ class MultiPagesFilter extends StatefulWidget {
     required this.title,
     required this.settingsIndex,
     required this.pages,
+    this.initialKeys,
+    this.onSelectionChanged,
   });
 
   final String title;
@@ -575,6 +577,8 @@ class MultiPagesFilter extends StatefulWidget {
 
   // key - name
   final Map<String, String> pages;
+  final List<String>? initialKeys;
+  final ValueChanged<List<String>>? onSelectionChanged;
 
   @override
   State<MultiPagesFilter> createState() => _MultiPagesFilterState();
@@ -587,10 +591,9 @@ class _MultiPagesFilterState extends State<MultiPagesFilter> {
   @override
   void initState() {
     keys = List<String>.from(
-      appdata.settings[widget.settingsIndex] ??
-          (widget.settingsIndex == 'searchSources'
-              ? widget.pages.keys
-              : const <String>[]),
+      widget.initialKeys ??
+          appdata.settings[widget.settingsIndex] ??
+          const <String>[],
     );
     keys.remove("");
     _initialKeys = List<String>.of(keys);
@@ -652,7 +655,7 @@ class _MultiPagesFilterState extends State<MultiPagesFilter> {
     return PopUpWidgetScaffold(
       title: widget.title,
       tailing: [
-        if (keys.length < widget.pages.length)
+        if (widget.pages.keys.any((key) => !keys.contains(key)))
           TextButton.icon(
             style: actionButtonStyle,
             label: Text("Add".tl),
@@ -766,6 +769,7 @@ class _MultiPagesFilterState extends State<MultiPagesFilter> {
 
   void updateSetting() {
     if (listEquals(keys, _initialKeys)) return;
+    widget.onSelectionChanged?.call(keys);
     appdata.settings[widget.settingsIndex] = keys;
     appdata.saveData();
   }

@@ -491,10 +491,14 @@ class RemoteLibraryEngine {
   Future<Res<bool>> synchronize({bool force = false, bool automatic = false}) =>
       _scanner.synchronize(force: force, automatic: automatic);
 
-  Future<String?> _directoryIndexError(RemoteLibraryConfig config) async {
-    final hasIndex = await _cache.hasDirectoryIndex(config.cacheKey);
+  Future<String?> _directoryIndexError(
+    RemoteLibraryConfig config, {
+    required bool initializeIndex,
+  }) async {
+    final shouldInitialize =
+        initializeIndex && !await _cache.hasDirectoryIndex(config.cacheKey);
     _ensureActive();
-    if (hasIndex) return null;
+    if (!shouldInitialize) return null;
     return (await _scanner.start().indexReady).errorMessage;
   }
 
@@ -503,6 +507,7 @@ class RemoteLibraryEngine {
     String keyword = '',
     Iterable<String> tags = const [],
     bool showAuthor = false,
+    bool initializeIndex = true,
   }) async {
     final config = _config;
     if (!config.isValid) {
@@ -510,7 +515,10 @@ class RemoteLibraryEngine {
     }
     try {
       if (page < 1) return const Res([], subData: 1);
-      final error = await _directoryIndexError(config);
+      final error = await _directoryIndexError(
+        config,
+        initializeIndex: initializeIndex,
+      );
       if (error != null) return Res.error(error);
       final (count: count, rows: rows) = await _cache.pageWithCount(
         config.cacheKey,
@@ -540,13 +548,16 @@ class RemoteLibraryEngine {
     }
   }
 
-  Future<Res<List<String>>> availableTags() async {
+  Future<Res<List<String>>> availableTags({bool initializeIndex = true}) async {
     final config = _config;
     if (!config.isValid) {
       return const Res.error('Invalid remote comic library configuration');
     }
     try {
-      final error = await _directoryIndexError(config);
+      final error = await _directoryIndexError(
+        config,
+        initializeIndex: initializeIndex,
+      );
       if (error != null) return Res.error(error);
       return Res(
         await _cache.availableTags(
@@ -584,7 +595,22 @@ class RemoteLibraryEngine {
           },
         ),
       ],
-      null,
+      _config.isValid
+          ? SearchPageData(
+              null,
+              // 全局及聚合搜索使用已有索引，保留书库浏览的首次扫描入口。
+              (keyword, page, options) => loadComics(
+                page,
+                keyword: keyword,
+                tags: options,
+                showAuthor: true,
+                initializeIndex: false,
+              ),
+              null,
+              loadTags: () => availableTags(initializeIndex: false),
+              changeListenable: contentVersion,
+            )
+          : null,
       null,
       loadComicInfo,
       null,

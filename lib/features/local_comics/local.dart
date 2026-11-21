@@ -12,6 +12,7 @@ import 'package:venera_plus/features/comic_storage/comic_storage.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/foundation/sqlite_connection.dart';
 import 'package:venera_plus/features/local_comics/download.dart';
 import 'package:venera_plus/features/reader/reader.dart';
@@ -212,6 +213,7 @@ typedef LocalComicCategory = ({int id, String name});
 class LocalManager with ChangeNotifier {
   static const allCategories = -1;
   static const uncategorized = 0;
+  static const _searchPageSize = 20;
 
   static LocalManager? _instance;
 
@@ -717,13 +719,7 @@ class LocalManager with ChangeNotifier {
     Iterable<String> tags = const [],
   }) {
     final category = _categoryFilter(categoryId);
-    final filter = librarySearchFilter(
-      titleColumn: 'title',
-      authorColumn: 'subtitle',
-      tagsColumn: 'tags',
-      keyword: keyword,
-      tags: tags,
-    );
+    final filter = _searchFilter(keyword, tags);
     final res = _db.select(
       '''
       SELECT * FROM comics
@@ -736,6 +732,49 @@ class LocalManager with ChangeNotifier {
     );
     return res.map((row) => LocalComic.fromRow(row)).toList();
   }
+
+  Future<Res<List<LocalComic>>> searchPage(
+    int page, {
+    String keyword = '',
+    Iterable<String> tags = const [],
+  }) async {
+    if (page < 1) return const Res([], subData: 1);
+
+    final filter = _searchFilter(keyword, tags);
+    final countRow = _db
+        .select(
+          'SELECT COUNT(*) FROM comics WHERE 1${filter.sql}',
+          filter.parameters,
+        )
+        .single;
+    final count = countRow[0] as int;
+    final maxPage = count == 0
+        ? 1
+        : (count + _searchPageSize - 1) ~/ _searchPageSize;
+    if (page > maxPage) return Res([], subData: maxPage);
+
+    final rows = _db.select(
+      '''
+      SELECT * FROM comics
+      WHERE 1${filter.sql}
+      ORDER BY created_at DESC, id, comic_type
+      LIMIT ? OFFSET ?;
+      ''',
+      [...filter.parameters, _searchPageSize, (page - 1) * _searchPageSize],
+    );
+    return Res(rows.map(LocalComic.fromRow).toList(), subData: maxPage);
+  }
+
+  ({String sql, List<Object?> parameters}) _searchFilter(
+    String keyword,
+    Iterable<String> tags,
+  ) => librarySearchFilter(
+    titleColumn: 'title',
+    authorColumn: 'subtitle',
+    tagsColumn: 'tags',
+    keyword: keyword,
+    tags: tags,
+  );
 
   List<String> availableTags(int categoryId) {
     final category = _categoryFilter(categoryId);

@@ -5,6 +5,7 @@ import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/select.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
+import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/context.dart';
@@ -15,9 +16,11 @@ import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 import 'package:venera_plus/foundation/search_history.dart';
 
+import 'library_tag_picker.dart';
 import 'search_filter.dart';
 import 'search_page.dart';
 import 'search_options.dart';
+import 'search_targets.dart';
 
 class SearchResultPage extends StatefulWidget {
   const SearchResultPage({
@@ -52,8 +55,20 @@ class _SearchResultPageState extends State<SearchResultPage> {
   Timer? _historyTimer;
   SearchHistoryEntry? _pendingHistory;
   GlobalKey<ComicListState> _listKey = GlobalKey<ComicListState>();
+  Listenable? _contentChanges;
 
   OverlayEntry? get suggestionOverlay => suggestionsController.entry;
+
+  SearchTarget? get _target =>
+      widget.onComicTap != null && sourceKey == localSearchTargetKey
+      ? null
+      : findSearchTarget(sourceKey);
+
+  List<SearchTarget> get _selectableTargets => [
+    for (final target in enabledSearchTargets())
+      if (widget.onComicTap == null || target.key != localSearchTargetKey)
+        target,
+  ];
 
   void _save(SearchHistoryEntry entry) {
     unawaited(
@@ -77,12 +92,12 @@ class _SearchResultPageState extends State<SearchResultPage> {
 
   SearchHistoryEntry? _entry() {
     if (text.trim().isEmpty) return null;
-    final source = ComicSource.find(sourceKey);
-    if (source?.searchPageData == null) return null;
+    final source = _target;
+    if (source == null) return null;
     return SearchHistoryEntry(
       keyword: text,
       sourceKey: sourceKey,
-      sourceName: source!.name,
+      sourceName: source.name,
       options: options,
       page: _initialPage,
     );
@@ -146,15 +161,34 @@ class _SearchResultPageState extends State<SearchResultPage> {
     _revision++;
     _flushHistory();
     ComicSourceManager().removeListener(_sourcesChanged);
+    _contentChanges?.removeListener(_reloadContent);
     Future.microtask(suggestionsController.remove);
     super.dispose();
   }
 
   void _sourcesChanged() {
-    if (ComicSource.find(sourceKey)?.searchPageData == null) {
+    final target = _target;
+    final changed = _listenForContentChanges(target?.searchPageData);
+    if (target == null || changed) {
       _listKey.currentState?.cancelPendingLoads();
+      _listKey = GlobalKey<ComicListState>();
+      _revision++;
+      suggestionsController.remove();
     }
     if (mounted) setState(() {});
+  }
+
+  bool _listenForContentChanges(SearchPageData? data) {
+    final next = data?.changeListenable;
+    if (identical(next, _contentChanges)) return false;
+    _contentChanges?.removeListener(_reloadContent);
+    _contentChanges = next;
+    next?.addListener(_reloadContent);
+    return true;
+  }
+
+  void _reloadContent() {
+    unawaited(_listKey.currentState?.reload(queueIfLoading: true));
   }
 
   String _applyConfiguredLanguageFilter(String value) =>
@@ -190,13 +224,14 @@ class _SearchResultPageState extends State<SearchResultPage> {
       });
     }
     suggestionsController = _SuggestionsController(controller, sourceKey);
+    _listenForContentChanges(_target?.searchPageData);
     ComicSourceManager().addListener(_sourcesChanged);
     _remember();
   }
 
   bool validateOptions() {
-    final data = ComicSource.find(sourceKey)?.searchPageData;
-    if (data == null) return false;
+    final data = _target?.searchPageData;
+    if (data == null || data.loadTags != null) return false;
     final definitions = data.searchOptions ?? [];
     final valid = validatedSearchOptions(definitions, options);
     options = valid ?? defaultSearchOptions(definitions);
@@ -205,8 +240,8 @@ class _SearchResultPageState extends State<SearchResultPage> {
 
   @override
   Widget build(BuildContext context) {
-    final source = ComicSource.find(sourceKey);
-    if (source?.searchPageData == null) {
+    final source = _target;
+    if (source == null) {
       return Scaffold(
         appBar: AppBar(title: Text(text)),
         body: Center(
@@ -231,14 +266,18 @@ class _SearchResultPageState extends State<SearchResultPage> {
     final selectedOptions = List<String>.unmodifiable(options);
     final entry = _entry();
     final revision = _revision;
-    final data = source!.searchPageData!;
+    final data = source.searchPageData;
+    final onComicTap = widget.onComicTap;
     return Scaffold(
       body: ComicList(
-        onTap: widget.onComicTap == null
-            ? null
-            : (comic, _) => widget.onComicTap!(comic),
+        onTap: onComicTap != null
+            ? (comic, _) => onComicTap(comic)
+            : source.key == localSearchTargetKey
+            ? (comic, _) => (comic as LocalComic).read()
+            : null,
         key: _listKey,
         initialPage: _initialPage,
+        preserveScrollPosition: data.changeListenable != null,
         onVisiblePageChanged: entry == null
             ? null
             : (page) => _visiblePage(entry, revision, page),
@@ -266,32 +305,36 @@ class _SearchResultPageState extends State<SearchResultPage> {
     icon: const Icon(Icons.tune),
     onPressed: () async {
       suggestionsController.remove();
-      final previousOptions = List<String>.of(options);
-      final previousSourceKey = sourceKey;
-      await showDialog<void>(
+      final hadSource = _target != null;
+      final selection = await showDialog<(String, List<String>)>(
         context: context,
         useRootNavigator: true,
         builder: (context) => _SearchSettingsDialog(state: this),
       );
-      if (!mounted) return;
-      if (!previousOptions.isEqualTo(options) ||
-          previousSourceKey != sourceKey) {
-        _listKey.currentState?.cancelPendingLoads();
+      if (!mounted || selection == null) return;
+      final (nextSourceKey, nextOptions) = selection;
+      if (sourceKey == nextSourceKey && options.isEqualTo(nextOptions)) return;
+      if (!_selectableTargets.any((target) => target.key == nextSourceKey)) {
+        return;
+      }
+
+      _listKey.currentState?.cancelPendingLoads();
+      _flushHistory();
+      setState(() {
         _listKey = GlobalKey<ComicListState>();
-        _flushHistory();
+        sourceKey = nextSourceKey;
+        options = nextOptions;
         text = _applyConfiguredLanguageFilter(
-          ComicSource.find(previousSourceKey)?.searchPageData == null
-              ? text
-              : controller.text,
+          hadSource ? controller.text : text,
         );
         controller.currentText = text;
         suggestionsController = _SuggestionsController(controller, sourceKey);
         validateOptions();
+        _listenForContentChanges(_target?.searchPageData);
         _initialPage = 1;
         _revision++;
-        _remember();
-        setState(() {});
-      }
+      });
+      _remember();
     },
   );
 }
@@ -526,23 +569,12 @@ class _SearchSettingsDialogState extends State<_SearchSettingsDialog> {
     super.initState();
   }
 
-  void onChanged() {
-    widget.state.sourceKey = searchTarget;
-    widget.state.options = options;
-  }
-
   @override
   Widget build(BuildContext context) {
-    var sources = ComicSource.all();
-    final enabled =
-        (appdata.settings['searchSources'] as List?) ??
-        sources
-            .where((source) => source.searchPageData != null)
-            .map((source) => source.key)
-            .toList();
-    sources.removeWhere(
-      (e) => e.searchPageData == null || !enabled.contains(e.key),
-    );
+    final sources = widget.state._selectableTargets;
+    final selected = sources
+        .where((target) => target.key == searchTarget)
+        .firstOrNull;
     return ContentDialog(
       title: "Settings".tl,
       content: Column(
@@ -561,38 +593,42 @@ class _SearchSettingsDialogState extends State<_SearchSettingsDialog> {
                 onTap: () {
                   setState(() {
                     searchTarget = e.key;
-                    options = [];
-                    final searchOptions =
-                        ComicSource.find(
-                          searchTarget,
-                        )!.searchPageData!.searchOptions ??
-                        <SearchOptions>[];
-                    options = defaultSearchOptions(searchOptions);
+                    options = defaultSearchOptions(
+                      e.searchPageData.searchOptions ?? [],
+                    );
                   });
                 },
               );
             }).toList(),
           ).fixWidth(double.infinity).paddingHorizontal(16),
-          buildSearchOptions(),
+          if (selected != null) buildSearchOptions(selected.searchPageData),
           const SizedBox(height: 24),
           FilledButton(
+            onPressed: selected == null
+                ? null
+                : () {
+                    Navigator.of(context).pop((searchTarget, options));
+                  },
             child: Text("Confirm".tl),
-            onPressed: () {
-              onChanged();
-              context.pop();
-            },
           ),
         ],
       ).fixWidth(double.infinity),
     );
   }
 
-  Widget buildSearchOptions() {
+  Widget buildSearchOptions(SearchPageData data) {
+    final loadTags = data.loadTags;
+    if (loadTags != null) {
+      return LibrarySearchTagFilter(
+        key: ValueKey(searchTarget),
+        loadTags: loadTags,
+        selected: options,
+        onChanged: (tags) => setState(() => options = tags),
+      );
+    }
     var children = <Widget>[];
 
-    final searchOptions =
-        ComicSource.find(searchTarget)?.searchPageData?.searchOptions ??
-        <SearchOptions>[];
+    final searchOptions = data.searchOptions ?? <SearchOptions>[];
     options =
         validatedSearchOptions(searchOptions, options) ??
         defaultSearchOptions(searchOptions);
