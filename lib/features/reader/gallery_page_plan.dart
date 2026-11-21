@@ -1,4 +1,6 @@
 import 'dart:collection';
+import 'dart:math' as math;
+import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 
@@ -23,6 +25,74 @@ enum GalleryImagePart {
   bool get isLeft => this == GalleryImagePart.left;
   bool get isRight => this == GalleryImagePart.right;
   bool get isFull => this == GalleryImagePart.full;
+}
+
+/// 按阅读顺序将两页模式的原图分组。范围从零开始，结束位置不包含在内。
+class GallerySpreadPlan {
+  GallerySpreadPlan({
+    required this.imageCount,
+    required this.singleCover,
+    required Set<int> wideSourceIndices,
+  }) {
+    for (var start = 0; start < imageCount;) {
+      final next = start + 1;
+      final canPair =
+          next < imageCount &&
+          !(singleCover && start == 0) &&
+          !wideSourceIndices.contains(start) &&
+          !wideSourceIndices.contains(next);
+      final end = canPair ? next + 1 : next;
+      _ranges.add((start, end));
+      start = end;
+    }
+  }
+
+  final int imageCount;
+  final bool singleCover;
+  final _ranges = <(int, int)>[];
+
+  int get pageCount => _ranges.length;
+
+  (int start, int end) range(int page) => _ranges[page - 1];
+
+  int pageForSourcePage(int sourcePage) {
+    if (pageCount == 0) return 1;
+    final target = sourcePage.clamp(1, imageCount);
+    var start = 0;
+    var end = _ranges.length;
+    while (start < end) {
+      final middle = (start + end) ~/ 2;
+      if (_ranges[middle].$2 < target) {
+        start = middle + 1;
+      } else {
+        end = middle;
+      }
+    }
+    return start + 1;
+  }
+
+  int firstSourcePage(int page) {
+    if (pageCount == 0) return 1;
+    if (page > pageCount) return imageCount;
+    return range(page.clamp(1, pageCount).toInt()).$1 + 1;
+  }
+}
+
+/// 让同一展开页内的图片等高、等比，且整体居中放进视口。
+(Size, Size) gallerySpreadSizes(Size viewport, Size? first, Size? second) {
+  final fallback = first ?? second ?? const Size(2, 3);
+  final firstPage = first ?? fallback;
+  final secondPage = second ?? fallback;
+  final firstRatio = firstPage.width / firstPage.height;
+  final secondRatio = secondPage.width / secondPage.height;
+  final height = math.min(
+    viewport.height,
+    viewport.width / (firstRatio + secondRatio),
+  );
+  return (
+    Size(height * firstRatio, height),
+    Size(height * secondRatio, height),
+  );
 }
 
 /// An immutable descriptor for a single visual page in the gallery reader.

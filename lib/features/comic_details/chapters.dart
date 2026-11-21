@@ -5,6 +5,7 @@ import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/gesture.dart';
 import 'package:venera_plus/components/layout.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/comic_widgets/chapter_order.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/context.dart';
@@ -33,6 +34,13 @@ class ComicChaptersView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: appdata.settings,
+      builder: (context, _) => _buildChapters(ChapterListOrder.current),
+    );
+  }
+
+  Widget _buildChapters(ChapterListOrder order) {
     if (!chapters.isGrouped && chapterGroups.isNotEmpty) {
       final groups = <String, Map<String, String>>{};
       final chapterIndices = <String, int>{};
@@ -51,6 +59,7 @@ class ComicChaptersView extends StatelessWidget {
       }
       return _GroupedComicChapters(
         chapters: ComicChapters.grouped(groups),
+        order: order,
         chapterIndices: chapterIndices,
         pageCounts: pageCounts,
         history: history,
@@ -71,12 +80,14 @@ class ComicChaptersView extends StatelessWidget {
     return chapters.isGrouped
         ? _GroupedComicChapters(
             chapters: chapters,
+            order: order,
             pageCounts: pageCounts,
             history: history,
             readChapter: readChapter,
           )
         : _NormalComicChapters(
             chapters: chapters,
+            order: order,
             pageCounts: pageCounts,
             history: history,
             readChapter: readChapter,
@@ -87,12 +98,14 @@ class ComicChaptersView extends StatelessWidget {
 class _NormalComicChapters extends StatefulWidget {
   const _NormalComicChapters({
     required this.chapters,
+    required this.order,
     required this.pageCounts,
     this.history,
     required this.readChapter,
   });
 
   final ComicChapters chapters;
+  final ChapterListOrder order;
 
   final Map<String, int> pageCounts;
 
@@ -105,39 +118,12 @@ class _NormalComicChapters extends StatefulWidget {
 }
 
 class _NormalComicChaptersState extends State<_NormalComicChapters> {
-  late bool reverse;
-
   bool showAll = false;
-
-  late History? history;
-
-  @override
-  void initState() {
-    super.initState();
-    reverse = appdata.settings["reverseChapterOrder"] ?? false;
-    history = widget.history;
-  }
-
-  @override
-  void didUpdateWidget(covariant _NormalComicChapters oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    setState(() {
-      history = widget.history;
-    });
-  }
-
-  void setReverse(bool value) {
-    if (reverse == value) return;
-    setState(() {
-      reverse = value;
-    });
-    appdata.settings["reverseChapterOrder"] = value;
-    appdata.saveData();
-  }
 
   @override
   Widget build(BuildContext context) {
     final chapters = widget.chapters;
+    final entries = widget.order.entries(chapters.allChapters);
     return SliverLayoutBuilder(
       builder: (context, constrains) {
         int length = chapters.length;
@@ -159,20 +145,16 @@ class _NormalComicChaptersState extends State<_NormalComicChapters> {
             SliverToBoxAdapter(
               child: ListTile(
                 title: Text("Chapters".tl),
-                trailing: _ChapterOrderSegment(
-                  reverse: reverse,
-                  onChanged: setReverse,
-                ),
+                trailing: const ChapterOrderButton(),
               ),
             ),
             SliverGrid(
               delegate: SliverChildBuilderDelegate((context, i) {
-                if (reverse) {
-                  i = chapters.length - i - 1;
-                }
-                var key = chapters.ids.elementAt(i);
-                var value = chapters[key]!;
-                bool visited = (history?.readEpisode ?? {}).contains(i + 1);
+                final (index, entry) = entries[i];
+                final chapter = index + 1;
+                final visited =
+                    widget.history?.readEpisode.contains(chapter.toString()) ??
+                    false;
                 return Padding(
                   padding: const EdgeInsets.fromLTRB(4, 4, 4, 4),
                   child: Material(
@@ -181,14 +163,14 @@ class _NormalComicChaptersState extends State<_NormalComicChapters> {
                     child: ClickInkWell(
                       onTap: widget.readChapter == null
                           ? null
-                          : () => widget.readChapter!(i + 1, null),
+                          : () => widget.readChapter!(chapter, null),
                       borderRadius: BorderRadius.circular(16),
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 8),
                         child: Center(
                           child: _ChapterLabel(
-                            title: value,
-                            pageCount: widget.pageCounts[key],
+                            title: entry.value,
+                            pageCount: widget.pageCounts[entry.key],
                             visited: visited,
                           ),
                         ),
@@ -232,6 +214,7 @@ class _NormalComicChaptersState extends State<_NormalComicChapters> {
 class _GroupedComicChapters extends StatefulWidget {
   const _GroupedComicChapters({
     required this.chapters,
+    required this.order,
     required this.pageCounts,
     this.initialGroup,
     this.history,
@@ -242,6 +225,7 @@ class _GroupedComicChapters extends StatefulWidget {
   final int? initialGroup;
 
   final ComicChapters chapters;
+  final ChapterListOrder order;
 
   final Map<String, int> pageCounts;
   final Map<String, int>? chapterIndices;
@@ -255,8 +239,6 @@ class _GroupedComicChapters extends StatefulWidget {
 
 class _GroupedComicChaptersState extends State<_GroupedComicChapters>
     with TickerProviderStateMixin {
-  late bool reverse;
-
   bool showAll = false;
 
   late History? history;
@@ -268,7 +250,6 @@ class _GroupedComicChaptersState extends State<_GroupedComicChapters>
   @override
   void initState() {
     super.initState();
-    reverse = appdata.settings["reverseChapterOrder"] ?? false;
     history = widget.history;
     index = ((widget.initialGroup ?? history?.group ?? 1) - 1).clamp(
       0,
@@ -306,15 +287,6 @@ class _GroupedComicChaptersState extends State<_GroupedComicChapters>
     }
   }
 
-  void setReverse(bool value) {
-    if (reverse == value) return;
-    setState(() {
-      reverse = value;
-    });
-    appdata.settings["reverseChapterOrder"] = value;
-    appdata.saveData();
-  }
-
   @override
   void dispose() {
     tabController.removeListener(onTabChange);
@@ -328,9 +300,10 @@ class _GroupedComicChaptersState extends State<_GroupedComicChapters>
     if (chapters.groupCount == 0) {
       return const SliverToBoxAdapter(child: SizedBox.shrink());
     }
+    final group = chapters.getGroupByIndex(index);
+    final entries = widget.order.entries(group);
     return SliverLayoutBuilder(
       builder: (context, constrains) {
-        var group = chapters.getGroupByIndex(index);
         int length = group.length;
         bool canShowAll = showAll;
         if (!showAll) {
@@ -350,10 +323,7 @@ class _GroupedComicChaptersState extends State<_GroupedComicChapters>
             SliverToBoxAdapter(
               child: ListTile(
                 title: Text("Chapters".tl),
-                trailing: _ChapterOrderSegment(
-                  reverse: reverse,
-                  onChanged: setReverse,
-                ),
+                trailing: const ChapterOrderButton(),
               ),
             ),
             SliverToBoxAdapter(
@@ -366,16 +336,13 @@ class _GroupedComicChaptersState extends State<_GroupedComicChapters>
             ),
             SliverPadding(padding: const EdgeInsets.only(top: 8)),
             SliverGrid(
-              delegate: SliverChildBuilderDelegate((context, i) {
-                if (reverse) {
-                  i = group.length - i - 1;
-                }
-                var key = group.keys.elementAt(i);
-                var value = group[key]!;
+              delegate: SliverChildBuilderDelegate((context, displayIndex) {
+                final (i, entry) = entries[displayIndex];
                 bool visited = false;
                 if (history != null) {
                   if (widget.chapterIndices != null) {
-                    final rawIndex = widget.chapterIndices![key]?.toString();
+                    final rawIndex = widget.chapterIndices![entry.key]
+                        ?.toString();
                     visited =
                         rawIndex != null &&
                         history!.readEpisode.contains(rawIndex);
@@ -409,8 +376,8 @@ class _GroupedComicChaptersState extends State<_GroupedComicChapters>
                         padding: const EdgeInsets.symmetric(horizontal: 8),
                         child: Center(
                           child: _ChapterLabel(
-                            title: value,
-                            pageCount: widget.pageCounts[key],
+                            title: entry.value,
+                            pageCount: widget.pageCounts[entry.key],
                             visited: visited,
                           ),
                         ),
@@ -506,37 +473,6 @@ class _ChapterLabel extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-class _ChapterOrderSegment extends StatelessWidget {
-  const _ChapterOrderSegment({required this.reverse, required this.onChanged});
-
-  final bool reverse;
-
-  final ValueChanged<bool> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Tooltip(
-      message: "Order".tl,
-      child: SegmentedButton<bool>(
-        selected: {reverse},
-        showSelectedIcon: false,
-        style: const ButtonStyle(
-          visualDensity: VisualDensity.compact,
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          padding: WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 10)),
-        ),
-        segments: [
-          ButtonSegment<bool>(value: false, label: Text("Ascending".tl)),
-          ButtonSegment<bool>(value: true, label: Text("Descending".tl)),
-        ],
-        onSelectionChanged: (selected) {
-          onChanged(selected.first);
-        },
-      ),
     );
   }
 }

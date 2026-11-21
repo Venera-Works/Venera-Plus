@@ -3,9 +3,11 @@ import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/gesture.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/comic_widgets/chapter_order.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/reader/reader_page.dart';
+import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/log.dart';
@@ -24,10 +26,9 @@ class ReaderChaptersView extends StatefulWidget {
 class ReaderChaptersViewState extends State<ReaderChaptersView>
     with SingleTickerProviderStateMixin {
   late final TabController _tabs;
-  final _scrollControllers = <String, ScrollController>{};
+  final _scrollControllers = <(String, ChapterListOrder), ScrollController>{};
   late List<ImageFavorite> _bookmarks;
   String? _selectedGroup;
-  bool desc = false;
   bool _openingDownload = false;
   int _activeTab = 0;
 
@@ -153,20 +154,19 @@ class ReaderChaptersViewState extends State<ReaderChaptersView>
             maintainSize: true,
             maintainAnimation: true,
             maintainState: true,
-            child: IconButton(
-              tooltip: desc ? 'Descending'.tl : 'Ascending'.tl,
-              onPressed: () => setState(() => desc = !desc),
-              icon: Icon(
-                desc ? Icons.arrow_downward : Icons.arrow_upward,
-                size: 18,
-              ),
-            ),
+            child: const ChapterOrderButton(compact: true),
           ),
         ],
       ),
       body: TabBarView(
         controller: _tabs,
-        children: [_buildChapters(), _buildBookmarks()],
+        children: [
+          ListenableBuilder(
+            listenable: appdata.settings,
+            builder: (context, _) => _buildChapters(ChapterListOrder.current),
+          ),
+          _buildBookmarks(),
+        ],
       ),
       floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
       floatingActionButton: canDownload && _activeTab == 0
@@ -185,14 +185,7 @@ class ReaderChaptersViewState extends State<ReaderChaptersView>
     );
   }
 
-  Widget _buildChapters() {
-    final all = chapters?.isGrouped == true
-        ? [
-            for (final group in chapters!.groups)
-              ...chapters!.getGroup(group).entries,
-          ]
-        : chapters?.allChapters.entries.toList() ??
-              <MapEntry<String, String>>[];
+  Widget _buildChapters(ChapterListOrder order) {
     var groupStart = 0;
     if (chapters?.isGrouped == true) {
       for (final group in chapters!.groups) {
@@ -200,12 +193,16 @@ class ReaderChaptersViewState extends State<ReaderChaptersView>
         groupStart += chapters!.getGroup(group).length;
       }
     }
-    final entries = chapters?.isGrouped == true && _selectedGroup != null
-        ? chapters!.getGroup(_selectedGroup!).entries.toList()
-        : all;
-    final groupKey = _selectedGroup ?? '';
+    final group = _selectedGroup;
+    final entries = order.entries(
+      chapters?.isGrouped == true && group != null
+          ? chapters!.getGroup(group)
+          : chapters?.allChapters ?? const {},
+    );
+    final groupKey = (group ?? '', order);
     final controller = _scrollControllers.putIfAbsent(groupKey, () {
-      final current = widget.reader.chapter - groupStart - 1;
+      final rawIndex = widget.reader.chapter - groupStart - 1;
+      final current = entries.indexWhere((entry) => entry.$1 == rawIndex);
       return ScrollController(
         initialScrollOffset: ((current - 1) * 48.0).clamp(0, double.infinity),
       );
@@ -260,12 +257,8 @@ class ReaderChaptersViewState extends State<ReaderChaptersView>
               else
                 SliverList(
                   delegate: SliverChildBuilderDelegate((context, index) {
-                    final entry =
-                        entries[desc ? entries.length - 1 - index : index];
-                    final chapter =
-                        groupStart +
-                        (desc ? entries.length - 1 - index : index) +
-                        1;
+                    final (rawIndex, entry) = entries[index];
+                    final chapter = groupStart + rawIndex + 1;
                     return _ChapterListTile(
                       title: entry.value,
                       isActive: widget.reader.chapter == chapter,

@@ -1,6 +1,7 @@
 import 'package:path/path.dart' as path;
 import 'package:venera_plus/foundation/file_system.dart';
 
+import 'chapter_title_sort.dart';
 import 'comic_file_rules.dart';
 
 class ComicFileSystemChapter {
@@ -100,8 +101,10 @@ class ComicFileSystemLayout {
       nameOf: (file) => file.name,
       includeCover: false,
     );
-    final directories = entries.whereType<Directory>().toList()
-      ..sort((a, b) => compareComicFileNames(a.name, b.name));
+    final directories = sortedChapterEntries(
+      entries.whereType<Directory>(),
+      titleOf: (directory) => directory.name,
+    );
     final chapters = <ComicFileSystemChapter>[];
     final nestedDirectories = <Directory>[];
     for (final chapterDirectory in directories) {

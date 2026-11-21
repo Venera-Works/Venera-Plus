@@ -78,7 +78,7 @@ Cover image is optional.
 If there is a file named `cover.[ext]` in the directory, it will be considered as the cover image.
 Otherwise, the first image will be considered as the cover image.
 
-The name of directory will be used as comic title. And the name of chapter directory will be used as chapter title.
+The comic directory supplies the title. When importing chapter folders from a local directory or a CBZ, the app orders them by the volume and chapter numbers in their names. For example, `第1话`, `02`, and `Chapter 3` appear in that sequence. Explicit chapter ranges in an archive’s `metadata.json` retain their listed order.
 
 ## Archive
 

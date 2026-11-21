@@ -18,6 +18,8 @@ import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/reader/chapter_completion.dart';
+import 'package:venera_plus/features/reader/comic_image.dart';
+import 'package:venera_plus/features/reader/gallery_page_plan.dart';
 import 'package:venera_plus/features/reader/gesture.dart';
 import 'package:venera_plus/features/reader/images.dart';
 import 'package:venera_plus/features/reader/reading_session.dart';
@@ -213,6 +215,8 @@ class ReaderState extends State<Reader>
   @override
   int get maxPage {
     if (images == null) return 1;
+    final spreadPlan = gallerySpreadPlan;
+    if (spreadPlan != null) return spreadPlan.pageCount;
     return !showSingleImageOnFirstPage()
         ? (images!.length / imagesPerPage).ceil()
         : 1 + ((images!.length - 1) / imagesPerPage).ceil();
@@ -886,7 +890,7 @@ class ReaderState extends State<Reader>
       totalPages: totalPages,
       chapter: chapter,
       maxChapter: maxChapter,
-      isGallerySplitEnabled: isSplitDualPageEnabled,
+      isGallerySplitEnabled: isSplitDualPageEnabled || usesGallerySpread,
       controller: imageViewController,
     )) {
       return;
@@ -996,7 +1000,12 @@ class ReaderState extends State<Reader>
         submittedCommandId != null &&
         _retainObservedProgressCommandIds.contains(submittedCommandId);
 
-    final sourcePage = sourceImagePageForCurrentReaderPage();
+    final sourcePage =
+        usesGallerySpread &&
+            page >= maxPage &&
+            imageViewController?.isCurrentSourceSizeResolved() == true
+        ? images!.length
+        : sourceImagePageForCurrentReaderPage();
     final chapterEntry = _readingChapters.elementAtOrNull(chapter - 1);
     final localEpisode = chapterEntry?.ep ?? chapter;
     final position = ReadingPosition(
@@ -1094,12 +1103,7 @@ class ReaderState extends State<Reader>
         savedPosition?.page ??
         (images == null || images!.isEmpty
             ? pageValue
-            : sourceImagePageForReaderPage(
-                readerPage: page,
-                imageCount: images!.length,
-                imagesPerPage: imagesPerPage,
-                showSingleImageOnFirstPage: showSingleImageOnFirstPage(),
-              ));
+            : sourceImagePageForCurrentReaderPage());
     final position = savedPosition != null && chapterEntry == null
         ? savedPosition
         : ReadingPosition(
@@ -1160,9 +1164,14 @@ mixin ReaderImagePerPageHandler on ReaderLocation {
   late bool _lastOrientation;
 
   late bool _lastSingleImageOnFirstPage;
+  late bool _lastUsesGallerySpread;
   int? _sourceImageAnchor;
   int? _sourceAnchorChapter;
   int? _sourceAnchorReaderPage;
+  List<String>? _spreadImages;
+  int? _spreadChapter;
+  final _wideSpreadImages = <int>{};
+  GallerySpreadPlan? _spreadPlan;
 
   /// Track if we were on the chapter comments page before orientation change
   bool _wasOnCommentsPage = false;
@@ -1177,44 +1186,123 @@ mixin ReaderImagePerPageHandler on ReaderLocation {
   /// Get images list for calculating maxPage
   List<String>? get images;
 
+  bool get usesGallerySpread =>
+      imagesPerPage == 2 && mode.isGallery && !mode.isTopToBottom;
+
+  GallerySpreadPlan? get gallerySpreadPlan => usesGallerySpread
+      ? _spreadPlanForCover(showSingleImageOnFirstPage())
+      : null;
+
+  GallerySpreadPlan _spreadPlanForCover(bool singleCover) {
+    final currentImages = images;
+    if (!identical(_spreadImages, currentImages) || _spreadChapter != chapter) {
+      _spreadImages = currentImages;
+      _spreadChapter = chapter;
+      _wideSpreadImages.clear();
+      _spreadPlan = null;
+    }
+    final plan = _spreadPlan;
+    if (plan != null && plan.singleCover == singleCover) return plan;
+    return _spreadPlan = GallerySpreadPlan(
+      imageCount: currentImages?.length ?? 0,
+      singleCover: singleCover,
+      wideSourceIndices: _wideSpreadImages,
+    );
+  }
+
+  bool applyGallerySpreadImageSizes(Map<int, Size> sizes) {
+    final oldPlan = gallerySpreadPlan;
+    if (oldPlan == null) return false;
+    var changed = false;
+    for (final entry in sizes.entries) {
+      final size = entry.value;
+      final updated = shouldSplitWideImage(size)
+          ? _wideSpreadImages.add(entry.key)
+          : _wideSpreadImages.remove(entry.key);
+      changed = changed || updated;
+    }
+    if (!changed) return false;
+
+    final wasOnCommentsPage = isOnChapterCommentsPage;
+    final sourcePage = targetLastVisualPage
+        ? oldPlan.imageCount
+        : sourceImagePageForCurrentReaderPage();
+    _spreadPlan = null;
+    final plan = gallerySpreadPlan!;
+    if (wasOnCommentsPage) {
+      pageValue = plan.pageCount + 1;
+    } else {
+      pageValue = plan.pageForSourcePage(sourcePage);
+      _rememberSourceImage(sourcePage, pageValue);
+    }
+    return true;
+  }
+
+  void setGallerySpreadSourcePage(int sourcePage) {
+    final plan = gallerySpreadPlan;
+    if (plan == null || plan.imageCount == 0) return;
+    final target = sourcePage.clamp(1, plan.imageCount).toInt();
+    pageValue = plan.pageForSourcePage(target);
+    _rememberSourceImage(target, pageValue);
+  }
+
+  int get initialGallerySpreadSourcePage =>
+      _sourceAnchorChapter == chapter && _sourceAnchorReaderPage == pageValue
+      ? _sourceImageAnchor!
+      : 1;
+
   /// Preserve the open Reader's source image independently of synced resume.
-  int sourceImagePageForCurrentReaderPage({int? perPage, bool? singleImage}) {
+  int sourceImagePageForCurrentReaderPage() => _sourceImagePageForLayout(
+    imagesPerPage,
+    showSingleImageOnFirstPage(),
+    gallerySpreadPlan,
+  );
+
+  int _sourceImagePageForLayout(
+    int perPage,
+    bool singleImage,
+    GallerySpreadPlan? spreadPlan,
+  ) {
     final count = images?.length ?? 0;
     if (count == 0) return _sourceImageAnchor ?? page;
-    final perPageValue = perPage ?? imagesPerPage;
-    final singleImageValue = singleImage ?? showSingleImageOnFirstPage();
     final anchor = _sourceImageAnchor;
     if (anchor != null &&
         anchor <= count &&
         _sourceAnchorChapter == chapter &&
         _sourceAnchorReaderPage == page &&
-        readerPageForSourceImagePage(
-              sourceImagePage: anchor,
-              imageCount: count,
-              imagesPerPage: perPageValue,
-              showSingleImageOnFirstPage: singleImageValue,
-            ) ==
+        (spreadPlan?.pageForSourcePage(anchor) ??
+                readerPageForSourceImagePage(
+                  sourceImagePage: anchor,
+                  imageCount: count,
+                  imagesPerPage: perPage,
+                  showSingleImageOnFirstPage: singleImage,
+                )) ==
             page) {
       return anchor;
     }
-    final sourcePage = sourceImagePageForReaderPage(
-      readerPage: page,
-      imageCount: count,
-      imagesPerPage: perPageValue,
-      showSingleImageOnFirstPage: singleImageValue,
-    );
+    final sourcePage =
+        spreadPlan?.firstSourcePage(page) ??
+        sourceImagePageForReaderPage(
+          readerPage: page,
+          imageCount: count,
+          imagesPerPage: perPage,
+          showSingleImageOnFirstPage: singleImage,
+        );
+    _rememberSourceImage(sourcePage, page);
+    return sourcePage;
+  }
+
+  void _rememberSourceImage(int sourcePage, int readerPage) {
     _sourceImageAnchor = sourcePage;
     _sourceAnchorChapter = chapter;
-    _sourceAnchorReaderPage = page;
-    return sourcePage;
+    _sourceAnchorReaderPage = readerPage;
   }
 
   void initImagesPerPage(int initialPage) {
     _lastImagesPerPage = imagesPerPage;
     _lastOrientation = isPortrait;
     _lastSingleImageOnFirstPage = showSingleImageOnFirstPage();
-    _sourceImageAnchor = initialPage;
-    _sourceAnchorChapter = chapter;
+    _lastUsesGallerySpread = usesGallerySpread;
     _wasOnCommentsPage = false;
     if (imagesPerPage != 1) {
       pageValue = calculateInitialReaderPageForImagesPerPage(
@@ -1223,7 +1311,7 @@ mixin ReaderImagePerPageHandler on ReaderLocation {
         showSingleImageOnFirstPage: showSingleImageOnFirstPage(),
       );
     }
-    _sourceAnchorReaderPage = pageValue;
+    _rememberSourceImage(initialPage, pageValue);
   }
 
   bool showSingleImageOnFirstPage() => appdata.settings.getReaderSetting(
@@ -1265,26 +1353,32 @@ mixin ReaderImagePerPageHandler on ReaderLocation {
     int currentImagesPerPage = imagesPerPage;
     bool currentOrientation = isPortrait;
     final currentSingleImage = showSingleImageOnFirstPage();
+    final currentUsesSpread = usesGallerySpread;
 
     if (_lastImagesPerPage != currentImagesPerPage ||
         _lastOrientation != currentOrientation ||
-        _lastSingleImageOnFirstPage != currentSingleImage) {
+        _lastSingleImageOnFirstPage != currentSingleImage ||
+        _lastUsesGallerySpread != currentUsesSpread) {
       // Calculate old maxPage using old imagesPerPage to correctly determine
       // if we were on the comments page before the orientation change
-      int oldMaxPage = _calcMaxPage(
-        _lastImagesPerPage,
-        _lastSingleImageOnFirstPage,
-      );
-      _wasOnCommentsPage = page > oldMaxPage;
+      final oldSpreadPlan = _lastUsesGallerySpread
+          ? _spreadPlanForCover(_lastSingleImageOnFirstPage)
+          : null;
+      final oldMaxPage =
+          oldSpreadPlan?.pageCount ??
+          _calcMaxPage(_lastImagesPerPage, _lastSingleImageOnFirstPage);
+      _wasOnCommentsPage = images?.isNotEmpty == true && page > oldMaxPage;
 
       _adjustPageForImagesPerPageChange(
         _lastImagesPerPage,
         currentImagesPerPage,
         _lastSingleImageOnFirstPage,
+        oldSpreadPlan,
       );
       _lastImagesPerPage = currentImagesPerPage;
       _lastOrientation = currentOrientation;
       _lastSingleImageOnFirstPage = currentSingleImage;
+      _lastUsesGallerySpread = currentUsesSpread;
     }
   }
 
@@ -1293,32 +1387,35 @@ mixin ReaderImagePerPageHandler on ReaderLocation {
     int oldImagesPerPage,
     int newImagesPerPage,
     bool oldSingleImage,
+    GallerySpreadPlan? oldSpreadPlan,
   ) {
     final singleImage = showSingleImageOnFirstPage();
     final imageCount = images?.length ?? 0;
-    final sourceImagePage = sourceImagePageForCurrentReaderPage(
-      perPage: oldImagesPerPage,
-      singleImage: oldSingleImage,
+    final sourceImagePage = _sourceImagePageForLayout(
+      oldImagesPerPage,
+      oldSingleImage,
+      oldSpreadPlan,
     );
-    var newPage = imageCount > 0
-        ? readerPageForSourceImagePage(
-            sourceImagePage: sourceImagePage,
-            imageCount: imageCount,
-            imagesPerPage: newImagesPerPage,
-            showSingleImageOnFirstPage: singleImage,
-          )
-        : calculateInitialReaderPageForImagesPerPage(
-            initialPage: sourceImagePage,
-            imagesPerPage: newImagesPerPage,
-            showSingleImageOnFirstPage: singleImage,
-          );
+    final spreadPlan = gallerySpreadPlan;
+    var newPage =
+        spreadPlan?.pageForSourcePage(sourceImagePage) ??
+        (imageCount > 0
+            ? readerPageForSourceImagePage(
+                sourceImagePage: sourceImagePage,
+                imageCount: imageCount,
+                imagesPerPage: newImagesPerPage,
+                showSingleImageOnFirstPage: singleImage,
+              )
+            : calculateInitialReaderPageForImagesPerPage(
+                initialPage: sourceImagePage,
+                imagesPerPage: newImagesPerPage,
+                showSingleImageOnFirstPage: singleImage,
+              ));
 
     // Clamp to valid range (1 to maxPage)
     newPage = newPage.clamp(1, maxPage).toInt();
     if (!_wasOnCommentsPage) {
-      _sourceImageAnchor = sourceImagePage;
-      _sourceAnchorChapter = chapter;
-      _sourceAnchorReaderPage = newPage;
+      _rememberSourceImage(sourceImagePage, newPage);
     }
 
     // Gallery is keyed by these layout settings and opens its replacement
@@ -1646,6 +1743,11 @@ abstract mixin class ReaderLocation {
     ReadingNavigationSource source = ReadingNavigationSource.userForward,
   }) {
     final controller = imageViewController;
+    if (source == ReadingNavigationSource.userForward &&
+        controller is ContinuousModeState &&
+        controller.supportsViewportTurns) {
+      return controller.turnViewport(forward: true);
+    }
     if (controller != null) {
       final commandId = beginNavigationCommand(source, chapter: chapter);
       if (controller.toNextPage()) {
@@ -1661,6 +1763,11 @@ abstract mixin class ReaderLocation {
     ReadingNavigationSource source = ReadingNavigationSource.userBackward,
   }) {
     final controller = imageViewController;
+    if (source == ReadingNavigationSource.userBackward &&
+        controller is ContinuousModeState &&
+        controller.supportsViewportTurns) {
+      return controller.turnViewport(forward: false);
+    }
     if (controller != null) {
       final commandId = beginNavigationCommand(source, chapter: chapter);
       if (controller.toPrevPage()) {

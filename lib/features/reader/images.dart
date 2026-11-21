@@ -81,10 +81,9 @@ class ReaderImagesState extends State<ReaderImages> {
   /// Handle jumping to last page when jumpToLastPageOnLoad is true
   void _handleJumpToLastPage() {
     if (reader.jumpToLastPageOnLoad) {
-      if (reader.isSplitDualPageEnabled) {
-        reader.targetLastVisualPage = true;
-      } else {
-        reader.targetLastVisualPage = false;
+      if (!reader.mode.isContinuous || !reader.mode.isTopToBottom) {
+        reader.targetLastVisualPage =
+            reader.isSplitDualPageEnabled || reader.usesGallerySpread;
       }
       reader.pageValue = reader.maxPage;
       reader.jumpToLastPageOnLoad = false;
@@ -113,6 +112,9 @@ class ReaderImagesState extends State<ReaderImages> {
       if (!mounted) return;
       reader.images = images;
       _forceRefresh = false;
+      var spreadSourcePage = reader.usesGallerySpread
+          ? reader.initialGallerySpreadSourcePage
+          : null;
 
       if (!reader.localPageOrderChecked) {
         final history = reader.history;
@@ -129,12 +131,14 @@ class ReaderImagesState extends State<ReaderImages> {
                         savedPosition.group == currentChapter.group
                   : history.ep == currentChapter.ep &&
                         history.group == currentChapter.group);
-          final currentSourcePage = sourceImagePageForReaderPage(
-            readerPage: reader.pageValue,
-            imageCount: images.length,
-            imagesPerPage: reader.imagesPerPage,
-            showSingleImageOnFirstPage: reader.showSingleImageOnFirstPage(),
-          );
+          final currentSourcePage =
+              spreadSourcePage ??
+              sourceImagePageForReaderPage(
+                readerPage: reader.pageValue,
+                imageCount: images.length,
+                imagesPerPage: reader.imagesPerPage,
+                showSingleImageOnFirstPage: reader.showSingleImageOnFirstPage(),
+              );
           final savedSourcePage = savedPosition?.page ?? previousPage;
           final isLocalOrDownloaded =
               !fellBackOnline &&
@@ -153,13 +157,17 @@ class ReaderImagesState extends State<ReaderImages> {
               await LocalManager().migrateLegacyPageOrder(history, images);
               if (!mounted) return;
               if (isSameChapter && currentSourcePage == savedSourcePage) {
-                reader.pageValue = readerPageForSourceImagePage(
-                  sourceImagePage: history.page,
-                  imageCount: images.length,
-                  imagesPerPage: reader.imagesPerPage,
-                  showSingleImageOnFirstPage: reader
-                      .showSingleImageOnFirstPage(),
-                );
+                if (spreadSourcePage != null) {
+                  spreadSourcePage = history.page;
+                } else {
+                  reader.pageValue = readerPageForSourceImagePage(
+                    sourceImagePage: history.page,
+                    imageCount: images.length,
+                    imagesPerPage: reader.imagesPerPage,
+                    showSingleImageOnFirstPage: reader
+                        .showSingleImageOnFirstPage(),
+                  );
+                }
               }
             } catch (e, s) {
               Log.error(
@@ -173,6 +181,9 @@ class ReaderImagesState extends State<ReaderImages> {
         reader.localPageOrderChecked = true;
       }
 
+      if (spreadSourcePage != null) {
+        reader.setGallerySpreadSourcePage(spreadSourcePage);
+      }
       setState(() {
         reader.isLoading = false;
         inProgress = false;
@@ -310,6 +321,7 @@ class GalleryModeState extends State<_GalleryMode>
   bool get _isAnimatingVisualPage => _visualAnimationToken != null;
 
   String _controllerKeyForIndex(int index) {
+    if (index < 1 || index > totalVisualPages) return 'boundary:$index';
     return resolveControllerKey(
       controllerIndex: index,
       isSplitEnabled: isSplitEnabled,
@@ -340,15 +352,33 @@ class GalleryModeState extends State<_GalleryMode>
   final Set<int> _resolvedSourceIndices = <int>{};
   final _coalescer = GallerySizeUpdateCoalescer();
   bool _recoveryScheduled = false;
+  final _spreadSizes = <int, Size>{};
+  final _pendingSpreadSizes = <int, Size>{};
   bool isSourceSizeResolved(int sourceIndex) =>
       _resolvedSourceIndices.contains(sourceIndex);
 
   @override
   bool isReadyForChapter(int chapter) =>
-      mounted && _attachedChapter == chapter && _pagePlan != null;
+      mounted &&
+      _attachedChapter == chapter &&
+      (_pagePlan != null || reader.usesGallerySpread);
 
   @override
   bool isCurrentSourceSizeResolved() {
+    if (reader.usesGallerySpread) {
+      final current = controller.hasClients
+          ? controller.page?.round() ?? _currentControllerIndex
+          : _currentControllerIndex;
+      if (isChapterCommentsPage(current)) {
+        return _spreadSizes.containsKey(reader.images!.length - 1);
+      }
+      if (current < 1 || current > totalVisualImagePages) return false;
+      final (start, end) = getPageImagesRange(current);
+      for (var index = start; index < end; index++) {
+        if (!_spreadSizes.containsKey(index)) return false;
+      }
+      return true;
+    }
     if (!isSplitEnabled || _pagePlan == null) return true;
     final current = controller.hasClients && controller.page != null
         ? controller.page!.round()
@@ -460,11 +490,7 @@ class GalleryModeState extends State<_GalleryMode>
             true;
   }
 
-  int get totalImagePages {
-    return !reader.showSingleImageOnFirstPage()
-        ? (reader.images!.length / reader.imagesPerPage).ceil()
-        : 1 + ((reader.images!.length - 1) / reader.imagesPerPage).ceil();
-  }
+  int get totalImagePages => reader.maxPage;
 
   int get totalVisualImagePages => (isSplitEnabled && _pagePlan != null)
       ? _pagePlan!.displayPageCount
@@ -517,6 +543,9 @@ class GalleryModeState extends State<_GalleryMode>
   }
 
   int _computeInitialControllerIndex() {
+    if (reader.usesGallerySpread && reader.targetLastVisualPage) {
+      return totalVisualImagePages;
+    }
     if (!isSplitEnabled || _pagePlan == null) {
       return reader.page;
     }
@@ -561,6 +590,7 @@ class GalleryModeState extends State<_GalleryMode>
     if (_attachedChapter != null) return;
     // Image decode targets depend on MediaQuery, which cannot be read in initState.
     _initPagePlan();
+    if (reader.usesGallerySpread) _restoreCachedSpreadSizes();
     final initialPage = _computeInitialControllerIndex();
     _currentControllerIndex = initialPage;
     controller = PageController(initialPage: initialPage);
@@ -579,6 +609,130 @@ class GalleryModeState extends State<_GalleryMode>
     _endVisualPageAnimation();
     _pool.disposeAll();
     super.dispose();
+  }
+
+  void _restoreCachedSpreadSizes() {
+    final chapter = reader.chapter;
+    final target = _spreadTarget(context, MediaQuery.sizeOf(context));
+    for (var index = 0; index < reader.images!.length; index++) {
+      final image = _createImageProviderFromKey(
+        reader.images![index],
+        context,
+        index + 1,
+        target: target,
+      );
+      final size = ComicImage.getCachedSourceImageSize(image);
+      if (size != null) _pendingSpreadSizes[index] = size;
+    }
+    if (_pendingSpreadSizes.isNotEmpty) {
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        if (mounted && reader.chapter == chapter) _applyPendingSpreadSizes();
+      });
+    }
+  }
+
+  ComicImageLoadTarget _spreadTarget(BuildContext context, Size size) =>
+      ComicImageLoadTarget(
+        logicalWidth: size.width,
+        logicalHeight: size.height,
+        devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
+        fit: ComicImageTargetFit.contain,
+      );
+
+  ReaderImageProvider _galleryImageProvider(
+    int sourcePage,
+    BuildContext context,
+  ) {
+    if (!reader.usesGallerySpread) {
+      return _createImageProvider(sourcePage, context);
+    }
+    final viewport = MediaQuery.sizeOf(context);
+    final plan = reader.gallerySpreadPlan!;
+    final (start, end) = plan.range(plan.pageForSourcePage(sourcePage));
+    final first = _spreadSizes[start];
+    final second = _spreadSizes[start + 1];
+    final ComicImageLoadTarget target;
+    if (end - start == 2 && first != null && second != null) {
+      final (firstSlot, secondSlot) = gallerySpreadSizes(
+        viewport,
+        first,
+        second,
+      );
+      target = _spreadTarget(
+        context,
+        sourcePage == start + 1 ? firstSlot : secondSlot,
+      );
+    } else {
+      // 未确认宽高比前按单图加载，原图可能独占整屏。
+      target = _spreadTarget(context, viewport);
+    }
+    return _createImageProviderFromKey(
+      reader.images![sourcePage - 1],
+      context,
+      sourcePage,
+      target: target,
+    );
+  }
+
+  void _onSpreadSize(int index, Size size) {
+    if (!mounted ||
+        !reader.usesGallerySpread ||
+        _attachedChapter != reader.chapter) {
+      return;
+    }
+    // 后续解码可能使用适配后的图源目标，始终依据首次尺寸确定该章的排版。
+    if (_spreadSizes.containsKey(index) ||
+        _pendingSpreadSizes.containsKey(index)) {
+      return;
+    }
+    final schedule = _pendingSpreadSizes.isEmpty;
+    _pendingSpreadSizes[index] = size;
+    if (!schedule) return;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _applyPendingSpreadSizes();
+    });
+    SchedulerBinding.instance.ensureVisualUpdate();
+  }
+
+  void _applyPendingSpreadSizes() {
+    if (!reader.usesGallerySpread || _attachedChapter != reader.chapter) return;
+    if (controller.hasClients &&
+        controller.position.isScrollingNotifier.value) {
+      return;
+    }
+    final sizes = Map<int, Size>.of(_pendingSpreadSizes);
+    _pendingSpreadSizes.clear();
+    if (sizes.isEmpty) return;
+    _spreadSizes.addAll(sizes);
+    final changed = reader.applyGallerySpreadImageSizes(sizes);
+    if (reader.targetLastVisualPage &&
+        _spreadSizes.containsKey(reader.images!.length - 1)) {
+      reader.setGallerySpreadSourcePage(reader.images!.length);
+      reader.targetLastVisualPage = false;
+    }
+    if (changed) {
+      _endVisualPageAnimation();
+      reader.resetPageAnimation();
+      _currentControllerIndex = reader.page;
+      _lastVisibleStableIdentity = _visibleStableIdentityForIndex(reader.page);
+      if (reader.pendingNavigationPage != null) {
+        reader.setPendingNavigationPage(reader.page);
+      }
+      if (controller.hasClients && controller.page?.round() != reader.page) {
+        // 新分组可能多出数屏，以新页数挂载，避免旧页数触发跨章占位。
+        final previous = controller;
+        controller = PageController(initialPage: reader.page, keepPage: false);
+        SchedulerBinding.instance.addPostFrameCallback(
+          (_) => previous.dispose(),
+        );
+      }
+      context.readerScaffold.updatePage();
+    }
+    if (reader.page == reader.maxPage && isCurrentSourceSizeResolved()) {
+      reader.updateHistory();
+    }
+    reader.notifyChapterCompletedIfNeeded();
+    setState(() {});
   }
 
   void _onSourceImageSize(int sourceIndex, Size size) {
@@ -731,6 +885,8 @@ class GalleryModeState extends State<_GalleryMode>
 
   /// Get the range of images for the given page. [page] is 1-based.
   (int start, int end) getPageImagesRange(int page) {
+    final spreadPlan = reader.gallerySpreadPlan;
+    if (spreadPlan != null) return spreadPlan.range(page);
     var imagesPerPage = reader.imagesPerPage;
     if (reader.showSingleImageOnFirstPage()) {
       if (page == 1) {
@@ -777,7 +933,7 @@ class GalleryModeState extends State<_GalleryMode>
       sourcePages = [for (var i = start; i < end; i++) i + 1];
     }
     for (final sourcePage in sourcePages) {
-      _promoteReaderImage(_createImageProvider(sourcePage, context));
+      _promoteReaderImage(_galleryImageProvider(sourcePage, context));
     }
   }
 
@@ -823,9 +979,13 @@ class GalleryModeState extends State<_GalleryMode>
       sourcePages = [for (var i = start; i < end; i++) i + 1];
     }
     for (final sourcePage in sourcePages) {
+      final provider = _galleryImageProvider(sourcePage, context);
       yield _createReaderImagePreload(
-        _createImageProvider(sourcePage, context),
+        provider,
         context,
+        onImageSize: reader.usesGallerySpread
+            ? (size) => _onSpreadSize(sourcePage - 1, size)
+            : null,
       );
     }
   }
@@ -881,11 +1041,17 @@ class GalleryModeState extends State<_GalleryMode>
             if (commandId != null) reader.finishNavigationCommand(commandId);
             _isUserPaging = false;
             _userPagingCommandId = null;
+            if (_pendingSpreadSizes.isNotEmpty) {
+              SchedulerBinding.instance.addPostFrameCallback((_) {
+                if (mounted) _applyPendingSpreadSizes();
+              });
+            }
             _schedulePreload();
           }
           return false;
         },
         child: PhotoViewGallery.builder(
+          key: ValueKey(controller),
           backgroundDecoration: BoxDecoration(
             color: context.colorScheme.surface,
           ),
@@ -1097,6 +1263,10 @@ class GalleryModeState extends State<_GalleryMode>
       isRightToLeft: reader.mode == ReaderMode.galleryRightToLeft,
     );
 
+    if (reader.usesGallerySpread) {
+      return _buildSpreadImages(entries, zoomController);
+    }
+
     List<Widget> imageWidgets;
 
     if (entries.length == 2) {
@@ -1179,6 +1349,49 @@ class GalleryModeState extends State<_GalleryMode>
         : Row(children: imageWidgets);
   }
 
+  Widget _buildSpreadImages(
+    List<({String imageKey, int sourcePage})> entries,
+    PhotoViewController zoomController,
+  ) {
+    Widget imageForPage(int sourcePage) => ComicImage(
+      key: ValueKey(sourcePage),
+      showDimensions: reader.readerSetting('showImagePixelDimensions') == true,
+      zoomController: zoomController,
+      image: _galleryImageProvider(sourcePage, context),
+      onRetry: () => context
+          .findAncestorStateOfType<ReaderImagesState>()!
+          .retryImage(reader.chapter, sourcePage),
+      onSourceImageSize: (size) => _onSpreadSize(sourcePage - 1, size),
+      gaplessPlayback: true,
+      fit: BoxFit.contain,
+      onInit: (state) => imageStates.add(state),
+      onDispose: (state) => imageStates.remove(state),
+    );
+
+    if (entries.length == 1) {
+      return SizedBox.expand(child: imageForPage(entries.single.sourcePage));
+    }
+    final first = entries[0].sourcePage;
+    final second = entries[1].sourcePage;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final (firstSize, secondSize) = gallerySpreadSizes(
+          constraints.biggest,
+          _spreadSizes[first - 1],
+          _spreadSizes[second - 1],
+        );
+        return Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          textDirection: TextDirection.ltr,
+          children: [
+            SizedBox.fromSize(size: firstSize, child: imageForPage(first)),
+            SizedBox.fromSize(size: secondSize, child: imageForPage(second)),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   bool toNextPage() {
     return _moveVisualPage(1);
@@ -1192,6 +1405,7 @@ class GalleryModeState extends State<_GalleryMode>
 
   @override
   bool isAtLastVisualPartOfSource() {
+    if (reader.usesGallerySpread) return isCurrentSourceSizeResolved();
     if (!isSplitEnabled || _pagePlan == null) return true;
     if (!isCurrentSourceSizeResolved()) return false;
     final current = controller.hasClients && controller.page != null
@@ -1311,6 +1525,20 @@ class GalleryModeState extends State<_GalleryMode>
   @override
   void toVisualEnd() {
     _endVisualPageAnimation();
+    if (reader.usesGallerySpread) {
+      reader.targetLastVisualPage = !_spreadSizes.containsKey(
+        reader.images!.length - 1,
+      );
+      final end = totalVisualImagePages;
+      if (controller.hasClients) {
+        controller.jumpToPage(end);
+      } else {
+        _currentControllerIndex = end;
+      }
+      reader.setGallerySpreadSourcePage(reader.images!.length);
+      reader.setPage(reader.maxPage);
+      return;
+    }
     final result = resolveVisualEndTarget(
       isSplitEnabled: isSplitEnabled,
       plan: _pagePlan,
@@ -1574,6 +1802,7 @@ class ContinuousModeState extends State<_ContinuousMode>
   String? _userScrollCommandId;
   Timer? _userScrollEndTimer;
   late ReaderState reader;
+  late final bool _initiallyAtChapterEnd;
 
   var itemScrollController = ItemScrollController();
   var itemPositionsListener = ItemPositionsListener.create();
@@ -1581,6 +1810,9 @@ class ContinuousModeState extends State<_ContinuousMode>
   ScrollController? _scrollController;
 
   ScrollController get scrollController => _scrollController!;
+
+  double? _viewportTurnTarget;
+  Future<void>? _viewportTurnAnimation;
 
   var isCTRLPressed = false;
   static var _isMouseScrolling = false;
@@ -1639,7 +1871,11 @@ class ContinuousModeState extends State<_ContinuousMode>
     if (!_isUserScrolling) return;
     final commandId = _userScrollCommandId;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _userScrollCommandId != commandId) return;
+      if (!mounted ||
+          _userScrollCommandId != commandId ||
+          _viewportTurnTarget != null) {
+        return;
+      }
       if (_scrollController?.hasClients == true &&
           scrollController.position.isScrollingNotifier.value) {
         return;
@@ -1737,6 +1973,7 @@ class ContinuousModeState extends State<_ContinuousMode>
       reader.imageViewController == this;
 
   int _invalidateWaterfallRequests() {
+    _viewportTurnTarget = null;
     _waterfallRequestGeneration++;
     final idle = _waterfallScrollIdle;
     _waterfallScrollIdle = null;
@@ -2047,6 +2284,10 @@ class ContinuousModeState extends State<_ContinuousMode>
   @override
   void initState() {
     reader = context.reader;
+    _initiallyAtChapterEnd =
+        reader.mode.isTopToBottom &&
+        !crossChapter &&
+        reader.targetLastVisualPage;
     reader.targetLastVisualPage = false;
     reader.imageViewController = this;
     _initSegments();
@@ -2181,6 +2422,7 @@ class ContinuousModeState extends State<_ContinuousMode>
     if (HardwareKeyboard.instance.isShiftPressed) {
       return;
     }
+    _viewportTurnTarget = null;
     var currentLocation = scrollController.position.pixels;
     var old = _futurePosition;
     _futurePosition ??= currentLocation;
@@ -2367,6 +2609,7 @@ class ContinuousModeState extends State<_ContinuousMode>
   }
 
   bool onScaleUpdate([double? scale]) {
+    _viewportTurnTarget = null;
     if (prepareToNextChapter || prepareToPrevChapter) {
       setState(() {
         prepareToPrevChapter = false;
@@ -2391,10 +2634,14 @@ class ContinuousModeState extends State<_ContinuousMode>
       if (current != null) cacheImages(current);
     });
     Widget widget = ScrollablePositionedList.builder(
-      initialScrollIndex: reader.page,
+      initialScrollIndex: _initiallyAtChapterEnd
+          ? _flowImageCount + 1
+          : reader.page,
+      initialAlignment: _initiallyAtChapterEnd ? 1 : 0,
       itemScrollController: itemScrollController,
       itemPositionsListener: itemPositionsListener,
       scrollControllerCallback: (scrollController) {
+        _viewportTurnTarget = null;
         if (_scrollController != null) {
           _scrollController!.removeListener(onScroll);
         }
@@ -2556,6 +2803,7 @@ class ContinuousModeState extends State<_ContinuousMode>
         if (notification is ScrollStartNotification) {
           delayedSetIsScrolling(true);
           if (notification.dragDetails != null) {
+            _viewportTurnTarget = null;
             _beginUserScroll();
           }
         } else if (notification is ScrollEndNotification) {
@@ -2723,6 +2971,104 @@ class ContinuousModeState extends State<_ContinuousMode>
     return true;
   }
 
+  bool get supportsViewportTurns => reader.mode.isTopToBottom;
+
+  bool turnViewport({required bool forward}) {
+    if (reader.isLoading ||
+        !reader.canAcceptReaderPageChanges ||
+        reader.isPageAnimating ||
+        _isRestoringPrependedSegmentPosition ||
+        _isNavigatingWaterfallLocation ||
+        fingers > 0 ||
+        _scrollController?.hasClients != true) {
+      return true;
+    }
+    final position = scrollController.position;
+    if (!position.hasContentDimensions || position.viewportDimension <= 0) {
+      return true;
+    }
+
+    final min = position.minScrollExtent;
+    final max = position.maxScrollExtent;
+    final current = position.pixels.clamp(min, max);
+    final direction = forward ? 1.0 : -1.0;
+    final scale = (photoViewController.scale ?? 1.0).clamp(1.0, 2.5);
+    final distance = position.viewportDimension * 0.9;
+    final base = (_viewportTurnTarget ?? current).clamp(min, max);
+    final target = (base + direction * distance / scale).clamp(min, max);
+
+    if ((target - base).abs() <= 0.5) {
+      if (position.isScrollingNotifier.value || (base - current).abs() > 0.5) {
+        return true;
+      }
+      // 放大时，先走完列表到边界后仍能看到的内容，再切换章节。
+      final zoomOverflow = position.viewportDimension * (scale - 1) / 2;
+      final pan = photoViewController.position;
+      final remaining = zoomOverflow + direction * pan.dy;
+      if (remaining > 0.5) {
+        photoViewController.updateMultiple(
+          position: pan.translate(
+            0,
+            -direction * math.min(distance, remaining),
+          ),
+        );
+        return true;
+      }
+      for (final state in imageStates.whereType<ComicImageState>()) {
+        if (state.visibleInReader &&
+            state.autoReadingImageState == AutoReadingImageState.loading) {
+          return true;
+        }
+      }
+      if (crossChapter) {
+        if (forward) {
+          _ensureWaterfallImagesAfter(_flowImageCount);
+        } else {
+          _ensureWaterfallImagesBefore(1);
+        }
+        return true;
+      }
+      if (forward) {
+        return reader.toNextChapter(
+          source: ReadingNavigationSource.userForward,
+        );
+      }
+      final moved = reader.toPrevChapter(
+        toLastPage: true,
+        source: ReadingNavigationSource.userBackward,
+      );
+      if (moved) reader.targetLastVisualPage = true;
+      return moved;
+    }
+
+    reader.cancelPendingNavigation();
+    _beginUserScroll();
+    _futurePosition = null;
+    if (reader.enablePageAnimation(reader.cid, reader.type)) {
+      _viewportTurnTarget = target;
+      final animation = position.animateTo(
+        target,
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.ease,
+      );
+      _viewportTurnAnimation = animation;
+      unawaited(
+        animation.then((_) {
+          if (!mounted || !identical(_viewportTurnAnimation, animation)) return;
+          _viewportTurnAnimation = null;
+          if (_viewportTurnTarget == null) return;
+          _viewportTurnTarget = null;
+          _finishUserScrollAfterLayout();
+        }),
+      );
+    } else {
+      position.jumpTo(target);
+      _viewportTurnTarget = null;
+      _finishUserScrollAfterLayout();
+    }
+    return true;
+  }
+
   @override
   bool toNextPage() => false;
 
@@ -2820,6 +3166,7 @@ class ContinuousModeState extends State<_ContinuousMode>
       return AutoReadingStep.advanced;
     }
     _futurePosition = null;
+    _viewportTurnTarget = null;
     reader.beginNavigationCommand(
       ReadingNavigationSource.automatic,
       chapter: reader.chapter,
@@ -2845,6 +3192,16 @@ class ContinuousModeState extends State<_ContinuousMode>
     if (event is KeyUpEvent) {
       return;
     }
+    if (reader.mode.isTopToBottom) {
+      if (event.logicalKey == LogicalKeyboardKey.arrowDown ||
+          event.logicalKey == LogicalKeyboardKey.pageDown) {
+        reader.toNextPage();
+      } else if (event.logicalKey == LogicalKeyboardKey.arrowUp ||
+          event.logicalKey == LogicalKeyboardKey.pageUp) {
+        reader.toPrevPage();
+      }
+      return;
+    }
     bool? forward;
     if (reader.mode == ReaderMode.continuousLeftToRight &&
         event.logicalKey == LogicalKeyboardKey.arrowRight) {
@@ -2852,12 +3209,6 @@ class ContinuousModeState extends State<_ContinuousMode>
     } else if (reader.mode == ReaderMode.continuousRightToLeft &&
         event.logicalKey == LogicalKeyboardKey.arrowLeft) {
       forward = true;
-    } else if (reader.mode.isTopToBottom &&
-        event.logicalKey == LogicalKeyboardKey.arrowDown) {
-      forward = true;
-    } else if (reader.mode.isTopToBottom &&
-        event.logicalKey == LogicalKeyboardKey.arrowUp) {
-      forward = false;
     } else if (reader.mode == ReaderMode.continuousLeftToRight &&
         event.logicalKey == LogicalKeyboardKey.arrowLeft) {
       forward = false;
@@ -2882,7 +3233,7 @@ class ContinuousModeState extends State<_ContinuousMode>
 
   @override
   bool handleOnTap(Offset location) {
-    if (delayedIsScrolling) {
+    if (delayedIsScrolling && _viewportTurnTarget == null) {
       return true;
     }
     return false;
@@ -3274,10 +3625,10 @@ ComicImageLoadTarget calculateReaderImageTargetFromContext(
 ReaderImageProvider _createImageProviderFromKey(
   String imageKey,
   BuildContext context,
-  int page,
-) {
+  int page, {
+  ComicImageLoadTarget? target,
+}) {
   var reader = context.reader;
-  final target = calculateReaderImageTargetFromContext(context, page);
   return ReaderImageProvider(
     imageKey,
     reader.type.comicSource?.key,
@@ -3286,7 +3637,7 @@ ReaderImageProvider _createImageProviderFromKey(
     page,
     chapter: reader.chapter,
     enableResize: true,
-    target: target,
+    target: target ?? calculateReaderImageTargetFromContext(context, page),
   );
 }
 
@@ -3316,13 +3667,52 @@ ReaderImageProvider _createImageProvider(int page, BuildContext context) {
 
 ReaderImagePreload _createReaderImagePreload(
   ReaderImageProvider provider,
-  BuildContext context,
-) => ReaderImagePreload(
+  BuildContext context, {
+  void Function(Size)? onImageSize,
+}) => ReaderImagePreload(
   key: provider,
   isCached: () =>
       PaintingBinding.instance.imageCache.statusForKey(provider).tracked,
   load: () => RemoteReadContext(priority: RemoteReadPriority.preload).run(
     () async {
+      if (onImageSize != null) {
+        final configuration = createLocalImageConfiguration(context);
+        final stream = provider.resolve(configuration);
+        final completion = Completer<void>();
+        late final ImageStreamListener listener;
+        listener = ImageStreamListener(
+          (info, synchronousCall) {
+            if (completion.isCompleted) {
+              info.dispose();
+              return;
+            }
+            onImageSize(
+              ReaderImageProvider.sourceSizeOf(stream.completer) ??
+                  Size(
+                    info.image.width.toDouble(),
+                    info.image.height.toDouble(),
+                  ),
+            );
+            completion.complete();
+            SchedulerBinding.instance.addPostFrameCallback((_) {
+              info.dispose();
+              stream.removeListener(listener);
+            });
+            SchedulerBinding.instance.ensureVisualUpdate();
+          },
+          onError: (Object error, StackTrace? stack) {
+            if (!completion.isCompleted) completion.completeError(error, stack);
+          },
+        );
+        stream.addListener(listener);
+        try {
+          await completion.future;
+        } catch (_) {
+          stream.removeListener(listener);
+          rethrow;
+        }
+        return;
+      }
       Object? loadError;
       StackTrace? loadStack;
       await precacheImage(

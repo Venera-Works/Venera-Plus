@@ -16,6 +16,14 @@ For aggregated cloud works, automatic reading continues only within the current 
 
 On Android and iOS, automatic reading keeps the screen awake by default. This can be disabled in reader settings. Stopping, backgrounding or leaving restores system sleep. Image waiting, screen-awake and original pixel dimension settings inherit global, device and comic preferences.
 
+## Manual page turns and two-page reading
+
+In vertical continuous and waterfall modes, tapping a page-turn region or using a page-turn key moves about 90% of the visible height in either direction. The overlap makes it easier to follow dialogue through a tall image. Volume-key page turns use the same distance when enabled.
+
+In a horizontal gallery, set the image count for the current screen orientation to 2. Facing pages keep their proportions and line up at the top and bottom. An image wider than it is tall occupies a spread by itself. Square pages can pair with their neighbors. Enable “Show single image on first page” to display the cover on its own.
+
+Use the sort button in the comic details or reader chapter list to select “Volume and chapter ascending”, “Volume and chapter descending”, or the original source order. For example, ascending order places `第1话`, `2`, `Chapter 3`, and `第10话` in that sequence. Equal numbers keep their original order. Read markers, bookmarks and chapter links follow the original chapter.
+
 ## Reading information
 
 “Settings → Browsing and Favorites → Show detailed reading progress” adds chapter and page totals to history and enabled history badges on comic cards. Chapter and group names are saved during normal reading. Older records fall back to ordinal positions without extra network requests. Grouped chapter totals refer to the current group.

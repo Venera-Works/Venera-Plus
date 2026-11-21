@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:collection';
 import 'dart:ui' as ui;
 import 'reader_page.dart';
 import 'package:venera_plus/foundation/reader_diagnostics.dart';
@@ -41,6 +40,7 @@ class ComicImage extends StatefulWidget {
     this.splitWideImageInvert = false,
     this.wideImagePart,
     this.onImageSize,
+    this.onSourceImageSize,
     Map<String, String>? headers,
     int? cacheWidth,
     int? cacheHeight,
@@ -91,6 +91,7 @@ class ComicImage extends StatefulWidget {
   final GalleryImagePart? wideImagePart;
 
   final void Function(Size size)? onImageSize;
+  final void Function(Size size)? onSourceImageSize;
 
   final void Function(State<ComicImage> state)? onInit;
 
@@ -105,6 +106,9 @@ class ComicImage extends StatefulWidget {
 
   static Size? getCachedImageSize(ImageProvider provider) =>
       ComicImageState._cachedImageSize(provider);
+
+  static Size? getCachedSourceImageSize(ImageProvider provider) =>
+      ComicImageState._cachedImageSizes(provider)?.source;
 
   @visibleForTesting
   static const imageSizeCacheCapacity = 128;
@@ -236,17 +240,26 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
     return visible.width > 1 && visible.height > 1;
   }
 
-  static final _cache = LinkedHashMap<ImageProvider, Size>();
+  static final _cache = <ImageProvider, ({Size layout, Size source})>{};
 
-  static Size? _cachedImageSize(ImageProvider provider) {
-    final size = _cache.remove(provider);
-    if (size != null) _cache[provider] = size;
-    return size;
+  static ({Size layout, Size source})? _cachedImageSizes(
+    ImageProvider provider,
+  ) {
+    final sizes = _cache.remove(provider);
+    if (sizes != null) _cache[provider] = sizes;
+    return sizes;
   }
 
-  static void _recordImageSize(ImageProvider provider, Size size) {
+  static Size? _cachedImageSize(ImageProvider provider) =>
+      _cachedImageSizes(provider)?.layout;
+
+  static void _recordImageSize(
+    ImageProvider provider,
+    Size size, [
+    Size? source,
+  ]) {
     _cache.remove(provider);
-    _cache[provider] = size;
+    _cache[provider] = (layout: size, source: source ?? size);
     if (_cache.length > ComicImage.imageSizeCacheCapacity) {
       _cache.remove(_cache.keys.first);
     }
@@ -571,15 +584,17 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
     _cancelPendingProgress();
     final isFirstBaseFrame =
         _resolvedImage == widget.image && _layoutSize == null;
+    _sourceSize ??= ReaderImageProvider.sourceSizeOf(_imageStream?.completer);
     if (isFirstBaseFrame) {
       _layoutSize = Size(
         imageInfo.image.width.toDouble(),
         imageInfo.image.height.toDouble(),
       );
-      _recordImageSize(widget.image, _layoutSize!);
+      final sourceSize = _sourceSize ?? _layoutSize!;
+      _recordImageSize(widget.image, _layoutSize!, sourceSize);
+      widget.onSourceImageSize?.call(sourceSize);
     }
     _notifyImageSizeIfNeeded();
-    _sourceSize ??= ReaderImageProvider.sourceSizeOf(_imageStream?.completer);
     setState(() {
       _replaceImage(info: imageInfo);
       _loadingProgress = null;

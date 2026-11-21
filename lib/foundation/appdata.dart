@@ -887,6 +887,7 @@ class Settings with ChangeNotifier {
     'showSingleImageOnFirstPage': false,
     'enableDoubleTapToZoom': true,
     'reverseChapterOrder': false,
+    'sortChaptersByNumber': false,
     'showSystemStatusBar': false,
     'comicSpecificSettings': <String, Map<String, dynamic>>{},
     'deviceSpecificSettings': <String, Map<String, dynamic>>{},
