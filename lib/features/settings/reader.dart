@@ -29,24 +29,6 @@ class ReaderSettings extends StatefulWidget {
 }
 
 class _ReaderSettingsState extends State<ReaderSettings> {
-  Widget _sectionHeading(BuildContext context, String title) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-      child: Semantics(
-        header: true,
-        child: Text(
-          title,
-          style: TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
-            color: context.colorScheme.primary,
-            letterSpacing: 0.5,
-          ),
-        ),
-      ),
-    ).toSliver();
-  }
-
   @override
   Widget build(BuildContext context) {
     final comicId = widget.comicId;
@@ -86,7 +68,10 @@ class _ReaderSettingsState extends State<ReaderSettings> {
         if (comicId != null && sourceKey != null)
           SliverMainAxisGroup(
             slivers: [
-              _sectionHeading(context, 'Settings Scope'.tl),
+              SettingPartTitle(
+                title: 'Settings Scope'.tl,
+                icon: Icons.devices_outlined,
+              ),
               SwitchListTile(
                 title: Text("Enable comic specific settings".tl),
                 value: isEnabledSpecificSettings,
@@ -119,7 +104,10 @@ class _ReaderSettingsState extends State<ReaderSettings> {
         if (comicId == null)
           SliverMainAxisGroup(
             slivers: [
-              _sectionHeading(context, 'Settings Scope'.tl),
+              SettingPartTitle(
+                title: 'Settings Scope'.tl,
+                icon: Icons.devices_outlined,
+              ),
               SwitchListTile(
                 title: Text("Enable device specific settings".tl),
                 value: useDeviceSpecificSettings,
@@ -147,7 +135,10 @@ class _ReaderSettingsState extends State<ReaderSettings> {
                 ).toSliver(),
             ],
           ),
-        _sectionHeading(context, 'Reading Mode and Layout'.tl),
+        SettingPartTitle(
+          title: 'Reading Mode and Layout'.tl,
+          icon: Icons.menu_book_outlined,
+        ),
         SelectSetting(
           title: "Reading mode".tl,
           settingKey: "readerMode",
@@ -293,7 +284,10 @@ class _ReaderSettingsState extends State<ReaderSettings> {
             useDeviceSettings: useDeviceSpecificSettings,
           ),
         ),
-        _sectionHeading(context, 'Page Turning and Controls'.tl),
+        SettingPartTitle(
+          title: 'Page Turning and Controls'.tl,
+          icon: Icons.touch_app_outlined,
+        ),
         SwitchSetting(
           title: "Tap to turn Pages".tl,
           settingKey: "enableTapToTurnPages",
@@ -373,7 +367,10 @@ class _ReaderSettingsState extends State<ReaderSettings> {
             useDeviceSettings: useDeviceSpecificSettings,
           ),
         ),
-        _sectionHeading(context, 'Automatic Reading'.tl),
+        SettingPartTitle(
+          title: 'Automatic Reading'.tl,
+          icon: Icons.play_circle_outline,
+        ),
         SliderSetting(
           title: "Auto page turning interval".tl,
           settingsIndex: "autoPageTurningInterval",
@@ -421,7 +418,10 @@ class _ReaderSettingsState extends State<ReaderSettings> {
             comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
             useDeviceSettings: useDeviceSpecificSettings,
           ).toSliver(),
-        _sectionHeading(context, 'Display and Reading Information'.tl),
+        SettingPartTitle(
+          title: 'Display and Reading Information'.tl,
+          icon: Icons.monitor_outlined,
+        ),
         SwitchSetting(
           title: "Show Page Number".tl,
           settingKey: "showPageNumberInReader",
@@ -558,7 +558,10 @@ class _ReaderSettingsState extends State<ReaderSettings> {
             ],
           ),
         ),
-        _sectionHeading(context, 'Chapters and Comments'.tl),
+        SettingPartTitle(
+          title: 'Chapters and Comments'.tl,
+          icon: Icons.comment_outlined,
+        ),
         if (comicId == null)
           SwitchSetting(
             title: "Reverse default chapter order".tl,
@@ -602,7 +605,10 @@ class _ReaderSettingsState extends State<ReaderSettings> {
             useDeviceSettings: useDeviceSpecificSettings,
           ),
         ),
-        _sectionHeading(context, 'Image Loading and Processing'.tl),
+        SettingPartTitle(
+          title: 'Image Loading and Processing'.tl,
+          icon: Icons.image_outlined,
+        ),
         SliderSetting(
           title: "Number of images preloaded".tl,
           settingsIndex: "preloadImageCount",
