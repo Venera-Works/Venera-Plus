@@ -23,6 +23,33 @@ String _getTimeString(DateTime time) {
   return time.toIso8601String().replaceFirst("T", " ").substring(0, 19);
 }
 
+class FavoriteFolder {
+  static final _pathSeparator = RegExp(r'\s*/\s*');
+
+  const FavoriteFolder({
+    required this.id,
+    required this.name,
+    this.parentId,
+    this.parentName,
+  });
+
+  final String id;
+  final String name;
+  final String? parentId;
+  final String? parentName;
+
+  String get path => parentName == null ? name : '$parentName / $name';
+
+  bool matchesPath(String query) {
+    final value = query.trim().toLowerCase();
+    return value.isEmpty ||
+        path
+            .toLowerCase()
+            .replaceAll(_pathSeparator, '/')
+            .contains(value.replaceAll(_pathSeparator, '/'));
+  }
+}
+
 class FavoriteItem implements Comic {
   String name;
   String author;
@@ -603,17 +630,45 @@ class LocalFavoritesManager with ChangeNotifier {
     return rows.map((element) => element["folder_name"] as String).toList();
   }
 
-  void updateOrder(List<String> folders) {
+  List<FavoriteFolder> get folders {
     FavoriteSyncData.ensureFolderMetadataTable(_db);
+    return _db
+        .select('''
+      SELECT f.folder_id, f.folder_name,
+             p.folder_id AS parent_id, p.folder_name AS parent_name
+      FROM folder_metadata f
+      LEFT JOIN folder_metadata p ON p.folder_id = f.parent_folder_id
+        AND p.parent_folder_id IS NULL
+      ORDER BY COALESCE(p.order_value, f.order_value),
+               COALESCE(p.folder_name, f.folder_name), p.folder_id IS NOT NULL,
+               f.order_value, f.folder_name;
+    ''')
+        .map(
+          (row) => FavoriteFolder(
+            id: row['folder_id'] as String,
+            name: row['folder_name'] as String,
+            parentId: row['parent_id'] as String?,
+            parentName: row['parent_name'] as String?,
+          ),
+        )
+        .toList();
+  }
+
+  void updateOrder(List<String> folders, {String? parentFolderId}) {
+    final remaining = this.folders
+        .where((folder) => folder.parentId == parentFolderId)
+        .map((folder) => folder.name)
+        .toSet();
+    final sorted = [...folders.where(remaining.remove), ...remaining];
     _db.execute('BEGIN TRANSACTION');
     try {
-      for (int i = 0; i < folders.length; i++) {
+      for (int i = 0; i < sorted.length; i++) {
         _db.execute(
           """
           insert or replace into folder_order (folder_name, order_value)
           values (?, ?);
         """,
-          [folders[i], i],
+          [sorted[i], i],
         );
         _db.execute(
           """
@@ -621,7 +676,7 @@ class LocalFavoritesManager with ChangeNotifier {
           set order_value = ?
           where folder_name == ?;
         """,
-          [i, folders[i]],
+          [i, sorted[i]],
         );
       }
       _db.execute('COMMIT');
@@ -753,9 +808,46 @@ class LocalFavoritesManager with ChangeNotifier {
     String name, [
     bool renameWhenInvalidName = false,
     String? folderId,
-  ]) {
-    FavoriteSyncData.ensureFolderMetadataTable(_db);
+  ]) => _createFolder(
+    name,
+    renameWhenInvalidName: renameWhenInvalidName,
+    folderId: folderId,
+  );
+
+  String createSubfolder(String name, String parentFolderId) =>
+      _createFolder(name, parentFolderId: parentFolderId);
+
+  int _nextFolderOrder(String? parentFolderId) =>
+      _db
+              .select(
+                '''
+    SELECT COALESCE(MAX(order_value), -1) + 1 AS next_order
+    FROM folder_metadata WHERE parent_folder_id IS ?;
+  ''',
+                [parentFolderId],
+              )
+              .single['next_order']
+          as int;
+
+  String _createFolder(
+    String name, {
+    bool renameWhenInvalidName = false,
+    String? folderId,
+    String? parentFolderId,
+  }) {
     final folders = folderNames;
+    if (parentFolderId != null &&
+        _db
+            .select(
+              '''
+          SELECT 1 FROM folder_metadata
+          WHERE folder_id = ? AND parent_folder_id IS NULL;
+        ''',
+              [parentFolderId],
+            )
+            .isEmpty) {
+      throw StateError('Invalid parent favorite folder');
+    }
     bool unavailable(String candidate) =>
         hasFavoriteFolderName(folders, candidate) ||
         isInternalFavoriteTable(candidate);
@@ -773,40 +865,73 @@ class LocalFavoritesManager with ChangeNotifier {
       } while (unavailable(name));
     }
     final stableId = folderId ?? const Uuid().v4();
-    _db.execute("""
-      create table ${quoteSqlIdentifier(name)}(
-        id text,
-        name TEXT,
-        author TEXT,
-        type int,
-        tags TEXT,
-        cover_path TEXT,
-        time TEXT,
-        display_order int,
-        translated_tags TEXT,
-        primary key (id, type)
+    final nextOrder = _nextFolderOrder(parentFolderId);
+    _db.execute('BEGIN TRANSACTION');
+    try {
+      _db.execute('''
+        CREATE TABLE ${quoteSqlIdentifier(name)} (
+          id TEXT, name TEXT, author TEXT, type INT, tags TEXT, cover_path TEXT,
+          time TEXT, display_order INT, translated_tags TEXT,
+          PRIMARY KEY (id, type)
+        );
+      ''');
+      _db.execute(
+        '''
+        INSERT INTO folder_metadata
+          (folder_id, folder_name, logical_name, order_value, parent_folder_id)
+        VALUES (?, ?, ?, ?, ?);
+      ''',
+        [stableId, name, name, nextOrder, parentFolderId],
       );
-    """);
-    final nextOrder = folderNames.length;
-    _db.execute(
-      """
-      insert or replace into folder_metadata (folder_id, folder_name, logical_name, order_value, source_key, source_folder)
-      values (?, ?, ?, ?, null, null);
-    """,
-      [stableId, name, name, nextOrder],
-    );
-    _db.execute(
-      """
-      insert or replace into folder_order (folder_name, order_value)
-      values (?, ?);
-    """,
-      [name, nextOrder],
-    );
+      _db.execute(
+        'INSERT OR REPLACE INTO folder_order (folder_name, order_value) VALUES (?, ?);',
+        [name, nextOrder],
+      );
+      _db.execute('COMMIT');
+    } catch (_) {
+      _db.execute('ROLLBACK');
+      rethrow;
+    }
 
     counts[name] = 0;
     _generation++;
     notifyListeners();
     return name;
+  }
+
+  void moveFolder(String folderId, String? parentFolderId) {
+    final folders = this.folders;
+    final folder = folders.firstWhere((item) => item.id == folderId);
+    if (folder.parentId == parentFolderId) return;
+    if (parentFolderId != null &&
+        (parentFolderId == folderId ||
+            !folders.any(
+              (item) => item.id == parentFolderId && item.parentId == null,
+            ) ||
+            folders.any((item) => item.parentId == folderId))) {
+      throw StateError('Invalid parent favorite folder');
+    }
+
+    final nextOrder = _nextFolderOrder(parentFolderId);
+    _db.execute('BEGIN TRANSACTION');
+    try {
+      _db.execute(
+        '''
+        UPDATE folder_metadata SET parent_folder_id = ?, order_value = ?
+        WHERE folder_id = ?;
+      ''',
+        [parentFolderId, nextOrder, folderId],
+      );
+      _db.execute(
+        'INSERT OR REPLACE INTO folder_order (folder_name, order_value) VALUES (?, ?);',
+        [folder.name, nextOrder],
+      );
+      _db.execute('COMMIT');
+    } catch (_) {
+      _db.execute('ROLLBACK');
+      rethrow;
+    }
+    notifyListeners();
   }
 
   void linkFolderToNetwork(String folder, String source, String networkFolder) {
@@ -1132,6 +1257,18 @@ class LocalFavoritesManager with ChangeNotifier {
   /// delete a folder
   void deleteFolder(String name) {
     FavoriteSyncData.ensureFolderMetadataTable(_db);
+    if (_db
+        .select(
+          '''
+      SELECT 1 FROM folder_metadata child JOIN folder_metadata parent
+        ON child.parent_folder_id = parent.folder_id
+      WHERE parent.folder_name = ? COLLATE NOCASE LIMIT 1;
+    ''',
+          [name],
+        )
+        .isNotEmpty) {
+      throw StateError('Move or delete subfolders first');
+    }
     final wasReadingFolder = readingFolder == name;
     _db.execute('BEGIN TRANSACTION');
     try {

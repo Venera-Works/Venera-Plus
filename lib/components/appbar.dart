@@ -837,11 +837,21 @@ class _SliverSearchBarDelegate extends SliverPersistentHeaderDelegate {
 }
 
 class AppSearchBar extends StatefulWidget {
-  const AppSearchBar({super.key, required this.controller, this.action});
+  const AppSearchBar({
+    super.key,
+    required this.controller,
+    this.action,
+    this.onChanged,
+    this.hintText,
+  });
 
   final SearchBarController controller;
 
   final Widget? action;
+
+  final ValueChanged<String>? onChanged;
+
+  final String? hintText;
 
   @override
   State<AppSearchBar> createState() => _SearchBarState();
@@ -871,6 +881,13 @@ class _SearchBarState extends State<AppSearchBar> with _SearchBarMixin {
   }
 
   @override
+  void dispose() {
+    if (identical(_controller._state, this)) _controller._state = null;
+    _editingController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final topPadding = MediaQuery.of(context).padding.top;
     return Container(
@@ -894,9 +911,11 @@ class _SearchBarState extends State<AppSearchBar> with _SearchBarMixin {
               child: TextField(
                 controller: _editingController,
                 decoration: InputDecoration(
-                  hintText: "Search".tl,
+                  hintText: widget.hintText ?? "Search".tl,
                   border: InputBorder.none,
                 ),
+                onChanged: widget.onChanged,
+                textInputAction: TextInputAction.search,
                 onSubmitted: (text) {
                   _controller.onSearch?.call(text);
                 },
@@ -913,6 +932,7 @@ class _SearchBarState extends State<AppSearchBar> with _SearchBarMixin {
                       icon: const Icon(Icons.clear),
                       onPressed: () {
                         _editingController.clear();
+                        widget.onChanged?.call('');
                       },
                     );
             },

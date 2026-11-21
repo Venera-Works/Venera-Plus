@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/pop_up_widget.dart';
-import 'package:venera_plus/components/select.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/favorites/favorites_manager.dart';
 import 'package:venera_plus/features/favorites/favorite_sync_data.dart';
@@ -18,26 +17,26 @@ import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 
 /// Open a dialog to create a new favorite folder.
-Future<String?> newFolder() {
+Future<String?> newFolder({String? parentFolderId}) {
+  final manager = LocalFavoritesManager();
+  var name = '';
+  String? error;
   return showDialog<String>(
     context: App.rootContext,
     builder: (context) {
-      var controller = TextEditingController();
-      String? error;
-
       return StatefulBuilder(
         builder: (context, setState) {
           return ContentDialog(
-            title: "New Folder".tl,
+            title: (parentFolderId == null ? 'New Folder' : 'New subfolder').tl,
             content: Column(
               children: [
                 TextField(
-                  controller: controller,
                   decoration: InputDecoration(
                     hintText: "Folder Name".tl,
                     errorText: error,
                   ),
-                  onChanged: (s) {
+                  onChanged: (value) {
+                    name = value;
                     if (error != null) {
                       setState(() {
                         error = null;
@@ -48,32 +47,42 @@ Future<String?> newFolder() {
               ],
             ).paddingHorizontal(16),
             actions: [
-              TextButton(
-                child: Text("Import from file".tl),
-                onPressed: () async {
-                  var file = await selectFile(ext: ['json']);
-                  if (file == null) return;
-                  var data = await file.readAsBytes();
-                  try {
-                    LocalFavoritesManager().fromJson(utf8.decode(data));
-                  } catch (e) {
-                    context.showMessage(message: "Failed to import".tl);
-                    return;
-                  }
-                  context.pop();
-                },
-              ).paddingRight(4),
+              if (parentFolderId == null)
+                TextButton(
+                  child: Text("Import from file".tl),
+                  onPressed: () async {
+                    var file = await selectFile(ext: ['json']);
+                    if (file == null) return;
+                    var data = await file.readAsBytes();
+                    if (!context.mounted) return;
+                    try {
+                      manager.fromJson(utf8.decode(data));
+                    } catch (e) {
+                      context.showMessage(message: "Failed to import".tl);
+                      return;
+                    }
+                    context.pop();
+                  },
+                ).paddingRight(4),
               FilledButton(
                 onPressed: () {
-                  var e = validateFolderName(controller.text);
+                  var e = validateFolderName(name);
+                  if (parentFolderId != null &&
+                      !manager.folders.any(
+                        (folder) =>
+                            folder.id == parentFolderId &&
+                            folder.parentId == null,
+                      )) {
+                    e = 'Favorite folder no longer exists'.tl;
+                  }
                   if (e != null) {
                     setState(() {
                       error = e;
                     });
                   } else {
-                    final createdName = LocalFavoritesManager().createFolder(
-                      controller.text,
-                    );
+                    final createdName = parentFolderId == null
+                        ? manager.createFolder(name)
+                        : manager.createSubfolder(name, parentFolderId);
                     Navigator.of(context).pop(createdName);
                   }
                 },
@@ -100,55 +109,45 @@ String? validateFolderName(String newFolderName, {String? currentName}) {
   return null;
 }
 
-void addFavorite(List<Comic> comics) {
-  var folders = LocalFavoritesManager().folderNames;
-
-  showDialog(
+Future<void> addFavorite(List<Comic> comics) async {
+  final manager = LocalFavoritesManager();
+  final selected = await showDialog<String>(
     context: App.rootContext,
     builder: (context) {
-      String? selectedFolder = appdata.settings['quickFavorite'];
+      String? selectedId = manager.getFolderId(
+        appdata.settings['quickFavorite'] as String? ?? '',
+      );
+      var query = '';
 
       return StatefulBuilder(
         builder: (context, setState) {
+          final folders = manager.folders;
           return ContentDialog(
             title: "Select a folder".tl,
-            content: ListTile(
-              title: Text("Folder".tl),
-              trailing: Select(
-                current: selectedFolder,
-                values: folders,
-                minWidth: 112,
-                onTap: (v) {
-                  setState(() {
-                    selectedFolder = folders[v];
-                  });
-                },
-              ),
+            content: Column(
+              children: [
+                FavoriteFolderSearchField(
+                  onChanged: (value) => setState(() => query = value),
+                ),
+                for (final folder in folders)
+                  if (folder.matchesPath(query))
+                    ListTile(
+                      leading: Icon(
+                        selectedId == folder.id
+                            ? Icons.check_circle_outline
+                            : Icons.folder_outlined,
+                      ),
+                      selected: selectedId == folder.id,
+                      title: Text(folder.path),
+                      onTap: () => setState(() => selectedId = folder.id),
+                    ),
+              ],
             ),
             actions: [
               FilledButton(
-                onPressed: () {
-                  if (selectedFolder != null) {
-                    for (var comic in comics) {
-                      LocalFavoritesManager().addComic(
-                        selectedFolder!,
-                        FavoriteItem(
-                          id: comic.id,
-                          name: comic.title,
-                          coverPath: comic.cover,
-                          author: comic.subtitle ?? '',
-                          type: ComicType(
-                            (comic.sourceKey == 'local'
-                                ? 0
-                                : comic.sourceKey.hashCode),
-                          ),
-                          tags: comic.tags ?? [],
-                        ),
-                      );
-                    }
-                    context.pop();
-                  }
-                },
+                onPressed: folders.any((folder) => folder.id == selectedId)
+                    ? () => Navigator.of(context).pop(selectedId)
+                    : null,
                 child: Text("Confirm".tl),
               ),
             ],
@@ -156,6 +155,49 @@ void addFavorite(List<Comic> comics) {
         },
       );
     },
+  );
+  if (selected == null) return;
+  final folder = manager.getFolderNameById(selected);
+  if (folder == null) return;
+  for (final comic in comics) {
+    manager.addComic(
+      folder,
+      FavoriteItem(
+        id: comic.id,
+        name: comic.title,
+        coverPath: comic.cover,
+        author: comic.subtitle ?? '',
+        type: ComicType(
+          comic.sourceKey == 'local' ? 0 : comic.sourceKey.hashCode,
+        ),
+        tags: comic.tags ?? [],
+      ),
+    );
+  }
+}
+
+class FavoriteFolderSearchField extends StatelessWidget {
+  const FavoriteFolderSearchField({
+    super.key,
+    required this.onChanged,
+    this.autofocus = false,
+  });
+
+  final ValueChanged<String> onChanged;
+  final bool autofocus;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+    child: TextField(
+      autofocus: autofocus,
+      decoration: InputDecoration(
+        prefixIcon: const Icon(Icons.search),
+        hintText: 'Search folders'.tl,
+        isDense: true,
+      ),
+      onChanged: onChanged,
+    ),
   );
 }
 
@@ -286,15 +328,19 @@ Future<List<FavoriteItem>> updateComicsInfo(String folder) async {
   return comics;
 }
 
-Future<void> sortFolders() async {
-  var folders = LocalFavoritesManager().folderNames;
+Future<void> sortFolders({String? parentFolderId}) async {
+  final manager = LocalFavoritesManager();
+  final folders = manager.folders
+      .where((folder) => folder.parentId == parentFolderId)
+      .toList();
+  var changed = false;
 
   await showPopUpWidget(
     App.rootContext,
     StatefulBuilder(
       builder: (context, setState) {
         return PopUpWidgetScaffold(
-          title: "Sort".tl,
+          title: (parentFolderId == null ? 'Sort' : 'Sort subfolders').tl,
           tailing: [
             Tooltip(
               message: "Help".tl,
@@ -316,6 +362,7 @@ Future<void> sortFolders() async {
                 newIndex--;
               }
               setState(() {
+                changed = changed || oldIndex != newIndex;
                 var item = folders.removeAt(oldIndex);
                 folders.insert(newIndex, item);
               });
@@ -323,8 +370,8 @@ Future<void> sortFolders() async {
             itemCount: folders.length,
             itemBuilder: (context, index) {
               return ListTile(
-                key: ValueKey(folders[index]),
-                title: Text(folders[index]),
+                key: ValueKey(folders[index].id),
+                title: Text(folders[index].name),
               );
             },
           ),
@@ -333,7 +380,55 @@ Future<void> sortFolders() async {
     ),
   );
 
-  LocalFavoritesManager().updateOrder(folders);
+  if (changed) {
+    final currentNames = {
+      for (final folder in manager.folders) folder.id: folder.name,
+    };
+    manager.updateOrder([
+      for (final folder in folders) ?currentNames[folder.id],
+    ], parentFolderId: parentFolderId);
+  }
+}
+
+Future<void> moveFavoriteFolder(FavoriteFolder folder) async {
+  final manager = LocalFavoritesManager();
+  final destination = await showDialog<String>(
+    context: App.rootContext,
+    builder: (context) => ContentDialog(
+      title: 'Move folder'.tl,
+      content: Column(
+        children: [
+          if (folder.parentId != null)
+            ListTile(
+              leading: const Icon(Icons.folder_open),
+              title: Text('Top level'.tl),
+              onTap: () => Navigator.of(context).pop(''),
+            ),
+          for (final target in manager.folders)
+            if (target.parentId == null &&
+                target.id != folder.id &&
+                target.id != folder.parentId)
+              ListTile(
+                leading: const Icon(Icons.folder_outlined),
+                title: Text(target.name),
+                onTap: () => Navigator.of(context).pop(target.id),
+              ),
+        ],
+      ),
+    ),
+  );
+  if (destination == null) return;
+  final currentFolders = manager.folders;
+  if (!currentFolders.any((item) => item.id == folder.id) ||
+      (destination.isNotEmpty &&
+          (!currentFolders.any(
+                (item) => item.id == destination && item.parentId == null,
+              ) ||
+              currentFolders.any((item) => item.parentId == folder.id)))) {
+    App.rootContext.showMessage(message: 'Favorite folder no longer exists'.tl);
+    return;
+  }
+  manager.moveFolder(folder.id, destination.isEmpty ? null : destination);
 }
 
 Future<void> importNetworkFolder(

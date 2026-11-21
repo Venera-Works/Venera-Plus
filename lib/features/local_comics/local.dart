@@ -15,6 +15,7 @@ import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/sqlite_connection.dart';
 import 'package:venera_plus/features/local_comics/download.dart';
 import 'package:venera_plus/features/reader/reader.dart';
+import 'package:venera_plus/features/search/library_search_query.dart';
 import 'package:venera_plus/foundation/file_interaction.dart';
 
 import 'package:venera_plus/foundation/translations.dart';
@@ -206,7 +207,12 @@ class LocalComic with HistoryMixin implements Comic {
   double? get stars => null;
 }
 
+typedef LocalComicCategory = ({int id, String name});
+
 class LocalManager with ChangeNotifier {
+  static const allCategories = -1;
+  static const uncategorized = 0;
+
   static LocalManager? _instance;
 
   @visibleForTesting
@@ -355,6 +361,11 @@ class LocalManager with ChangeNotifier {
   Future<void> init() async {
     _db = openSqliteDatabase('${App.dataPath}/local.db');
     _db.execute('''
+      PRAGMA foreign_keys = ON;
+      CREATE TABLE IF NOT EXISTS local_comic_categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL COLLATE NOCASE UNIQUE
+      );
       CREATE TABLE IF NOT EXISTS comics (
         id TEXT NOT NULL,
         title TEXT NOT NULL,
@@ -379,11 +390,24 @@ class LocalManager with ChangeNotifier {
         PRIMARY KEY (id, comic_type)
       );
     ''');
-    if (!_db
+    final columns = _db
         .select('PRAGMA table_info(comics)')
-        .any((row) => row['name'] == 'incomplete_pages')) {
+        .map((row) => row['name'])
+        .toSet();
+    if (!columns.contains('incomplete_pages')) {
       _db.execute(
         "ALTER TABLE comics ADD COLUMN incomplete_pages TEXT NOT NULL DEFAULT '{}'",
+      );
+    }
+    if (!columns.contains('category_id')) {
+      _db.execute('''
+        ALTER TABLE comics ADD COLUMN category_id INTEGER
+          REFERENCES local_comic_categories(id) ON DELETE SET NULL;
+      ''');
+    }
+    if (!columns.contains('original_search_metadata')) {
+      _db.execute(
+        'ALTER TABLE comics ADD COLUMN original_search_metadata TEXT',
       );
     }
     if (File(FilePath.join(App.dataPath, 'local_path')).existsSync()) {
@@ -489,7 +513,17 @@ class LocalManager with ChangeNotifier {
       ..addAll(comic.incompleteChapters);
     downloaded.removeWhere(incomplete.containsKey);
     _db.execute(
-      'INSERT OR REPLACE INTO comics (id, title, subtitle, tags, directory, chapters, cover, comic_type, downloadedChapters, created_at, incomplete_pages) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);',
+      '''
+      INSERT INTO comics (
+        id, title, subtitle, tags, directory, chapters, cover, comic_type,
+        downloadedChapters, created_at, incomplete_pages
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id, comic_type) DO UPDATE SET
+        title = excluded.title, subtitle = excluded.subtitle, tags = excluded.tags,
+        directory = excluded.directory, chapters = excluded.chapters,
+        cover = excluded.cover, downloadedChapters = excluded.downloadedChapters,
+        created_at = excluded.created_at, incomplete_pages = excluded.incomplete_pages;
+      ''',
       [
         id ?? comic.id,
         comic.title,
@@ -527,15 +561,106 @@ class LocalManager with ChangeNotifier {
     remove(comic.id, comic.comicType);
   }
 
-  List<LocalComic> getComics(LocalSortType sortType) {
-    var res = _db.select('''
-      SELECT * FROM comics
-      ORDER BY
-        ${sortType.value == 'name' ? 'title' : 'created_at'}
-        ${sortType.value == 'time_asc' ? 'ASC' : 'DESC'}
-      ;
-    ''');
-    return res.map((row) => LocalComic.fromRow(row)).toList();
+  List<LocalComic> getComics(LocalSortType sortType) =>
+      search('', sortType: sortType);
+
+  List<LocalComicCategory> get comicCategories => _db
+      .select('SELECT id, name FROM local_comic_categories ORDER BY id')
+      .map((row) => (id: row['id'] as int, name: row['name'] as String))
+      .toList();
+
+  int? createComicCategory(String name) {
+    name = name.trim();
+    if (name.isEmpty) return null;
+    _db.execute(
+      '''
+      INSERT INTO local_comic_categories (name) VALUES (?)
+      ON CONFLICT(name) DO NOTHING;
+    ''',
+      [name],
+    );
+    if (_db.updatedRows == 0) return null;
+    final id = _db.lastInsertRowId;
+    notifyListeners();
+    return id;
+  }
+
+  bool renameComicCategory(int id, String name) {
+    name = name.trim();
+    if (name.isEmpty) return false;
+    _db.execute(
+      'UPDATE OR IGNORE local_comic_categories SET name = ? WHERE id = ?',
+      [name, id],
+    );
+    if (_db.updatedRows == 0) return false;
+    notifyListeners();
+    return true;
+  }
+
+  void deleteComicCategory(int id) {
+    _db.execute('DELETE FROM local_comic_categories WHERE id = ?', [id]);
+    notifyListeners();
+  }
+
+  void moveComicsToCategory(List<LocalComic> comics, int categoryId) {
+    final storedId = categoryId == uncategorized ? null : categoryId;
+    _db.execute('BEGIN');
+    try {
+      for (final comic in comics) {
+        _db.execute(
+          'UPDATE comics SET category_id = ? WHERE id = ? AND comic_type = ?',
+          [storedId, comic.id, comic.comicType.value],
+        );
+      }
+      _db.execute('COMMIT');
+    } catch (_) {
+      _db.execute('ROLLBACK');
+      rethrow;
+    }
+    notifyListeners();
+  }
+
+  void updateImportedMetadata(
+    String id, {
+    required List<String> tags,
+    required String author,
+  }) {
+    final identity = [id, ComicType.local.value];
+    final row = _db.select('''
+      SELECT subtitle, tags, original_search_metadata FROM comics
+      WHERE id = ? AND comic_type = ?;
+    ''', identity).firstOrNull;
+    if (row == null) return;
+
+    // 重选条目时用最新刮削结果替换上次补入的内容。
+    final raw = row['original_search_metadata'] as String?;
+    final original = raw == null
+        ? {
+            'subtitle': row['subtitle'] as String,
+            'tags': jsonDecode(row['tags'] as String),
+          }
+        : jsonDecode(raw) as Map<String, dynamic>;
+    final subtitle = original['subtitle'] as String;
+    final originalTags = (original['tags'] as List).cast<String>();
+    final seen = {for (final tag in originalTags) tag.trim().toLowerCase()};
+    final mergedTags = [
+      ...originalTags,
+      for (final tag in tags)
+        if (seen.add(tag.trim().toLowerCase())) tag,
+    ];
+    _db.execute(
+      '''
+      UPDATE comics SET subtitle = ?, tags = ?, original_search_metadata = ?
+      WHERE id = ? AND comic_type = ?;
+      ''',
+      [
+        subtitle.trim().isEmpty ? author : subtitle,
+        jsonEncode(mergedTags),
+        raw ?? jsonEncode(original),
+        ...identity,
+      ],
+    );
+    notifyListeners();
   }
 
   LocalComic? find(String id, ComicType comicType) {
@@ -585,17 +710,55 @@ class LocalManager with ChangeNotifier {
     return LocalComic.fromRow(res.first);
   }
 
-  List<LocalComic> search(String keyword) {
+  List<LocalComic> search(
+    String keyword, {
+    LocalSortType sortType = LocalSortType.timeDesc,
+    int categoryId = allCategories,
+    Iterable<String> tags = const [],
+  }) {
+    final category = _categoryFilter(categoryId);
+    final filter = librarySearchFilter(
+      titleColumn: 'title',
+      authorColumn: 'subtitle',
+      tagsColumn: 'tags',
+      keyword: keyword,
+      tags: tags,
+    );
     final res = _db.select(
       '''
       SELECT * FROM comics
-      WHERE title LIKE ? OR tags LIKE ? OR subtitle LIKE ?
-      ORDER BY created_at DESC;
+      WHERE 1${category.sql}${filter.sql}
+      ORDER BY
+        ${sortType == LocalSortType.name ? 'title' : 'created_at'}
+        ${sortType == LocalSortType.timeAsc ? 'ASC' : 'DESC'};
     ''',
-      ['%$keyword%', '%$keyword%', '%$keyword%'],
+      [...category.parameters, ...filter.parameters],
     );
     return res.map((row) => LocalComic.fromRow(row)).toList();
   }
+
+  List<String> availableTags(int categoryId) {
+    final category = _categoryFilter(categoryId);
+    return _db
+        .select('''
+      SELECT DISTINCT ${libraryTagSql('t.value')} COLLATE NOCASE AS tag_name
+      FROM comics, json_each(comics.tags) t
+      WHERE tag_name IS NOT NULL AND tag_name <> ''${category.sql}
+      ORDER BY tag_name;
+    ''', category.parameters)
+        .map((row) => row['tag_name'] as String)
+        .toList();
+  }
+
+  ({String sql, List<Object?> parameters}) _categoryFilter(int categoryId) =>
+      switch (categoryId) {
+        allCategories => (sql: '', parameters: const []),
+        uncategorized => (
+          sql: ' AND category_id IS NULL',
+          parameters: const [],
+        ),
+        _ => (sql: ' AND category_id = ?', parameters: [categoryId]),
+      };
 
   Future<List<String>> getImages(String id, ComicType type, Object ep) async {
     if (ep is! String && ep is! int) {

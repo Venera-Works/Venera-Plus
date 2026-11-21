@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:sqlite3/sqlite3.dart';
+import 'package:venera_plus/features/search/library_search_query.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/sqlite_connection.dart';
 
@@ -125,6 +126,30 @@ class RemoteLibraryRepository {
     configKey,
     page,
     pageSize,
+    roots?.toList(growable: false),
+  ]);
+
+  Future<({int count, List<RemoteLibraryCachedComic> rows})> pageWithCount(
+    String configKey, {
+    required int page,
+    required int pageSize,
+    Iterable<String>? roots,
+    String keyword = '',
+    Iterable<String> tags = const [],
+  }) => _request(_RemoteLibraryOperation.pageWithCount, [
+    configKey,
+    page,
+    pageSize,
+    roots?.toList(growable: false),
+    keyword,
+    tags.toList(growable: false),
+  ]);
+
+  Future<List<String>> availableTags(
+    String configKey, {
+    Iterable<String>? roots,
+  }) => _request(_RemoteLibraryOperation.availableTags, [
+    configKey,
     roots?.toList(growable: false),
   ]);
 

@@ -3,6 +3,8 @@ part of 'remote_library_repository.dart';
 enum _RemoteLibraryOperation {
   count,
   page,
+  pageWithCount,
+  availableTags,
   versions,
   all,
   find,
@@ -415,13 +417,31 @@ class _RemoteLibraryDatabase {
     final configKey = arguments[0] as String;
     switch (operation) {
       case _RemoteLibraryOperation.count:
-        return count(configKey, arguments[1] as List<String>?);
+        return _count(_catalogFilter(configKey, arguments[1] as List<String>?));
       case _RemoteLibraryOperation.page:
-        return page(
-          configKey,
+        return _page(
+          _catalogFilter(configKey, arguments[3] as List<String>?),
           page: arguments[1] as int,
           pageSize: arguments[2] as int,
-          roots: arguments[3] as List<String>?,
+        );
+      case _RemoteLibraryOperation.pageWithCount:
+        final filter = _catalogFilter(
+          configKey,
+          arguments[3] as List<String>?,
+          keyword: arguments[4] as String,
+          tags: arguments[5] as List<String>,
+        );
+        return (
+          count: _count(filter),
+          rows: _page(
+            filter,
+            page: arguments[1] as int,
+            pageSize: arguments[2] as int,
+          ),
+        );
+      case _RemoteLibraryOperation.availableTags:
+        return _availableTags(
+          _catalogFilter(configKey, arguments[1] as List<String>?),
         );
       case _RemoteLibraryOperation.versions:
         return versions(configKey);
@@ -601,24 +621,38 @@ class _RemoteLibraryDatabase {
     )''';
   }
 
-  int count(String configKey, List<String>? roots) {
-    return db
-            .select(
-              '''
+  ({String sql, List<Object?> parameters}) _catalogFilter(
+    String configKey,
+    List<String>? roots, {
+    String keyword = '',
+    List<String> tags = const [],
+  }) {
+    final search = librarySearchFilter(
+      titleColumn: 'c.title',
+      authorColumn: 'c.author',
+      tagsColumn: 'c.tags',
+      keyword: keyword,
+      tags: tags,
+    );
+    return (
+      sql:
+          'WHERE c.config_key = ?${_rootFilter(configKey, roots)}${search.sql}',
+      parameters: [configKey, ...?roots, ...search.parameters],
+    );
+  }
+
+  int _count(({String sql, List<Object?> parameters}) filter) {
+    return db.select('''
       SELECT COUNT(*) AS count FROM remote_library_comics c
-      WHERE c.config_key = ?${_rootFilter(configKey, roots)};
-    ''',
-              [configKey, ...?roots],
-            )
-            .single['count']
+      ${filter.sql};
+    ''', filter.parameters).single['count']
         as int;
   }
 
-  List<RemoteLibraryCachedComic> page(
-    String configKey, {
+  List<RemoteLibraryCachedComic> _page(
+    ({String sql, List<Object?> parameters}) filter, {
     required int page,
     required int pageSize,
-    List<String>? roots,
   }) {
     return db
         .select(
@@ -626,14 +660,31 @@ class _RemoteLibraryDatabase {
       SELECT c.id, c.sort_index, c.title, c.author, c.tags, c.cover,
         c.remote_etag, c.remote_modified_at, c.snapshot_state_json
       FROM remote_library_comics c
-      WHERE c.config_key = ?${_rootFilter(configKey, roots)}
+      ${filter.sql}
       ORDER BY c.sort_index, c.id LIMIT ? OFFSET ?;
     ''',
-          [configKey, ...?roots, pageSize, (page - 1) * pageSize],
+          [...filter.parameters, pageSize, (page - 1) * pageSize],
         )
         .map((row) => _comic(row))
         .toList();
   }
+
+  List<String> _availableTags(
+    ({String sql, List<Object?> parameters}) filter,
+  ) => [
+    for (final row in db.select('''
+      SELECT MIN(tag) AS tag
+      FROM (
+        SELECT ${libraryTagSql('t.value')} AS tag
+        FROM remote_library_comics c JOIN json_each(c.tags) t
+        ${filter.sql}
+      )
+      WHERE tag IS NOT NULL AND tag != ''
+      GROUP BY lower(tag)
+      ORDER BY tag COLLATE NOCASE, tag;
+    ''', filter.parameters))
+      row['tag'] as String,
+  ];
 
   Map<String, RemoteLibraryCachedComic> versions(String configKey) => {
     for (final row in db.select(

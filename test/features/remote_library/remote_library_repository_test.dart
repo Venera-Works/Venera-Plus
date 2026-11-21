@@ -470,6 +470,90 @@ void main() {
       expect(await repository.rootFailures(key), isEmpty);
     });
 
+    test('库内搜索按当前库和识别根先筛选再分页，重叠根不重复', () async {
+      const roots = ['/A/', '/A/子目录/'];
+      await repository.replaceRootDirectoryIndex(
+        key,
+        _index(roots[0], [
+          'title',
+          'author',
+          'partial',
+          'untagged',
+          'no-keyword',
+        ]),
+      );
+      await repository.replaceRootDirectoryIndex(
+        key,
+        _index(roots[1], ['author', 'tag']),
+      );
+      await repository.replaceRootDirectoryIndex(
+        key,
+        _index('/移除的目录/', ['outside']),
+      );
+      await repository.replaceRootDirectoryIndex(
+        'other',
+        _index(roots[0], ['other-book']),
+      );
+      await repository.upsertSnapshots(key, [
+        _comic('title', title: 'Case Notes 01', tags: ['标签:悬疑', '校园']),
+        _comic(
+          'author',
+          sortIndex: 1,
+          author: 'Case Notes',
+          tags: ['悬疑', '校园'],
+        ),
+        _comic('tag', sortIndex: 2, tags: ['Case Notes', '悬疑', '标签:校园']),
+        _comic(
+          'partial',
+          sortIndex: 3,
+          title: 'Case Notes 02',
+          tags: ['轻悬疑', '校园'],
+        ),
+        _comic(
+          'untagged',
+          sortIndex: 4,
+          title: 'Case Notes 03',
+          tags: ['作者:悬疑', '校园'],
+        ),
+        _comic('no-keyword', sortIndex: 5, tags: ['悬疑', '校园']),
+        _comic('outside', title: 'Case Notes 04', tags: ['悬疑', '校园', '根外标签']),
+      ]);
+      await repository.upsertSnapshot(
+        'other',
+        _comic(
+          'other-book',
+          title: 'Case Notes 05',
+          tags: ['悬疑', '校园', '其他库标签'],
+        ),
+      );
+      await repository.close();
+
+      final first = await repository.pageWithCount(
+        key,
+        page: 1,
+        pageSize: 2,
+        roots: roots,
+        keyword: 'case notes',
+        tags: const ['悬疑', '校园'],
+      );
+      expect(first.count, 3);
+      expect(first.rows.map((comic) => comic.id), ['title', 'author']);
+      final second = await repository.pageWithCount(
+        key,
+        page: 2,
+        pageSize: 2,
+        roots: roots,
+        keyword: 'case notes',
+        tags: const ['悬疑', '校园'],
+      );
+      expect(second.count, 3);
+      expect(second.rows.map((comic) => comic.id), ['tag']);
+      expect(
+        await repository.availableTags(key, roots: roots),
+        unorderedEquals(['Case Notes', '悬疑', '校园', '轻悬疑']),
+      );
+    });
+
     test('根索引事务失败时保留成员、排序和失败状态', () async {
       await repository.replaceRootDirectoryIndex(
         key,
@@ -736,6 +820,8 @@ RemoteLibraryCachedComic _comic(
   String id, {
   int sortIndex = 0,
   String? title,
+  String author = '作者',
+  List<String> tags = const ['标签'],
   Map<String, dynamic>? snapshot = const {
     'formatVersion': remoteLibrarySnapshotFormatVersion,
   },
@@ -745,8 +831,8 @@ RemoteLibraryCachedComic _comic(
   id: id,
   sortIndex: sortIndex,
   title: title ?? '标题 $id',
-  author: '作者',
-  tags: const ['标签'],
+  author: author,
+  tags: tags,
   cover: 'https://example.com/$id.jpg',
   snapshot: snapshot,
   remoteETag: eTag,

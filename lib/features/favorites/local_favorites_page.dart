@@ -566,10 +566,16 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
     final readFilteredCount =
         matchingComics.length - _readFilteredComics.length;
     final blockedCount = _readFilteredComics.length - displayedComics.length;
-    var title = widget.folder;
-    if (title == localAllFolderLabel) {
-      title = "All".tl;
-    }
+    final folders = isAllFolder ? const <FavoriteFolder>[] : manager.folders;
+    final currentFolder = folders
+        .where((folder) => folder.name == widget.folder)
+        .firstOrNull;
+    final parentName = currentFolder?.parentName;
+    final hasSubfolders =
+        currentFolder != null &&
+        folders.any((folder) => folder.parentId == currentFolder.id);
+    final narrow = context.width <= favoritesTwoPanelChangeWidth;
+    final title = isAllFolder ? 'All'.tl : widget.folder;
 
     Widget body = SmoothCustomScrollView(
       controller: scrollController,
@@ -581,21 +587,44 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                 ? AppbarStyle.shadow
                 : AppbarStyle.blur,
             leading: Tooltip(
-              message: "Folders".tl,
-              child: context.width <= favoritesTwoPanelChangeWidth
+              message: (parentName == null ? 'Folders' : 'Back').tl,
+              child: narrow
                   ? IconButton(
-                      icon: const Icon(Icons.menu),
+                      icon: Icon(
+                        parentName == null ? Icons.menu : Icons.arrow_back,
+                      ),
                       color: context.colorScheme.primary,
-                      onPressed: widget.showFolders,
+                      onPressed: parentName == null
+                          ? widget.showFolders
+                          : () => widget.onFolderSelected(false, parentName),
                     )
                   : const SizedBox(),
             ),
-            title: GestureDetector(
-              onTap: context.width < favoritesTwoPanelChangeWidth
-                  ? widget.showFolders
-                  : null,
-              child: Text(title),
-            ),
+            title: parentName != null && !narrow
+                ? Row(
+                    children: [
+                      Flexible(
+                        child: TextButton(
+                          onPressed: () =>
+                              widget.onFolderSelected(false, parentName),
+                          child: Text(
+                            parentName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ),
+                      const Icon(Icons.chevron_right),
+                      Flexible(child: Text(title)),
+                    ],
+                  )
+                : GestureDetector(
+                    onTap: narrow ? widget.showFolders : null,
+                    child: Tooltip(
+                      message: currentFolder?.path ?? title,
+                      child: Text(title),
+                    ),
+                  ),
             actions: [
               if (networkSource != null && !isAllFolder)
                 Tooltip(
@@ -685,7 +714,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                   },
                 ),
               ),
-              if (!isAllFolder)
+              if (currentFolder != null)
                 MenuButton(
                   entries: [
                     MenuEntry(
@@ -715,6 +744,38 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                         );
                       },
                     ),
+                    if (currentFolder.parentId == null)
+                      MenuEntry(
+                        icon: Icons.create_new_folder_outlined,
+                        text: 'New subfolder'.tl,
+                        onClick: () async {
+                          final folder = await newFolder(
+                            parentFolderId: currentFolder.id,
+                          );
+                          if (mounted && folder != null) {
+                            widget.onFolderSelected(false, folder);
+                          }
+                        },
+                      ),
+                    if (!hasSubfolders &&
+                        (currentFolder.parentId != null ||
+                            folders.any(
+                              (folder) =>
+                                  folder.parentId == null &&
+                                  folder.id != currentFolder.id,
+                            )))
+                      MenuEntry(
+                        icon: Icons.drive_file_move_outlined,
+                        text: 'Move folder'.tl,
+                        onClick: () => moveFavoriteFolder(currentFolder),
+                      ),
+                    if (hasSubfolders)
+                      MenuEntry(
+                        icon: Icons.sort,
+                        text: 'Sort subfolders'.tl,
+                        onClick: () =>
+                            sortFolders(parentFolderId: currentFolder.id),
+                      ),
                     MenuEntry(
                       icon: manager.readingFolder == widget.folder
                           ? Icons.home
@@ -768,6 +829,12 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                       text: "Delete Folder".tl,
                       color: context.colorScheme.error,
                       onClick: () {
+                        if (hasSubfolders) {
+                          context.showMessage(
+                            message: 'Move or delete subfolders first'.tl,
+                          );
+                          return;
+                        }
                         showConfirmDialog(
                           context: App.rootContext,
                           title: "Delete".tl,
@@ -776,8 +843,23 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                           }),
                           btnColor: context.colorScheme.error,
                           onConfirm: () {
-                            widget.onFolderSelected(false, null);
-                            LocalFavoritesManager().deleteFolder(widget.folder);
+                            final folders = manager.folders;
+                            final folder = folders
+                                .where(
+                                  (folder) => folder.id == currentFolder.id,
+                                )
+                                .firstOrNull;
+                            if (!mounted || folder == null) return;
+                            if (folders.any(
+                              (child) => child.parentId == folder.id,
+                            )) {
+                              context.showMessage(
+                                message: 'Move or delete subfolders first'.tl,
+                              );
+                              return;
+                            }
+                            widget.onFolderSelected(false, folder.parentName);
+                            manager.deleteFolder(folder.name);
                             widget.updateFolderList();
                           },
                         );
@@ -1054,9 +1136,9 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
         ),
       ),
     );
-    final canPopScope = widget.isActive
-        ? (!multiSelectMode && !searchMode)
-        : true;
+    final canPopScope =
+        !widget.isActive ||
+        (!multiSelectMode && !searchMode && parentName == null);
     return PopScope(
       canPop: canPopScope,
       onPopInvokedWithResult: (didPop, result) {
@@ -1072,6 +1154,8 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
             keyword = "";
             _refreshComics();
           });
+        } else if (parentName != null) {
+          widget.onFolderSelected(false, parentName);
         }
       },
       child: body,
@@ -1080,14 +1164,18 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
 
   void favoriteOption(String option) {
     selectedLocalFolders.clear();
-    var targetFolders = LocalFavoritesManager().folderNames
-        .where((folder) => folder != widget.folder)
-        .toList();
+    var query = '';
 
     showPopUpWidget(
       App.rootContext,
       StatefulBuilder(
         builder: (context, setState) {
+          final targetFolders = manager.folders
+              .where(
+                (folder) =>
+                    folder.name != widget.folder && folder.matchesPath(query),
+              )
+              .toList();
           return PopUpWidgetScaffold(
             title: widget.folder,
             body: Padding(
@@ -1099,6 +1187,9 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                 ),
                 child: Column(
                   children: [
+                    FavoriteFolderSearchField(
+                      onChanged: (value) => setState(() => query = value),
+                    ),
                     Expanded(
                       child: ListView.builder(
                         itemCount: targetFolders.length + 1,
@@ -1110,15 +1201,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                                 child: TextButton(
                                   onPressed: () {
                                     newFolder().then((_) {
-                                      setState(() {
-                                        targetFolders = LocalFavoritesManager()
-                                            .folderNames
-                                            .where(
-                                              (folder) =>
-                                                  folder != widget.folder,
-                                            )
-                                            .toList();
-                                      });
+                                      if (context.mounted) setState(() {});
                                     });
                                   },
                                   child: Row(
@@ -1133,7 +1216,8 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                               ),
                             );
                           }
-                          var folder = targetFolders[index];
+                          final target = targetFolders[index];
+                          final folder = target.name;
                           var disabled = false;
                           if (selectedLocalFolders.isNotEmpty) {
                             if (added.contains(folder) &&
@@ -1145,12 +1229,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                             }
                           }
                           return CheckboxListTile(
-                            title: Row(
-                              children: [
-                                Text(folder),
-                                const SizedBox(width: 8),
-                              ],
-                            ),
+                            title: Text(target.path),
                             value: selectedLocalFolders.contains(folder),
                             onChanged: disabled
                                 ? null

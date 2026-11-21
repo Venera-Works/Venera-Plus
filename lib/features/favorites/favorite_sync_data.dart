@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:sqlite3/sqlite3.dart';
+import 'package:venera_plus/foundation/sqlite_connection.dart';
 import 'package:venera_plus/foundation/sync_records.dart';
 import 'comic_update_state.dart';
 
@@ -9,13 +10,7 @@ String quoteSqlIdentifier(String name) {
   return '"${name.replaceAll('"', '""')}"';
 }
 
-final _asciiUppercase = RegExp(r'[A-Z]');
-
-/// SQLite folds ASCII table names, preserving non-ASCII case distinctions.
-String favoriteFolderNameKey(String name) => name.replaceAllMapped(
-  _asciiUppercase,
-  (match) => String.fromCharCode(match[0]!.codeUnitAt(0) + 32),
-);
+String favoriteFolderNameKey(String name) => sqliteNoCaseKey(name);
 
 bool hasFavoriteFolderName(
   Iterable<String> folders,
@@ -59,6 +54,7 @@ class FolderMetadataRecord {
   final int orderValue;
   final String? sourceKey;
   final String? sourceFolder;
+  final String? parentFolderId;
 
   const FolderMetadataRecord({
     required this.folderId,
@@ -67,6 +63,7 @@ class FolderMetadataRecord {
     this.orderValue = 0,
     this.sourceKey,
     this.sourceFolder,
+    this.parentFolderId,
   });
 
   Map<String, Object?> toMap() => {
@@ -76,6 +73,7 @@ class FolderMetadataRecord {
     'order_value': orderValue,
     'source_key': sourceKey,
     'source_folder': sourceFolder,
+    'parent_folder_id': parentFolderId,
   };
 }
 
@@ -285,6 +283,7 @@ class FavoriteSyncData {
     final existingMetaCheck = db.select(
       "SELECT 1 FROM sqlite_master WHERE type='table' AND name='folder_metadata' COLLATE NOCASE;",
     );
+    var hasLegacyMetadataSchema = false;
     if (existingMetaCheck.isNotEmpty) {
       final pragma = db.select('PRAGMA table_info("folder_metadata");');
       final hasFolderId = pragma.any((col) => col['name'] == 'folder_id');
@@ -301,6 +300,10 @@ class FavoriteSyncData {
         }
         db.execute(
           'ALTER TABLE "folder_metadata" RENAME TO ${quoteSqlIdentifier(migratedName)};',
+        );
+      } else {
+        hasLegacyMetadataSchema = !pragma.any(
+          (col) => col['name'] == 'parent_folder_id',
         );
       }
     }
@@ -325,9 +328,15 @@ class FavoriteSyncData {
         logical_name TEXT,
         order_value INT DEFAULT 0,
         source_key TEXT,
-        source_folder TEXT
+        source_folder TEXT,
+        parent_folder_id TEXT
       );
     ''');
+    if (hasLegacyMetadataSchema) {
+      db.execute(
+        'ALTER TABLE folder_metadata ADD COLUMN parent_folder_id TEXT;',
+      );
+    }
 
     final tableRows = db.select(
       "SELECT name FROM sqlite_master WHERE type='table';",
@@ -397,7 +406,8 @@ class FavoriteSyncData {
     final records = <String, Map<String, Object?>>{};
 
     final folderRows = db.select('''
-      SELECT folder_id, folder_name, logical_name, order_value, source_key, source_folder
+      SELECT folder_id, folder_name, logical_name, order_value, source_key,
+             source_folder, parent_folder_id
       FROM folder_metadata
       ORDER BY order_value, folder_id;
     ''');
@@ -409,12 +419,14 @@ class FavoriteSyncData {
       final orderValue = fRow['order_value'] as int? ?? 0;
       final sourceKey = fRow['source_key'] as String?;
       final sourceFolder = fRow['source_folder'] as String?;
+      final parentFolderId = fRow['parent_folder_id'] as String?;
 
       records[syncRecordKey('folder', [folderId])] = {
         'name': logicalName,
         'order': orderValue,
-        if (sourceKey != null) 'sourceKey': sourceKey,
-        if (sourceFolder != null) 'sourceFolder': sourceFolder,
+        'sourceKey': ?sourceKey,
+        'sourceFolder': ?sourceFolder,
+        'parentFolderId': ?parentFolderId,
       };
 
       final tableExists = db.select(
@@ -611,7 +623,8 @@ class FavoriteSyncData {
 
     // Query current local state in DB.
     final localMetadataRows = db.select('''
-      SELECT folder_id, folder_name, logical_name, order_value, source_key, source_folder
+      SELECT folder_id, folder_name, logical_name, order_value, source_key,
+             source_folder, parent_folder_id
       FROM folder_metadata;
     ''');
     final localFoldersById = <String, FolderMetadataRecord>{};
@@ -630,6 +643,7 @@ class FavoriteSyncData {
         orderValue: orderVal,
         sourceKey: srcKey,
         sourceFolder: srcFolder,
+        parentFolderId: row['parent_folder_id'] as String?,
       );
       localFoldersById[folderId] = meta;
       localPhysicalByFolderId[folderId] = physicalName;
@@ -646,6 +660,8 @@ class FavoriteSyncData {
             if (existing.sourceKey != null) 'sourceKey': existing.sourceKey,
             if (existing.sourceFolder != null)
               'sourceFolder': existing.sourceFolder,
+            if (existing.parentFolderId != null)
+              'parentFolderId': existing.parentFolderId,
           };
         } else {
           final prefix = folderId.length > 8
@@ -669,6 +685,8 @@ class FavoriteSyncData {
           : 0;
       final srcKey = fields['sourceKey'] as String?;
       final srcFolder = fields['sourceFolder'] as String?;
+      final parentId = fields['parentFolderId'];
+      final parent = parentId is String ? incomingFolders[parentId] : null;
 
       candidateFolders.add(
         FolderMetadataRecord(
@@ -678,6 +696,13 @@ class FavoriteSyncData {
           orderValue: orderVal,
           sourceKey: srcKey,
           sourceFolder: srcFolder,
+          parentFolderId:
+              parentId is String &&
+                  parentId != folderId &&
+                  parent != null &&
+                  parent['parentFolderId'] == null
+              ? parentId
+              : null,
         ),
       );
     }
@@ -758,6 +783,7 @@ class FavoriteSyncData {
         final orderValue = candidate.orderValue;
         final sourceKey = candidate.sourceKey;
         final sourceFolder = candidate.sourceFolder;
+        final parentFolderId = candidate.parentFolderId;
         final targetPhysicalName = assignedPhysicalNames[folderId]!;
         final existing = localFoldersById[folderId];
 
@@ -787,11 +813,14 @@ class FavoriteSyncData {
             existing.logicalName != logicalName ||
             existing.orderValue != orderValue ||
             existing.sourceKey != sourceKey ||
-            existing.sourceFolder != sourceFolder) {
+            existing.sourceFolder != sourceFolder ||
+            existing.parentFolderId != parentFolderId) {
           db.execute(
             '''
-            INSERT OR REPLACE INTO folder_metadata (folder_id, folder_name, logical_name, order_value, source_key, source_folder)
-            VALUES (?, ?, ?, ?, ?, ?);
+            INSERT OR REPLACE INTO folder_metadata
+              (folder_id, folder_name, logical_name, order_value, source_key,
+               source_folder, parent_folder_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?);
           ''',
             [
               folderId,
@@ -800,6 +829,7 @@ class FavoriteSyncData {
               orderValue,
               sourceKey,
               sourceFolder,
+              parentFolderId,
             ],
           );
           db.execute(

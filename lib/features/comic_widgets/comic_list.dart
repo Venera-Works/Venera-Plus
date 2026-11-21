@@ -363,6 +363,7 @@ class ComicList extends StatefulWidget {
     this.loadNext,
     this.leadingSliver,
     this.trailingSliver,
+    this.emptySliver,
     this.errorLeading,
     this.menuBuilder,
     this.controller,
@@ -385,6 +386,8 @@ class ComicList extends StatefulWidget {
   final Widget? leadingSliver;
 
   final Widget? trailingSliver;
+
+  final Widget? emptySliver;
 
   final Widget? errorLeading;
 
@@ -1314,15 +1317,18 @@ class ComicListState extends State<ComicList> {
       slivers: [
         if (widget.leadingSliver != null) widget.leadingSliver!,
         if (_maxPage != 1) _buildSliverPageSelector(),
-        SliverGridComics(
-          comics: _data[_page] ?? const [],
-          preserveScrollPosition: widget.preserveScrollPosition,
-          menuBuilder: widget.menuBuilder,
-          onTap: widget.onTap,
-          badgeBuilder: widget.badgeBuilder,
-          useFavoriteDisplaySettings: widget.useFavoriteDisplaySettings,
-          hideFavoriteBadge: widget.hideFavoriteBadge,
-        ),
+        if (widget.emptySliver != null && _data[_page]!.isEmpty)
+          widget.emptySliver!
+        else
+          SliverGridComics(
+            comics: _data[_page] ?? const [],
+            preserveScrollPosition: widget.preserveScrollPosition,
+            menuBuilder: widget.menuBuilder,
+            onTap: widget.onTap,
+            badgeBuilder: widget.badgeBuilder,
+            useFavoriteDisplaySettings: widget.useFavoriteDisplaySettings,
+            hideFavoriteBadge: widget.hideFavoriteBadge,
+          ),
         if (_data[_page]!.length > 6 && _maxPage != 1)
           _buildSliverPageSelector(),
         if (widget.trailingSliver != null) widget.trailingSliver!,
@@ -1379,7 +1385,11 @@ class ComicListState extends State<ComicList> {
       physics: const AlwaysScrollableScrollPhysics(),
       slivers: [
         if (widget.leadingSliver != null) widget.leadingSliver!,
-        if (_tracksPages)
+        if (widget.emptySliver != null &&
+            _maxPage == 1 &&
+            _data[_firstPage]!.isEmpty)
+          widget.emptySliver!
+        else if (_tracksPages)
           for (final page in pages) ...[
             SliverLayoutBuilder(
               builder: (context, constraints) {

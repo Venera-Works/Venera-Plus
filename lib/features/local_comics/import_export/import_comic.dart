@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -430,11 +431,24 @@ class ImportComic {
         : const <String>[];
     final coverPath = layout.relativePath(cover);
     var directoryPath = useRelativePath ? directory.name : directory.path;
+    ComicMetaData? metadata;
+    final metadataFile = directory.joinFile('metadata.json');
+    try {
+      if (await metadataFile.exists()) {
+        metadata = ComicMetaData.fromJson(
+          jsonDecode(await metadataFile.readAsString()),
+        );
+      }
+    } catch (error) {
+      Log.warning('Import Comic', '读取目录元数据失败：$error');
+    }
     return LocalComic(
       id: id ?? '0',
       title: name,
-      subtitle: subtitle ?? '',
-      tags: tags ?? [],
+      subtitle: subtitle == null || subtitle.isEmpty
+          ? metadata?.author ?? ''
+          : subtitle,
+      tags: {...?tags, ...?metadata?.tags}.toList(),
       directory: directoryPath,
       chapters: layout.useChapterDirectories
           ? ComicChapters(Map.fromIterables(chapters, chapters))

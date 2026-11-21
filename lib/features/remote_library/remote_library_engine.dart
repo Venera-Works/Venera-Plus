@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_storage/comic_storage.dart';
 import 'package:venera_plus/features/remote_library/remote_library_repository.dart';
+import 'package:venera_plus/features/search/library_search_query.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/extensions.dart';
 import 'package:venera_plus/foundation/log.dart';
@@ -490,34 +491,43 @@ class RemoteLibraryEngine {
   Future<Res<bool>> synchronize({bool force = false, bool automatic = false}) =>
       _scanner.synchronize(force: force, automatic: automatic);
 
-  Future<Res<List<Comic>>> loadComics(int page) async {
+  Future<String?> _directoryIndexError(RemoteLibraryConfig config) async {
+    final hasIndex = await _cache.hasDirectoryIndex(config.cacheKey);
+    _ensureActive();
+    if (hasIndex) return null;
+    return (await _scanner.start().indexReady).errorMessage;
+  }
+
+  Future<Res<List<Comic>>> loadComics(
+    int page, {
+    String keyword = '',
+    Iterable<String> tags = const [],
+    bool showAuthor = false,
+  }) async {
     final config = _config;
     if (!config.isValid) {
       return const Res.error('Invalid remote comic library configuration');
     }
     try {
       if (page < 1) return const Res([], subData: 1);
-      if (!await _cache.hasDirectoryIndex(config.cacheKey)) {
-        final result = await _scanner.start().indexReady;
-        if (result.error) return Res.error(result.errorMessage!);
-      }
-      final roots = config.remoteLibrary?.directories;
-      final count = await _cache.count(config.cacheKey, roots: roots);
-      final maxPage = count == 0 ? 1 : (count + pageSize - 1) ~/ pageSize;
-      if (page > maxPage) return Res([], subData: maxPage);
-      final rows = await _cache.page(
+      final error = await _directoryIndexError(config);
+      if (error != null) return Res.error(error);
+      final (count: count, rows: rows) = await _cache.pageWithCount(
         config.cacheKey,
         page: page,
         pageSize: pageSize,
-        roots: roots,
+        roots: config.remoteLibrary?.directories,
+        keyword: keyword,
+        tags: tags,
       );
+      final maxPage = count == 0 ? 1 : (count + pageSize - 1) ~/ pageSize;
       return Res([
         for (final comic in rows)
           Comic(
             comic.title,
             comic.cover,
             comic.id,
-            null,
+            showAuthor && comic.author.isNotEmpty ? comic.author : null,
             comic.tags,
             '',
             _activeSourceKey,
@@ -525,6 +535,25 @@ class RemoteLibraryEngine {
             null,
           ),
       ], subData: maxPage);
+    } catch (error) {
+      return Res.error(error.toString());
+    }
+  }
+
+  Future<Res<List<String>>> availableTags() async {
+    final config = _config;
+    if (!config.isValid) {
+      return const Res.error('Invalid remote comic library configuration');
+    }
+    try {
+      final error = await _directoryIndexError(config);
+      if (error != null) return Res.error(error);
+      return Res(
+        await _cache.availableTags(
+          config.cacheKey,
+          roots: config.remoteLibrary?.directories,
+        ),
+      );
     } catch (error) {
       return Res.error(error.toString());
     }
@@ -574,7 +603,18 @@ class RemoteLibraryEngine {
       null,
       null,
       null,
-      null,
+      (namespace, tag) {
+        if (isAuthorNamespace(namespace)) {
+          return PageJumpTarget(_activeSourceKey, 'remoteLibrarySearch', {
+            'keyword': tag,
+          });
+        }
+        final label = libraryTagLabel(tag);
+        if (label == null) return null;
+        return PageJumpTarget(_activeSourceKey, 'remoteLibrarySearch', {
+          'tag': label,
+        });
+      },
       null,
       null,
       false,
@@ -2026,6 +2066,13 @@ class RemoteLibraryEngines {
   static final _bySourceKey = <String, RemoteLibraryEngine>{};
 
   static RemoteLibraryEngine? find(String sourceKey) => _bySourceKey[sourceKey];
+
+  static RemoteLibraryEngine? forSearch(String sourceKey) =>
+      find(sourceKey) ??
+      (sourceKey == RemoteLibrarySource.sourceKey &&
+              RemoteLibrarySource._legacyEngine._config.isValid
+          ? RemoteLibrarySource._legacyEngine
+          : null);
 
   static Future<void> refreshAll() async {
     for (final engine in _bySourceKey.values) {

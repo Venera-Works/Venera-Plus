@@ -110,7 +110,8 @@ class _BrowsingAndFavoritesSettingsState
               "Long press on the favorite button to quickly add to this folder"
                   .tl,
           optionTranslation: {
-            for (var e in LocalFavoritesManager().folderNames) e: e,
+            for (final folder in LocalFavoritesManager().folders)
+              folder.name: folder.path,
           },
         ).toSliver(),
         CallbackSetting(

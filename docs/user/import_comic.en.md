@@ -12,6 +12,10 @@ features continue to work.
 Local comics are located under `Library` -> `Local Comics`. Imported comics
 can be browsed, sorted, and read directly there.
 
+In Local Comics, search the current category by title, author, or tag text. Open the tag filter to select complete tags. Selecting both “school” and “mystery” shows comics with both tags. For an imported comic, choose **Match Bangumi tags** from its menu, search by title or subject ID, and confirm the match. Matching again replaces the supplemental tags and keeps the tags supplied by the original import.
+
+When importing an image directory, the app reads author and tag information from its `metadata.json`. Select multiple comics to move them into a category together. Each comic can belong to one manual category. Removing a comic from a category or deleting the category returns it to **Uncategorized**. Category assignments are stored on the device and the comic files stay in place.
+
 Supported comic image extensions are `jpg`, `jpeg`, `jpe`, `png`, `webp`,
 `gif`, and `avif`.
 
@@ -154,6 +158,8 @@ EPUB, PDF, or CBZ before importing.
 Document import never overwrites an existing comic with the same title.
 
 ## WebDAV and Cloud Online Libraries
+
+Select a cloud library in Discover and open its search to find titles, authors, and tags across all indexed works in that library. Selecting several tags requires every one of them. Tapping a tag in a comic's details opens matching titles in the same library. The existing index can be searched offline and search results update as metadata arrives.
 
 Online libraries provide a reading channel separate from local import/export and comic archive backup, using WebDAV or a configured cloud account.
 

@@ -9,16 +9,21 @@ import '../../support/sqlite.dart';
 
 const _testComicType = ComicType(9001);
 
-LocalComic _localComic(String id) {
+LocalComic _localComic(
+  String id, {
+  String subtitle = 'Author',
+  List<String> tags = const ['tag'],
+  ComicType comicType = _testComicType,
+}) {
   return LocalComic(
     id: id,
     title: 'Local $id',
-    subtitle: 'Author',
-    tags: const ['tag'],
+    subtitle: subtitle,
+    tags: tags,
     directory: id,
     chapters: null,
     cover: 'cover.jpg',
-    comicType: _testComicType,
+    comicType: comicType,
     downloadedChapters: const [],
     createdAt: DateTime(2026, 1, 1),
   );
@@ -208,6 +213,95 @@ void main() {
       expect(manager.path, savedPath);
       expect(pathFile.readAsStringSync(), savedPath);
       expect(manager.directory.path, savedPath);
+    },
+    skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
+  );
+
+  group(
+    '本地书库分类与搜索',
+    () {
+      late LocalManager manager;
+
+      setUp(() async {
+        final root = Directory.systemTemp.createTempSync(
+          'venera-local-library-',
+        );
+        addTearDown(() {
+          LocalManager.resetForTesting();
+          root.deleteSync(recursive: true);
+        });
+        App.dataPath = App.cachePath = root.path;
+        final library = Directory('${root.path}/library')..createSync();
+        File('${root.path}/local_path').writeAsStringSync(library.path);
+        LocalManager.resetForTesting();
+        LocalManager.debugSkipComicSourceInit = true;
+        manager = LocalManager();
+        await manager.init();
+      });
+
+      test('删掉分类后漫画回到未分类且保留文件', () async {
+        final comic = _localComic('downloaded');
+        final page = File('${manager.path}/${comic.directory}/1.png')
+          ..createSync(recursive: true);
+        await manager.add(comic);
+        final category = manager.createComicCategory('待阅读')!;
+        manager.moveComicsToCategory([comic], category);
+
+        await manager.add(comic);
+        expect(manager.search('', categoryId: category).single.id, comic.id);
+
+        manager.deleteComicCategory(category);
+        expect(manager.comicCategories, isEmpty);
+        expect(
+          manager.search('', categoryId: LocalManager.uncategorized).single.id,
+          comic.id,
+        );
+        expect(page.existsSync(), isTrue);
+      });
+
+      test('标签要求完整匹配并能与作者搜索组合', () async {
+        await manager.add(
+          _localComic('first', subtitle: '', tags: ['标签:悬疑', '校园', '作者:朝仓']),
+        );
+        await manager.add(
+          _localComic('partial', subtitle: '朝仓', tags: ['轻悬疑', '校园']),
+        );
+        await manager.add(_localComic('other', subtitle: '朝仓', tags: ['悬疑']));
+
+        expect(
+          manager.search('朝仓', tags: ['悬疑', '校园']).map((comic) => comic.id),
+          ['first'],
+        );
+        expect(
+          manager.availableTags(LocalManager.allCategories),
+          unorderedEquals(['悬疑', '校园', '轻悬疑']),
+        );
+      });
+
+      test('重复刮削替换上次的 Bangumi 标签并保留导入元数据', () async {
+        final comic = _localComic(
+          'imported',
+          comicType: ComicType.local,
+          subtitle: '原作者',
+          tags: ['原标签', '校园'],
+        );
+        await manager.add(comic);
+        manager.updateImportedMetadata(
+          comic.id,
+          tags: ['校园', '旧标签'],
+          author: '作者甲',
+        );
+        expect(manager.find(comic.id, comic.comicType)!.tags, [
+          '原标签',
+          '校园',
+          '旧标签',
+        ]);
+
+        manager.updateImportedMetadata(comic.id, tags: ['新标签'], author: '作者乙');
+        final updated = manager.find(comic.id, comic.comicType)!;
+        expect(updated.tags, ['原标签', '校园', '新标签']);
+        expect(updated.subtitle, '原作者');
+      });
     },
     skip: isSqliteAvailable() ? false : 'sqlite3 native library is unavailable',
   );

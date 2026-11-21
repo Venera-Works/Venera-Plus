@@ -22,6 +22,7 @@ class BangumiProgressPanel extends StatefulWidget {
     required this.chapters,
     required this.history,
     this.initialSubjectId,
+    this.selectMetadataOnly = false,
   });
 
   final BangumiService? service;
@@ -31,6 +32,7 @@ class BangumiProgressPanel extends StatefulWidget {
   final ComicChapters? chapters;
   final History? history;
   final int? initialSubjectId;
+  final bool selectMetadataOnly;
 
   @override
   State<BangumiProgressPanel> createState() => _BangumiProgressPanelState();
@@ -52,8 +54,9 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
   bool _loading = false;
 
   BangumiService get _service => widget.service ?? BangumiService();
-  BangumiBinding? get _binding =>
-      _service.bindingFor(widget.sourceKey, widget.comicId);
+  BangumiBinding? get _binding => widget.selectMetadataOnly
+      ? null
+      : _service.bindingFor(widget.sourceKey, widget.comicId);
 
   @override
   void initState() {
@@ -104,7 +107,7 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
 
   @override
   Widget build(BuildContext context) => PopUpWidgetScaffold(
-    title: 'Bangumi',
+    title: widget.selectMetadataOnly ? 'Match Bangumi tags'.tl : 'Bangumi',
     body: !_service.isConnected
         ? Center(child: Text('Connect Bangumi in Settings first'.tl))
         : SingleChildScrollView(
@@ -132,7 +135,7 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
         onSubmitted: _loading ? null : (_) => _search(),
       ),
       const SizedBox(height: 12),
-      _modePicker(),
+      if (!widget.selectMetadataOnly) _modePicker(),
       if (_error != null) _errorText(),
       if (_loading)
         const Padding(
@@ -145,10 +148,17 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
         const SizedBox(height: 12),
         Button.filled(
           key: const Key('bangumi-bind'),
-          onPressed: _loading ? () {} : () => _bind(),
-          child: Text('Bind'.tl),
+          onPressed: _loading ? () {} : _confirmSubject,
+          child: Text(
+            widget.selectMetadataOnly ? 'Use metadata'.tl : 'Bind'.tl,
+          ),
         ),
       ],
+      if (_results?.isEmpty == true && !_loading)
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text('No matching subjects'.tl),
+        ),
       if (_results != null)
         for (final subject in _results!.where((item) => item != _selected))
           ListTile(
@@ -158,7 +168,7 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
                   : Icons.radio_button_off,
             ),
             title: _subjectTile(subject),
-            onTap: () => setState(() => _selected = subject),
+            onTap: _loading ? null : () => setState(() => _selected = subject),
           ),
     ],
   );
@@ -281,6 +291,12 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
           children: [
             Text(subject.title),
             Text(subject.originalTitle),
+            if (widget.selectMetadataOnly && subject.tags.isNotEmpty)
+              Text(
+                subject.tags.join(' · '),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
             Text(
               '${'Episodes'.tl}: ${subject.totalEpisodes}  ${'Volumes'.tl}: ${subject.totalVolumes}',
             ),
@@ -409,7 +425,7 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
     }
   }
 
-  Future<void> _bind() async {
+  Future<void> _confirmSubject() async {
     final subject = _selected;
     if (subject == null) return;
     setState(() {
@@ -417,6 +433,14 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
       _error = null;
     });
     try {
+      if (widget.selectMetadataOnly) {
+        final popupRoute = ModalRoute.of(Navigator.of(context).context);
+        final detailed = await _service.getSubject(subject.id);
+        if (mounted && popupRoute?.isCurrent == true) {
+          Navigator.of(context, rootNavigator: true).pop(detailed);
+        }
+        return;
+      }
       await _service.bind(
         sourceKey: widget.sourceKey,
         comicId: widget.comicId,

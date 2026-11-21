@@ -49,14 +49,14 @@ class _FavoritePanelState extends State<ComicFavoritePanel>
 
   late bool hasNetwork;
 
-  late List<String> localFolders;
+  late List<FavoriteFolder> localFolders;
 
   late List<String> added;
 
   @override
   void initState() {
     comicSource = widget.type.comicSource!;
-    localFolders = LocalFavoritesManager().folderNames;
+    localFolders = LocalFavoritesManager().folders;
     added = LocalFavoritesManager().find(widget.cid, widget.type);
     hasNetwork = comicSource.favoriteData != null && comicSource.isLogged;
     super.initState();
@@ -104,7 +104,7 @@ class _FavoriteList extends StatefulWidget {
   final ComicUpdateSnapshot? updateSnapshot;
   final ComicSource comicSource;
   final bool hasNetwork;
-  final List<String> localFolders;
+  final List<FavoriteFolder> localFolders;
   final List<String> added;
 
   @override
@@ -480,7 +480,7 @@ class _LocalSection extends StatefulWidget {
   final ComicType type;
   final FavoriteItem favoriteItem;
   final ComicUpdateSnapshot? updateSnapshot;
-  final List<String> localFolders;
+  final List<FavoriteFolder> localFolders;
   final List<String> added;
   final void Function(bool) onFavorite;
 
@@ -489,8 +489,9 @@ class _LocalSection extends StatefulWidget {
 }
 
 class _LocalSectionState extends State<_LocalSection> {
-  late List<String> localFolders;
+  late List<FavoriteFolder> localFolders;
   late Set<String> localAdded;
+  var folderQuery = '';
 
   @override
   void initState() {
@@ -514,13 +515,19 @@ class _LocalSectionState extends State<_LocalSection> {
             ),
           ),
         ),
-        ...localFolders.map((folder) {
-          var isAdded = localAdded.contains(folder);
+        if (localFolders.isNotEmpty)
+          FavoriteFolderSearchField(
+            onChanged: (value) => setState(() => folderQuery = value),
+          ),
+        ...localFolders.where((folder) => folder.matchesPath(folderQuery)).map((
+          folder,
+        ) {
+          final isAdded = localAdded.contains(folder.name);
 
           return ListTile(
             title: Row(
               children: [
-                Text(folder),
+                Flexible(child: Text(folder.path)),
                 const SizedBox(width: 8),
                 if (isAdded)
                   Container(
@@ -539,25 +546,30 @@ class _LocalSectionState extends State<_LocalSection> {
             trailing: _HoverButton(
               isFavorite: isAdded,
               onTap: () {
-                if (isAdded) {
-                  LocalFavoritesManager().deleteComicWithId(
-                    folder,
-                    widget.cid,
-                    widget.type,
+                final manager = LocalFavoritesManager();
+                final name = manager.getFolderNameById(folder.id);
+                if (name == null) {
+                  context.showMessage(
+                    message: 'Favorite folder no longer exists'.tl,
                   );
+                  setState(() => localFolders = manager.folders);
+                  return;
+                }
+                if (isAdded) {
+                  manager.deleteComicWithId(name, widget.cid, widget.type);
                   setState(() {
-                    localAdded.remove(folder);
+                    localAdded.remove(folder.name);
                   });
-                  widget.onFavorite(false);
+                  widget.onFavorite(localAdded.isNotEmpty);
                 } else {
-                  LocalFavoritesManager().addComic(
-                    folder,
+                  manager.addComic(
+                    name,
                     widget.favoriteItem,
                     null,
                     widget.updateSnapshot,
                   );
                   setState(() {
-                    localAdded.add(folder);
+                    localAdded.add(folder.name);
                   });
                   widget.onFavorite(true);
                 }
@@ -580,8 +592,9 @@ class _LocalSectionState extends State<_LocalSection> {
           ),
           onTap: () {
             newFolder().then((_) {
+              if (!mounted) return;
               setState(() {
-                localFolders = LocalFavoritesManager().folderNames;
+                localFolders = LocalFavoritesManager().folders;
               });
             });
           },

@@ -346,6 +346,80 @@ void main() {
     );
 
     test(
+      'legacy and nested favorite folders keep stable identities and direct favorites on restore',
+      () async {
+        late SyncRecords exported;
+        late String parentId;
+        late String childId;
+        await _withManager(
+          (manager) async {
+            expect(manager.folders.single.id, 'legacy-stable-id');
+            expect(manager.folders.single.parentId, isNull);
+
+            manager.createFolder('Parent');
+            parentId = manager.getFolderId('Parent')!;
+            manager.createSubfolder('Child', parentId);
+            childId = manager.getFolderId('Child')!;
+            manager.addComic('Parent', _testComic('parent-only'));
+            manager.addComic('Parent', _testComic('shared'));
+            manager.addComic('Child', _testComic('child-only'));
+            manager.addComic('Child', _testComic('shared'));
+            exported = manager.exportSyncRecords();
+          },
+          seed: (db) {
+            db.execute('''
+              CREATE TABLE folder_metadata (
+                folder_id TEXT PRIMARY KEY, folder_name TEXT UNIQUE,
+                logical_name TEXT, order_value INT DEFAULT 0,
+                source_key TEXT, source_folder TEXT
+              );
+              CREATE TABLE Legacy (
+                id TEXT, name TEXT, author TEXT, type INT, tags TEXT,
+                cover_path TEXT, time TEXT, display_order INT,
+                PRIMARY KEY (id, type)
+              );
+              INSERT INTO folder_metadata (folder_id, folder_name, logical_name)
+              VALUES ('legacy-stable-id', 'Legacy', 'Legacy');
+              INSERT INTO Legacy VALUES (
+                'legacy-comic', 'Legacy comic', '', 0, '', '', '2026-10-07', 0
+              );
+            ''');
+          },
+        );
+
+        await _withManager((manager) async {
+          manager.applySyncRecords(exported);
+
+          final restored = {
+            for (final folder in manager.folders) folder.id: folder,
+          };
+          expect(restored['legacy-stable-id']!.parentId, isNull);
+          expect(restored[parentId]!.parentId, isNull);
+          expect(restored[childId]!.parentId, parentId);
+          expect(restored[childId]!.path, 'Parent / Child');
+          expect(manager.getFolderComics('Legacy').single.id, 'legacy-comic');
+          expect(
+            manager.getFolderComics('Parent').map((comic) => comic.id),
+            unorderedEquals(['parent-only', 'shared']),
+          );
+          expect(
+            manager.getFolderComics('Child').map((comic) => comic.id),
+            unorderedEquals(['child-only', 'shared']),
+          );
+          expect(
+            manager.getAllComics().map((comic) => comic.id),
+            unorderedEquals([
+              'legacy-comic',
+              'parent-only',
+              'child-only',
+              'shared',
+            ]),
+          );
+        });
+      },
+    );
+
+    test(
       'sync records separate shared update evidence from membership and local check times',
       () async {
         await _withManager((manager) async {

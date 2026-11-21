@@ -11,6 +11,7 @@ import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/features/local_comics/downloading_page.dart';
 import 'download.dart';
@@ -19,11 +20,15 @@ import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/features/comic_details/comic_details.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/local_comics/import_export/import_export.dart';
+import 'package:venera_plus/features/search/library_tag_picker.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/file_interaction.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:zip_flutter/zip_flutter.dart';
 import 'package:url_launcher/url_launcher_string.dart';
+
+import 'local_bangumi_tags.dart';
+import 'local_category_picker.dart';
 
 class LocalComicsPage extends StatefulWidget {
   const LocalComicsPage({super.key, this.isRoot = false, this.isActive = true});
@@ -36,10 +41,13 @@ class LocalComicsPage extends StatefulWidget {
 
 class _LocalComicsPageState extends State<LocalComicsPage> {
   late List<LocalComic> comics;
+  late List<LocalComicCategory> _categories;
 
   late LocalSortType sortType;
 
-  String keyword = "";
+  final _searchController = TextEditingController();
+  var _categoryId = LocalManager.allCategories;
+  Set<String> _selectedTags = {};
 
   bool searchMode = false;
 
@@ -73,18 +81,127 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
   void update() {
     if (!mounted) return;
     setState(() {
-      comics = keyword.isEmpty
-          ? LocalManager().getComics(sortType)
-          : LocalManager().search(keyword);
+      _loadComics();
       reconcileSelection();
     });
+  }
+
+  void _loadComics() {
+    final manager = LocalManager();
+    _categories = manager.comicCategories;
+    if (_categoryId > LocalManager.uncategorized &&
+        !_categories.any((category) => category.id == _categoryId)) {
+      _categoryId = LocalManager.uncategorized;
+    }
+    comics = manager.search(
+      _searchController.text,
+      sortType: sortType,
+      categoryId: _categoryId,
+      tags: _selectedTags,
+    );
+  }
+
+  void _closeSearch() {
+    searchMode = false;
+    _searchController.clear();
+    update();
+  }
+
+  Future<void> _pickCategory() async {
+    final id = await showLocalCategoryPicker(
+      context,
+      selectedCategory: _categoryId,
+    );
+    if (!mounted || id == null || id == _categoryId) return;
+    _categoryId = id;
+    update();
+  }
+
+  Future<void> _pickTags() async {
+    final tags = await showLibraryTagPicker(
+      context,
+      availableTags: LocalManager().availableTags(_categoryId),
+      selectedTags: _selectedTags,
+    );
+    if (!mounted || tags == null) return;
+    _selectedTags = tags;
+    update();
+  }
+
+  Future<void> _moveComicsToCategory(
+    List<LocalComic> comics, {
+    bool fromSelection = false,
+  }) async {
+    final id = await showLocalCategoryPicker(
+      context,
+      selectedCategory: _categoryId,
+      moving: true,
+    );
+    if (!mounted || id == null) return;
+    final candidates = {
+      for (final comic in fromSelection ? selectedComics.keys : visibleComics)
+        (comic.id, comic.comicType): comic,
+    };
+    for (final comic in comics) {
+      final current = candidates[(comic.id, comic.comicType)];
+      if (current == null ||
+          (comic.comicType == ComicType.local &&
+              (current.directory != comic.directory ||
+                  current.createdAt != comic.createdAt))) {
+        return;
+      }
+    }
+    LocalManager().moveComicsToCategory(comics, id);
+    setState(() {
+      multiSelectMode = false;
+      selectedComics.clear();
+    });
+  }
+
+  Widget _buildFilters() {
+    final categoryName = switch (_categoryId) {
+      LocalManager.allCategories => 'All Comics'.tl,
+      LocalManager.uncategorized => 'Uncategorized'.tl,
+      _ =>
+        _categories.firstWhere((category) => category.id == _categoryId).name,
+    };
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: Align(
+              alignment: AlignmentDirectional.centerStart,
+              child: TextButton.icon(
+                onPressed: _pickCategory,
+                icon: const Icon(Icons.folder_outlined),
+                label: Text(
+                  categoryName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ),
+          ),
+          TextButton.icon(
+            onPressed: _pickTags,
+            icon: Badge.count(
+              count: _selectedTags.length,
+              isLabelVisible: _selectedTags.isNotEmpty,
+              child: const Icon(Icons.sell_outlined),
+            ),
+            label: Text('Tags'.tl),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
   void initState() {
     var sort = appdata.implicitData["local_sort"] ?? "name";
     sortType = LocalSortType.fromString(sort);
-    comics = LocalManager().getComics(sortType);
+    _loadComics();
     LocalManager().addListener(update);
     appdata.settings.addListener(onSettingsChanged);
     super.initState();
@@ -94,6 +211,7 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
   void dispose() {
     LocalManager().removeListener(update);
     appdata.settings.removeListener(onSettingsChanged);
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -177,6 +295,27 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
             if (isCurrent()) addFavorite(selection);
           },
         ),
+        if (selection.isNotEmpty)
+          MenuEntry(
+            icon: Icons.drive_file_move_outlined,
+            text: 'Move to category'.tl,
+            onClick: () {
+              if (isCurrent()) {
+                _moveComicsToCategory(selection, fromSelection: true);
+              }
+            },
+          ),
+        if (selection.length == 1 &&
+            selection.single.comicType == ComicType.local)
+          MenuEntry(
+            icon: Icons.sell_outlined,
+            text: 'Match Bangumi tags'.tl,
+            onClick: () {
+              if (isCurrent()) {
+                showLocalBangumiTagMatch(context, selection.single);
+              }
+            },
+          ),
         if (selectedComics.length == 1)
           MenuEntry(
             icon: Icons.folder_open,
@@ -244,6 +383,8 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final hasSearch =
+        _searchController.text.trim().isNotEmpty || _selectedTags.isNotEmpty;
     List<Widget> selectActions = [
       IconButton(
         icon: const Icon(Icons.select_all),
@@ -405,14 +546,12 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
                     : Text("Local Comics".tl),
                 actions: multiSelectMode ? selectActions : normalActions,
               )
-            else if (searchMode)
+            else
               SliverAppbar(
                 leading: Tooltip(
-                  message: multiSelectMode ? "Cancel".tl : "Cancel".tl,
+                  message: "Cancel".tl,
                   child: IconButton(
-                    icon: multiSelectMode
-                        ? const Icon(Icons.close)
-                        : const Icon(Icons.close),
+                    icon: const Icon(Icons.close),
                     onPressed: () {
                       if (multiSelectMode) {
                         setState(() {
@@ -420,11 +559,7 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
                           selectedComics.clear();
                         });
                       } else {
-                        setState(() {
-                          searchMode = false;
-                          keyword = "";
-                          update();
-                        });
+                        _closeSearch();
                       }
                     },
                   ),
@@ -432,18 +567,17 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
                 title: multiSelectMode
                     ? Text(selectedComics.length.toString())
                     : TextField(
+                        controller: _searchController,
                         autofocus: true,
                         decoration: InputDecoration(
                           hintText: "Search".tl,
                           border: InputBorder.none,
                         ),
-                        onChanged: (v) {
-                          keyword = v;
-                          update();
-                        },
+                        onChanged: (_) => update(),
                       ),
                 actions: multiSelectMode ? selectActions : null,
               ),
+            if (!multiSelectMode) SliverToBoxAdapter(child: _buildFilters()),
             if (comics.isEmpty)
               SliverFillRemaining(
                 hasScrollBody: false,
@@ -458,12 +592,10 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
                       ),
                       const SizedBox(height: 16),
                       Text(
-                        keyword.isNotEmpty
-                            ? "No Comics Found".tl
-                            : "No Comics".tl,
+                        hasSearch ? "No Comics Found".tl : "No Comics".tl,
                         style: const TextStyle(fontSize: 16),
                       ),
-                      if (keyword.isEmpty) ...[
+                      if (!hasSearch) ...[
                         const SizedBox(height: 16),
                         FilledButton.icon(
                           icon: const Icon(Icons.add),
@@ -573,6 +705,17 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
                       },
                     ),
                     MenuEntry(
+                      icon: Icons.drive_file_move_outlined,
+                      text: 'Move to category'.tl,
+                      onClick: () => _moveComicsToCategory([c]),
+                    ),
+                    if (c.comicType == ComicType.local)
+                      MenuEntry(
+                        icon: Icons.sell_outlined,
+                        text: 'Match Bangumi tags'.tl,
+                        onClick: () => showLocalBangumiTagMatch(context, c),
+                      ),
+                    MenuEntry(
                       icon: Icons.delete,
                       text: "Delete".tl,
                       onClick: () {
@@ -615,11 +758,7 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
             selectedComics.clear();
           });
         } else if (searchMode) {
-          setState(() {
-            searchMode = false;
-            keyword = "";
-            update();
-          });
+          _closeSearch();
         }
       },
       child: body,

@@ -49,7 +49,10 @@ class FavoritesFolderSidebar extends StatefulWidget {
 
 class _FavoritesFolderSidebarState extends State<FavoritesFolderSidebar>
     implements FolderList {
-  var folders = <String>[];
+  var folders = <FavoriteFolder>[];
+  final _collapsed = <String>{};
+  var _showSearch = false;
+  var _folderQuery = '';
 
   var networkFolders = <String>[];
 
@@ -70,11 +73,26 @@ class _FavoritesFolderSidebarState extends State<FavoritesFolderSidebar>
   @override
   void initState() {
     widget.onFolderListReady?.call(this);
-    folders = LocalFavoritesManager().folderNames;
+    folders = LocalFavoritesManager().folders;
     findNetworkFolders();
     appdata.settings.addListener(updateFolders);
     LocalFavoritesManager().addListener(updateFolders);
     super.initState();
+  }
+
+  @override
+  void didUpdateWidget(covariant FavoritesFolderSidebar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isNetworkSelected ||
+        widget.selectedFolder == oldWidget.selectedFolder) {
+      return;
+    }
+    for (final folder in folders) {
+      if (folder.name == widget.selectedFolder) {
+        _collapsed.remove(folder.parentId);
+        break;
+      }
+    }
   }
 
   @override
@@ -86,6 +104,13 @@ class _FavoritesFolderSidebarState extends State<FavoritesFolderSidebar>
 
   @override
   Widget build(BuildContext context) {
+    final favoriteParents = {for (final folder in folders) ?folder.parentId};
+    final hasQuery = _folderQuery.trim().isNotEmpty;
+    final visibleFolders = folders.where((folder) {
+      return hasQuery
+          ? folder.matchesPath(_folderQuery)
+          : !_collapsed.contains(folder.parentId);
+    }).toList();
     return Container(
       width: double.infinity,
       height: double.infinity,
@@ -116,20 +141,43 @@ class _FavoritesFolderSidebarState extends State<FavoritesFolderSidebar>
               padding: widget.withAppbar
                   ? EdgeInsets.zero
                   : EdgeInsets.only(top: context.padding.top),
-              itemCount: folders.length + networkFolders.length + 3,
+              itemCount:
+                  visibleFolders.length +
+                  networkFolders.length +
+                  3 +
+                  (_showSearch ? 1 : 0),
               itemBuilder: (context, index) {
                 if (index == 0) {
                   return buildLocalTitle();
                 }
                 index--;
+                if (_showSearch) {
+                  if (index == 0) {
+                    return FavoriteFolderSearchField(
+                      autofocus: true,
+                      onChanged: (query) =>
+                          setState(() => _folderQuery = query),
+                    );
+                  }
+                  index--;
+                }
                 if (index == 0) {
                   return buildLocalFolder(localAllFolderLabel);
                 }
                 index--;
-                if (index < folders.length) {
-                  return buildLocalFolder(folders[index]);
+                if (index < visibleFolders.length) {
+                  final folder = visibleFolders[index];
+                  return buildLocalFolder(
+                    folder.name,
+                    displayName: hasQuery ? folder.path : folder.name,
+                    isChild: folder.parentId != null && !hasQuery,
+                    expandableId:
+                        !hasQuery && favoriteParents.contains(folder.id)
+                        ? folder.id
+                        : null,
+                  );
                 }
-                index -= folders.length;
+                index -= visibleFolders.length;
                 if (index == 0) {
                   return buildNetworkTitle();
                 }
@@ -152,29 +200,25 @@ class _FavoritesFolderSidebarState extends State<FavoritesFolderSidebar>
           const SizedBox(width: 12),
           Text("Local".tl),
           const Spacer(),
+          IconButton(
+            tooltip: 'Search folders'.tl,
+            icon: Icon(_showSearch ? Icons.close : Icons.search),
+            onPressed: () => setState(() {
+              _showSearch = !_showSearch;
+              _folderQuery = '';
+            }),
+          ),
           MenuButton(
             entries: [
               MenuEntry(
                 icon: Icons.add,
                 text: 'Create Folder'.tl,
-                onClick: () {
-                  newFolder().then((_) {
-                    setState(() {
-                      folders = LocalFavoritesManager().folderNames;
-                    });
-                  });
-                },
+                onClick: newFolder,
               ),
               MenuEntry(
                 icon: Icons.reorder,
                 text: 'Sort'.tl,
-                onClick: () {
-                  sortFolders().then((value) {
-                    setState(() {
-                      folders = LocalFavoritesManager().folderNames;
-                    });
-                  });
-                },
+                onClick: sortFolders,
               ),
             ],
           ),
@@ -212,7 +256,12 @@ class _FavoritesFolderSidebarState extends State<FavoritesFolderSidebar>
     );
   }
 
-  Widget buildLocalFolder(String name) {
+  Widget buildLocalFolder(
+    String name, {
+    String? displayName,
+    bool isChild = false,
+    String? expandableId,
+  }) {
     bool isSelected =
         name == widget.selectedFolder && !widget.isNetworkSelected;
     int count = 0;
@@ -223,7 +272,7 @@ class _FavoritesFolderSidebarState extends State<FavoritesFolderSidebar>
     }
     var folderName = name == localAllFolderLabel
         ? "All".tl
-        : getFavoriteDataOrNull(name)?.title ?? name;
+        : displayName ?? name;
     return ClickInkWell(
       onTap: () {
         if (isSelected) {
@@ -248,10 +297,40 @@ class _FavoritesFolderSidebarState extends State<FavoritesFolderSidebar>
             ),
           ),
         ),
-        padding: const EdgeInsets.only(left: 16),
+        padding: EdgeInsets.only(left: isChild ? 32 : 16),
         child: Row(
           children: [
-            Expanded(child: Text(folderName)),
+            Expanded(
+              child: Tooltip(
+                message: folderName,
+                child: Text(
+                  folderName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ),
+            if (expandableId != null)
+              IconButton(
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints.tightFor(
+                  width: 32,
+                  height: 42,
+                ),
+                tooltip:
+                    (_collapsed.contains(expandableId) ? 'Expand' : 'Collapse')
+                        .tl,
+                icon: Icon(
+                  _collapsed.contains(expandableId)
+                      ? Icons.chevron_right
+                      : Icons.expand_more,
+                ),
+                onPressed: () => setState(() {
+                  if (!_collapsed.remove(expandableId)) {
+                    _collapsed.add(expandableId);
+                  }
+                }),
+              ),
             Container(
               margin: EdgeInsets.only(right: 8),
               padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
@@ -313,7 +392,7 @@ class _FavoritesFolderSidebarState extends State<FavoritesFolderSidebar>
   void updateFolders() {
     if (!mounted) return;
     setState(() {
-      folders = LocalFavoritesManager().folderNames;
+      folders = LocalFavoritesManager().folders;
       findNetworkFolders();
     });
   }

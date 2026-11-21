@@ -26,6 +26,7 @@ class FavoritesPage extends StatefulWidget {
 
 class _FavoritesPageState extends State<FavoritesPage> {
   String? folder;
+  String? _folderId;
 
   bool isNetwork = false;
 
@@ -35,6 +36,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
     appdata.implicitData['favoriteFolder'] = {
       'name': folder,
       'isNetwork': isNetwork,
+      if (_folderId != null) 'id': _folderId,
     };
     appdata.writeImplicitData();
   }
@@ -59,6 +61,9 @@ class _FavoritesPageState extends State<FavoritesPage> {
     setState(() {
       this.isNetwork = selectedNetwork;
       this.folder = selectedFolder;
+      _folderId = selectedNetwork || selectedFolder == localAllFolderLabel
+          ? null
+          : LocalFavoritesManager().getFolderId(selectedFolder);
     });
     folderList?.update();
     _saveFolderSelection();
@@ -68,7 +73,16 @@ class _FavoritesPageState extends State<FavoritesPage> {
     final data = appdata.implicitData['favoriteFolder'];
     if (data is Map) {
       final storedFolder = data['name'];
+      final storedId = data['id'];
       final storedIsNetwork = data['isNetwork'] == true;
+      if (!storedIsNetwork && storedId is String) {
+        final resolved = LocalFavoritesManager().getFolderNameById(storedId);
+        if (resolved != null) {
+          folder = resolved;
+          _folderId = storedId;
+          return;
+        }
+      }
       if (storedFolder is String && storedFolder.isNotEmpty) {
         if (storedFolder == localAllFolderLabel) {
           folder = localAllFolderLabel;
@@ -81,16 +95,26 @@ class _FavoritesPageState extends State<FavoritesPage> {
             isNetwork = true;
             return;
           }
-        } else if (LocalFavoritesManager().existsFolder(storedFolder)) {
-          folder = storedFolder;
-          isNetwork = false;
-          return;
+        } else if (storedId is! String) {
+          final id = LocalFavoritesManager().getFolderId(storedFolder);
+          if (id != null) {
+            folder = LocalFavoritesManager().getFolderNameById(id);
+            _folderId = id;
+            return;
+          }
         }
       }
     }
     folder = localAllFolderLabel;
     isNetwork = false;
     _saveFolderSelection();
+  }
+
+  void _refreshSelectedFolder() {
+    final id = _folderId;
+    if (id == null || !mounted) return;
+    final currentName = LocalFavoritesManager().getFolderNameById(id);
+    if (currentName != folder) setFolder(false, currentName);
   }
 
   void _fallbackToAllAfterBuild() {
@@ -126,6 +150,13 @@ class _FavoritesPageState extends State<FavoritesPage> {
   void initState() {
     super.initState();
     _restoreFolderSelection();
+    LocalFavoritesManager().addListener(_refreshSelectedFolder);
+  }
+
+  @override
+  void dispose() {
+    LocalFavoritesManager().removeListener(_refreshSelectedFolder);
+    super.dispose();
   }
 
   @override

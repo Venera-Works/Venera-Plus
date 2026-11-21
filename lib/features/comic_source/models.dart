@@ -391,17 +391,18 @@ class ComicDetails with HistoryMixin {
   }
 }
 
-bool isAuthorNamespace(String namespace) {
-  const authorNamespaces = {
-    'author',
-    'authors',
-    'artist',
-    'artists',
-    '作者',
-    '画师',
-  };
-  return authorNamespaces.contains(namespace.trim().toLowerCase());
-}
+const comicAuthorNamespaces = {
+  'author',
+  'authors',
+  'artist',
+  'artists',
+  '作者',
+  '画师',
+  '畫師',
+};
+
+bool isAuthorNamespace(String namespace) =>
+    comicAuthorNamespaces.contains(namespace.trim().toLowerCase());
 
 class ArchiveInfo {
   final String title;

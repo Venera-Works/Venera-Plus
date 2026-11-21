@@ -27,7 +27,7 @@ Future<void> _createReadingFolder(LocalFavoritesManager manager) async {
 
 void _showReadingFolderSelector() {
   final manager = LocalFavoritesManager();
-  final folders = manager.folderNames;
+  final folders = manager.folders;
   showDialog<void>(
     context: App.rootContext,
     builder: (dialogContext) => SimpleDialog(
@@ -39,16 +39,20 @@ void _showReadingFolderSelector() {
           SimpleDialogOption(
             onPressed: () {
               Navigator.of(dialogContext).pop();
-              unawaited(manager.setReadingFolder(folder));
+              unawaited(manager.setReadingFolder(folder.name));
             },
             child: ListTile(
               contentPadding: EdgeInsets.zero,
               leading: Icon(
-                manager.readingFolder == folder
+                manager.readingFolder == folder.name
                     ? Icons.check_circle_outline
                     : Icons.folder_outlined,
               ),
-              title: Text(folder, maxLines: 1, overflow: TextOverflow.ellipsis),
+              title: Text(
+                folder.path,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
           ),
         SimpleDialogOption(

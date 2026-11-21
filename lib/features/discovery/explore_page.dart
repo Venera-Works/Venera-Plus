@@ -9,6 +9,8 @@ import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
+import 'package:venera_plus/features/remote_library/remote_library_engine.dart';
+import 'package:venera_plus/features/remote_library/remote_library_search_page.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/context.dart';
@@ -763,6 +765,7 @@ class _ExplorePageState extends State<ExplorePage>
     final source = currentSource!;
     final hasBrowse = _sourceHasBrowse(source);
     final hasCategories = _sourceHasCategories(source);
+    final canSearchLibrary = RemoteLibraryEngines.forSearch(source.key) != null;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -890,6 +893,14 @@ class _ExplorePageState extends State<ExplorePage>
                       ),
                     ),
                     const SizedBox(width: 8),
+                    if (canSearchLibrary)
+                      IconButton(
+                        tooltip: 'Search'.tl,
+                        icon: const Icon(Icons.search),
+                        onPressed: () => context.to(
+                          () => RemoteLibrarySearchPage(sourceKey: source.key),
+                        ),
+                      ),
                     manageMenu,
                   ]
                 : [

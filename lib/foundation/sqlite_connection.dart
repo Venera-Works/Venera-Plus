@@ -1,5 +1,11 @@
 import 'package:sqlite3/sqlite3.dart';
 
+final _asciiUppercase = RegExp(r'[A-Z]');
+
+/// 与 SQLite 的 NOCASE 排序规则一致，只合并 ASCII 大小写。
+String sqliteNoCaseKey(String value) =>
+    value.replaceAllMapped(_asciiUppercase, (match) => match[0]!.toLowerCase());
+
 Database openSqliteDatabase(String path) {
   final db = sqlite3.open(path);
   try {
