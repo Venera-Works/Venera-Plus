@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:isolate';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_saf/flutter_saf.dart';
+import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
@@ -270,6 +272,7 @@ class LocalManager with ChangeNotifier {
         task.pause();
         await task.pendingCleanup;
       }
+      await downloadTransition;
       await pendingDownloadTaskWrites;
       await _storageMigration.move(directory, newDir);
     } catch (e, s) {
@@ -290,6 +293,15 @@ class LocalManager with ChangeNotifier {
       _relocatedRoot = (source, destination);
       for (final task in downloadingTasks) {
         task.relocateOutput(source, destination);
+      }
+      final cancelledOutputs = _cancelledDownloadOutputs.toList();
+      for (final output in cancelledOutputs) {
+        if (p.isWithin(source, output)) {
+          _cancelledDownloadOutputs.remove(output);
+          _cancelledDownloadOutputs.add(
+            p.join(destination, p.relative(output, from: source)),
+          );
+        }
       }
     },
   );
@@ -723,7 +735,25 @@ class LocalManager with ChangeNotifier {
   }
 
   List<DownloadTask> downloadingTasks = [];
-  Future<void>? downloadTransition;
+  final _cancellingDownloads = Map<DownloadTask, Future<void>>.identity();
+  static const _cancelledDownloadOutputType = 'CancelledDownloadOutput';
+  final _cancelledDownloadOutputs = <String>{};
+  Future<void>? _downloadTransition;
+
+  Iterable<DownloadTask> get downloadsWithUnfinishedOutput =>
+      downloadingTasks.followedBy(_cancellingDownloads.keys);
+
+  Iterable<String> get cancelledDownloadOutputs => _cancelledDownloadOutputs;
+
+  Future<void>? get downloadTransition {
+    final previous = _downloadTransition;
+    if (_cancellingDownloads.isEmpty) return previous;
+    return Future.wait([
+      ?previous,
+      ..._cancellingDownloads.values,
+    ]).then<void>((_) {});
+  }
+
   int _downloadCommand = 0;
   DownloadTask? get currentDownloadTask => downloadingTasks
       .where((task) => !task.isAwaitingMissingPages)
@@ -731,7 +761,7 @@ class LocalManager with ChangeNotifier {
 
   Future<void> retainIncompleteTask(DownloadTask task) async {
     _writeComic(task.toLocalComic(), null);
-    downloadTransition = task.pendingCleanup;
+    _downloadTransition = task.pendingCleanup;
     currentDownloadTask?.resume();
     notifyListeners();
     await saveCurrentDownloadingTasks();
@@ -772,12 +802,18 @@ class LocalManager with ChangeNotifier {
     if (name.length > comicDirectoryMaxLength) {
       name = name.substring(0, comicDirectoryMaxLength);
     }
-    return DocumentImportSession.allocateDirectory(path, name);
+    final directory = DocumentImportSession.allocateDirectory(path, name);
+    _cancelledDownloadOutputs.removeWhere(
+      (output) => p.equals(output, directory.path),
+    );
+    return directory;
   }
 
   Future<void> completeTask(DownloadTask task) async {
     await add(task.toLocalComic());
-    final index = downloadingTasks.indexOf(task);
+    final index = downloadingTasks.indexWhere(
+      (entry) => identical(entry, task),
+    );
     if (index < 0) return;
     downloadingTasks.removeAt(index);
     notifyListeners();
@@ -788,15 +824,64 @@ class LocalManager with ChangeNotifier {
       notifyListeners();
       rethrow;
     }
-    downloadTransition = task.pendingCleanup;
+    _downloadTransition = task.pendingCleanup;
     currentDownloadTask?.resume();
   }
 
   void removeTask(DownloadTask task) {
+    final index = downloadingTasks.indexWhere(
+      (entry) => identical(entry, task),
+    );
+    if (index < 0) return;
     _downloadCommand++;
-    downloadingTasks.remove(task);
+    downloadingTasks.removeAt(index);
     notifyListeners();
-    saveCurrentDownloadingTasks();
+    if (!_cancellingDownloads.containsKey(task)) saveCurrentDownloadingTasks();
+  }
+
+  Future<void> cancelTask(
+    DownloadTask task, {
+    required Future<void>? stopped,
+    required Future<void> Function(String output) cleanOutput,
+  }) {
+    final done = Completer<void>();
+    _cancellingDownloads[task] = done.future;
+    removeTask(task);
+    done.complete(() async {
+      var checkpointSaved = false;
+      try {
+        final initialOutput = task.path;
+        // 清理前同时等待旧任务停写和取消状态落盘。
+        await Future.wait([
+          saveCurrentDownloadingTasks().then((_) {
+            checkpointSaved = true;
+          }),
+          ?stopped,
+        ]);
+        final output = task.path;
+        if (output != null && output.isNotEmpty) {
+          if (output != initialOutput) await saveCurrentDownloadingTasks();
+          await cleanOutput(output);
+        }
+      } catch (error, stack) {
+        final output = task.path;
+        if (output != null && output.isNotEmpty) {
+          _cancelledDownloadOutputs.add(output);
+        }
+        Log.error('Download cancellation', error, stack);
+      } finally {
+        _cancellingDownloads.remove(task);
+        final output = task.path;
+        if (!checkpointSaved || (output != null && output.isNotEmpty)) {
+          try {
+            await saveCurrentDownloadingTasks();
+          } catch (error, stack) {
+            Log.error('Download checkpoint', error, stack);
+          }
+        }
+      }
+    }());
+    return done.future;
   }
 
   void moveToFirst(DownloadTask task) {
@@ -818,27 +903,46 @@ class LocalManager with ChangeNotifier {
   Future<void> get pendingDownloadTaskWrites => _downloadTaskWrites;
 
   Future<void> saveCurrentDownloadingTasks() {
-    final snapshot = jsonEncode(
-      downloadingTasks.map((task) => task.toJson()).toList(),
-    );
+    final cancelledOutputs = {
+      ..._cancelledDownloadOutputs,
+      for (final task in _cancellingDownloads.keys)
+        if (task.path case final String output when output.isNotEmpty) output,
+    };
+    final snapshot = jsonEncode([
+      for (final task in downloadingTasks) task.toJson(),
+      for (final output in cancelledOutputs)
+        {'type': _cancelledDownloadOutputType, 'path': output},
+    ]);
     final file = File(FilePath.join(App.dataPath, 'downloading_tasks.json'));
     return _downloadTaskWrites = _downloadTaskWrites
         .catchError((Object error, StackTrace stack) {
           Log.error('Download checkpoint', error, stack);
         })
-        .then((_) => file.writeAsString(snapshot, flush: true))
-        .then<void>((_) {});
+        .then((_) async {
+          if (snapshot == '[]' && !await file.exists()) return;
+          final temporary = File('${file.path}.new');
+          await temporary.writeAsString(snapshot, flush: true);
+          await temporary.rename(file.path);
+        });
   }
 
   void restoreDownloadingTasks() {
     var file = File(FilePath.join(App.dataPath, 'downloading_tasks.json'));
     if (file.existsSync()) {
       try {
-        var tasks = jsonDecode(file.readAsStringSync());
-        for (var e in tasks) {
-          var task = DownloadTask.fromJson(e);
-          if (task != null) {
-            downloadingTasks.add(task);
+        final entries = jsonDecode(file.readAsStringSync()) as List;
+        for (final entry in entries.whereType<Map<String, dynamic>>()) {
+          if (entry['type'] == _cancelledDownloadOutputType) {
+            if (entry['path'] case final String output when output.isNotEmpty) {
+              _cancelledDownloadOutputs.add(output);
+            }
+            continue;
+          }
+          try {
+            final task = DownloadTask.fromJson(entry);
+            if (task != null) downloadingTasks.add(task);
+          } catch (error, stack) {
+            Log.error('Download checkpoint', error, stack);
           }
         }
       } catch (e) {

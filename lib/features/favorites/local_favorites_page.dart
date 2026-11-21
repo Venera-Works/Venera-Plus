@@ -513,19 +513,22 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
     });
   }
 
-  bool downloadComic(FavoriteItem c) {
-    var source = c.type.comicSource;
-    if (source != null) {
-      bool isDownloaded = LocalManager().isDownloaded(c.id, (c).type);
-      if (isDownloaded) {
-        return false;
-      }
-      LocalManager().addTask(
-        ImagesDownloadTask(source: source, comicId: c.id, comicTitle: c.title),
-      );
-      return true;
+  bool downloadComic(FavoriteItem comic) {
+    final source = comic.type.comicSource;
+    final manager = LocalManager();
+    if (source == null ||
+        manager.isDownloading(comic.id, comic.type) ||
+        manager.isDownloaded(comic.id, comic.type)) {
+      return false;
     }
-    return false;
+    manager.addTask(
+      ImagesDownloadTask(
+        source: source,
+        comicId: comic.id,
+        comicTitle: comic.title,
+      ),
+    );
+    return true;
   }
 
   Future<void> _downloadComics(List<FavoriteItem> groups) async {

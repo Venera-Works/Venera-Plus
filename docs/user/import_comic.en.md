@@ -30,7 +30,7 @@ If you migrated the app and kept the local download folder but lost `local.db`,
 you can restore the local database by scanning the current local path.
 
 - Open `Library` -> `Local Comics` -> top bar `Import` -> `Restore local downloads`.
-- The app scans the current local storage path and rebuilds entries.
+- The app scans the current local storage path and rebuilds entries. It skips folders used by queued or paused downloads. If cleanup of a canceled download fails or is interrupted, the scan continues to skip the leftover folder after an app restart.
 - It does not copy files or add favorites.
 - Duplicates (same title or directory) are skipped.
 

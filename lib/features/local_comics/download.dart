@@ -195,17 +195,18 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
     if (_cancelled) return;
     _cancelled = true;
     pause();
-    _cancellation = () async {
-      await _resumeFuture;
-      final output = path;
-      if (output == null) return;
-      final local = LocalManager().find(id, comicType);
-      if (_keepDownloadedFiles || local?.isIncomplete == true) return;
-      try {
+    final manager = LocalManager();
+    _cancellation = manager.cancelTask(
+      this,
+      stopped: _resumeFuture,
+      cleanOutput: (output) async {
+        final local = manager.find(id, comicType);
+        if (_keepDownloadedFiles || local?.isIncomplete == true) return;
         if (local == null) {
           await Directory(output).delete(recursive: true);
         } else if (chapters != null) {
           for (final chapter in chapters!) {
+            if (local.downloadedChapters.contains(chapter)) continue;
             final directory = Directory(
               FilePath.join(
                 output,
@@ -217,11 +218,8 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
             }
           }
         }
-      } catch (error, stack) {
-        Log.error('Download cancellation', error, stack);
-      }
-    }();
-    LocalManager().removeTask(this);
+      },
+    );
   }
 
   @override
@@ -926,10 +924,13 @@ class ArchiveDownloadTask extends DownloadTask {
   DownloadRetry? _retry;
   Future<void>? _resumeFuture;
   Future<void>? _stopping;
+  Future<void>? _cancellation;
+  bool _cancelled = false;
   int _generation = 0;
   bool _isCurrentRun(int generation) => _isRunning && _generation == generation;
   @override
-  Future<void> get pendingCleanup => _resumeFuture ?? Future.value();
+  Future<void> get pendingCleanup =>
+      _cancellation ?? _resumeFuture ?? Future.value();
   @override
   bool get isWaitingToRetry => _isRunning && (_retry?.isWaiting ?? false);
   @override
@@ -950,14 +951,20 @@ class ArchiveDownloadTask extends DownloadTask {
   }
 
   @override
-  void cancel() async {
+  void cancel() {
+    if (_cancelled) return;
+    _cancelled = true;
     pause();
-    await pendingCleanup;
-    if (path != null) {
-      Directory(path!).deleteIgnoreError(recursive: true);
-    }
-    path = null;
-    LocalManager().removeTask(this);
+    final manager = LocalManager();
+    _cancellation = manager.cancelTask(
+      this,
+      stopped: _resumeFuture ?? _stopping,
+      cleanOutput: (output) async {
+        if (manager.find(id, comicType) == null) {
+          await Directory(output).delete(recursive: true);
+        }
+      },
+    );
   }
 
   @override
@@ -1002,7 +1009,11 @@ class ArchiveDownloadTask extends DownloadTask {
 
   @override
   void resume() {
-    if (_isRunning || LocalComicStorageGuard.instance.isExclusive) return;
+    if (_isRunning ||
+        _cancelled ||
+        LocalComicStorageGuard.instance.isExclusive) {
+      return;
+    }
     final previous = _resumeFuture;
     final transition = LocalManager().downloadTransition;
     final generation = ++_generation;
@@ -1053,6 +1064,9 @@ class ArchiveDownloadTask extends DownloadTask {
       }
       path = dir.path;
     }
+
+    await LocalManager().saveCurrentDownloadingTasks();
+    if (!_isCurrentRun(generation)) return;
 
     var archiveFile = File(
       FilePath.join(App.dataPath, "archive_downloading.zip"),

@@ -720,25 +720,25 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
         text: "Export as cbz".tl,
         onClick: () {
           if (isCurrent?.call() != false) {
-            exportComics(comics, CBZ.export, ".cbz");
+            unawaited(exportComics(comics, CBZ.export, ".cbz"));
           }
         },
       ),
       MenuEntry(
         icon: Icons.picture_as_pdf_outlined,
         text: "Export as pdf".tl,
-        onClick: () async {
+        onClick: () {
           if (isCurrent?.call() != false) {
-            exportComics(comics, createPdfFromComicIsolate, ".pdf");
+            unawaited(exportComics(comics, createPdfFromComicIsolate, ".pdf"));
           }
         },
       ),
       MenuEntry(
         icon: Icons.import_contacts_outlined,
         text: "Export as epub".tl,
-        onClick: () async {
+        onClick: () {
           if (isCurrent?.call() != false) {
-            exportComics(comics, createEpubWithLocalComic, ".epub");
+            unawaited(exportComics(comics, createEpubWithLocalComic, ".epub"));
           }
         },
       ),
@@ -746,74 +746,70 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
   }
 
   /// Export given comics to a file
-  void exportComics(
+  Future<void> exportComics(
     List<LocalComic> comics,
     ExportComicFunc export,
     String ext,
   ) async {
-    var current = 0;
-    var cacheDir = FilePath.join(App.cachePath, 'comics_export');
-    var outFile = FilePath.join(App.cachePath, 'comics_export.zip');
-    bool canceled = false;
-    if (Directory(cacheDir).existsSync()) {
-      Directory(cacheDir).deleteSync(recursive: true);
-    }
-    Directory(cacheDir).createSync();
-    var loadingController = showLoadingDialog(
+    if (comics.isEmpty) return;
+    final isBatch = comics.length > 1;
+    var canceled = false;
+    final loadingController = showLoadingDialog(
       context,
       allowCancel: true,
-      message: "${"Exporting".tl} $current/${comics.length}",
-      withProgress: comics.length > 1,
+      message: "${"Exporting".tl} 0/${comics.length}",
+      withProgress: isBatch,
       onCancel: () {
         canceled = true;
       },
     );
+    Directory? workspace;
     try {
-      var fileName = "";
-      // For each comic, export it to a file
-      for (var comic in comics) {
-        fileName = FilePath.join(
-          cacheDir,
-          sanitizeFileName(comic.title, maxLength: 100) + ext,
+      final exportDirectory = await Directory(
+        App.cachePath,
+      ).createTemp('comics-export-');
+      workspace = exportDirectory;
+      final outputDirectory = isBatch
+          ? await Directory(
+              FilePath.join(exportDirectory.path, 'comics'),
+            ).create()
+          : exportDirectory;
+      if (canceled || !mounted) return;
+
+      for (final (index, comic) in comics.indexed) {
+        final filename = sanitizeFileName(comic.title, maxLength: 100) + ext;
+        final file = await export(
+          comic,
+          FilePath.join(outputDirectory.path, filename),
         );
-        await export(comic, fileName);
-        current++;
-        if (comics.length > 1) {
-          loadingController.setMessage(
-            "${"Exporting".tl} $current/${comics.length}",
-          );
-          loadingController.setProgress(current / comics.length);
-        }
-        if (canceled) {
+        if (canceled || !mounted) return;
+        if (!isBatch) {
+          await saveFile(file: file, filename: filename);
           return;
         }
+        final current = index + 1;
+        loadingController.setMessage(
+          "${"Exporting".tl} $current/${comics.length}",
+        );
+        loadingController.setProgress(current / comics.length);
       }
-      // For single comic, just save the file
-      if (comics.length == 1) {
-        await saveFile(file: File(fileName), filename: File(fileName).name);
-        Directory(cacheDir).deleteSync(recursive: true);
-        loadingController.close();
-        return;
-      }
-      // For multiple comics, compress the folder
+
       loadingController.setProgress(null);
       loadingController.setMessage("Compressing".tl);
-      await ZipFile.compressFolderAsync(cacheDir, outFile);
-      if (canceled) {
-        File(outFile).deleteIgnoreError();
-        return;
+      const filename = 'comics_export.zip';
+      final archive = File(FilePath.join(exportDirectory.path, filename));
+      await ZipFile.compressFolderAsync(outputDirectory.path, archive.path);
+      if (canceled || !mounted) return;
+      await saveFile(file: archive, filename: filename);
+    } catch (error, stack) {
+      Log.error("Export Comics", error, stack);
+      if (mounted && !canceled) {
+        context.showMessage(message: error.toString());
       }
-    } catch (e, s) {
-      Log.error("Export Comics", e, s);
-      context.showMessage(message: e.toString());
-      loadingController.close();
-      return;
     } finally {
-      Directory(cacheDir).deleteIgnoreError(recursive: true);
+      loadingController.close();
+      await workspace?.deleteIgnoreError(recursive: true);
     }
-    await saveFile(file: File(outFile), filename: "comics_export.zip");
-    loadingController.close();
-    File(outFile).deleteIgnoreError();
   }
 }
 

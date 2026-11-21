@@ -15,7 +15,7 @@ class EpubData {
 
   final File cover;
 
-  final Map<String, List<File>> chapters;
+  final List<({String title, List<File> images})> chapters;
 
   const EpubData({
     required this.title,
@@ -30,12 +30,21 @@ Future<File> createEpubComic(
   String cacheDir,
   String outFilePath,
 ) async {
-  final workingDir = Directory(FilePath.join(cacheDir, 'epub'));
-  if (workingDir.existsSync()) {
-    workingDir.deleteSync(recursive: true);
+  final cache = await Directory(cacheDir).create(recursive: true);
+  final workingDir = await cache.createTemp('epub-');
+  try {
+    _writeEpubArchive(data, workingDir, outFilePath);
+    return File(outFilePath);
+  } finally {
+    await workingDir.deleteIgnoreError(recursive: true);
   }
-  workingDir.createSync(recursive: true);
+}
 
+void _writeEpubArchive(
+  EpubData data,
+  Directory workingDir,
+  String outFilePath,
+) {
   // mimetype
   workingDir.joinFile('mimetype').writeAsStringSync('application/epub+zip');
 
@@ -71,9 +80,9 @@ Future<File> createEpubComic(
   manifestStrBuilder.writeln(
     '        <item id="toc" href="toc.ncx" media-type="application/x-dtbncx+xml"/>',
   );
-  for (final chapter in data.chapters.keys) {
+  for (final chapter in data.chapters) {
     var images = <String>[];
-    for (final image in data.chapters[chapter]!) {
+    for (final image in chapter.images) {
       final ext = image.extension;
       imageDir
           .joinFile('img$imgIndex.$ext')
@@ -93,7 +102,7 @@ Future<File> createEpubComic(
     "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
-    <title>${_escapeEpubXml(chapter)}</title>
+    <title>${_escapeEpubXml(chapter.title)}</title>
     <style type="text/css">
         img { 
             max-width: 100%;
@@ -106,7 +115,7 @@ Future<File> createEpubComic(
     </style>
 </head>
 <body>
-    <h1>${_escapeEpubXml(chapter)}</h1>
+    <h1>${_escapeEpubXml(chapter.title)}</h1>
     <div>
 ${images.map((e) => '        <img src="$e" alt="$e"/>').join('\n')}
     </div>
@@ -151,13 +160,12 @@ ${spineStrBuilder.toString()}
   final tocNcx = File(FilePath.join(workingDir.path, 'toc.ncx'));
   var navMapStrBuilder = StringBuffer();
   var playOrder = 2;
-  final chapterNames = data.chapters.keys.toList();
   for (var i = 0; i < chapterIndex; i++) {
     navMapStrBuilder.writeln(
       '        <navPoint id="chapter$i" playOrder="$playOrder">',
     );
     navMapStrBuilder.writeln(
-      '            <navLabel><text>${_escapeEpubXml(chapterNames[i])}</text></navLabel>',
+      '            <navLabel><text>${_escapeEpubXml(data.chapters[i].title)}</text></navLabel>',
     );
     navMapStrBuilder.writeln('            <content src="OEBPS/$i.html"/>');
     navMapStrBuilder.writeln('        </navPoint>');
@@ -184,10 +192,6 @@ ${navMapStrBuilder.toString()}
   ''');
 
   ZipFile.compressFolder(workingDir.path, outFilePath);
-
-  workingDir.deleteSync(recursive: true);
-
-  return File(outFilePath);
 }
 
 String _escapeEpubXml(String value) {
@@ -206,20 +210,23 @@ Future<File> createEpubWithLocalComic(
   if (comic.isIncomplete) {
     throw StateError('Retry missing images before exporting this comic.'.tl);
   }
-  var chapters = <String, List<String>>{};
-  if (comic.chapters == null) {
-    chapters[comic.title] = await LocalManager().getImages(
-      comic.id,
-      comic.comicType,
-      0,
-    );
+  final chapters = <({String title, List<String> paths})>[];
+  final comicChapters = comic.chapters;
+  if (comicChapters == null) {
+    chapters.add((
+      title: comic.title,
+      paths: await LocalManager().getImages(comic.id, comic.comicType, 0),
+    ));
   } else {
-    for (var chapter in comic.downloadedChapters) {
-      chapters[comic.chapters![chapter]!] = await LocalManager().getImages(
-        comic.id,
-        comic.comicType,
-        chapter,
-      );
+    for (final chapterId in comic.downloadedChapters) {
+      chapters.add((
+        title: comicChapters[chapterId]!,
+        paths: await LocalManager().getImages(
+          comic.id,
+          comic.comicType,
+          chapterId,
+        ),
+      ));
     }
   }
   // SAF files own native handles via finalizers. Transfer paths only and
@@ -236,10 +243,13 @@ Future<File> createEpubWithLocalComic(
         title: title,
         author: author,
         cover: File(coverPath),
-        chapters: chapters.map(
-          (name, paths) =>
-              MapEntry(name, paths.map((path) => File(path)).toList()),
-        ),
+        chapters: [
+          for (final chapter in chapters)
+            (
+              title: chapter.title,
+              images: chapter.paths.map(File.new).toList(),
+            ),
+        ],
       );
       return createEpubComic(data, cacheDir, outFilePath);
     }),

@@ -204,25 +204,27 @@ abstract class CBZ {
         author: "",
         tags: [],
       );
-      final files = List<File>.from(layout.rootPages);
-      final chapterDirectories = layout.chapters;
-      if (!layout.hasImages) {
+      final files = layout.rootPages;
+      final chapterRanges = metaData.chapters ?? const <ComicChapter>[];
+      final useChapterDirectories =
+          chapterRanges.isEmpty && layout.useChapterDirectories;
+      if (files.isEmpty && !useChapterDirectories) {
         throw Exception('No images found in the archive');
       }
+      metaData.validateChapterRanges(pageCount: files.length);
 
       session = DocumentImportSession.start(metaData.title);
+      final coverFile = layout.inferredCover!;
+      final coverName = await session.copyCover(
+        coverFile,
+        extension: coverFile.extension,
+      );
       Map<String, String>? cpMap;
-      late final String coverName;
 
-      if (metaData.chapters == null && layout.useChapterDirectories) {
-        final coverFile = layout.inferredCover!;
-        coverName = await session.copyCover(
-          coverFile,
-          extension: coverFile.extension,
-        );
+      if (useChapterDirectories) {
         cpMap = <String, String>{};
-        for (var i = 0; i < chapterDirectories.length; i++) {
-          final chapter = chapterDirectories[i];
+        for (var i = 0; i < layout.chapters.length; i++) {
+          final chapter = layout.chapters[i];
           final chapterKey = i.toString();
           cpMap[chapterKey] = chapter.title;
           for (var j = 0; j < chapter.pages.length; j++) {
@@ -235,47 +237,29 @@ abstract class CBZ {
             );
           }
         }
-      } else {
-        if (files.isEmpty) {
-          throw Exception('No images found in the archive');
+      } else if (chapterRanges.isEmpty) {
+        for (var i = 0; i < files.length; i++) {
+          final src = files[i];
+          await session.copyPage(
+            src,
+            pageIndex: i + 1,
+            extension: src.extension,
+          );
         }
-        final coverFile = layout.inferredCover!;
-        coverName = await session.copyCover(
-          coverFile,
-          extension: coverFile.extension,
-        );
-        if (metaData.chapters == null) {
-          for (var i = 0; i < files.length; i++) {
-            var src = files[i];
+      } else {
+        cpMap = <String, String>{};
+        for (var i = 0; i < chapterRanges.length; i++) {
+          final chapter = chapterRanges[i];
+          final chapterKey = i.toString();
+          cpMap[chapterKey] = chapter.title;
+          for (var page = chapter.start; page <= chapter.end; page++) {
+            final src = files[page - 1];
             await session.copyPage(
               src,
-              pageIndex: i + 1,
+              pageIndex: page - chapter.start + 1,
               extension: src.extension,
+              chapterId: chapterKey,
             );
-          }
-        } else {
-          var chapters = <String, List<File>>{};
-          for (var chapter in metaData.chapters!) {
-            chapters[chapter.title] = files.sublist(
-              chapter.start - 1,
-              chapter.end,
-            );
-          }
-          int i = 0;
-          cpMap = <String, String>{};
-          for (var chapter in chapters.entries) {
-            final chapterKey = i.toString();
-            cpMap[chapterKey] = chapter.key;
-            for (var j = 0; j < chapter.value.length; j++) {
-              var src = chapter.value[j];
-              await session.copyPage(
-                src,
-                pageIndex: j + 1,
-                extension: src.extension,
-                chapterId: chapterKey,
-              );
-            }
-            i++;
           }
         }
       }
@@ -317,67 +301,58 @@ abstract class CBZ {
     if (comic.isIncomplete) {
       throw StateError('Retry missing images before exporting this comic.'.tl);
     }
-    var cache = Directory(FilePath.join(App.cachePath, 'cbz_export'));
-    if (cache.existsSync()) cache.deleteSync(recursive: true);
-    cache.createSync();
-    List<ComicChapter>? chapters;
-    var pageCount = 0;
-    if (comic.chapters == null) {
-      var images = await LocalManager().getImages(comic.id, comic.comicType, 1);
-      pageCount = images.length;
-      int i = 1;
-      for (var image in images) {
-        var src = File(_localFilePathFromImageUri(image));
-        var dstName = compatiblePageFileName(i, image.split('.').last);
-        var dst = File(FilePath.join(cache.path, dstName));
-        await src.copyMem(dst.path);
-        i++;
+    final cache = await Directory(App.cachePath).createTemp('cbz_export_');
+    try {
+      final comicChapters = comic.chapters;
+      final List<String> images;
+      List<ComicChapter>? chapters;
+      if (comicChapters == null) {
+        images = await LocalManager().getImages(comic.id, comic.comicType, 1);
+      } else {
+        images = [];
+        final chapterPageCounts = <MapEntry<String, int>>[];
+        for (final chapterId in comic.downloadedChapters) {
+          final chapterImages = await LocalManager().getImages(
+            comic.id,
+            comic.comicType,
+            chapterId,
+          );
+          images.addAll(chapterImages);
+          chapterPageCounts.add(
+            MapEntry(comicChapters[chapterId]!, chapterImages.length),
+          );
+        }
+        chapters = _buildChapterRanges(chapterPageCounts);
       }
-    } else {
-      var allImages = <String>[];
-      final chapterPageCounts = <MapEntry<String, int>>[];
-      for (var c in comic.downloadedChapters) {
-        var chapterName = comic.chapters![c];
-        var images = await LocalManager().getImages(
-          comic.id,
-          comic.comicType,
-          c,
-        );
-        allImages.addAll(images);
-        chapterPageCounts.add(MapEntry(chapterName!, images.length));
+
+      for (var i = 0; i < images.length; i++) {
+        final src = File(_localFilePathFromImageUri(images[i]));
+        final name = compatiblePageFileName(i + 1, src.extension);
+        await src.copyMem(FilePath.join(cache.path, name));
       }
-      chapters = _buildChapterRanges(chapterPageCounts);
-      pageCount = allImages.length;
-      int i = 1;
-      for (var image in allImages) {
-        var src = File(_localFilePathFromImageUri(image));
-        var dstName = compatiblePageFileName(i, image.split('.').last);
-        var dst = File(FilePath.join(cache.path, dstName));
-        await src.copyMem(dst.path);
-        i++;
-      }
+      final cover = comic.coverFile;
+      await cover.copyMem(
+        FilePath.join(cache.path, 'cover.${cover.extension}'),
+      );
+      final metaData = ComicMetaData(
+        title: comic.title,
+        author: comic.subtitle,
+        tags: comic.tags,
+        chapters: chapters,
+      );
+      await cache.joinFile('metadata.json').writeAsString(jsonEncode(metaData));
+      await cache
+          .joinFile('ComicInfo.xml')
+          .writeAsString(
+            _buildComicInfoXml(metaData, pageCount: images.length),
+          );
+      final cbz = File(outFilePath);
+      if (cbz.existsSync()) cbz.deleteSync();
+      await _compress(cache.path, cbz.path);
+      return cbz;
+    } finally {
+      await cache.deleteIgnoreError(recursive: true);
     }
-    var cover = comic.coverFile;
-    await cover.copyMem(
-      FilePath.join(cache.path, 'cover.${cover.path.split('.').last}'),
-    );
-    final metaData = ComicMetaData(
-      title: comic.title,
-      author: comic.subtitle,
-      tags: comic.tags,
-      chapters: chapters,
-    );
-    await File(
-      FilePath.join(cache.path, 'metadata.json'),
-    ).writeAsString(jsonEncode(metaData));
-    await File(
-      FilePath.join(cache.path, 'ComicInfo.xml'),
-    ).writeAsString(_buildComicInfoXml(metaData, pageCount: pageCount));
-    var cbz = File(outFilePath);
-    if (cbz.existsSync()) cbz.deleteSync();
-    await _compress(cache.path, cbz.path);
-    cache.deleteSync(recursive: true);
-    return cbz;
   }
 
   static String compatiblePageFileName(int pageIndex, String extension) {

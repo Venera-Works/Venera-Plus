@@ -341,7 +341,18 @@ class ImportComic {
   }
 
   Future<bool> _scanLocalDownloads() async {
-    var localDir = LocalManager().directory;
+    final manager = LocalManager();
+    final localDir = manager.directory;
+    // 保留任务引用，扫描期间仍可识别刚分配目录或进入取消清理的任务。
+    final downloads = manager.downloadsWithUnfinishedOutput.toList();
+    final cancelledOutputs = manager.cancelledDownloadOutputs.toList();
+    bool isDownloadOutput(String directory) =>
+        cancelledOutputs.any((output) => path.equals(output, directory)) ||
+        downloads.any((task) {
+          final output = task.path;
+          return output != null && path.equals(output, directory);
+        });
+
     Map<String?, List<LocalComic>> imported = {null: []};
     bool cancelled = false;
     var controller = showLoadingDialog(
@@ -360,14 +371,14 @@ class ImportComic {
         if (cancelled) {
           break;
         }
-        if (entry is Directory) {
+        if (entry is Directory && !isDownloadOutput(entry.path)) {
           var stat = await entry.stat();
           var result = await _checkSingleComic(
             entry,
             createTime: stat.modified,
             useRelativePath: true,
           );
-          if (result != null) {
+          if (result != null && !isDownloadOutput(entry.path)) {
             imported[null]!.add(result);
           }
         }
