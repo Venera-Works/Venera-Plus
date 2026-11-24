@@ -20,15 +20,16 @@ String _occurrenceKey(String? groupId, String chapterId) {
 ) {
   final decoded = jsonDecode(key);
   if (decoded is List) {
+    // 漫画源可以返回空章节 ID，阅读器也用空字符串表示无章节作品。
     if (decoded.length == 2 && decoded[0] == 'u') {
       final id = decoded[1];
-      if (id is String && id.isNotEmpty) {
+      if (id is String) {
         return (isUnique: true, groupId: null, chapterId: id);
       }
     } else if (decoded.length == 3 && decoded[0] == 'g') {
       final g = decoded[1];
       final id = decoded[2];
-      if (g is String && id is String && id.isNotEmpty) {
+      if (g is String && id is String) {
         return (isUnique: false, groupId: g.isEmpty ? null : g, chapterId: id);
       }
     }
