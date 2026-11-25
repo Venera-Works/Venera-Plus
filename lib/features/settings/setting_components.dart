@@ -830,7 +830,9 @@ class SettingPartTitle extends StatelessWidget {
           children: [
             Icon(icon, size: 24),
             const SizedBox(width: 8),
-            Expanded(child: Text(title, style: ts.s18)),
+            Expanded(
+              child: Semantics(header: true, child: Text(title, style: ts.s18)),
+            ),
           ],
         ),
       ),
