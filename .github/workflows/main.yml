@@ -143,7 +143,7 @@ jobs:
       release_mode: true
       build_android: true
       build_windows: true
-      build_macos: false
+      build_macos: true
       build_ios: true
       build_linux_x64: true
       build_linux_arm64: true
