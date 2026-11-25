@@ -479,7 +479,36 @@ jobs:
           name: macos_build
           path: result/
           if-no-files-found: error
-          retention-days: 7
+          retention-days: ${{ !inputs.release_mode && 7 || 0 }}
+
+  Upload_MacOS:
+    runs-on: ubuntu-22.04
+    needs: Build_MacOS
+    if: inputs.release_mode && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: 下载 macOS 构建产物
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: macos_build
+          path: outputs
+      - name: 上传 DMG 到 Release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(outputs/*.dmg)
+          (( ${#files[@]} == 1 )) || { echo "应当恰好有一个 macOS DMG，实际 ${#files[@]} 个。" >&2; exit 1; }
+          existing=$(gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets[] | select(.state == "uploaded") | .name')
+          name=$(basename "${files[0]}")
+          if grep -Fxq "$name" <<<"$existing"; then
+            echo "Release 已包含 $name，本次跳过上传。"
+          else
+            gh release upload "${GITHUB_REF_NAME}" "${files[0]}"
+          fi
 
   Build_IOS:
     if: ${{ inputs.build_ios }}
