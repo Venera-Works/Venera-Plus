@@ -330,6 +330,7 @@ void main() {
         if (history != null) {
           await history.waitForAsyncWrites();
           if (history.isInitialized) history.close();
+          await history.waitForPendingReads();
         }
         HistoryManager.cache = previousHistory;
 
@@ -474,6 +475,112 @@ void main() {
           expect(
             cookies.map((cookie) => cookie.name),
             isNot(contains('later')),
+          );
+        },
+      );
+
+      test(
+        'restores history backup cleanly while background batch reading progress queries are active',
+        () async {
+          final manager = HistoryManager();
+          final db = manager.imageFavoritesDatabase;
+          db.execute('BEGIN;');
+          try {
+            db.execute(
+              '''
+              INSERT INTO history (id, title, type, ep, page, max_page, time)
+              VALUES (?, ?, ?, 1, ?, ?, 2000);
+              ''',
+              [
+                'export-history',
+                'Exported history',
+                ComicType.local.value,
+                5,
+                5,
+              ],
+            );
+            for (var i = 0; i < 1200; i++) {
+              db.execute(
+                '''
+                INSERT INTO history (id, title, type, ep, page, max_page, time)
+                VALUES (?, ?, ?, 1, ?, ?, 1000);
+                ''',
+                ['bulk-$i', 'Bulk $i', ComicType.local.value, 1, 10],
+              );
+            }
+            db.execute('COMMIT;');
+          } catch (_) {
+            db.execute('ROLLBACK;');
+            rethrow;
+          }
+          manager.notifyChanges();
+
+          final archive = await exportAppData(false);
+          final extracted = await _extractArchive(archive, root);
+          _addHistory('later-history', 'Later history');
+
+          final targets = [
+            (id: 'export-history', type: ComicType.local),
+            for (var i = 0; i < 1200; i++)
+              (id: 'bulk-$i', type: ComicType.local),
+          ];
+          final pendingReads = <Future<Object?>>[];
+          addTearDown(() => configureAppDataArchiveExtractorForTesting(null));
+          configureAppDataArchiveExtractorForTesting((_, destination) {
+            for (final entity in extracted.listSync(
+              recursive: true,
+              followLinks: false,
+            )) {
+              final rel = p.relative(entity.path, from: extracted.path);
+              final targetPath = p.join(destination.path, rel);
+              if (entity is Directory) {
+                Directory(targetPath).createSync(recursive: true);
+              } else if (entity is File) {
+                File(targetPath).parent.createSync(recursive: true);
+                entity.copySync(targetPath);
+              }
+            }
+            for (var i = 0; i < 4; i++) {
+              pendingReads.add(
+                HistoryManager()
+                    .findReadingProgressBatchAsync(targets)
+                    .then<Object?>(
+                      (value) => value,
+                      onError: (Object error) => error,
+                    ),
+              );
+            }
+          });
+
+          try {
+            await importAppData(archive);
+          } finally {
+            configureAppDataArchiveExtractorForTesting(null);
+          }
+
+          expect(pendingReads, hasLength(4));
+          final outcomes = await Future.wait(pendingReads);
+          for (final outcome in outcomes) {
+            expect(
+              outcome is Map<String, HistoryPageProgress> ||
+                  outcome is StateError,
+              isTrue,
+              reason: 'Unexpected concurrent batch read outcome: $outcome',
+            );
+          }
+          expect(HistoryManager().isInitialized, isTrue);
+          expect(_historyTitle('export-history'), 'Exported history');
+          expect(_historyTitle('later-history'), isNull);
+          final restoredProgress = await HistoryManager()
+              .findReadingProgressBatchAsync([
+                (id: 'export-history', type: ComicType.local),
+              ]);
+          expect(
+            restoredProgress[HistoryManager.historyKey(
+              'export-history',
+              ComicType.local,
+            )],
+            (page: 5, maxPage: 5),
           );
         },
       );

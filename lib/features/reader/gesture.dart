@@ -514,11 +514,26 @@ class ReaderGestureDetectorState
     context.reader.imageViewController?.handleDoubleTap(location);
   }
 
+  ReaderImageReference? _pinImageReference(ReaderImageReference? ref) {
+    if (ref == null) return null;
+    return ReaderImageReference(
+      imageKey: ref.imageKey,
+      sourceKey: ref.sourceKey ?? reader.type.sourceKey,
+      cid: ref.cid,
+      eid: ref.eid,
+      chapter: ref.chapter ?? reader.chapter,
+      page: ref.page ?? reader.page,
+      file: ref.file,
+    );
+  }
+
   void _showContextMenu(Offset location) {
     final compact = App.isMobile && context.width < 600;
     final ref = reader.isLoading || reader.isOnChapterCommentsPage
         ? null
-        : reader.imageViewController?.getImageReferenceByOffset(location);
+        : _pinImageReference(
+            reader.imageViewController?.getImageReferenceByOffset(location),
+          );
     if (compact && ref == null) return;
     _previousEvent = null;
     showMenuX(context, location, [
@@ -566,10 +581,13 @@ class ReaderGestureDetectorState
   }
 
   void _viewOriginalImage(ReaderImageReference ref) {
-    final sourceKey = reader.type.sourceKey;
+    final future = loadReaderOriginalImageBytes(
+      ref,
+      fallbackSourceKey: ref.sourceKey ?? reader.type.sourceKey,
+    );
     context.to<void>(
       () => FutureBuilder<Uint8List>(
-        future: loadReaderOriginalImageBytes(ref, fallbackSourceKey: sourceKey),
+        future: future,
         builder: (context, snapshot) {
           final bytes = snapshot.data;
           final Widget body;
@@ -622,7 +640,7 @@ class ReaderGestureDetectorState
     try {
       return await loadReaderOriginalImageBytes(
         ref,
-        fallbackSourceKey: reader.type.sourceKey,
+        fallbackSourceKey: ref.sourceKey ?? reader.type.sourceKey,
       );
     } catch (e) {
       if (mounted) context.showMessage(message: e.toString());

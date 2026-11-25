@@ -34,79 +34,104 @@ class ImportComic {
 
   Future<bool> cbz() => LocalComicStorageGuard.instance.runImport(() async {
     var file = await selectFile(ext: ['cbz', 'zip', '7z', 'cb7']);
-    Map<String?, List<LocalComic>> imported = {};
     if (file == null) {
       return false;
     }
     var controller = showLoadingDialog(App.rootContext, allowCancel: false);
+    late final ({int importedCount, List<String> failures}) result;
     try {
-      var comic = await CBZ.import(File(file.path));
-      imported[selectedFolder] = [comic];
+      result = await CBZ.importArchive(
+        File(file.path),
+        registerComic: (comic) => registerComic(comic, folder: selectedFolder),
+      );
     } catch (e, s) {
       Log.error("Import Comic", e.toString(), s);
       App.rootContext.showMessage(message: e.toString());
-      controller.close();
       return false;
+    } finally {
+      controller.close();
     }
-    controller.close();
-    return registerComics(imported, false);
+    await _showArchiveImportResult(
+      importedCount: result.importedCount,
+      failures: result.failures,
+    );
+    return result.importedCount > 0;
   });
 
-  Future<bool> multipleCbz() => LocalComicStorageGuard.instance.runImport(
-    () async {
-      var picker = DirectoryPicker();
-      var dir = await picker.pickDirectory(directAccess: true);
-      if (dir != null) {
+  Future<bool> multipleCbz() =>
+      LocalComicStorageGuard.instance.runImport(() async {
+        var picker = DirectoryPicker();
+        var dir = await picker.pickDirectory(directAccess: true);
+        if (dir == null) {
+          return false;
+        }
         var files = (await dir.list().toList()).whereType<File>().toList();
         files.removeWhere((file) => !isComicArchiveFileName(file.name));
+        files.sort((a, b) => compareComicFileNames(a.name, b.name));
         var controller = showLoadingDialog(App.rootContext, allowCancel: false);
         var importedCount = 0;
         final failures = <String>[];
-        for (var file in files) {
-          try {
-            var comic = await CBZ.import(file);
-            await registerComic(comic, folder: selectedFolder);
-            importedCount++;
-          } catch (e, s) {
-            Log.error("Import Comic", '${file.name}: $e', s);
-            failures.add('${file.name}: $e');
+        try {
+          for (var file in files) {
+            try {
+              final result = await CBZ.importArchive(
+                file,
+                registerComic: (comic) =>
+                    registerComic(comic, folder: selectedFolder),
+                failurePrefix: file.name,
+              );
+              importedCount += result.importedCount;
+              failures.addAll(result.failures);
+            } catch (e, s) {
+              Log.error("Import Comic", '${file.name}: $e', s);
+              failures.add('${file.name}: $e');
+            }
           }
+        } finally {
+          controller.close();
         }
         if (files.isEmpty) {
           App.rootContext.showMessage(message: "No valid comics found".tl);
+          return false;
         }
-        controller.close();
-        if (failures.isNotEmpty) {
-          await showDialog<void>(
-            context: App.rootContext,
-            builder: (context) => AlertDialog(
-              title: Text(
-                'Success: @a, Failed: @b'.tlParams({
-                  'a': importedCount,
-                  'b': failures.length,
-                }),
-              ),
-              content: SingleChildScrollView(
-                child: SelectableText(failures.join('\n\n')),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: Text('Close'.tl),
-                ),
-              ],
-            ),
-          );
-        } else if (importedCount > 0) {
-          App.rootContext.showMessage(
-            message: 'Imported @a comics'.tlParams({'a': importedCount}),
-          );
-        }
+        await _showArchiveImportResult(
+          importedCount: importedCount,
+          failures: failures,
+        );
         return importedCount > 0;
-      }
-      return false;
-    },
-  );
+      });
+
+  Future<void> _showArchiveImportResult({
+    required int importedCount,
+    required List<String> failures,
+  }) async {
+    if (failures.isNotEmpty) {
+      await showDialog<void>(
+        context: App.rootContext,
+        builder: (context) => AlertDialog(
+          title: Text(
+            'Success: @a, Failed: @b'.tlParams({
+              'a': importedCount,
+              'b': failures.length,
+            }),
+          ),
+          content: SingleChildScrollView(
+            child: SelectableText(failures.join('\n\n')),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text('Close'.tl),
+            ),
+          ],
+        ),
+      );
+    } else if (importedCount > 0) {
+      App.rootContext.showMessage(
+        message: 'Imported @a comics'.tlParams({'a': importedCount}),
+      );
+    }
+  }
 
   Future<bool> pdf() async {
     try {

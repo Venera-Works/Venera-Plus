@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/reader/images.dart';
@@ -311,4 +312,163 @@ void main() {
       );
     },
   );
+
+  group('resolveContinuousImageHit', () {
+    const readerBounds = Rect.fromLTWH(0, 0, 1000, 600);
+    const verticalViewport = Rect.fromLTWH(290, 0, 420, 600);
+    const horizontalViewport = Rect.fromLTWH(0, 100, 1000, 400);
+
+    test('prefers exact image bounds before row whitespace fallback', () {
+      const candidates = [
+        (value: 'p1', bounds: Rect.fromLTWH(350, 20, 300, 200)),
+        (value: 'p2', bounds: Rect.fromLTWH(350, 260, 300, 220)),
+      ];
+      expect(
+        resolveContinuousImageHit(
+          offset: const Offset(400, 100),
+          readerBounds: readerBounds,
+          viewportBounds: verticalViewport,
+          isVertical: true,
+          candidates: candidates,
+        ),
+        'p1',
+      );
+      expect(
+        resolveContinuousImageHit(
+          offset: const Offset(50, 100),
+          readerBounds: readerBounds,
+          viewportBounds: verticalViewport,
+          isVertical: true,
+          candidates: candidates,
+        ),
+        'p1',
+      );
+      expect(
+        resolveContinuousImageHit(
+          offset: const Offset(950, 320),
+          readerBounds: readerBounds,
+          viewportBounds: verticalViewport,
+          isVertical: true,
+          candidates: candidates,
+        ),
+        'p2',
+      );
+    });
+
+    test('matches vertical bands in horizontal continuous mode', () {
+      const candidates = [
+        (value: 'p1', bounds: Rect.fromLTWH(40, 140, 300, 320)),
+        (value: 'p2', bounds: Rect.fromLTWH(380, 140, 300, 320)),
+      ];
+      expect(
+        resolveContinuousImageHit(
+          offset: const Offset(120, 40),
+          readerBounds: readerBounds,
+          viewportBounds: horizontalViewport,
+          isVertical: false,
+          candidates: candidates,
+        ),
+        'p1',
+      );
+      expect(
+        resolveContinuousImageHit(
+          offset: const Offset(520, 560),
+          readerBounds: readerBounds,
+          viewportBounds: horizontalViewport,
+          isVertical: false,
+          candidates: candidates,
+        ),
+        'p2',
+      );
+    });
+
+    test(
+      'returns null on divider band, offscreen candidates and outside viewport',
+      () {
+        const candidates = [
+          (value: 'offscreen', bounds: Rect.fromLTWH(350, -300, 300, 200)),
+          (value: 'p1', bounds: Rect.fromLTWH(350, 20, 300, 200)),
+          (value: 'p2', bounds: Rect.fromLTWH(350, 280, 300, 200)),
+        ];
+        expect(
+          resolveContinuousImageHit(
+            offset: const Offset(500, 250),
+            readerBounds: readerBounds,
+            viewportBounds: verticalViewport,
+            isVertical: true,
+            candidates: candidates,
+          ),
+          isNull,
+        );
+        expect(
+          resolveContinuousImageHit(
+            offset: const Offset(50, 250),
+            readerBounds: readerBounds,
+            viewportBounds: verticalViewport,
+            isVertical: true,
+            candidates: candidates,
+          ),
+          isNull,
+        );
+        expect(
+          resolveContinuousImageHit(
+            offset: const Offset(-5, 100),
+            readerBounds: readerBounds,
+            viewportBounds: verticalViewport,
+            isVertical: true,
+            candidates: candidates,
+          ),
+          isNull,
+        );
+        expect(
+          resolveContinuousImageHit(
+            offset: const Offset(400, 620),
+            readerBounds: readerBounds,
+            viewportBounds: verticalViewport,
+            isVertical: true,
+            candidates: candidates,
+          ),
+          isNull,
+        );
+      },
+    );
+
+    test('respects transformed zoomed and panned viewport bounds', () {
+      const zoomedViewport = Rect.fromLTWH(100, 80, 600, 520);
+      const candidates = [
+        (value: 'p1', bounds: Rect.fromLTWH(120, -80, 560, 220)),
+        (value: 'p2', bounds: Rect.fromLTWH(120, 200, 560, 260)),
+      ];
+      expect(
+        resolveContinuousImageHit(
+          offset: const Offset(50, 50),
+          readerBounds: readerBounds,
+          viewportBounds: zoomedViewport,
+          isVertical: true,
+          candidates: candidates,
+        ),
+        isNull,
+      );
+      expect(
+        resolveContinuousImageHit(
+          offset: const Offset(50, 110),
+          readerBounds: readerBounds,
+          viewportBounds: zoomedViewport,
+          isVertical: true,
+          candidates: candidates,
+        ),
+        'p1',
+      );
+      expect(
+        resolveContinuousImageHit(
+          offset: const Offset(850, 300),
+          readerBounds: readerBounds,
+          viewportBounds: zoomedViewport,
+          isVertical: true,
+          candidates: candidates,
+        ),
+        'p2',
+      );
+    });
+  });
 }

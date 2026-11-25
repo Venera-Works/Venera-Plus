@@ -310,6 +310,8 @@ void notifyHistoryDataChanged() => _historyDataChangedHandler?.call();
 
 typedef _HistoryWriteResult = ({History history, bool matchesInputCatalog});
 
+typedef HistoryPageProgress = ({int page, int? maxPage});
+
 class HistoryManager with ChangeNotifier {
   static HistoryManager? cache;
 
@@ -327,6 +329,13 @@ class HistoryManager with ChangeNotifier {
   int get length => _db.select("select count(*) from history;").first[0] as int;
 
   static String _historyKey(String id, ComicType type) => "${type.value}:$id";
+
+  static String historyKey(String id, ComicType type) => _historyKey(id, type);
+
+  static const _readingProgressBatchSize = 400;
+
+  static bool isCompletedProgress(HistoryPageProgress? progress) =>
+      progress != null && progress.page == progress.maxPage;
 
   /// Cache of history keys (type:id). Improves the performance of find operations.
   Map<String, bool>? _cachedHistoryKeys;
@@ -347,8 +356,27 @@ class HistoryManager with ChangeNotifier {
   Future<void> Function()? debugBeforeAsyncHistoryResultApplied;
 
   bool isInitialized = false;
+  bool _closed = false;
+  final Set<Future<void>> _pendingReadJobs = {};
+
+  Future<void> waitForPendingReads() async {
+    while (_pendingReadJobs.isNotEmpty) {
+      await Future.wait(_pendingReadJobs.toList(growable: false));
+    }
+  }
+
+  Future<T> _trackPendingRead<T>(Future<T> Function() start) {
+    final read = start();
+    late final Future<void> tracker;
+    tracker = read.then<void>((_) {}, onError: (_, _) {}).whenComplete(() {
+      _pendingReadJobs.remove(tracker);
+    });
+    _pendingReadJobs.add(tracker);
+    return read;
+  }
 
   Future<void> init() async {
+    await waitForPendingReads();
     if (isInitialized) {
       return;
     }
@@ -364,6 +392,7 @@ class HistoryManager with ChangeNotifier {
     clearExpiredHistory(
       (appdata.settings['historyRetentionDays'] as num?)?.round() ?? 0,
     );
+    _closed = false;
     isInitialized = true;
   }
 
@@ -645,6 +674,57 @@ class HistoryManager with ChangeNotifier {
         db.dispose();
       }
     });
+  }
+
+  static Future<Map<String, HistoryPageProgress>>
+  _readReadingProgressBatchAsync(
+    String dbPath,
+    List<({String id, int type})> targets,
+  ) {
+    return Isolate.run(() {
+      final db = sqlite3.open(dbPath, mode: OpenMode.readOnly);
+      try {
+        db.execute('PRAGMA busy_timeout = 5000;');
+        return _readReadingProgressBatchFromDb(db, targets);
+      } finally {
+        db.close();
+      }
+    });
+  }
+
+  static Map<String, HistoryPageProgress> _readReadingProgressBatchFromDb(
+    Database db,
+    List<({String id, int type})> targets,
+  ) {
+    final result = <String, HistoryPageProgress>{};
+    for (
+      var start = 0;
+      start < targets.length;
+      start += _readingProgressBatchSize
+    ) {
+      final end = start + _readingProgressBatchSize < targets.length
+          ? start + _readingProgressBatchSize
+          : targets.length;
+      final chunk = targets.sublist(start, end);
+      final placeholders = List.filled(chunk.length, '(?, ?)').join(', ');
+      final params = <Object>[
+        for (final item in chunk) ...[item.id, item.type],
+      ];
+      final rows = db.select('''
+        WITH target_keys(id, type) AS (VALUES $placeholders)
+        SELECT h.id, h.type, h.page, h.max_page
+        FROM history h
+        JOIN target_keys t ON h.id = t.id AND h.type = t.type;
+      ''', params);
+      for (final row in rows) {
+        final id = row['id'] as String;
+        final typeValue = (row['type'] as num).toInt();
+        final page = (row['page'] as num?)?.toInt() ?? 0;
+        final maxPage = (row['max_page'] as num?)?.toInt();
+        result['$typeValue:$id'] = (page: page, maxPage: maxPage);
+      }
+    }
+    return result;
   }
 
   Future<void> _asyncHistoryQueue = Future.value();
@@ -1400,6 +1480,72 @@ class HistoryManager with ChangeNotifier {
     return item;
   }
 
+  Map<String, HistoryPageProgress>? tryFindReadingProgressBatchSync(
+    Iterable<({String id, ComicType type})> targets,
+  ) {
+    if (isInitialized || _closed) return null;
+    final unique = <String, ({String id, int type, ComicType comicType})>{};
+    for (final target in targets) {
+      unique.putIfAbsent(
+        _historyKey(target.id, target.type),
+        () => (id: target.id, type: target.type.value, comicType: target.type),
+      );
+    }
+    if (unique.isEmpty) return const {};
+    return _findReadingProgressBatchFromFind(unique);
+  }
+
+  Future<Map<String, HistoryPageProgress>> findReadingProgressBatchAsync(
+    Iterable<({String id, ComicType type})> targets,
+  ) async {
+    if (_closed) {
+      throw StateError('HistoryManager is closed');
+    }
+    final unique = <String, ({String id, int type, ComicType comicType})>{};
+    for (final target in targets) {
+      unique.putIfAbsent(
+        _historyKey(target.id, target.type),
+        () => (id: target.id, type: target.type.value, comicType: target.type),
+      );
+    }
+    if (unique.isEmpty) return const {};
+    if (!isInitialized) {
+      return _findReadingProgressBatchFromFind(unique);
+    }
+    final queryTargets = [
+      for (final entry in unique.values) (id: entry.id, type: entry.type),
+    ];
+    final persisted = await _trackPendingRead(
+      () => _readReadingProgressBatchAsync(_dbPath, queryTargets),
+    );
+    if (_closed || !isInitialized) {
+      throw StateError('HistoryManager is closed');
+    }
+    for (final key in unique.keys) {
+      final live = _pendingReadingProgress[key] ?? _queuedHistories[key];
+      if (live == null) continue;
+      final existing = persisted[key];
+      persisted[key] = (
+        page: live.page,
+        maxPage: live.maxPage ?? existing?.maxPage,
+      );
+    }
+    return persisted;
+  }
+
+  Map<String, HistoryPageProgress> _findReadingProgressBatchFromFind(
+    Map<String, ({String id, int type, ComicType comicType})> unique,
+  ) {
+    final result = <String, HistoryPageProgress>{};
+    for (final entry in unique.entries) {
+      final item = find(entry.value.id, entry.value.comicType);
+      if (item != null) {
+        result[entry.key] = (page: item.page, maxPage: item.maxPage);
+      }
+    }
+    return result;
+  }
+
   /// Exports sync records for history, historyChapter, and imageFavorite domains.
   ///
   /// Flushes coalesced reading progress and queued writes before sync capture.
@@ -1537,6 +1683,7 @@ class HistoryManager with ChangeNotifier {
       _writeHistory(_db, item);
     }
     if (pending.isNotEmpty) notifyHistoryDataChanged();
+    _closed = true;
     isInitialized = false;
     _historyCacheEpoch++;
     _db.dispose();

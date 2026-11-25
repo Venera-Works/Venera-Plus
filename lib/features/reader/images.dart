@@ -3240,82 +3240,70 @@ class ContinuousModeState extends State<_ContinuousMode>
   }
 
   ReaderImageProvider? _findProviderByOffset(Offset offset) {
-    for (var imageState in imageStates) {
-      if ((imageState as ComicImageState).containsPoint(offset)) {
-        final image = imageState.widget.image;
-        if (image is ReaderImageProvider) {
-          return image;
-        }
-      }
+    final readerBox = context.findRenderObject();
+    if (readerBox is! RenderBox || !readerBox.attached || !readerBox.hasSize) {
+      return null;
     }
-    return null;
-  }
+    final readerBounds = MatrixUtils.transformRect(
+      readerBox.getTransformTo(null),
+      Offset.zero & readerBox.size,
+    );
+    final controller = _scrollController;
+    if (controller == null || !controller.hasClients) {
+      return null;
+    }
+    final scrollContext = controller.position.context;
+    final activeScrollable = scrollContext is ScrollableState
+        ? scrollContext
+        : null;
+    final viewportBox = scrollContext.storageContext.findRenderObject();
+    if (viewportBox is! RenderBox ||
+        !viewportBox.attached ||
+        !viewportBox.hasSize) {
+      return null;
+    }
+    final viewportBounds = MatrixUtils.transformRect(
+      viewportBox.getTransformTo(null),
+      Offset.zero & viewportBox.size,
+    );
 
-  WaterfallImageRef? _currentWaterfallImageRef() {
-    final page = reader.page;
-    if (page < 1) return null;
-    final globalIndex = _waterfallIndexOfChapterPage(reader.chapter, page);
-    if (globalIndex == null) return null;
-    return _imageRefAt(globalIndex);
+    final candidates = <ContinuousImageHitCandidate<ReaderImageProvider>>[];
+    for (final state in imageStates) {
+      if (state is! ComicImageState || !state.mounted) continue;
+      final image = state.widget.image;
+      if (image is! ReaderImageProvider) continue;
+      if (activeScrollable != null &&
+          Scrollable.maybeOf(state.context) != activeScrollable) {
+        continue;
+      }
+      final box = state.context.findRenderObject();
+      if (box is! RenderBox || !box.attached || !box.hasSize) continue;
+      final bounds = MatrixUtils.transformRect(
+        box.getTransformTo(null),
+        Offset.zero & box.size,
+      );
+      candidates.add((value: image, bounds: bounds));
+    }
+
+    return resolveContinuousImageHit(
+      offset: offset,
+      readerBounds: readerBounds,
+      viewportBounds: viewportBounds,
+      isVertical: reader.mode.isTopToBottom,
+      candidates: candidates,
+    );
   }
 
   @override
   ReaderImageReference? getImageReferenceByOffset(Offset offset) {
     final provider = _findProviderByOffset(offset);
-    if (provider != null) {
-      return createReaderImageReferenceFromProvider(
-        provider,
-        fallbackSourceKey: reader.type.comicSource?.key,
-        fallbackChapter: reader.chapter,
-        segments: crossChapter ? _waterfallFlow.segments : null,
-      );
-    }
-    final imageKey = getImageKeyByOffset(offset);
-    if (imageKey != null) {
-      final file = imageKey.startsWith("file://")
-          ? File(imageKey.substring(7))
-          : null;
-      final ref = _currentWaterfallImageRef();
-      return ReaderImageReference(
-        imageKey: imageKey,
-        sourceKey: reader.type.comicSource?.key,
-        cid: reader.cid,
-        eid: ref?.eid ?? reader.eid,
-        chapter: ref?.chapter ?? reader.chapter,
-        page: ref?.page ?? reader.page,
-        file: file,
-      );
-    }
-    final ref = _currentWaterfallImageRef();
-    if (ref != null) {
-      final file = ref.imageKey.startsWith("file://")
-          ? File(ref.imageKey.substring(7))
-          : null;
-      return ReaderImageReference(
-        imageKey: ref.imageKey,
-        sourceKey: reader.type.comicSource?.key,
-        cid: reader.cid,
-        eid: ref.eid,
-        chapter: ref.chapter,
-        page: ref.page,
-        file: file,
-      );
-    }
-    final page = reader.page;
-    if (page > 0 && page <= (reader.images?.length ?? 0)) {
-      final key = reader.images![page - 1];
-      final file = key.startsWith("file://") ? File(key.substring(7)) : null;
-      return ReaderImageReference(
-        imageKey: key,
-        sourceKey: reader.type.comicSource?.key,
-        cid: reader.cid,
-        eid: reader.eid,
-        chapter: reader.chapter,
-        page: page,
-        file: file,
-      );
-    }
-    return null;
+    if (provider == null) return null;
+    return createReaderImageReferenceFromProvider(
+      provider,
+      fallbackSourceKey: reader.type.comicSource?.key,
+      fallbackChapter: reader.chapter,
+      segments: crossChapter ? _waterfallFlow.segments : null,
+    );
   }
 
   @override
@@ -3381,14 +3369,50 @@ class ContinuousModeState extends State<_ContinuousMode>
 
   @override
   String? getImageKeyByOffset(Offset offset) {
-    String? imageKey;
-    for (var imageState in imageStates) {
-      if ((imageState as ComicImageState).containsPoint(offset)) {
-        imageKey = (imageState.widget.image as ReaderImageProvider).imageKey;
+    return _findProviderByOffset(offset)?.imageKey;
+  }
+}
+
+typedef ContinuousImageHitCandidate<T> = ({T value, Rect bounds});
+
+@visibleForTesting
+T? resolveContinuousImageHit<T>({
+  required Offset offset,
+  required Rect readerBounds,
+  required Rect viewportBounds,
+  required bool isVertical,
+  required Iterable<ContinuousImageHitCandidate<T>> candidates,
+}) {
+  if (!readerBounds.contains(offset)) return null;
+  final activeViewport = readerBounds.intersect(viewportBounds);
+  if (activeViewport.isEmpty) return null;
+  if (isVertical) {
+    if (offset.dy < activeViewport.top || offset.dy >= activeViewport.bottom) {
+      return null;
+    }
+  } else {
+    if (offset.dx < activeViewport.left || offset.dx >= activeViewport.right) {
+      return null;
+    }
+  }
+
+  T? bandMatch;
+  for (final candidate in candidates) {
+    final visible = candidate.bounds.intersect(activeViewport);
+    if (visible.isEmpty) continue;
+    if (visible.contains(offset)) {
+      return candidate.value;
+    }
+    if (bandMatch == null) {
+      final inBand = isVertical
+          ? offset.dy >= visible.top && offset.dy < visible.bottom
+          : offset.dx >= visible.left && offset.dx < visible.right;
+      if (inBand) {
+        bandMatch = candidate.value;
       }
     }
-    return imageKey;
   }
+  return bandMatch;
 }
 
 /// Pure calculation helper for reader content size.

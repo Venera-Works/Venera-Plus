@@ -26,6 +26,7 @@ import 'package:venera_plus/features/follow_updates/follow_updates.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/consts.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/file_interaction.dart';
@@ -74,10 +75,26 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
 
   late List<String> added = [];
 
+  final _searchController = TextEditingController();
+
   String keyword = "";
   bool searchHasUpper = false;
 
   bool searchMode = false;
+
+  void _clearSearchState() {
+    searchMode = false;
+    keyword = "";
+    searchHasUpper = false;
+    _searchController.clear();
+  }
+
+  void _closeSearch() {
+    setState(() {
+      _clearSearchState();
+      _refreshComics();
+    });
+  }
 
   bool multiSelectMode = false;
 
@@ -89,8 +106,12 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
 
   bool isLoading = false;
   String? loadError;
+  String? _readFilterError;
   int _loadGeneration = 0;
   late String readFilterSelect;
+  Map<String, HistoryPageProgress>? _readingProgressByKey;
+  int _readFilterGeneration = 0;
+  bool _isFilteringReadStatus = false;
 
   var searchResults = <FavoriteItem>[];
   var _readFilteredComics = <FavoriteItem>[];
@@ -100,6 +121,13 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
 
   bool get _filtersHistory =>
       readFilterSelect == 'UnCompleted' || readFilterSelect == 'Completed';
+
+  void _invalidateReadingProgress() {
+    _readingProgressByKey = null;
+    _readFilterGeneration++;
+    _isFilteringReadStatus = false;
+    _readFilterError = null;
+  }
 
   void _updateDisplayedComics(KeywordFilter filter) {
     _blockedRules = filter.rules;
@@ -121,8 +149,100 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
 
   void _refreshReadFilter() {
     _historyDirty = false;
-    _readFilteredComics = filterComics(searchMode ? searchResults : comics);
-    _updateDisplayedComics(comicKeywordFilter());
+    _readFilterError = null;
+    final candidates = searchMode ? searchResults : comics;
+    if (!_filtersHistory) {
+      _isFilteringReadStatus = false;
+      _readFilterGeneration++;
+      _readFilteredComics = candidates;
+      _updateDisplayedComics(comicKeywordFilter());
+      return;
+    }
+    if (comics.isEmpty) {
+      _isFilteringReadStatus = false;
+      _readFilterGeneration++;
+      _readFilteredComics = const [];
+      _updateDisplayedComics(comicKeywordFilter());
+      return;
+    }
+    final cachedProgress = _readingProgressByKey;
+    if (cachedProgress != null) {
+      _isFilteringReadStatus = false;
+      _readFilteredComics = _filterByProgress(candidates, cachedProgress);
+      _updateDisplayedComics(comicKeywordFilter());
+      return;
+    }
+    if (_isFilteringReadStatus) return;
+
+    final targets = [
+      for (final comic in comics) (id: comic.id, type: comic.type),
+    ];
+    final syncProgress = HistoryManager().tryFindReadingProgressBatchSync(
+      targets,
+    );
+    if (syncProgress != null) {
+      _readingProgressByKey = syncProgress;
+      _isFilteringReadStatus = false;
+      _readFilteredComics = _filterByProgress(candidates, syncProgress);
+      _updateDisplayedComics(comicKeywordFilter());
+      return;
+    }
+    unawaited(_startAsyncReadFilter(targets));
+  }
+
+  Future<void> _startAsyncReadFilter(
+    List<({String id, ComicType type})> targets,
+  ) async {
+    final requestId = ++_readFilterGeneration;
+    final loadGeneration = _loadGeneration;
+    final targetFolder = widget.folder;
+    final targetComics = comics;
+    _isFilteringReadStatus = true;
+    _readFilterError = null;
+    _readFilteredComics = const [];
+    displayedComics = const [];
+    _retainDisplayedSelection();
+    try {
+      final progress = await HistoryManager().findReadingProgressBatchAsync(
+        targets,
+      );
+      if (!mounted ||
+          requestId != _readFilterGeneration ||
+          loadGeneration != _loadGeneration ||
+          widget.folder != targetFolder ||
+          !identical(comics, targetComics) ||
+          !_filtersHistory) {
+        return;
+      }
+      setState(() {
+        _readingProgressByKey = progress;
+        _isFilteringReadStatus = false;
+        _readFilterError = null;
+        _historyDirty = false;
+        _readFilteredComics = _filterByProgress(
+          searchMode ? searchResults : comics,
+          progress,
+        );
+        _updateDisplayedComics(comicKeywordFilter());
+      });
+    } catch (error, stackTrace) {
+      Log.error("LocalFavoritesPage._refreshReadFilter", error, stackTrace);
+      if (mounted &&
+          requestId == _readFilterGeneration &&
+          loadGeneration == _loadGeneration &&
+          widget.folder == targetFolder &&
+          identical(comics, targetComics) &&
+          _filtersHistory) {
+        setState(() {
+          _isFilteringReadStatus = false;
+          _readFilterError = "Failed to load reading status".tl;
+          _readFilteredComics = const [];
+          displayedComics = const [];
+          _retainDisplayedSelection();
+        });
+        context.showMessage(message: "Failed to load reading status".tl);
+      }
+    }
   }
 
   List<FavoriteItem> get selectedMembers =>
@@ -162,7 +282,9 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
   }
 
   void _onHistoryChanged() {
-    if (!mounted || !_filtersHistory) return;
+    if (!mounted) return;
+    _invalidateReadingProgress();
+    if (!_filtersHistory) return;
     _historyDirty = true;
     if (_isVisible) setState(_refreshReadFilter);
   }
@@ -186,6 +308,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
     if (!mounted) return;
     final generation = ++_loadGeneration;
     final managerGen = manager.generation;
+    _invalidateReadingProgress();
 
     if (isAllFolder) {
       final totalComics = manager.totalComics;
@@ -214,6 +337,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
             isLoading = false;
             comics = value;
             loadError = null;
+            _invalidateReadingProgress();
             _refreshComics();
           });
         }
@@ -227,6 +351,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
             isLoading = false;
             comics = [];
             loadError = "Failed to load comics".tl;
+            _invalidateReadingProgress();
             _refreshComics();
           });
           context.showMessage(message: "Failed to load comics".tl);
@@ -271,6 +396,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
             isLoading = false;
             comics = value;
             loadError = null;
+            _invalidateReadingProgress();
             _refreshComics();
           });
         }
@@ -285,6 +411,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
             isLoading = false;
             comics = [];
             loadError = "Failed to load comics".tl;
+            _invalidateReadingProgress();
             _refreshComics();
           });
           context.showMessage(message: "Failed to load comics".tl);
@@ -293,11 +420,15 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
     }
   }
 
-  List<FavoriteItem> filterComics(List<FavoriteItem> currentComics) {
+  List<FavoriteItem> _filterByProgress(
+    List<FavoriteItem> currentComics,
+    Map<String, HistoryPageProgress> progressByKey,
+  ) {
     if (!_filtersHistory) return currentComics;
     return currentComics.where((comic) {
-      final history = HistoryManager().find(comic.id, comic.type);
-      final completed = history != null && history.page == history.maxPage;
+      final completed = HistoryManager.isCompletedProgress(
+        progressByKey[HistoryManager.historyKey(comic.id, comic.type)],
+      );
       return readFilterSelect == 'Completed' ? completed : !completed;
     }).toList();
   }
@@ -390,6 +521,9 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
       selectedComics.clear();
       multiSelectMode = false;
       lastSelectedComic = null;
+      _clearSearchState();
+      _invalidateReadingProgress();
+      _historyDirty = false;
       final linked = isAllFolder
           ? (null, null)
           : manager.findLinked(widget.folder);
@@ -404,9 +538,11 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
 
   @override
   void dispose() {
+    _readFilterGeneration++;
     LocalFavoritesManager().removeListener(updateComics);
     appdata.settings.removeListener(_onSettingsChanged);
     HistoryManager().removeListener(_onHistoryChanged);
+    _searchController.dispose();
     scrollController.dispose();
     super.dispose();
   }
@@ -706,8 +842,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                   icon: const Icon(Icons.search),
                   onPressed: () {
                     setState(() {
-                      keyword = "";
-                      searchHasUpper = false;
+                      _clearSearchState();
                       searchMode = true;
                       _refreshComics();
                     });
@@ -878,12 +1013,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
               message: "Cancel".tl,
               child: IconButton(
                 icon: const Icon(Icons.close),
-                onPressed: () {
-                  setState(() {
-                    multiSelectMode = false;
-                    selectedComics.clear();
-                  });
-                },
+                onPressed: _cancel,
               ),
             ),
             title: Text(
@@ -981,15 +1111,11 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
               message: "Cancel".tl,
               child: IconButton(
                 icon: const Icon(Icons.close),
-                onPressed: () {
-                  setState(() {
-                    searchMode = false;
-                    _refreshComics();
-                  });
-                },
+                onPressed: _closeSearch,
               ),
             ),
             title: TextField(
+              controller: _searchController,
               autofocus: true,
               decoration: InputDecoration(
                 hintText: "Search".tl,
@@ -1002,14 +1128,14 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
               },
             ).paddingBottom(8).paddingRight(8),
           ),
-        if (isLoading)
+        if (isLoading || _isFilteringReadStatus)
           SliverToBoxAdapter(
             child: SizedBox(
               height: 200,
               child: const Center(child: CircularProgressIndicator()),
             ),
           )
-        else if (loadError != null)
+        else if (loadError != null || _readFilterError != null)
           SliverToBoxAdapter(
             child: SizedBox(
               height: 200,
@@ -1024,14 +1150,16 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      loadError!,
+                      loadError ?? _readFilterError!,
                       style: TextStyle(
                         color: Theme.of(context).colorScheme.error,
                       ),
                     ),
                     const SizedBox(height: 8),
                     Button.filled(
-                      onPressed: loadComics,
+                      onPressed: loadError != null
+                          ? loadComics
+                          : () => setState(_refreshReadFilter),
                       child: Text("Retry".tl),
                     ),
                   ],
@@ -1144,16 +1272,9 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
       onPopInvokedWithResult: (didPop, result) {
         if (didPop || !widget.isActive) return;
         if (multiSelectMode) {
-          setState(() {
-            multiSelectMode = false;
-            selectedComics.clear();
-          });
+          _cancel();
         } else if (searchMode) {
-          setState(() {
-            searchMode = false;
-            keyword = "";
-            _refreshComics();
-          });
+          _closeSearch();
         } else if (parentName != null) {
           widget.onFolderSelected(false, parentName);
         }

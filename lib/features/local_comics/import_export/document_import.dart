@@ -28,10 +28,15 @@ class DocumentImportSession {
   final Directory directory;
 
   static String findUniqueDirectoryName(String localPath, String baseName) {
-    final sanitizedBase = sanitizeFileName(
-      baseName,
-      maxLength: maxSanitizedFileNameLength,
-    );
+    String sanitizedBase;
+    try {
+      sanitizedBase = sanitizeFileName(
+        baseName,
+        maxLength: maxSanitizedFileNameLength,
+      );
+    } catch (_) {
+      sanitizedBase = 'comic';
+    }
     var candidate = sanitizedBase;
     var i = 1;
     bool isTaken(String name) =>
@@ -56,12 +61,16 @@ class DocumentImportSession {
       ..createSync(recursive: true);
   }
 
-  static DocumentImportSession start(String title) {
+  static DocumentImportSession start(
+    String title, {
+    bool allowDuplicateTitle = false,
+  }) {
     final normalizedTitle = title.trim();
     if (normalizedTitle.isEmpty) {
       throw const FormatException('Document title is empty');
     }
-    if (LocalManager().findByName(normalizedTitle) != null) {
+    if (!allowDuplicateTitle &&
+        LocalManager().findByName(normalizedTitle) != null) {
       throw Exception('Comic with name $normalizedTitle already exists');
     }
 

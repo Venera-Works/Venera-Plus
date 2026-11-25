@@ -24,7 +24,6 @@ import 'package:venera_plus/features/search/library_tag_picker.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/file_interaction.dart';
 import 'package:venera_plus/foundation/translations.dart';
-import 'package:zip_flutter/zip_flutter.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 
 import 'local_bangumi_tags.dart';
@@ -915,8 +914,13 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
           : exportDirectory;
       if (canceled || !mounted) return;
 
+      final usedFileNames = <String>{};
       for (final (index, comic) in comics.indexed) {
-        final filename = sanitizeFileName(comic.title, maxLength: 100) + ext;
+        final filename = CBZ.allocateExportFileName(
+          comic.title,
+          ext,
+          usedFileNames,
+        );
         final file = await export(
           comic,
           FilePath.join(outputDirectory.path, filename),
@@ -937,7 +941,7 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
       loadingController.setMessage("Compressing".tl);
       const filename = 'comics_export.zip';
       final archive = File(FilePath.join(exportDirectory.path, filename));
-      await ZipFile.compressFolderAsync(outputDirectory.path, archive.path);
+      await CBZ.compressDirectory(outputDirectory.path, archive.path);
       if (canceled || !mounted) return;
       await saveFile(file: archive, filename: filename);
     } catch (error, stack) {

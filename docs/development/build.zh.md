@@ -63,7 +63,7 @@ Git fork 的来源、固定 commit 和升级要求见[依赖治理](dependencies
 
 ## rhttp 原生库预编译
 
-仓库已更名为 `Venera-Works/Venera-rhttp`。当前已发布的 `precompiled_3aea817bfb329ec326ef4561451cab83` 在 `cargokit.yaml` 中仍使用原仓库下载前缀，GitHub 会将 Release 和资产请求重定向到新仓库。该前缀参与 Cargokit 源码标识计算，因此本次保留它及配套锁文件、下载补丁的原值，避免仅改名就让构建查找尚未发布的新标识。后续迁移此前缀时，须先完成对应新标识的预编译发布，再同步应用配置。
+仓库已更名为 `Venera-Works/Venera-rhttp`。当前已发布的 `precompiled_a75ea2c9d25abac35a14b40d2261964a` 在 `cargokit.yaml` 中仍使用原仓库下载前缀，GitHub 会将 Release 和资产请求重定向到新仓库。该前缀参与 Cargokit 源码标识计算，因此本次保留它及配套锁文件、下载补丁的原值，避免仅改名就让构建查找尚未发布的新标识。后续迁移此前缀时，须先完成对应新标识的预编译发布，再同步应用配置。
 
 `rhttp` 原生库由 `Venera-Works/Venera-rhttp` 独立编译和签名发布，本地资源仓库位于 `cache/Venera-rhttp`。应用的 `native/prebuilts/rhttp/lock.json` 固定包归档摘要、桥接库与工具链版本，`cargokit.yaml` 固定下载地址、公钥和编译参数；`Cargo.toml` 与 `Cargo.lock` 固定原生依赖。这四份文件必须与资源仓库的 `rhttp/` 保持一致。
 
@@ -71,7 +71,7 @@ Git fork 的来源、固定 commit 和升级要求见[依赖治理](dependencies
 
 两仓库的准备脚本在计算源码 hash 前应用 Cargo 清单和锁文件，将 Rust 桥接运行库及宏固定到上游提交 [`d59f05b6b0da3606933385f80cbd9e21cc35b59c`](https://github.com/fzyzcjy/flutter_rust_bridge/commit/d59f05b6b0da3606933385f80cbd9e21cc35b59c)，保留 `2.11.1` 版本与现有 Dart 绑定，修复请求取消后迟到回调触发 `unwrap()` 崩溃的问题。新 hash 对应的完整预编译发布就绪后才能构建应用，旧产物不会被复用。
 
-当前原生配置使用 Rust `1.88.0` 和安全依赖版本，对应资源版本 [`precompiled_3aea817bfb329ec326ef4561451cab83`](https://github.com/Venera-Works/Venera-rhttp/releases/tag/precompiled_3aea817bfb329ec326ef4561451cab83)。`time 0.3.47` 要求 Rust 至少为 `1.88.0`，应用工具链、CI 准备脚本和原生配置保持一致，FRB 绑定保持 `2.11.1`。预编译资源验签、应用构建和各平台设备运行分别验收；修补范围见[依赖治理](dependencies.zh.md#关键原生与平台依赖边界)。
+当前原生配置使用 Rust `1.88.0` 和安全依赖版本，对应资源版本 [`precompiled_a75ea2c9d25abac35a14b40d2261964a`](https://github.com/Venera-Works/Venera-rhttp/releases/tag/precompiled_a75ea2c9d25abac35a14b40d2261964a)。`time 0.3.47` 要求 Rust 至少为 `1.88.0`，应用工具链、CI 准备脚本和原生配置保持一致，FRB 绑定保持 `2.11.1`。预编译资源验签、应用构建和各平台设备运行分别验收；修补范围见[依赖治理](dependencies.zh.md#关键原生与平台依赖边界)。
 
 配置脚本按目录解析 Pub 返回的包 URI，支持绝对或相对 URI、末尾省略 `/` 以及带空格的路径。Apple CI 在安装 Rustup 包装器前创建 `~/.cargo/bin`，并将该目录加入后续步骤的 `PATH`，使并行插件构建中的 Rustup 安装操作串行执行。
 

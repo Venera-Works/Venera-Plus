@@ -490,8 +490,11 @@ class ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
     if (!mounted) {
       return false;
     }
-    var renderBox = context.findRenderObject() as RenderBox;
-    var localPoint = renderBox.globalToLocal(point);
+    final renderBox = context.findRenderObject();
+    if (renderBox is! RenderBox || !renderBox.attached || !renderBox.hasSize) {
+      return false;
+    }
+    final localPoint = renderBox.globalToLocal(point);
     return renderBox.paintBounds.contains(localPoint);
   }
 

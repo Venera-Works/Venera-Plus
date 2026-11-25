@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -14,6 +15,7 @@ import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/opencc.dart';
 
+import '../../support/sqlite.dart';
 import '../../widget_test_io.dart';
 
 FavoriteItem _favorite(String id, {String? title}) => FavoriteItem(
@@ -350,13 +352,305 @@ void main() {
       expect(history.lookups, 2);
       await _setReadFilter(tester, 'UnCompleted');
       expect(_grid(tester).comics, [unread]);
-      expect(history.lookups, 4);
+      expect(history.lookups, 2);
+
+      await tester.tap(find.byTooltip('Search'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'unread');
+      await tester.pumpAndSettle();
+      expect(_grid(tester).comics, [unread]);
+      expect(history.lookups, 2);
+      await tester.tap(find.byTooltip('Cancel'));
+      await tester.pumpAndSettle();
+
       await _setReadFilter(tester, 'All');
       expect(_grid(tester).comics, [completed, unread]);
-      expect(history.lookups, 4);
+      expect(history.lookups, 2);
       expect(favorites.loads, 1);
       expect(tester.takeException(), isNull);
     },
+  );
+
+  testWidgets(
+    'search keeps query and results across multi-select exit and clears on close or folder change',
+    (tester) async {
+      final cat = _favorite('cat', title: 'Cat story');
+      final dog = _favorite('dog', title: 'Dog story');
+      final bird = _favorite('bird', title: 'Bird story');
+      favorites.folderItems['Folder A'] = [cat, dog];
+      favorites.folderItems['Folder B'] = [bird];
+
+      var currentFolder = 'Folder A';
+      late StateSetter updateFolder;
+      await tester.pumpWidget(
+        MaterialApp(
+          navigatorKey: App.rootNavigatorKey,
+          home: Scaffold(
+            body: StatefulBuilder(
+              builder: (context, setState) {
+                updateFolder = setState;
+                return LocalFavoritesPage(
+                  folder: currentFolder,
+                  showFolders: () {},
+                  onFolderSelected: (_, _) {},
+                  updateFolderList: () {},
+                );
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
+
+      await tester.tap(find.byTooltip('Search'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'Cat');
+      await tester.pumpAndSettle();
+      expect(_grid(tester).comics, [cat]);
+
+      _select(tester, cat);
+      await tester.pump();
+      expect(find.text('Selected 1 comics'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Cancel'));
+      await tester.pumpAndSettle();
+      expect(find.text('Selected 1 comics'), findsNothing);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller?.text,
+        'Cat',
+      );
+      expect(_grid(tester).comics, [cat]);
+
+      _select(tester, cat);
+      await tester.pump();
+      expect(find.text('Selected 1 comics'), findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.text('Selected 1 comics'), findsNothing);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller?.text,
+        'Cat',
+      );
+      expect(_grid(tester).comics, [cat]);
+
+      await tester.enterText(find.byType(TextField), 'Dog');
+      await tester.pumpAndSettle();
+      expect(_grid(tester).comics, [dog]);
+
+      await tester.tap(find.byTooltip('Cancel'));
+      await tester.pumpAndSettle();
+      expect(find.byType(TextField), findsNothing);
+      expect(_grid(tester).comics, [cat, dog]);
+
+      await tester.tap(find.byTooltip('Search'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller?.text,
+        isEmpty,
+      );
+      await tester.enterText(find.byType(TextField), 'Cat');
+      await tester.pumpAndSettle();
+      expect(_grid(tester).comics, [cat]);
+
+      updateFolder(() => currentFolder = 'Folder B');
+      await tester.pumpAndSettle();
+      expect(find.byType(TextField), findsNothing);
+      expect(_grid(tester).comics, [bird]);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'large collections filter reading status in background batches and discard stale folder results',
+    (tester) async {
+      final realHistory = _SpyRealHistory();
+      HistoryManager.cache = realHistory;
+      await runWidgetIo(tester, realHistory.init);
+      addTearDown(() async {
+        await runWidgetIo(tester, () async {
+          await realHistory.flushReadingProgress();
+          await realHistory.waitForAsyncWrites();
+          realHistory.close();
+        });
+      });
+
+      final sharedLocal = FavoriteItem(
+        id: 'shared',
+        name: 'Shared Local',
+        coverPath: '',
+        author: 'Author',
+        type: ComicType.local,
+        tags: <String>[],
+      );
+      final sharedOther = FavoriteItem(
+        id: 'shared',
+        name: 'Shared Other',
+        coverPath: '',
+        author: 'Author',
+        type: ComicType(99),
+        tags: <String>[],
+      );
+      final noHistory = _favorite('no_history', title: 'No History');
+      final unknownTotal = _favorite('unknown_total', title: 'Unknown Total');
+      final folderAItems = <FavoriteItem>[
+        sharedLocal,
+        sharedOther,
+        noHistory,
+        unknownTotal,
+        for (var i = 4; i < 1005; i++) _favorite('item_$i', title: 'Item $i'),
+      ];
+      final bDone = _favorite('b_done', title: 'B Done');
+      final bUnread = _favorite('b_unread', title: 'B Unread');
+
+      realHistory.imageFavoritesDatabase.execute('BEGIN;');
+      try {
+        void insertRow(String id, ComicType type, int page, int? maxPage) {
+          realHistory.imageFavoritesDatabase.execute(
+            '''
+            INSERT INTO history (id, title, type, ep, page, max_page, time)
+            VALUES (?, ?, ?, 1, ?, ?, 1000);
+            ''',
+            [id, id, type.value, page, maxPage],
+          );
+        }
+
+        insertRow(sharedLocal.id, sharedLocal.type, 10, 10);
+        insertRow(sharedOther.id, sharedOther.type, 3, 10);
+        insertRow(unknownTotal.id, unknownTotal.type, 5, null);
+        for (var i = 4; i < 1005; i++) {
+          insertRow('item_$i', ComicType.local, i.isEven ? 5 : 2, 5);
+        }
+        insertRow(bDone.id, bDone.type, 4, 4);
+        insertRow(bUnread.id, bUnread.type, 1, 4);
+        realHistory.imageFavoritesDatabase.execute('COMMIT;');
+      } catch (_) {
+        realHistory.imageFavoritesDatabase.execute('ROLLBACK;');
+        rethrow;
+      }
+      realHistory.notifyChanges();
+
+      favorites.folderItems['Folder A'] = folderAItems;
+      favorites.folderItems['Folder B'] = [bDone, bUnread];
+      var currentFolder = 'Folder A';
+      late StateSetter updateFolder;
+      await tester.pumpWidget(
+        MaterialApp(
+          navigatorKey: App.rootNavigatorKey,
+          home: Scaffold(
+            body: StatefulBuilder(
+              builder: (context, setState) {
+                updateFolder = setState;
+                return LocalFavoritesPage(
+                  folder: currentFolder,
+                  showFolders: () {},
+                  onFolderSelected: (_, _) {},
+                  updateFolderList: () {},
+                );
+              },
+            ),
+          ),
+        ),
+      );
+      addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
+
+      Future<void> waitForGrid() async {
+        final stopwatch = Stopwatch()..start();
+        while (find.byType(SliverGridComics).evaluate().isEmpty &&
+            stopwatch.elapsed < const Duration(seconds: 10)) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 10)),
+          );
+          await tester.pump();
+        }
+        expect(find.byType(SliverGridComics), findsOneWidget);
+      }
+
+      Future<void> setRealReadFilter(String filter) async {
+        await tester.tap(find.byTooltip('Filter'));
+        await tester.pumpAndSettle();
+        final select = tester.widget<Select>(find.byType(Select));
+        select.onTap!(readFilterList.indexOf(filter));
+        await tester.pump();
+        await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
+        await tester.pump();
+        await runWidgetIo(tester, appdata.writeImplicitData);
+        await waitForGrid();
+      }
+
+      await waitForGrid();
+      expect(_grid(tester).comics, hasLength(1005));
+      expect(realHistory.batchCalls, 0);
+      expect(realHistory.syncFindCalls, 0);
+
+      await setRealReadFilter('Completed');
+      expect(_grid(tester).comics, hasLength(502));
+      expect(_grid(tester).comics, contains(sharedLocal));
+      expect(_grid(tester).comics, isNot(contains(sharedOther)));
+      expect(_grid(tester).comics, isNot(contains(noHistory)));
+      expect(_grid(tester).comics, isNot(contains(unknownTotal)));
+      expect(realHistory.batchCalls, 1);
+      expect(realHistory.syncFindCalls, 0);
+
+      await setRealReadFilter('UnCompleted');
+      expect(_grid(tester).comics, hasLength(503));
+      expect(_grid(tester).comics, contains(sharedOther));
+      expect(_grid(tester).comics, contains(noHistory));
+      expect(_grid(tester).comics, contains(unknownTotal));
+      expect(_grid(tester).comics, isNot(contains(sharedLocal)));
+      expect(realHistory.batchCalls, 1);
+      expect(realHistory.syncFindCalls, 0);
+
+      await tester.tap(find.byTooltip('Search'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'Shared');
+      await tester.pumpAndSettle();
+      expect(_grid(tester).comics, [sharedOther]);
+      expect(realHistory.batchCalls, 1);
+      await tester.tap(find.byTooltip('Cancel'));
+      await tester.pumpAndSettle();
+
+      realHistory.imageFavoritesDatabase.execute(
+        '''
+        INSERT INTO history (id, title, type, ep, page, max_page, time)
+        VALUES (?, ?, ?, 1, 10, 10, 2000);
+        ''',
+        [noHistory.id, noHistory.id, noHistory.type.value],
+      );
+      realHistory.notifyChanges();
+      await tester.pump();
+      await waitForGrid();
+      expect(_grid(tester).comics, hasLength(502));
+      expect(_grid(tester).comics, isNot(contains(noHistory)));
+      expect(realHistory.batchCalls, 2);
+      expect(realHistory.syncFindCalls, 0);
+
+      await setRealReadFilter('Completed');
+      final gate = Completer<void>();
+      realHistory.batchGate = gate;
+      updateFolder(() => currentFolder = 'Folder B');
+      await tester.pump();
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
+      expect(realHistory.batchCalls, 3);
+
+      updateFolder(() => currentFolder = 'Folder A');
+      await tester.pump();
+      await waitForGrid();
+      expect(_grid(tester).comics, hasLength(503));
+
+      gate.complete();
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 30)),
+      );
+      await tester.pump();
+      expect(_grid(tester).comics, hasLength(503));
+      expect(_grid(tester).comics, isNot(contains(bDone)));
+      expect(realHistory.syncFindCalls, 0);
+      expect(tester.takeException(), isNull);
+    },
+    skip: !isSqliteAvailable(),
   );
 
   testWidgets('display metadata changes still apply keyword rules', (
@@ -383,10 +677,87 @@ void main() {
     expect(history.lookups, 0);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'failed reading status filter clears stale list and selection and recovers on retry or All',
+    (tester) async {
+      final completed = _favorite('done', title: 'Done story');
+      final unread = _favorite('unread', title: 'Unread story');
+      final failingHistory = _FailingAsyncHistory()
+        ..progress = {
+          HistoryManager.historyKey(completed.id, completed.type): (
+            page: 10,
+            maxPage: 10,
+          ),
+          HistoryManager.historyKey(unread.id, unread.type): (
+            page: 2,
+            maxPage: 10,
+          ),
+        };
+      HistoryManager.cache = failingHistory;
+      addTearDown(failingHistory.dispose);
+
+      favorites.items = [completed, unread];
+      await mount(tester);
+      expect(_grid(tester).comics, [completed, unread]);
+
+      await _setReadFilter(tester, 'Completed');
+      expect(find.byType(SliverGridComics), findsNothing);
+      expect(
+        find.descendant(
+          of: find.byType(LocalFavoritesPage),
+          matching: find.text('Failed to load reading status'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Retry'), findsOneWidget);
+
+      failingHistory.shouldFail = false;
+      await tester.tap(find.text('Retry'));
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(
+          of: find.byType(LocalFavoritesPage),
+          matching: find.text('Failed to load reading status'),
+        ),
+        findsNothing,
+      );
+      expect(_grid(tester).comics, [completed]);
+
+      _select(tester, completed);
+      await tester.pump();
+      expect(find.text('Selected 1 comics'), findsOneWidget);
+
+      failingHistory.shouldFail = true;
+      failingHistory.changed();
+      await tester.pumpAndSettle();
+      expect(find.text('Selected 1 comics'), findsNothing);
+      expect(find.byType(SliverGridComics), findsNothing);
+      expect(
+        find.descendant(
+          of: find.byType(LocalFavoritesPage),
+          matching: find.text('Failed to load reading status'),
+        ),
+        findsOneWidget,
+      );
+
+      await _setReadFilter(tester, 'All');
+      expect(
+        find.descendant(
+          of: find.byType(LocalFavoritesPage),
+          matching: find.text('Failed to load reading status'),
+        ),
+        findsNothing,
+      );
+      expect(_grid(tester).comics, [completed, unread]);
+      expect(tester.takeException(), isNull);
+    },
+  );
 }
 
 class _Favorites extends ChangeNotifier implements LocalFavoritesManager {
   List<FavoriteItem> items = [];
+  Map<String, List<FavoriteItem>> folderItems = {};
   int loads = 0;
 
   @override
@@ -406,6 +777,33 @@ class _Favorites extends ChangeNotifier implements LocalFavoritesManager {
 
   @override
   Future<List<FavoriteItem>> getAllComicsAsync() async => getAllComics();
+
+  @override
+  bool existsFolder(String name) => folderItems.containsKey(name);
+
+  @override
+  int folderComics(String name) => folderItems[name]?.length ?? 0;
+
+  @override
+  List<FavoriteItem> getFolderComics(String name) {
+    loads++;
+    return List.of(folderItems[name] ?? const []);
+  }
+
+  @override
+  Future<List<FavoriteItem>> getFolderComicsAsync(String name) async =>
+      getFolderComics(name);
+
+  @override
+  (String?, String?) findLinked(String folder) => (null, null);
+
+  @override
+  List<FavoriteFolder> get folders => [
+    for (final name in folderItems.keys) FavoriteFolder(id: name, name: name),
+  ];
+
+  @override
+  String? get readingFolder => null;
 
   @override
   bool hasNewUpdate(String id, ComicType type, [String? folder]) => false;
@@ -431,6 +829,33 @@ class _History extends HistoryManager {
   void changed() => notifyListeners();
 }
 
+class _SpyRealHistory extends HistoryManager {
+  _SpyRealHistory() : super.create();
+
+  int syncFindCalls = 0;
+  int batchCalls = 0;
+  Completer<void>? batchGate;
+
+  @override
+  History? find(String id, ComicType type) {
+    syncFindCalls++;
+    return super.find(id, type);
+  }
+
+  @override
+  Future<Map<String, HistoryPageProgress>> findReadingProgressBatchAsync(
+    Iterable<({String id, ComicType type})> targets,
+  ) async {
+    batchCalls++;
+    final gate = batchGate;
+    if (gate != null) {
+      batchGate = null;
+      await gate.future;
+    }
+    return super.findReadingProgressBatchAsync(targets);
+  }
+}
+
 class _ObservedFavorite extends FavoriteItem {
   _ObservedFavorite(String id)
     : super(
@@ -449,4 +874,30 @@ class _ObservedFavorite extends FavoriteItem {
     descriptionReads++;
     return super.description;
   }
+}
+
+class _FailingAsyncHistory extends HistoryManager {
+  _FailingAsyncHistory() : super.create();
+
+  bool shouldFail = true;
+  int batchCalls = 0;
+  Map<String, HistoryPageProgress> progress = {};
+
+  @override
+  Map<String, HistoryPageProgress>? tryFindReadingProgressBatchSync(
+    Iterable<({String id, ComicType type})> targets,
+  ) => null;
+
+  @override
+  Future<Map<String, HistoryPageProgress>> findReadingProgressBatchAsync(
+    Iterable<({String id, ComicType type})> targets,
+  ) async {
+    batchCalls++;
+    if (shouldFail) {
+      throw StateError('history read failed');
+    }
+    return Map.of(progress);
+  }
+
+  void changed() => notifyListeners();
 }

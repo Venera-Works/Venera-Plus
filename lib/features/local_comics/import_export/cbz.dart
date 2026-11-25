@@ -1,14 +1,17 @@
-import 'package:venera_plus/foundation/translations.dart';
 import 'dart:convert';
+import 'dart:isolate';
+
 import 'package:archive/archive_io.dart' as archive_io;
 import 'package:enough_convert/enough_convert.dart';
 import 'package:flutter_7zip/flutter_7zip.dart';
+import 'package:path/path.dart' as path;
 import 'package:venera_plus/features/comic_storage/comic_storage.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/features/local_comics/local.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/file_type.dart';
 import 'package:venera_plus/foundation/file_system.dart';
+import 'package:venera_plus/foundation/translations.dart';
 import 'package:zip_flutter/zip_flutter.dart';
 import 'document_import.dart';
 
@@ -37,13 +40,16 @@ abstract class CBZ {
     Future<void> Function(String archivePath, String outputPath)?
     dartZipExtractor,
   }) async {
-    final zipExtract = zipExtractor ?? ZipFile.openAndExtractAsync;
-    final sevenZipExtract = sevenZipExtractor ?? SZArchive.extractIsolates;
+    final zipExtract = zipExtractor ?? _extractZipWithZipFlutter;
+    final sevenZipExtract = sevenZipExtractor ?? _extractWithSevenZip;
     final dartZipExtract = dartZipExtractor ?? _extractZipWithDart;
     var fileType = await checkType(file);
     if (fileType.mime == 'application/zip') {
       try {
         await zipExtract(file.path, out.path, 4);
+      } on _UnsafeArchivePathException {
+        await out.deleteContents();
+        rethrow;
       } catch (e) {
         Log.warning(
           "CBZ",
@@ -52,6 +58,9 @@ abstract class CBZ {
         await out.deleteContents();
         try {
           await sevenZipExtract(file.path, out.path, 4);
+        } on _UnsafeArchivePathException {
+          await out.deleteContents();
+          rethrow;
         } catch (sevenZipError) {
           Log.warning(
             "CBZ",
@@ -62,29 +71,191 @@ abstract class CBZ {
         }
       }
     } else if (fileType.mime == "application/x-7z-compressed") {
-      await sevenZipExtract(file.path, out.path, 4);
+      try {
+        await sevenZipExtract(file.path, out.path, 4);
+      } on _UnsafeArchivePathException {
+        await out.deleteContents();
+        rethrow;
+      }
     } else {
       throw Exception('Unsupported archive type');
     }
   }
 
+  static String? resolveSafeArchiveEntryPath(
+    String outputPath,
+    String rawEntryName,
+  ) {
+    if (rawEntryName.contains('\u0000')) {
+      throw _UnsafeArchivePathException(
+        'Unsafe archive entry path: $rawEntryName',
+      );
+    }
+    final normalized = rawEntryName.replaceAll('\\', '/');
+    if (normalized.startsWith('/') ||
+        RegExp(r'^[a-zA-Z]:').hasMatch(normalized)) {
+      throw _UnsafeArchivePathException(
+        'Unsafe archive entry path: $rawEntryName',
+      );
+    }
+    final rawSegments = normalized.split('/');
+    if (rawSegments.any((segment) => segment == '..')) {
+      throw _UnsafeArchivePathException(
+        'Unsafe archive entry path: $rawEntryName',
+      );
+    }
+    final segments = rawSegments
+        .where((segment) => segment.isNotEmpty && segment != '.')
+        .toList();
+    if (segments.isEmpty) {
+      return null;
+    }
+    final root = path.normalize(Directory(outputPath).absolute.path);
+    final destination = path.normalize(path.joinAll([root, ...segments]));
+    if (!path.isWithin(root, destination)) {
+      throw _UnsafeArchivePathException(
+        'Unsafe archive entry path: $rawEntryName',
+      );
+    }
+    return destination;
+  }
+
+  static Future<void> _extractZipWithZipFlutter(
+    String archivePath,
+    String outputPath,
+    int threads,
+  ) async {
+    final directoryPaths = <String>{};
+    final fileTaskByDest = <String, int>{};
+    final zip = ZipFile.openRead(archivePath);
+    try {
+      for (final entry in zip.getAllEntries()) {
+        final destination = resolveSafeArchiveEntryPath(outputPath, entry.name);
+        if (destination == null) continue;
+        if (entry.isDir) {
+          directoryPaths.add(destination);
+        } else {
+          fileTaskByDest[destination] = entry.index;
+        }
+      }
+    } finally {
+      zip.close();
+    }
+
+    _prepareExtractionDirectories(directoryPaths, fileTaskByDest.keys);
+    final fileTasks = fileTaskByDest.entries.toList(growable: false);
+    if (fileTasks.isEmpty) return;
+
+    await _runChunkedIsolates(fileTasks, threads, (chunk) {
+      final workerZip = ZipFile.openRead(archivePath);
+      try {
+        for (final task in chunk) {
+          workerZip.getEntryByIndex(task.value).writeToFile(task.key);
+        }
+      } finally {
+        workerZip.close();
+      }
+    });
+  }
+
+  static Future<void> _extractWithSevenZip(
+    String archivePath,
+    String outputPath,
+    int threads,
+  ) async {
+    final directoryPaths = <String>{};
+    final fileTaskByDest = <String, int>{};
+    final archive = SZArchive.open(archivePath);
+    try {
+      final total = archive.numFiles;
+      for (var i = 0; i < total; i++) {
+        final entry = archive.getFile(i);
+        final destination = resolveSafeArchiveEntryPath(outputPath, entry.name);
+        if (destination == null) continue;
+        if (entry.isDirectory) {
+          directoryPaths.add(destination);
+        } else {
+          fileTaskByDest[destination] = i;
+        }
+      }
+    } finally {
+      archive.dispose();
+    }
+
+    _prepareExtractionDirectories(directoryPaths, fileTaskByDest.keys);
+    final fileTasks = fileTaskByDest.entries.toList(growable: false);
+    if (fileTasks.isEmpty) return;
+
+    await _runChunkedIsolates(fileTasks, threads, (chunk) {
+      final workerArchive = SZArchive.open(archivePath);
+      try {
+        for (final task in chunk) {
+          workerArchive.extractToFile(task.value, task.key);
+        }
+      } finally {
+        workerArchive.dispose();
+      }
+    });
+  }
+
+  static void _prepareExtractionDirectories(
+    Iterable<String> directoryPaths,
+    Iterable<String> fileDestinations,
+  ) {
+    final parentDirs = <String>{};
+    for (final dirPath in directoryPaths) {
+      Directory(dirPath).createSync(recursive: true);
+    }
+    for (final destination in fileDestinations) {
+      final parentPath = path.dirname(destination);
+      if (parentDirs.add(parentPath)) {
+        Directory(parentPath).createSync(recursive: true);
+      }
+    }
+  }
+
+  static Future<void> _runChunkedIsolates<T>(
+    List<T> items,
+    int threads,
+    void Function(List<T> chunk) worker,
+  ) {
+    final requested = threads < 1 ? 1 : threads;
+    final workerCount = requested < items.length ? requested : items.length;
+    final chunkSize = (items.length / workerCount).ceil();
+    final futures = <Future<void>>[];
+    for (var start = 0; start < items.length; start += chunkSize) {
+      final end = start + chunkSize < items.length
+          ? start + chunkSize
+          : items.length;
+      final chunk = items.sublist(start, end);
+      futures.add(Isolate.run(() => worker(chunk)));
+    }
+    return Future.wait(futures);
+  }
+
   static Future<void> _extractZipWithDart(
     String archivePath,
     String outputPath,
-  ) async {
+  ) {
+    return Isolate.run(() => _extractZipWithDartSync(archivePath, outputPath));
+  }
+
+  static void _extractZipWithDartSync(String archivePath, String outputPath) {
     final input = archive_io.InputFileStream(archivePath);
     try {
-      // Preserve legacy name bytes and report damaged archives as failures.
+      // Verify CRC32 & size on decode and preserve legacy filename bytes.
       final archive = archive_io.ZipDecoder(
         filenameEncoding: latin1,
-      ).decodeStream(input, throwOnError: true);
+      ).decodeStream(input, verify: true, throwOnError: true);
+      final destinations = <String?>[];
       for (final entry in archive) {
-        final entryName = _normalizeZipEntryName(entry.name);
-        if (entryName == null) continue;
-        final destination = FilePath.join(outputPath, entryName);
-        if (!_isWithinDirectory(outputPath, destination)) {
-          continue;
-        }
+        final decodedName = _decodeLegacyZipName(entry.name);
+        destinations.add(resolveSafeArchiveEntryPath(outputPath, decodedName));
+      }
+      for (var i = 0; i < archive.length; i++) {
+        final destination = destinations[i];
+        if (destination == null) continue;
+        final entry = archive[i];
         if (entry.isDirectory) {
           Directory(destination).createSync(recursive: true);
         } else {
@@ -98,24 +269,8 @@ abstract class CBZ {
         }
       }
     } finally {
-      await input.close();
+      input.closeSync();
     }
-  }
-
-  static String? _normalizeZipEntryName(String name) {
-    final decodedName = _decodeLegacyZipName(name);
-    final normalized = decodedName.replaceAll('\\', '/');
-    final segments = normalized
-        .split('/')
-        .where((segment) => segment.isNotEmpty && segment != '.')
-        .toList();
-    if (segments.any((segment) => segment == '..')) {
-      return null;
-    }
-    if (segments.isEmpty) {
-      return null;
-    }
-    return segments.join(Platform.pathSeparator);
   }
 
   static String _decodeLegacyZipName(String name) {
@@ -166,28 +321,105 @@ abstract class CBZ {
         name.contains('Â');
   }
 
-  static bool _isWithinDirectory(String directory, String filePath) {
-    final normalizedDirectory = Directory(directory).absolute.path;
-    final normalizedFile = File(filePath).absolute.path;
-    return normalizedFile == normalizedDirectory ||
-        normalizedFile.startsWith(
-          '$normalizedDirectory${Platform.pathSeparator}',
-        );
-  }
-
-  static Future<LocalComic> import(File file) async {
+  static Future<LocalComic> import(
+    File file, {
+    bool allowDuplicateTitle = false,
+  }) async {
     final extractionRoot = Directory(
       App.cachePath,
     ).createTempSync('cbz_import_');
-    var cache = extractionRoot;
-    DocumentImportSession? session;
     try {
-      await extractArchive(file, cache);
+      await extractArchive(file, extractionRoot);
       final layout = ComicFileSystemLayout.inspect(
-        cache,
+        extractionRoot,
         unwrapSingleDirectory: true,
       );
-      cache = layout.root;
+      return await _importFromLayout(
+        layout,
+        fallbackTitle: comicFileStem(file.name),
+        allowDuplicateTitle: allowDuplicateTitle,
+      );
+    } finally {
+      await extractionRoot.deleteIgnoreError(recursive: true);
+    }
+  }
+
+  static Future<({int importedCount, List<String> failures})> importArchive(
+    File file, {
+    required Future<void> Function(LocalComic comic) registerComic,
+    String? failurePrefix,
+  }) async {
+    final extractionRoot = Directory(
+      App.cachePath,
+    ).createTempSync('cbz_import_');
+    try {
+      await extractArchive(file, extractionRoot);
+      final layout = ComicFileSystemLayout.inspect(
+        extractionRoot,
+        unwrapSingleDirectory: true,
+      );
+      final collectionFiles = _findCollectionCbzFiles(layout);
+      if (collectionFiles.isEmpty) {
+        final comic = await _importFromLayout(
+          layout,
+          fallbackTitle: comicFileStem(file.name),
+          allowDuplicateTitle: false,
+        );
+        try {
+          await registerComic(comic);
+        } catch (_) {
+          await Directory(comic.baseDir).deleteIgnoreError(recursive: true);
+          rethrow;
+        }
+        return (importedCount: 1, failures: const <String>[]);
+      }
+
+      var importedCount = 0;
+      final failures = <String>[];
+      for (final childFile in collectionFiles) {
+        LocalComic? comic;
+        try {
+          comic = await import(childFile, allowDuplicateTitle: true);
+          await registerComic(comic);
+          importedCount++;
+        } catch (e, s) {
+          if (comic != null) {
+            await Directory(comic.baseDir).deleteIgnoreError(recursive: true);
+          }
+          final label = failurePrefix == null
+              ? childFile.name
+              : '$failurePrefix/${childFile.name}';
+          Log.error("Import Comic", '$label: $e', s);
+          failures.add('$label: $e');
+        }
+      }
+      return (importedCount: importedCount, failures: failures);
+    } finally {
+      await extractionRoot.deleteIgnoreError(recursive: true);
+    }
+  }
+
+  static List<File> _findCollectionCbzFiles(ComicFileSystemLayout layout) {
+    if (layout.hasImages) return const [];
+    final files = <File>[];
+    for (final entity in layout.root.listSync()) {
+      if (isIgnoredComicStorageEntry(entity.name)) continue;
+      if (entity is File && comicFileExtension(entity.name) == 'cbz') {
+        files.add(entity);
+      }
+    }
+    files.sort((a, b) => compareComicFileNames(a.name, b.name));
+    return files;
+  }
+
+  static Future<LocalComic> _importFromLayout(
+    ComicFileSystemLayout layout, {
+    required String fallbackTitle,
+    bool allowDuplicateTitle = false,
+  }) async {
+    DocumentImportSession? session;
+    try {
+      final cache = layout.root;
       var metaDataFile = File(FilePath.join(cache.path, 'metadata.json'));
       ComicMetaData? metaData;
       if (metaDataFile.existsSync()) {
@@ -199,11 +431,18 @@ abstract class CBZ {
           Log.warning("CBZ", "Failed to parse metadata: $e");
         }
       }
-      metaData ??= ComicMetaData(
-        title: file.name.substring(0, file.name.lastIndexOf('.')),
-        author: "",
-        tags: [],
-      );
+      if (metaData == null) {
+        metaData = ComicMetaData(title: fallbackTitle, author: "", tags: []);
+      } else if (metaData.title.trim().isEmpty) {
+        metaData = ComicMetaData(
+          title: fallbackTitle,
+          author: metaData.author,
+          tags: metaData.tags,
+          description: metaData.description,
+          chapters: metaData.chapters,
+          bangumiSubjectId: metaData.bangumiSubjectId,
+        );
+      }
       final files = layout.rootPages;
       final chapterRanges = metaData.chapters ?? const <ComicChapter>[];
       final useChapterDirectories =
@@ -213,7 +452,10 @@ abstract class CBZ {
       }
       metaData.validateChapterRanges(pageCount: files.length);
 
-      session = DocumentImportSession.start(metaData.title);
+      session = DocumentImportSession.start(
+        metaData.title,
+        allowDuplicateTitle: allowDuplicateTitle,
+      );
       final coverFile = layout.inferredCover!;
       final coverName = await session.copyCover(
         coverFile,
@@ -273,8 +515,6 @@ abstract class CBZ {
     } catch (_) {
       await session?.abort();
       rethrow;
-    } finally {
-      await extractionRoot.deleteIgnoreError(recursive: true);
     }
   }
 
@@ -528,8 +768,92 @@ abstract class CBZ {
     return values.toSet().toList();
   }
 
-  static Future<void> _compress(String src, String dst) async {
-    await ZipFile.compressFolderAsync(src, dst, 4);
+  static const _precompressedZipExtensions = {
+    ...comicImageExtensions,
+    ...comicArchiveExtensions,
+    'epub',
+  };
+
+  static String allocateExportFileName(
+    String title,
+    String extension,
+    Set<String> usedLowerNames, {
+    String fallback = 'comic',
+  }) {
+    var counter = 1;
+    while (true) {
+      final candidate = sanitizeFileNameWithSuffix(
+        title,
+        middle: counter == 1 ? '' : ' ($counter)',
+        extension: extension,
+        fallback: fallback,
+      );
+      if (usedLowerNames.add(candidate.toLowerCase())) {
+        return candidate;
+      }
+      counter++;
+    }
+  }
+
+  static Future<void> compressDirectory(String src, String dst) {
+    return Isolate.run(() => _compressDirectorySync(src, dst));
+  }
+
+  static void _compressDirectorySync(String src, String dst) {
+    final sourceDir = Directory(src);
+    final files = <({File file, String entryName})>[];
+    for (final entity in sourceDir.listSync(
+      recursive: true,
+      followLinks: false,
+    )) {
+      if (entity is File) {
+        final relative = path.relative(entity.path, from: sourceDir.path);
+        final entryName = path.posix.joinAll(path.split(relative));
+        files.add((file: entity, entryName: entryName));
+      }
+    }
+    files.sort((a, b) => a.entryName.compareTo(b.entryName));
+
+    final targetFile = File(dst);
+    targetFile.parent.createSync(recursive: true);
+    if (targetFile.existsSync()) {
+      targetFile.deleteSync();
+    }
+
+    final output = archive_io.OutputFileStream(dst);
+    final encoder = archive_io.ZipEncoder(streamed: true);
+    var succeeded = false;
+    try {
+      encoder.startEncode(output, level: archive_io.DeflateLevel.bestSpeed);
+      for (final item in files) {
+        final input = archive_io.InputFileStream(item.file.path);
+        try {
+          final entry = archive_io.ArchiveFile.stream(item.entryName, input);
+          if (_precompressedZipExtensions.contains(
+            comicFileExtension(item.entryName),
+          )) {
+            entry.compression = archive_io.CompressionType.none;
+          }
+          final stat = item.file.statSync();
+          entry.mode = stat.mode;
+          entry.lastModTime = stat.modified.millisecondsSinceEpoch ~/ 1000;
+          encoder.add(entry);
+        } finally {
+          input.closeSync();
+        }
+      }
+      encoder.endEncode();
+      succeeded = true;
+    } finally {
+      output.closeSync();
+      if (!succeeded && targetFile.existsSync()) {
+        targetFile.deleteSync();
+      }
+    }
+  }
+
+  static Future<void> _compress(String src, String dst) {
+    return compressDirectory(src, dst);
   }
 }
 
@@ -545,4 +869,8 @@ class _ComicInfoTags {
     required this.genres,
     required this.tags,
   });
+}
+
+class _UnsafeArchivePathException extends FormatException {
+  const _UnsafeArchivePathException(super.message);
 }

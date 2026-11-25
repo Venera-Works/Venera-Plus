@@ -1,17 +1,30 @@
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as img;
+import 'package:photo_view/photo_view.dart';
 import 'package:sqlite3/sqlite3.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/history/history.dart';
+import 'package:venera_plus/features/local_comics/local_comics.dart';
+import 'package:venera_plus/features/reader/comic_image.dart';
 import 'package:venera_plus/features/reader/gesture.dart';
+import 'package:venera_plus/features/reader/images.dart';
+import 'package:venera_plus/features/reader/reader.dart';
 import 'package:venera_plus/features/reader/reader_page.dart';
 import 'package:venera_plus/features/reader/scaffold.dart';
 import 'package:venera_plus/features/sync/sync.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/foundation/image_provider/reader_image.dart';
+import 'package:venera_plus/foundation/res.dart';
 
 const _comicKey = ValueKey('comic-content');
 
@@ -280,6 +293,402 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  group('context menu pinning and continuous hit testing', () {
+    Uint8List encodeSolidPng(int r, int g, int b) {
+      final image = img.Image(width: 4, height: 4);
+      img.fill(image, color: img.ColorRgb8(r, g, b));
+      return Uint8List.fromList(img.encodePng(image));
+    }
+
+    Future<Uint8List> openOriginalAndReadBytes(WidgetTester tester) async {
+      await tester.tap(find.text('View Original Image'));
+      final stopwatch = Stopwatch()..start();
+      while (find.byType(PhotoView).evaluate().isEmpty &&
+          stopwatch.elapsed < const Duration(seconds: 10)) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+        await tester.pump();
+      }
+      expect(find.byType(PhotoView), findsOneWidget);
+      final photoView = tester.widget<PhotoView>(find.byType(PhotoView));
+      return (photoView.imageProvider as MemoryImage).bytes;
+    }
+
+    testWidgets(
+      'secondary tap and touch long press pin original image reference across page turns',
+      (tester) async {
+        final page1Bytes = encodeSolidPng(220, 40, 40);
+        final page2Bytes = encodeSolidPng(40, 80, 220);
+        final page1File = File('${directory.path}/page1.png')
+          ..writeAsBytesSync(page1Bytes);
+        final page2File = File('${directory.path}/page2.png')
+          ..writeAsBytesSync(page2Bytes);
+
+        final reader = await openReader(tester, ReaderMode.galleryLeftToRight);
+        final controller = reader.imageViewController as _ImageController;
+        final ref1 = ReaderImageReference(
+          imageKey: 'file://${page1File.path}',
+          cid: 'pull-book',
+          eid: 'ep-1',
+          chapter: 1,
+          page: 1,
+          file: page1File,
+        );
+        final ref2 = ReaderImageReference(
+          imageKey: 'file://${page2File.path}',
+          cid: 'pull-book',
+          eid: 'ep-2',
+          file: page2File,
+        );
+
+        reader.chapter = 2;
+        reader.pageValue = 3;
+        ReaderImageReference? activeRef = ref2;
+        controller.onGetByOffset = (_) => activeRef;
+
+        final center = tester.getCenter(find.byKey(_comicKey));
+        final rightClick = await tester.startGesture(
+          center,
+          kind: PointerDeviceKind.mouse,
+          buttons: kSecondaryButton,
+        );
+        await tester.pump();
+        await rightClick.up();
+        await tester.pumpAndSettle();
+        expect(find.text('View Original Image'), findsOneWidget);
+
+        // 模拟打开菜单后自动或按键翻页切章并更换命中目标。
+        reader.chapter = 3;
+        reader.pageValue = 5;
+        activeRef = ref1;
+
+        expect(await openOriginalAndReadBytes(tester), page2Bytes);
+        Navigator.of(tester.element(find.byType(PhotoView))).pop();
+        await tester.pumpAndSettle();
+
+        reader.chapter = 2;
+        reader.pageValue = 3;
+        activeRef = ref2;
+        final touch = await tester.startGesture(
+          center,
+          kind: PointerDeviceKind.touch,
+        );
+        await tester.pump(kLongPressTimeout + const Duration(milliseconds: 50));
+        await touch.up();
+        await tester.pumpAndSettle();
+        expect(find.text('View Original Image'), findsOneWidget);
+
+        reader.chapter = 4;
+        reader.pageValue = 6;
+        activeRef = ref1;
+
+        expect(await openOriginalAndReadBytes(tester), page2Bytes);
+        Navigator.of(tester.element(find.byType(PhotoView))).pop();
+        await tester.pumpAndSettle();
+
+        activeRef = null;
+        final emptyRightClick = await tester.startGesture(
+          center,
+          kind: PointerDeviceKind.mouse,
+          buttons: kSecondaryButton,
+        );
+        await tester.pump();
+        await emptyRightClick.up();
+        await tester.pumpAndSettle();
+        expect(find.text('View Original Image'), findsNothing);
+        expect(find.text('Copy Image'), findsNothing);
+        expect(find.text('Save Image'), findsNothing);
+        await tester.tapAt(const Offset(5, 5));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'waterfall mode hits whitespace per image row, rejects dividers and supports zoom/pan',
+      (tester) async {
+        const sourceKey = 'waterfall_hit_fixture';
+        const chapters = ComicChapters({'c1': 'Ch 1', 'c2': 'Ch 2'});
+        final comicType = ComicType.fromKey(sourceKey);
+        const viewportSize = Size(1000, 600);
+        final previousAllSettings = jsonDecode(
+          jsonEncode(appdata.toJson()['settings']),
+        );
+        late String previousDataPath;
+        try {
+          previousDataPath = App.dataPath;
+        } on Error {
+          previousDataPath = directory.path;
+        }
+
+        final source = _WaterfallHitSource(sourceKey, chapters);
+        ComicSourceManager().add(source);
+        App.dataPath = directory.path;
+        LocalManager.resetForTesting();
+        LocalManager.debugSkipComicSourceInit = true;
+        await tester.runAsync(() => LocalManager().init());
+
+        tester.view.physicalSize = viewportSize;
+        tester.view.devicePixelRatio = 1.0;
+
+        addTearDown(() async {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+          await tester.runAsync(() async {
+            await ReadingSessionTracker.finishAll();
+            await LocalManager().pendingDownloadTaskWrites;
+            LocalManager.resetForTesting();
+          });
+          ComicSourceManager().remove(sourceKey);
+          App.dataPath = previousDataPath;
+          appdata.settings.replaceAll(previousAllSettings);
+          PaintingBinding.instance.imageCache.clear();
+          PaintingBinding.instance.imageCache.clearLiveImages();
+          ComicImage.clear();
+        });
+
+        final waterfallSettings = <String, dynamic>{
+          'autoReaderMode': false,
+          'readerMode': 'waterfallTopToBottom',
+          'readerScreenPicNumberForLandscape': 1,
+          'readerScreenPicNumberForPortrait': 1,
+          'showSingleImageOnFirstPage': false,
+          'splitDualPage': false,
+          'splitDualPageInvert': false,
+          'showChapterComments': false,
+          'showChapterCommentsAtEnd': false,
+          'enablePageAnimation': false,
+          'enableCustomImageProcessing': false,
+          'limitImageWidth': true,
+          'readerSideMargin': 0,
+          'eInkMode': false,
+          'preloadImageCount': 2,
+          'moveFavoriteAfterRead': 'none',
+        };
+        waterfallSettings.forEach(
+          (key, value) => appdata.settings[key] = value,
+        );
+
+        for (var chapter = 1; chapter <= 2; chapter++) {
+          for (var page = 1; page <= 2; page++) {
+            final provider = ReaderImageProvider(
+              _waterfallImageKey(chapter, page),
+              sourceKey,
+              'waterfall-hit-book',
+              chapters.ids.elementAt(chapter - 1),
+              page,
+              chapter: chapter,
+              enableResize: true,
+              target: calculateReaderImageTarget(
+                mode: ReaderMode.waterfallTopToBottom,
+                viewportSize: viewportSize,
+                devicePixelRatio: 1.0,
+                page: page,
+                totalImages: 2,
+                limitImageWidth: true,
+              ),
+            );
+            PaintingBinding.instance.imageCache.putIfAbsent(
+              provider,
+              () => _TestImageStream(400, 140),
+            );
+          }
+        }
+
+        final key = GlobalKey<_WaterfallReaderState>();
+        await tester.pumpWidget(
+          MaterialApp(
+            home: _WaterfallReader(
+              key: key,
+              comicType: comicType,
+              chapters: chapters,
+            ),
+          ),
+        );
+        addTearDown(() async {
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.pump(const Duration(seconds: 1));
+        });
+
+        final reader = key.currentState!;
+        reader.onReaderContentReady();
+        for (var i = 0; i < 8; i++) {
+          await tester.pump(const Duration(milliseconds: 16));
+        }
+
+        final flow = reader.imageViewController as ContinuousModeState;
+        final rect1 = tester.getRect(_findWaterfallImage(1, 2));
+        final rect2 = tester.getRect(_findWaterfallImage(2, 1));
+
+        expect(rect1.left, greaterThan(200));
+        expect(rect2.top, greaterThan(rect1.bottom));
+        expect(rect2.bottom, lessThan(viewportSize.height));
+
+        final leftBlank1 = flow.getImageReferenceByOffset(
+          Offset(40, rect1.center.dy),
+        );
+        final rightBlank1 = flow.getImageReferenceByOffset(
+          Offset(960, rect1.center.dy),
+        );
+        expect(leftBlank1?.chapter, 1);
+        expect(leftBlank1?.page, 2);
+        expect(rightBlank1?.chapter, 1);
+        expect(rightBlank1?.page, 2);
+
+        final leftBlank2 = flow.getImageReferenceByOffset(
+          Offset(40, rect2.center.dy),
+        );
+        final rightBlank2 = flow.getImageReferenceByOffset(
+          Offset(960, rect2.center.dy),
+        );
+        expect(leftBlank2?.chapter, 2);
+        expect(leftBlank2?.page, 1);
+        expect(rightBlank2?.chapter, 2);
+        expect(rightBlank2?.page, 1);
+
+        final dividerY = (rect1.bottom + rect2.top) / 2;
+        expect(flow.getImageReferenceByOffset(Offset(500, dividerY)), isNull);
+        expect(flow.getImageReferenceByOffset(Offset(40, dividerY)), isNull);
+        expect(
+          flow.getImageReferenceByOffset(Offset(-10, rect1.center.dy)),
+          isNull,
+        );
+        expect(flow.getImageReferenceByOffset(const Offset(500, 620)), isNull);
+
+        flow.photoViewController.updateMultiple(
+          scale: 1.5,
+          position: const Offset(-40, 20),
+        );
+        await tester.pump();
+
+        final scaledRect1 = tester.getRect(_findWaterfallImage(1, 2));
+        final scaledRect2 = tester.getRect(_findWaterfallImage(2, 1));
+        expect(scaledRect2.left, greaterThan(20));
+        final visibleTop = scaledRect2.top < 0 ? 0.0 : scaledRect2.top;
+        final visibleBottom = scaledRect2.bottom > viewportSize.height
+            ? viewportSize.height
+            : scaledRect2.bottom;
+        final scaledTargetY = (visibleTop + visibleBottom) / 2;
+        final scaledHit = flow.getImageReferenceByOffset(
+          Offset(20, scaledTargetY),
+        );
+        expect(scaledHit?.chapter, 2);
+        expect(scaledHit?.page, 1);
+        final scaledDividerY = (scaledRect1.bottom + scaledRect2.top) / 2;
+        expect(
+          flow.getImageReferenceByOffset(Offset(500, scaledDividerY)),
+          isNull,
+        );
+
+        final barRef = flow.getImageReferenceByIndex(reader.page - 1);
+        expect(barRef, isNotNull);
+        expect(barRef!.page, reader.page);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump(const Duration(seconds: 1));
+        expect(tester.takeException(), isNull);
+      },
+    );
+  });
+}
+
+String _waterfallImageKey(int chapter, int page) =>
+    'file://waterfall-hit-$chapter-$page';
+
+Finder _findWaterfallImage(int chapter, int page) => find.byWidgetPredicate(
+  (widget) =>
+      widget is ComicImage &&
+      widget.image is ReaderImageProvider &&
+      (widget.image as ReaderImageProvider).chapter == chapter &&
+      (widget.image as ReaderImageProvider).page == page,
+);
+
+class _TestImageStream extends ImageStreamCompleter {
+  _TestImageStream(int width, int height) {
+    final recorder = ui.PictureRecorder();
+    ui.Canvas(recorder).drawColor(Colors.grey, ui.BlendMode.src);
+    final picture = recorder.endRecording();
+    setImage(ImageInfo(image: picture.toImageSync(width, height)));
+    picture.dispose();
+  }
+}
+
+class _WaterfallReader extends Reader {
+  _WaterfallReader({
+    required super.key,
+    required ComicType comicType,
+    required ComicChapters chapters,
+  }) : super(
+         type: comicType,
+         cid: 'waterfall-hit-book',
+         name: 'Waterfall hit book',
+         chapters: chapters,
+         initialChapter: 1,
+         initialPage: 2,
+         history: History.fromMap({
+           'id': 'waterfall-hit-book',
+           'type': comicType.value,
+           'time': 1000,
+           'title': 'Waterfall hit book',
+           'ep': 1,
+           'page': 2,
+         }),
+         author: '',
+         tags: const [],
+       );
+
+  @override
+  ReaderState createState() => _WaterfallReaderState();
+}
+
+class _WaterfallReaderState extends ReaderState {
+  @override
+  void initState() {
+    super.initState();
+    images = [_waterfallImageKey(1, 1), _waterfallImageKey(1, 2)];
+  }
+
+  @override
+  void setImageCacheSize() {}
+  @override
+  void initReaderWindow() {}
+  @override
+  void disposeReaderWindow() {}
+  @override
+  void updateHistory({
+    ReadingNavigationSource source = ReadingNavigationSource.passive,
+    String? commandId,
+    bool recordProgress = true,
+  }) {}
+
+  @override
+  Widget build(BuildContext context) =>
+      ReaderScaffold(child: ContinuousMode(crossChapter: true));
+}
+
+class _WaterfallHitSource extends Fake implements ComicSource {
+  _WaterfallHitSource(this.key, this.chapters);
+
+  @override
+  final String key;
+  final ComicChapters chapters;
+
+  @override
+  String get filePath => '';
+  @override
+  String get name => 'WaterfallHit';
+  @override
+  get updateReadProgressFunc => null;
+  @override
+  get sendChapterCommentFunc => null;
+  @override
+  get chapterCommentsLoader => null;
+  @override
+  LoadComicPagesFunc get loadComicPages => (_, chapter) async {
+    final index = chapters.ids.toList().indexOf(chapter!) + 1;
+    return Res([_waterfallImageKey(index, 1), _waterfallImageKey(index, 2)]);
+  };
 }
 
 class _Reader extends Reader {
@@ -351,15 +760,21 @@ class _ReaderState extends ReaderState {
 }
 
 class _ImageController implements ReaderImageViewController {
+  ReaderImageReference? Function(Offset offset)? onGetByOffset;
+
   @override
-  ReaderImageReference getImageReferenceByOffset(Offset offset) =>
-      ReaderImageReference(
-        imageKey: offset.dx > 400 ? 'page-2' : 'page-1',
-        cid: 'pull-book',
-        eid: '0',
-        chapter: 1,
-        page: offset.dx > 400 ? 2 : 1,
-      );
+  ReaderImageReference? getImageReferenceByOffset(Offset offset) {
+    if (onGetByOffset != null) {
+      return onGetByOffset!(offset);
+    }
+    return ReaderImageReference(
+      imageKey: offset.dx > 400 ? 'page-2' : 'page-1',
+      cid: 'pull-book',
+      eid: '0',
+      chapter: 1,
+      page: offset.dx > 400 ? 2 : 1,
+    );
+  }
 
   @override
   bool handleOnTap(Offset location) => false;
@@ -374,6 +789,11 @@ class _History extends HistoryManager {
 
   @override
   Database get imageFavoritesDatabase => database;
+  @override
+  Future<History> resolveReadingProgressCatalog(
+    History fallback,
+    ReadingCatalog catalog,
+  ) async => fallback;
   @override
   Future<void> addReadDuration(History history, Duration duration) async {}
   @override

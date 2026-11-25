@@ -558,6 +558,8 @@ Future<void> _closeHistoryManagerForImport() async {
     manager.close();
   } catch (_) {
     // ignore partially initialized managers
+  } finally {
+    await manager.waitForPendingReads();
   }
 }
 
