@@ -4,7 +4,11 @@ class _RemoteLibraryScanner {
   _RemoteLibraryScanner(this._engine);
   final RemoteLibraryEngine _engine;
 
-  Future<Res<bool>> synchronize({bool force = false, bool automatic = false}) {
+  Future<Res<bool>> synchronize({
+    bool force = false,
+    bool automatic = false,
+    bool deep = true,
+  }) {
     if (_engine._state.disposed) {
       return Future.value(const Res.error('Remote comic library is closed'));
     }
@@ -13,10 +17,14 @@ class _RemoteLibraryScanner {
         const Res.error('Invalid remote comic library configuration'),
       );
     }
-    return start(force: force, automatic: automatic).complete;
+    return start(force: force, automatic: automatic, deep: deep).complete;
   }
 
-  _RemoteLibrarySyncRun start({bool force = false, bool automatic = false}) {
+  _RemoteLibrarySyncRun start({
+    bool force = false,
+    bool automatic = false,
+    bool deep = true,
+  }) {
     final state = _engine._state;
     final config = _engine._config;
     final current = state.syncRun;
@@ -27,15 +35,15 @@ class _RemoteLibraryScanner {
     }
     // 强刷建立新 generation，旧扫描和补全在提交前失效。
     state.syncGeneration++;
+    _engine._metadata.discardObsoleteTasks(state.syncGeneration);
     state.scanToken.cancel('Remote Library scan superseded');
     state.scanToken = CancelToken();
     final ready = Completer<Res<bool>>();
     late final _RemoteLibrarySyncRun run;
     final complete = Future<Res<bool>>.microtask(
-      () => RemoteReadContext(priority: RemoteReadPriority.background).run(
-        () =>
-            _scanRoots(config, run, ready, force: force, automatic: automatic),
-      ),
+      () => RemoteReadContext(
+        priority: RemoteReadPriority.background,
+      ).run(() => _scanRoots(config, run, ready, automatic: automatic)),
     );
     run = _RemoteLibrarySyncRun(
       configurationIdentity: _engine._configurationIdentity(config),
@@ -43,6 +51,7 @@ class _RemoteLibraryScanner {
       indexReady: ready.future,
       complete: complete,
       refresh: force,
+      deep: deep,
     );
     state.syncRun = run;
     unawaited(
@@ -57,14 +66,64 @@ class _RemoteLibraryScanner {
     RemoteLibraryConfig config,
     _RemoteLibrarySyncRun run,
     Completer<Res<bool>> ready, {
-    required bool force,
     required bool automatic,
   }) async {
+    if (!_engine._isSynchronizationCurrent(run)) {
+      ready.complete(const Res(true));
+      return const Res(true);
+    }
     final state = _engine._state;
+    final scheduler = _engine._archiveAccount(config).scheduler;
+    final rootPhases = {
+      for (final root in config.directories)
+        root: RemoteLibrarySyncPhase.listingRoots,
+    };
+    final newComics = <String>{};
+    final reusedDirectories = <String>{};
     var processed = 0;
     var failed = 0;
     Res<bool>? failure;
+
+    void progress({bool isSyncing = true, String? errorMessage}) {
+      if (!_engine._isSynchronizationCurrent(run)) return;
+      final pending = _engine._metadata.pendingCompletionCount;
+      final RemoteLibrarySyncPhase phase;
+      if (!isSyncing) {
+        phase = pending > 0
+            ? RemoteLibrarySyncPhase.completingMetadata
+            : RemoteLibrarySyncPhase.idle;
+      } else if (rootPhases.containsValue(
+        RemoteLibrarySyncPhase.scanningPriority,
+      )) {
+        phase = RemoteLibrarySyncPhase.scanningPriority;
+      } else if (rootPhases.isEmpty ||
+          rootPhases.containsValue(RemoteLibrarySyncPhase.scanningCatalog)) {
+        phase = RemoteLibrarySyncPhase.scanningCatalog;
+      } else {
+        phase = RemoteLibrarySyncPhase.listingRoots;
+      }
+      _engine.syncStatus.value = RemoteLibrarySyncStatus(
+        isSyncing: isSyncing,
+        lastSuccessfulSync: state.lastSuccessfulSync,
+        processed: processed,
+        total: processed,
+        failed: failed,
+        errorMessage: errorMessage,
+        phase: phase,
+        reused: reusedDirectories.length,
+        discoveredNew: newComics.length,
+        pendingMetadata: pending,
+        cooldownUntil: scheduler.cooldownUntil,
+      );
+    }
+
+    void reuseDirectory(String path) {
+      if (reusedDirectories.add(normalizeRemoteDirectory(path))) progress();
+    }
+
     try {
+      _engine._metadata.pauseDuringDiscovery(run);
+      progress();
       final previousLastSync = await _engine._cache.lastSuccessfulSync(
         config.cacheKey,
       );
@@ -73,18 +132,12 @@ class _RemoteLibraryScanner {
       state.lastSuccessfulSync = previousLastSync;
       state.failedRoots = await _engine._cache.rootFailures(config.cacheKey);
       _engine._throwIfSynchronizationObsolete(run);
-      void progress() {
-        if (!_engine._isSynchronizationCurrent(run)) return;
-        _engine.syncStatus.value = RemoteLibrarySyncStatus(
-          isSyncing: true,
-          lastSuccessfulSync: previousLastSync,
-          processed: processed,
-          total: processed,
-          failed: failed,
-        );
-      }
-
       progress();
+      final previousRootEntries = await _engine._readCachedDirectories(
+        config,
+        config.directories.map(normalizeRemoteDirectory),
+      );
+      _engine._throwIfSynchronizationObsolete(run);
 
       // 各根先独立推进，慢根不会挡住其他根的首批发现。
       await Future.wait(
@@ -102,17 +155,59 @@ class _RemoteLibraryScanner {
             final entries = await _engine._readDirectory(
               rootConfig,
               root,
-              refresh: force,
-              useCache: automatic,
+              refresh: run.refresh,
+              useCache: automatic && !run.refresh,
+              previousRootEntries: previousRootEntries,
+              onCacheHit: () => reuseDirectory(root),
             );
             _engine._throwIfSynchronizationObsolete(run);
+            final oldEntries =
+                previousRootEntries[normalizeRemoteDirectory(root)];
+            final previousRootDirs = {
+              for (final entry in oldEntries ?? const <RemoteLibraryEntry>[])
+                if (entry.isDirectory) entry.name: entry,
+            };
+            final previouslyIndexed = oldEntries == null
+                ? _previousRootDirectoryNames(rootConfig, previous.keys)
+                : const <String>{};
+            final priority = <RemoteLibraryEntry>[];
+            final ordinary = <RemoteLibraryEntry>[];
+            final reusable = <String>{};
+            for (final directory in _sortedDirectories(entries)) {
+              final old = previousRootDirs[directory.name];
+              final sameVersion = old?._hasSameVersion(directory) == true;
+              if (sameVersion || previouslyIndexed.contains(directory.name)) {
+                ordinary.add(directory);
+              } else {
+                priority.add(directory);
+              }
+              if (run.refresh &&
+                  !run.deep &&
+                  sameVersion &&
+                  directory._hasVersion) {
+                reusable.add(directory.name);
+              }
+            }
+            run.reusableRootChildren[rootConfig.remotePath] = reusable;
             var sequence = 0;
             final discovered = await _discoverComicDirectories(
               rootConfig,
               rootEntries: entries,
               syncRun: run,
-              refresh: force,
+              priorityDirectories: priority,
+              ordinaryDirectories: ordinary,
               useCache: automatic,
+              onDirectoryReused: reuseDirectory,
+              onPhaseChanged: (phase) {
+                if (rootPhases[root] == phase) return;
+                rootPhases[root] = phase;
+                progress();
+              },
+              onPriorityDiscovered: () async {
+                await batch.flush();
+                _engine._throwIfSynchronizationObsolete(run);
+                _engine._notifyContent(immediate: true);
+              },
               onDiscovered: (comic) async {
                 _engine._throwIfSynchronizationObsolete(run);
                 final id = _engine._stableComicPath(rootConfig, comic.id);
@@ -122,6 +217,7 @@ class _RemoteLibraryScanner {
                   sortIndex: cached?.sortIndex ?? sequence++,
                   eTag: comic.eTag,
                   modifiedAt: comic.modifiedAt,
+                  sourceModifiedAt: comic.sourceModifiedAt,
                 );
                 final shouldRefresh =
                     cached == null ||
@@ -148,6 +244,7 @@ class _RemoteLibraryScanner {
                     cached.snapshot?['bangumiSubjectId'] as int?,
                   );
                 }
+                if (cached == null) newComics.add(id);
                 processed++;
                 progress();
               },
@@ -161,6 +258,7 @@ class _RemoteLibraryScanner {
                   sortIndex: i,
                   eTag: discovered[i].eTag,
                   modifiedAt: discovered[i].modifiedAt,
+                  sourceModifiedAt: discovered[i].sourceModifiedAt,
                 ),
             ];
             // 在排队最终索引前固定排序，随后提交的后台快照使用同一顺序。
@@ -198,12 +296,16 @@ class _RemoteLibraryScanner {
               );
             }
             Log.error('Remote Library scan', error, stackTrace);
-            progress();
           } finally {
+            rootPhases.remove(root);
+            progress();
             batch.cancel();
+            await _engine._flushDirectoryCache();
           }
         }),
       );
+      _engine._throwIfSynchronizationObsolete(run);
+      await _engine._flushDirectoryCache();
       _engine._throwIfSynchronizationObsolete(run);
       if (failure == null) {
         final now = DateTime.now().millisecondsSinceEpoch;
@@ -213,14 +315,7 @@ class _RemoteLibraryScanner {
       }
       final result = failure ?? const Res<bool>(true);
       if (!ready.isCompleted) ready.complete(result);
-      _engine.syncStatus.value = RemoteLibrarySyncStatus(
-        isSyncing: false,
-        lastSuccessfulSync: state.lastSuccessfulSync,
-        processed: processed,
-        total: processed,
-        failed: failed,
-        errorMessage: failure?.errorMessage,
-      );
+      progress(isSyncing: false, errorMessage: failure?.errorMessage);
       _engine._notifyContent(immediate: true);
       return result;
     } on _RemoteSynchronizationObsoleteException {
@@ -231,14 +326,29 @@ class _RemoteLibraryScanner {
       if (!ready.isCompleted) ready.complete(result);
       if (_engine._isSynchronizationCurrent(run)) {
         Log.error('Remote Library scan', error, stackTrace);
-        _engine.syncStatus.value = RemoteLibrarySyncStatus(
-          isSyncing: false,
-          lastSuccessfulSync: state.lastSuccessfulSync,
-          errorMessage: error.toString(),
-        );
+        progress(isSyncing: false, errorMessage: error.toString());
       }
       return result;
+    } finally {
+      _engine._metadata.resumeAfterDiscovery(run);
     }
+  }
+
+  Set<String> _previousRootDirectoryNames(
+    RemoteLibraryConfig config,
+    Iterable<String> ids,
+  ) {
+    final names = <String>{};
+    final root = config.remotePath;
+    for (final id in ids) {
+      final path = id.startsWith(remoteComicWorkPrefix)
+          ? RemoteComicWork.location(id).directory
+          : config.childDirectoryPath(id);
+      if (!path.startsWith(root)) continue;
+      final end = path.indexOf('/', root.length);
+      if (end != -1) names.add(path.substring(root.length, end));
+    }
+    return names;
   }
 
   bool _looksLikeChapterName(String name) {
@@ -264,39 +374,71 @@ class _RemoteLibraryScanner {
     RemoteLibraryConfig config, {
     required List<RemoteLibraryEntry> rootEntries,
     required _RemoteLibrarySyncRun syncRun,
-    required bool refresh,
+    required List<RemoteLibraryEntry> priorityDirectories,
+    required List<RemoteLibraryEntry> ordinaryDirectories,
     required bool useCache,
+    required void Function(String path) onDirectoryReused,
+    required void Function(RemoteLibrarySyncPhase phase) onPhaseChanged,
+    required Future<void> Function() onPriorityDiscovered,
     required Future<void> Function(_RemoteDiscoveredDirectory) onDiscovered,
   }) async {
     final result = <_RemoteDiscoveredDirectory>[];
+    final concurrency = _engine
+        ._archiveAccount(config)
+        .scheduler
+        .maxConcurrent
+        .clamp(1, 8);
     final seenArchives = <String>{};
     var inspectedDirectories = 0;
     final maxDirectories =
         RemoteLibrarySource.discoveryDirectoryLimitOverride ??
         _maxDiscoveryDirectories;
     final publishedWorks = <String, _RemoteDiscoveredDirectory>{};
-    final directoryEntries = <String, List<RemoteLibraryEntry>>{};
+    final directoryReads = <String, FutureOr<List<RemoteLibraryEntry>>>{};
+    Future<Map<String, List<RemoteLibraryEntry>>>? cachedRootChildren;
+
+    Future<List<RemoteLibraryEntry>> fetchDirectory(
+      String path,
+      int depth,
+    ) async {
+      final reuseCache = syncRun.canReuseDirectory(config, path);
+      List<RemoteLibraryEntry>? prefetched;
+      if (reuseCache && depth == 0) {
+        final paths = syncRun.reusableRootChildren[config.remotePath]!.map(
+          config._discoveryDirectoryPath,
+        );
+        prefetched = (await (cachedRootChildren ??= _engine
+            ._readCachedDirectories(config, paths)))[path];
+        _engine._throwIfSynchronizationObsolete(syncRun);
+        if (prefetched != null) onDirectoryReused(path);
+      }
+      final entries = List<RemoteLibraryEntry>.from(
+        prefetched ??
+            await _engine._readDirectory(
+              config,
+              path,
+              refresh: syncRun.refresh,
+              useCache: useCache && !syncRun.refresh,
+              useStaleCache: reuseCache && depth > 0,
+              onCacheHit: () => onDirectoryReused(path),
+            ),
+      );
+      _engine._throwIfSynchronizationObsolete(syncRun);
+      directoryReads[path] = entries;
+      return entries;
+    }
 
     Future<List<RemoteLibraryEntry>> readDirectory(String id, int depth) async {
-      final path = config.childDirectoryPath(id);
-      final cached = directoryEntries[path];
-      if (cached != null) return cached;
+      _engine._throwIfSynchronizationObsolete(syncRun);
+      final path = config._discoveryDirectoryPath(id);
+      final reading = directoryReads[path];
+      if (reading != null) return reading;
       if (depth > _maxDiscoveryDepth ||
           inspectedDirectories >= maxDirectories) {
         throw FormatException('Remote Library discovery limit reached at $id');
       }
       inspectedDirectories++;
-      final entries = List<RemoteLibraryEntry>.from(
-        await _engine._readDirectory(
-          config,
-          path,
-          refresh: refresh,
-          useCache: useCache,
-        ),
-      );
-      _engine._throwIfSynchronizationObsolete(syncRun);
-      directoryEntries[path] = entries;
-      return entries;
+      return directoryReads[path] = fetchDirectory(path, depth);
     }
 
     Future<_RemoteDiscoveredDirectory> publishWork(
@@ -312,6 +454,9 @@ class _RemoteLibraryScanner {
         id: work.id,
         entries: entries,
         work: work,
+        sourceModifiedAt: _latestModifiedAt(
+          work.volumes.map((volume) => volume.archive.modifiedAt),
+        ),
         eTag: _contentVersion([
           for (final volume in work.volumes)
             RemoteLibraryEntry(
@@ -370,36 +515,71 @@ class _RemoteLibraryScanner {
       }
       final direct = _engine._archiveFiles(entries);
       if (direct.isNotEmpty && !marked && !homogeneous(direct)) return null;
+      final path = config._discoveryDirectoryPath(id);
       final volumes = [
         for (final file in direct)
           _engine._archiveVolume(
             config,
             file,
-            id,
-            edition: _directoryName(config.childDirectoryPath(id)),
+            path,
+            edition: _directoryName(path),
           ),
       ];
-      for (final child in children) {
+      final childVolumes = <String, List<RemoteComicVolume>>{};
+      final orderedChildren = id.isEmpty
+          ? [...priorityDirectories, ...ordinaryDirectories]
+          : children;
+
+      Future<bool> probeChild(RemoteLibraryEntry child) async {
         final childId = _joinRelativeDirectoryPath(id, child.name);
         final childEntries = await readDirectory(childId, depth + 1);
         final files = _engine._archiveFiles(childEntries);
         if (_sortedDirectories(childEntries).isNotEmpty ||
             _imageEntries(
               childEntries,
-            ).any((entry) => !isNamedComicCover(entry.name))) {
-          return null;
+            ).any((entry) => !isNamedComicCover(entry.name)) ||
+            !marked && files.isNotEmpty && !homogeneous(files)) {
+          return false;
         }
-        if (files.isEmpty) continue;
-        if (!marked && !homogeneous(files)) return null;
-        volumes.addAll([
+        if (files.isEmpty) return true;
+        final childPath = config._discoveryDirectoryPath(childId);
+        childVolumes[child.name] = [
           for (final file in files)
-            _engine._archiveVolume(config, file, childId, edition: child.name),
-        ]);
+            _engine._archiveVolume(
+              config,
+              file,
+              childPath,
+              edition: child.name,
+            ),
+        ];
+        return true;
       }
+
+      // 遇到空目录时继续顺序探测，读到压缩包后才并发检查余下目录。
+      var nextChild = 0;
+      while (nextChild < orderedChildren.length && childVolumes.isEmpty) {
+        if (!await probeChild(orderedChildren[nextChild])) return null;
+        nextChild++;
+      }
+      var rejected = false;
+      await runThrottledTasks(
+        orderedChildren.skip(nextChild).toList(growable: false),
+        concurrency: concurrency,
+        throttleEvery: 0,
+        run: (child) async {
+          if (rejected) return;
+          if (!await probeChild(child)) rejected = true;
+        },
+      );
+      if (rejected) return null;
+
+      volumes.addAll([
+        for (final child in children) ...?childVolumes[child.name],
+      ]);
       if (volumes.length < 2) return null;
       final work = RemoteComicWork(
-        directory: config.childDirectoryPath(id),
-        title: _directoryName(config.childDirectoryPath(id)),
+        directory: path,
+        title: _directoryName(path),
         volumes: separateRemoteComicEditions(volumes),
       );
       return publishWork(work, entries);
@@ -410,6 +590,7 @@ class _RemoteLibraryScanner {
       String parent,
     ) async {
       final files = _engine._archiveFiles(entries);
+      final path = config._discoveryDirectoryPath(parent);
       if (files.length >= 2 &&
           _hasMetadataFile(entries) &&
           _sortedDirectories(entries).isEmpty &&
@@ -417,11 +598,11 @@ class _RemoteLibraryScanner {
             entries,
           ).any((entry) => !isNamedComicCover(entry.name))) {
         final work = RemoteComicWork(
-          directory: config.childDirectoryPath(parent),
-          title: _directoryName(config.childDirectoryPath(parent)),
+          directory: path,
+          title: _directoryName(path),
           volumes: separateRemoteComicEditions([
             for (final file in files)
-              _engine._archiveVolume(config, file, parent),
+              _engine._archiveVolume(config, file, path),
           ]),
         );
         return [await publishWork(work, entries)];
@@ -440,22 +621,22 @@ class _RemoteLibraryScanner {
       for (final family in families.entries) {
         if (family.value.length < 2) continue;
         final ownDirectory =
-            !config.directories.contains(config.childDirectoryPath(parent)) &&
+            !config.directories.contains(path) &&
             family.value.length == files.length &&
             _sortedDirectories(entries).isEmpty &&
             !_imageEntries(
               entries,
             ).any((entry) => !isNamedComicCover(entry.name));
         final title = ownDirectory || titles[family.key]!.isEmpty
-            ? _directoryName(config.childDirectoryPath(parent))
+            ? _directoryName(path)
             : titles[family.key]!;
         final work = RemoteComicWork(
-          directory: config.childDirectoryPath(parent),
+          directory: path,
           title: title,
           family: ownDirectory ? null : title,
           volumes: separateRemoteComicEditions([
             for (final file in family.value)
-              _engine._archiveVolume(config, file, parent),
+              _engine._archiveVolume(config, file, path),
           ]),
         );
         comics.add(await publishWork(work, entries));
@@ -465,9 +646,7 @@ class _RemoteLibraryScanner {
         if (consumed.contains(file.name)) continue;
         _engine._throwIfSynchronizationObsolete(syncRun);
         final archiveId = _joinRelativeDirectoryPath(parent, file.name);
-        if (!seenArchives.add(
-          config.childFilePath(config.childDirectoryPath(parent), file.name),
-        )) {
+        if (!seenArchives.add(config.childFilePath(path, file.name))) {
           continue;
         }
         final comic = _RemoteDiscoveredDirectory(
@@ -483,6 +662,7 @@ class _RemoteLibraryScanner {
             ),
           ]).eTag,
           archiveFile: file,
+          sourceModifiedAt: file.modifiedAt,
         );
         await onDiscovered(comic);
         comics.add(comic);
@@ -490,6 +670,11 @@ class _RemoteLibraryScanner {
       return comics;
     }
 
+    onPhaseChanged(
+      priorityDirectories.isEmpty
+          ? RemoteLibrarySyncPhase.scanningCatalog
+          : RemoteLibrarySyncPhase.scanningPriority,
+    );
     final rootWork = await directoryWork('', rootEntries, -1);
     if (rootWork != null) return [rootWork];
     result.addAll(await archives(rootEntries, ''));
@@ -500,22 +685,39 @@ class _RemoteLibraryScanner {
       required List<RemoteLibraryEntry> entries,
       required int depth,
       required bool preserveFallback,
+      List<_RemoteDiscoveredDirectory>? knownArchives,
     }) async {
       _engine._throwIfSynchronizationObsolete(syncRun);
       final work = await directoryWork(id, entries, depth);
-      if (work != null) return [work];
-      final archiveComics = await archives(entries, id);
+      if (work != null) return [...?knownArchives, work];
+      final archiveComics = knownArchives ?? await archives(entries, id);
       final chapterArchives = <_RemoteDiscoveredDirectory>[];
       final version = _directoryContentVersion(directory, entries);
       Future<List<_RemoteDiscoveredDirectory>> current({
         Map<String, List<RemoteLibraryEntry>> childEntries = const {},
       }) async {
+        final listedChildren = entries
+            .where((entry) => entry.isDirectory && !_isIgnoredEntry(entry.name))
+            .expand((child) {
+              final path = config._discoveryDirectoryPath(
+                _joinRelativeDirectoryPath(id, child.name),
+              );
+              final listing = directoryReads[path];
+              return listing is List<RemoteLibraryEntry>
+                  ? listing
+                  : const <RemoteLibraryEntry>[];
+            });
         final comic = _RemoteDiscoveredDirectory(
           id: id,
           entries: entries,
           childEntries: childEntries,
           eTag: version.eTag,
           modifiedAt: version.modifiedAt,
+          sourceModifiedAt: _latestModifiedAt([
+            directory.modifiedAt,
+            for (final entry in entries.followedBy(listedChildren))
+              if (!_isIgnoredEntry(entry.name)) entry.modifiedAt,
+          ]),
         );
         await onDiscovered(comic);
         return [comic, ...archiveComics, ...chapterArchives];
@@ -555,57 +757,80 @@ class _RemoteLibraryScanner {
           'Remote Library discovery directory limit reached at $id',
         );
       }
-      final children =
+      final pendingChildren =
           <
+            String,
             ({
               RemoteLibraryEntry directory,
               String id,
               List<RemoteLibraryEntry> entries,
+              Future<List<_RemoteDiscoveredDirectory>> archiveComics,
             })
-          >[];
-      final childEntriesMap = <String, List<RemoteLibraryEntry>>{};
-      final nested = <_RemoteDiscoveredDirectory>[...archiveComics];
+          >{};
+      final nestedByChild = <String, List<_RemoteDiscoveredDirectory>>{};
       var isCategory = false;
 
-      for (final child in childDirectories) {
-        final childId = _joinRelativeDirectoryPath(id, child.name);
-        final childEntries = await readDirectory(childId, depth + 1);
-        _engine._throwIfSynchronizationObsolete(syncRun);
-        children.add((directory: child, id: childId, entries: childEntries));
-        childEntriesMap[child.name] = childEntries;
-        final childArchives = await archives(childEntries, childId);
-        chapterArchives.addAll(childArchives);
-        nested.addAll(childArchives);
-        final pages = _imageEntries(
-          childEntries,
-        ).where((entry) => !isNamedComicCover(entry.name));
-        isCategory =
-            isCategory ||
-            _hasMetadataFile(childEntries) ||
-            (pages.isEmpty &&
-                childEntries.any(
-                  (entry) =>
-                      !entry.isDirectory && isRemoteComicArchive(entry.name),
-                )) ||
-            _sortedDirectories(childEntries).isNotEmpty ||
-            (!_looksLikeChapterName(child.name) && pages.isNotEmpty);
-        if (isCategory) {
-          for (final pending in children) {
-            nested.addAll(
-              await scan(
+      await runThrottledTasks(
+        childDirectories,
+        concurrency: concurrency,
+        throttleEvery: 0,
+        run: (child) async {
+          final childId = _joinRelativeDirectoryPath(id, child.name);
+          final childEntries = await readDirectory(childId, depth + 1);
+          _engine._throwIfSynchronizationObsolete(syncRun);
+          final pages = _imageEntries(
+            childEntries,
+          ).where((entry) => !isNamedComicCover(entry.name));
+          isCategory =
+              isCategory ||
+              _hasMetadataFile(childEntries) ||
+              (pages.isEmpty &&
+                  childEntries.any(
+                    (entry) =>
+                        !entry.isDirectory && isRemoteComicArchive(entry.name),
+                  )) ||
+              _sortedDirectories(childEntries).isNotEmpty ||
+              (!_looksLikeChapterName(child.name) && pages.isNotEmpty);
+          final probed = (
+            directory: child,
+            id: childId,
+            entries: childEntries,
+            archiveComics: archives(childEntries, childId),
+          );
+          if (!isCategory) {
+            pendingChildren[child.name] = probed;
+            await probed.archiveComics;
+            return;
+          }
+
+          // 确认为分类时立即接管已读完的子目录，不等其他读取结束。
+          final ready = [...pendingChildren.values, probed];
+          pendingChildren.clear();
+          await Future.wait(
+            ready.map((pending) async {
+              nestedByChild[pending.directory.name] = await scan(
                 directory: pending.directory,
                 id: pending.id,
                 entries: pending.entries,
                 depth: depth + 1,
                 preserveFallback: false,
-              ),
-            );
-          }
-          children.clear();
-        }
-      }
+                knownArchives: await pending.archiveComics,
+              );
+            }),
+          );
+        },
+      );
 
       if (!isCategory) {
+        final children = [
+          for (final child in childDirectories) pendingChildren[child.name]!,
+        ];
+        final childEntriesMap = {
+          for (final child in children) child.directory.name: child.entries,
+        };
+        for (final child in children) {
+          chapterArchives.addAll(await child.archiveComics);
+        }
         final childrenWithImages = children.where(
           (child) => _imageEntries(
             child.entries,
@@ -634,32 +859,44 @@ class _RemoteLibraryScanner {
         }
       }
 
+      final nested = [
+        ...archiveComics,
+        ...chapterArchives,
+        for (final child in childDirectories) ...?nestedByChild[child.name],
+      ];
       if (nested.isNotEmpty) return nested;
       return preserveFallback ? current() : const [];
     }
 
-    await runThrottledTasks(
-      _sortedDirectories(rootEntries),
-      concurrency: 4,
-      throttleEvery: 0,
-      run: (directory) async {
-        _engine._throwIfSynchronizationObsolete(syncRun);
-        final id = directory.name;
-        final entries = await readDirectory(id, 0);
-        _engine._throwIfSynchronizationObsolete(syncRun);
-
-        result.addAll(
-          await scan(
-            directory: directory,
-            id: id,
-            entries: entries,
-            depth: 0,
-            preserveFallback: true,
-          ),
+    Future<void> scanRootDirectories(List<RemoteLibraryEntry> directories) =>
+        runThrottledTasks(
+          directories,
+          concurrency: concurrency,
+          throttleEvery: 0,
+          run: (directory) async {
+            final id = directory.name;
+            final entries = await readDirectory(id, 0);
+            _engine._throwIfSynchronizationObsolete(syncRun);
+            result.addAll(
+              await scan(
+                directory: directory,
+                id: id,
+                entries: entries,
+                depth: 0,
+                preserveFallback: true,
+              ),
+            );
+            _engine._throwIfSynchronizationObsolete(syncRun);
+          },
         );
-        _engine._throwIfSynchronizationObsolete(syncRun);
-      },
-    );
+
+    final initialCount = result.length;
+    await scanRootDirectories(priorityDirectories);
+    if (result.length > initialCount) await onPriorityDiscovered();
+    if (ordinaryDirectories.isNotEmpty) {
+      onPhaseChanged(RemoteLibrarySyncPhase.scanningCatalog);
+      await scanRootDirectories(ordinaryDirectories);
+    }
 
     final unique = {
       for (final comic in result) comic.id: comic,
@@ -672,6 +909,16 @@ class _RemoteLibraryScanner {
       return comparison != 0 ? comparison : a.id.compareTo(b.id);
     });
     return unique;
+  }
+
+  int? _latestModifiedAt(Iterable<int?> timestamps) {
+    int? latest;
+    for (final timestamp in timestamps) {
+      if (timestamp != null && (latest == null || timestamp > latest)) {
+        latest = timestamp;
+      }
+    }
+    return latest;
   }
 
   ({String? eTag, int? modifiedAt}) _directoryContentVersion(
@@ -722,6 +969,7 @@ class _RemoteDiscoveredDirectory {
     this.childEntries = const {},
     this.eTag,
     this.modifiedAt,
+    this.sourceModifiedAt,
     this.archiveFile,
     this.work,
   });
@@ -731,6 +979,7 @@ class _RemoteDiscoveredDirectory {
   final Map<String, List<RemoteLibraryEntry>> childEntries;
   final String? eTag;
   final int? modifiedAt;
+  final int? sourceModifiedAt;
   final RemoteLibraryEntry? archiveFile;
   final RemoteComicWork? work;
 }
@@ -813,10 +1062,11 @@ class _RemoteLibrarySummaryBatch {
                       : comicFileStem(row.comic.archiveFile!.name)),
               author: '',
               tags: const [],
-              cover: _previewCover(row.comic),
+              cover: _previewCover(row.comic, row.directory.id),
               snapshot: null,
               remoteETag: row.directory.eTag,
               remoteModifiedAt: row.directory.modifiedAt,
+              sourceModifiedAt: row.directory.sourceModifiedAt,
             ),
         ],
         rootPath: _config.remoteLibrary == null ? null : _config.remotePath,
@@ -840,14 +1090,14 @@ class _RemoteLibrarySummaryBatch {
     await write;
   }
 
-  String _previewCover(_RemoteDiscoveredDirectory comic) {
+  String _previewCover(_RemoteDiscoveredDirectory comic, String id) {
     final named = _findNamedCover(comic.entries);
     if (named != null) {
       final directory =
           comic.work?.directory ??
           (comic.archiveFile != null
-              ? _engine._metadataTarget(_config, comic.id).directory
-              : _config.childDirectoryPath(comic.id));
+              ? _engine._metadataTarget(_config, id).directory
+              : _config.childDirectoryPath(id));
       return _config.childFilePath(directory, named.name);
     }
     if (comic.archiveFile != null || comic.work != null) return '';
@@ -856,7 +1106,7 @@ class _RemoteLibrarySummaryBatch {
     ).where((entry) => !isNamedComicCover(entry.name));
     if (images.isNotEmpty) {
       return _config.childFilePath(
-        _config.childDirectoryPath(comic.id),
+        _config.childDirectoryPath(id),
         images.first.name,
       );
     }
@@ -867,7 +1117,7 @@ class _RemoteLibrarySummaryBatch {
       if (pages.isNotEmpty) {
         return _config.childFilePath(
           _config.childDirectoryPathFrom(
-            _config.childDirectoryPath(comic.id),
+            _config.childDirectoryPath(id),
             child.key,
           ),
           pages.first.name,

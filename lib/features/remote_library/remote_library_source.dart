@@ -93,8 +93,10 @@ class RemoteLibrarySource {
       _legacyEngine.loadComicInfo(id);
   static Future<Res<List<String>>> loadComicPages(String id, String? ep) =>
       _legacyEngine.loadComicPages(id, ep);
-  static Future<Res<bool>> synchronize({bool force = false}) =>
-      _legacyEngine.synchronize(force: force);
+  static Future<Res<bool>> synchronize({
+    bool force = false,
+    bool deep = true,
+  }) => _legacyEngine.synchronize(force: force, deep: deep);
   static Future<Map<String, dynamic>> getImageLoadingConfig(
     String imageKey,
     String comicId,

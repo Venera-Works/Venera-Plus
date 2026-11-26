@@ -105,8 +105,18 @@ class RemoteLibraryEngine {
   final _cache = RemoteLibraryRepository.instance;
   late final _scanner = _RemoteLibraryScanner(this);
   late final _metadata = _RemoteLibraryMetadataPipeline(this);
+  final _directoryCacheWrites =
+      <
+        String,
+        Map<String, ({List<RemoteLibraryEntry> entries, int fetchedAt})>
+      >{};
+  Future<void>? _directoryCacheFlush;
+  Timer? _directoryCacheTimer;
   Timer? _autoRefreshTimer;
   Dio? _imageDio;
+  RemoteLibrarySort? _sort;
+  RemoteReadScheduler? _cooldownScheduler;
+  StreamSubscription<DateTime?>? _cooldownSubscription;
 
   // 同一账号的目录、元数据和 Range 请求共用一个调度器。
   static final _archiveAccounts =
@@ -125,28 +135,102 @@ class RemoteLibraryEngine {
   List<RemoteLibraryMetadataPendingStatus> get metadataPendingStatuses =>
       _metadata.metadataPendingStatuses;
   Map<String, String> get failedRoots => Map.unmodifiable(_state.failedRoots);
-  String? get statusMessage => failedRoots.isEmpty
-      ? null
-      : 'Failed directories: ${failedRoots.keys.join(', ')}';
+
+  String get _sortKey => 'remote_library_sort_${library.id}';
+
+  RemoteLibrarySort get sort => _sort ??= RemoteLibrarySort.fromString(
+    switch (appdata.implicitData[_sortKey]) {
+      String value => value,
+      _ => null,
+    },
+  );
+
+  Future<void> setSort(RemoteLibrarySort value) async {
+    if (value == sort) return;
+    _sort = value;
+    appdata.implicitData[_sortKey] = value.value;
+    await appdata.writeImplicitData();
+    _notifyContent(immediate: true);
+  }
+
+  String? get statusMessage {
+    final status = syncStatus.value;
+    final scheduler = _cooldownScheduler;
+    final until = scheduler == null
+        ? status.cooldownUntil
+        : scheduler.cooldownUntil;
+    final cooldownMessage = until == null
+        ? null
+        : 'Rate limited until @time'.tlParams({
+            'time': until.toLocal().toString().split('.').first,
+          });
+    if (_state.failedRoots.isNotEmpty) {
+      final failures = 'Failed directories: @directories'.tlParams({
+        'directories': _state.failedRoots.keys.join(', '),
+      });
+      return cooldownMessage == null ? failures : '$failures\n$cooldownMessage';
+    }
+    if (cooldownMessage != null) return cooldownMessage;
+    if (status.isSyncing) {
+      return switch (status.phase) {
+        RemoteLibrarySyncPhase.listingRoots =>
+          'Checking library directories...'.tl,
+        RemoteLibrarySyncPhase.scanningPriority =>
+          'Scanning new and changed directories (@count new)...'.tlParams({
+            'count': status.discoveredNew,
+          }),
+        _ =>
+          'Syncing catalog (@processed processed, @reused directories reused)...'
+              .tlParams({
+                'processed': status.processed,
+                'reused': status.reused,
+              }),
+      };
+    }
+    if (status.pendingMetadata > 0) {
+      return 'Updating metadata (@count remaining)...'.tlParams({
+        'count': status.pendingMetadata,
+      });
+    }
+    return null;
+  }
+
   Map<String, _RemoteComicSnapshot> get _snapshotCache => _state.snapshotCache;
   Map<String, Future<_RemoteComicSnapshot>> get _snapshotInFlight =>
       _state.snapshotInFlight;
 
   ({RemoteReadScheduler scheduler, RemoteRangeCache cache}) _archiveAccount(
     RemoteLibraryConfig config,
-  ) => _archiveAccounts.putIfAbsent(
-    config.archiveAccountKey,
-    () => (
-      scheduler:
-          RemoteLibrarySource.archiveSchedulerFactory?.call() ??
-          (config.remoteStore == null
-              ? RemoteReadScheduler(minInterval: Duration.zero)
-              : RemoteStorageAccounts.instance.readSchedulerFor(
-                  config.remoteStore!.account,
-                )),
-      cache: RemoteRangeCache(),
-    ),
-  );
+  ) {
+    final account = _archiveAccounts.putIfAbsent(
+      config.archiveAccountKey,
+      () => (
+        scheduler:
+            RemoteLibrarySource.archiveSchedulerFactory?.call() ??
+            _storageScheduler(config) ??
+            RemoteReadScheduler(minInterval: Duration.zero),
+        cache: RemoteRangeCache(),
+      ),
+    );
+    _watchCooldown(account.scheduler);
+    return account;
+  }
+
+  RemoteReadScheduler? _storageScheduler(RemoteLibraryConfig config) {
+    final storageAccount = config.remoteStore?.account;
+    return storageAccount == null
+        ? null
+        : RemoteStorageAccounts.instance.readSchedulerFor(storageAccount);
+  }
+
+  void _watchCooldown(RemoteReadScheduler scheduler) {
+    if (_state.disposed || identical(_cooldownScheduler, scheduler)) return;
+    unawaited(_cooldownSubscription?.cancel());
+    _cooldownScheduler = scheduler;
+    _cooldownSubscription = scheduler.cooldownChanges.listen(
+      (_) => _updateSyncActivity(),
+    );
+  }
 
   RemoteLibraryConfig _configFor(String root) => _legacy
       ? _config
@@ -183,23 +267,99 @@ class RemoteLibraryEngine {
     String path, {
     bool refresh = false,
     bool useCache = false,
+    bool useStaleCache = false,
+    Map<String, List<RemoteLibraryEntry>>? previousRootEntries,
+    VoidCallback? onCacheHit,
   }) async {
     final cachePath = normalizeRemoteDirectory(path);
     final generation = _state.syncGeneration;
+    final cancelToken =
+        RemoteReadContext.current.priority == RemoteReadPriority.background
+        ? _state.scanToken
+        : _state.lifetimeToken;
+    if (useStaleCache || useCache && !refresh) {
+      final cached = await _readCachedDirectories(config, [
+        cachePath,
+      ], ignoreExpiry: useStaleCache);
+      final entries = cached[cachePath];
+      if (entries != null) {
+        onCacheHit?.call();
+        return entries;
+      }
+    }
+    final entries = await _archiveAccount(config).scheduler.run(() {
+      _ensureActive();
+      return _activeOps.readDir(config, path, refresh: refresh);
+    }, cancelToken: cancelToken);
+    if (!_state.disposed &&
+        generation == _state.syncGeneration &&
+        config.directories.contains(cachePath)) {
+      final previous =
+          previousRootEntries ??
+          await _readCachedDirectories(config, [cachePath]);
+      final oldDirectories = {
+        for (final entry in previous[cachePath] ?? const <RemoteLibraryEntry>[])
+          if (entry.isDirectory) entry.name: entry,
+      };
+      final changedPaths = [
+        for (final entry in entries)
+          if (entry.isDirectory &&
+              !_isIgnoredEntry(entry.name) &&
+              entry._hasVersion &&
+              oldDirectories[entry.name]?._hasSameVersion(entry) != true)
+            normalizeRemoteDirectory(
+              config.childDirectoryPathFrom(cachePath, entry.name),
+            ),
+      ];
+      if (changedPaths.isNotEmpty) {
+        // 先失效旧子树，避免扫描中断后拿新根目录版本匹配到旧缓存。
+        await _flushDirectoryCache();
+        if (!_state.disposed && generation == _state.syncGeneration) {
+          await _cache.invalidateDirectorySubtrees(
+            config.cacheKey,
+            changedPaths,
+          );
+        }
+      }
+    }
+    if (!_state.disposed && generation == _state.syncGeneration) {
+      _bufferDirectoryEntries(config.cacheKey, cachePath, entries);
+    }
+    return entries;
+  }
+
+  Future<Map<String, List<RemoteLibraryEntry>>> _readCachedDirectories(
+    RemoteLibraryConfig config,
+    Iterable<String> paths, {
+    bool ignoreExpiry = true,
+  }) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
     final maxAge = config.remoteStore?.account.driver == '115 Open'
         ? const Duration(hours: 1)
         : const Duration(minutes: 10);
-    if (useCache && !refresh) {
-      final cached = await _cache.directoryEntries(
+    final pending = _directoryCacheWrites[config.cacheKey];
+    final result = <String, List<RemoteLibraryEntry>>{};
+    final missing = <String>[];
+    for (final path in paths) {
+      final item = pending?[path];
+      if (item == null) {
+        missing.add(path);
+      } else if (ignoreExpiry ||
+          item.fetchedAt <= now &&
+              item.fetchedAt > now - maxAge.inMilliseconds) {
+        result[path] = item.entries;
+      }
+    }
+    if (missing.isNotEmpty) {
+      final cached = await _cache.directoryEntriesBatch(
         config.cacheKey,
-        cachePath,
-        now: DateTime.now().millisecondsSinceEpoch,
+        missing,
+        now: ignoreExpiry ? null : now,
         maxAge: maxAge,
       );
-      _ensureActive();
-      if (cached != null) {
-        return [
-          for (final entry in cached)
+      for (final row in cached.entries) {
+        result[row.key] = [
+          for (final entry in row.value)
             RemoteLibraryEntry(
               name: entry['name'] as String,
               isDirectory: entry['isDirectory'] as bool,
@@ -210,30 +370,87 @@ class RemoteLibraryEngine {
         ];
       }
     }
-    final entries = await _archiveAccount(config).scheduler.run(
-      () {
-        _ensureActive();
-        return _activeOps.readDir(config, path, refresh: refresh);
-      },
-      cancelToken:
-          RemoteReadContext.current.priority == RemoteReadPriority.background
-          ? _state.scanToken
-          : _state.lifetimeToken,
-    );
-    if (!_state.disposed && generation == _state.syncGeneration) {
-      await _cache.cacheDirectoryEntries(config.cacheKey, cachePath, [
-        for (final entry in entries)
-          {
-            'name': entry.name,
-            'isDirectory': entry.isDirectory,
-            'size': entry.size,
-            'modifiedAt': entry.modifiedAt,
-            'eTag': entry.eTag,
-          },
-      ], DateTime.now().millisecondsSinceEpoch);
-    }
-    return entries;
+    _ensureActive();
+    return result;
   }
+
+  void _bufferDirectoryEntries(
+    String configKey,
+    String path,
+    List<RemoteLibraryEntry> entries,
+  ) {
+    final pending = _directoryCacheWrites.putIfAbsent(configKey, () => {});
+    pending[path] = (
+      entries: List.of(entries, growable: false),
+      fetchedAt: DateTime.now().millisecondsSinceEpoch,
+    );
+    void flush() {
+      unawaited(
+        _flushDirectoryCache().catchError((
+          Object error,
+          StackTrace stackTrace,
+        ) {
+          Log.error('Remote Library directory cache', error, stackTrace);
+        }),
+      );
+    }
+
+    if (pending.length >= 32) {
+      flush();
+    } else {
+      _directoryCacheTimer ??= Timer(const Duration(milliseconds: 200), flush);
+    }
+  }
+
+  Future<void> _flushDirectoryCache() async {
+    _directoryCacheTimer?.cancel();
+    _directoryCacheTimer = null;
+    while (_directoryCacheWrites.isNotEmpty) {
+      await (_directoryCacheFlush ??= _writeDirectoryCache().whenComplete(() {
+        _directoryCacheFlush = null;
+      }));
+    }
+  }
+
+  Future<void> _writeDirectoryCache() async {
+    while (_directoryCacheWrites.isNotEmpty) {
+      final key = _directoryCacheWrites.keys.first;
+      final pending = _directoryCacheWrites[key]!;
+      final writing = Map.of(pending);
+      await _cache.cacheDirectoryEntriesBatch(key, [
+        for (final item in writing.entries)
+          (
+            path: item.key,
+            fetchedAt: item.value.fetchedAt,
+            entries: [
+              for (final entry in item.value.entries)
+                {
+                  'name': entry.name,
+                  'isDirectory': entry.isDirectory,
+                  'size': entry.size,
+                  'modifiedAt': entry.modifiedAt,
+                  'eTag': entry.eTag,
+                },
+            ],
+          ),
+      ]);
+      for (final item in writing.entries) {
+        if (pending[item.key] == item.value) pending.remove(item.key);
+      }
+      if (pending.isEmpty) _directoryCacheWrites.remove(key);
+    }
+  }
+
+  Future<List<RemoteLibraryEntry>> _readSnapshotDirectory(
+    RemoteLibraryConfig config,
+    String path,
+    _RemoteLibrarySyncRun? run,
+  ) => _readDirectory(
+    config,
+    path,
+    refresh: run?.refresh ?? false,
+    useStaleCache: run?.canReuseDirectory(config, path) ?? false,
+  );
 
   Future<RemoteLibraryTextFile> _readText(
     RemoteLibraryConfig config,
@@ -282,6 +499,10 @@ class RemoteLibraryEngine {
     final parent = normalizeRemoteDirectory(
       path.substring(0, path.lastIndexOf('/') + 1),
     );
+    await _flushDirectoryCache();
+    final pending = _directoryCacheWrites[config.cacheKey];
+    pending?.remove(parent);
+    if (pending?.isEmpty == true) _directoryCacheWrites.remove(config.cacheKey);
     await _cache.invalidateDirectoryEntries(config.cacheKey, parent);
     return result;
   }
@@ -363,18 +584,53 @@ class RemoteLibraryEngine {
   Future<void> _readStatus() async {
     final config = _config;
     if (!config.isValid || _state.disposed) return;
+    final scheduler =
+        _archiveAccounts[config.archiveAccountKey]?.scheduler ??
+        (RemoteLibrarySource.archiveSchedulerFactory == null
+            ? _storageScheduler(config)
+            : null);
+    if (scheduler != null) _watchCooldown(scheduler);
+    final generation = _state.syncGeneration;
     final last = await _cache.lastSuccessfulSync(config.cacheKey);
-    if (_state.disposed) return;
+    if (_state.disposed || generation != _state.syncGeneration) return;
     final failures = await _cache.rootFailures(config.cacheKey);
-    if (_state.disposed) return;
+    if (_state.disposed ||
+        generation != _state.syncGeneration ||
+        _state.syncRun != null) {
+      return;
+    }
     _state.lastSuccessfulSync = last;
     _state.failedRoots = failures;
-    if (!syncStatus.value.isSyncing) {
-      syncStatus.value = RemoteLibrarySyncStatus(
-        isSyncing: false,
-        lastSuccessfulSync: last,
-      );
+    _updateSyncActivity(fromCache: true);
+  }
+
+  void _updateSyncActivity({bool fromCache = false}) {
+    if (_state.disposed) return;
+    final status = syncStatus.value;
+    final pending = _metadata.pendingCompletionCount;
+    final until = _cooldownScheduler?.cooldownUntil;
+    if (!fromCache &&
+        status.pendingMetadata == pending &&
+        status.cooldownUntil == until) {
+      return;
     }
+    syncStatus.value = RemoteLibrarySyncStatus(
+      isSyncing: status.isSyncing,
+      lastSuccessfulSync: _state.lastSuccessfulSync,
+      processed: status.processed,
+      total: status.total,
+      failed: status.failed,
+      errorMessage: status.errorMessage,
+      phase: status.isSyncing
+          ? status.phase
+          : pending == 0
+          ? RemoteLibrarySyncPhase.idle
+          : RemoteLibrarySyncPhase.completingMetadata,
+      reused: status.reused,
+      discoveredNew: status.discoveredNew,
+      pendingMetadata: pending,
+      cooldownUntil: until,
+    );
   }
 
   bool matches(RemoteLibrary other, StorageAccount account) =>
@@ -399,8 +655,11 @@ class RemoteLibraryEngine {
     _state.scanToken.cancel('Remote Library closed');
     _state.lifetimeToken.cancel('Remote Library closed');
     _state.contentTimer?.cancel();
+    _directoryCacheTimer?.cancel();
+    _directoryCacheTimer = null;
     _state.autoSyncTimer?.cancel();
     _autoRefreshTimer?.cancel();
+    final closingCooldown = _cooldownSubscription?.cancel();
     final scanning = _state.syncRun?.complete;
     final snapshots = _snapshotInFlight.values.toList();
     final volumes = _state.workVolumeLoads.values
@@ -418,6 +677,7 @@ class RemoteLibraryEngine {
     }
     await closingMetadata;
     await Future.wait([
+      ?closingCooldown,
       if (scanning != null) scanning.then<void>((_) {}),
       ..._state.statusLoads,
       ..._state.snapshotQueries,
@@ -427,6 +687,7 @@ class RemoteLibraryEngine {
         volume.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
     ]);
     await Future.wait(_state.snapshotWriteTails.values.toList());
+    await _flushDirectoryCache();
   }
 
   void initializeAutoRefresh() {
@@ -488,8 +749,11 @@ class RemoteLibraryEngine {
   @visibleForTesting
   Future<void> waitForBackgroundTasks() => _metadata.waitForIdle();
 
-  Future<Res<bool>> synchronize({bool force = false, bool automatic = false}) =>
-      _scanner.synchronize(force: force, automatic: automatic);
+  Future<Res<bool>> synchronize({
+    bool force = false,
+    bool automatic = false,
+    bool deep = true,
+  }) => _scanner.synchronize(force: force, automatic: automatic, deep: deep);
 
   Future<String?> _directoryIndexError(
     RemoteLibraryConfig config, {
@@ -508,6 +772,7 @@ class RemoteLibraryEngine {
     Iterable<String> tags = const [],
     bool showAuthor = false,
     bool initializeIndex = true,
+    RemoteLibrarySort? sort,
   }) async {
     final config = _config;
     if (!config.isValid) {
@@ -527,6 +792,7 @@ class RemoteLibraryEngine {
         roots: config.remoteLibrary?.directories,
         keyword: keyword,
         tags: tags,
+        sort: sort ?? this.sort,
       );
       final maxPage = count == 0 ? 1 : (count + pageSize - 1) ~/ pageSize;
       return Res([
@@ -589,9 +855,13 @@ class RemoteLibraryEngine {
           null,
           null,
           changeListenable: contentVersion,
+          statusListenable: syncStatus,
           statusMessage: () => statusMessage,
           onRefresh: () async {
-            await synchronize(force: true);
+            await synchronize(force: true, deep: false);
+          },
+          onDeepRefresh: () async {
+            await synchronize(force: true, deep: true);
           },
         ),
       ],
@@ -691,10 +961,12 @@ class RemoteLibraryEngine {
     if (id.startsWith(remoteComicWorkPrefix)) return id;
     if (config.remoteLibrary == null) return id;
     final fullPath = _isArchiveId(id)
-        ? _archivePath(config, id)
+        ? id.startsWith('/')
+              ? id
+              : config.childFilePath(config.remotePath, id)
         : id.startsWith('/')
         ? normalizeWebDavDirectoryPath(id, fallback: '/')
-        : config.childDirectoryPathFrom(config.remotePath, id);
+        : config._discoveryDirectoryPath(id);
     final anchor = config.legacyAnchor;
     if (anchor == null) return fullPath;
     if (fullPath.startsWith(anchor)) {
@@ -1269,11 +1541,7 @@ class RemoteLibraryEngine {
     work.retainIndexes(previousSnapshot?.work);
     final entries =
         rootEntries ??
-        await _readDirectory(
-          config,
-          work.directory,
-          refresh: syncRun?.refresh ?? false,
-        );
+        await _readSnapshotDirectory(config, work.directory, syncRun);
     if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
     final inherited = work.volumes
         .map((volume) => volume.archive.metadata)
@@ -1514,10 +1782,10 @@ class RemoteLibraryEngine {
           modifiedAt: entry.modifiedAt,
         );
       } else {
-        siblings ??= await _readDirectory(
+        siblings ??= await _readSnapshotDirectory(
           config,
           target.directory,
-          refresh: syncRun?.refresh ?? false,
+          syncRun,
         );
         file = siblings.firstWhere(
           (entry) => !entry.isDirectory && entry.name == _directoryName(path),
@@ -1564,10 +1832,10 @@ class RemoteLibraryEngine {
     }
     if (cancelToken?.isCancelled == true) throw cancelToken!.cancelError!;
     _metadata._ensureMetadataContextActive();
-    siblings ??= await _readDirectory(
+    siblings ??= await _readSnapshotDirectory(
       config,
       target.directory,
-      refresh: syncRun?.refresh ?? false,
+      syncRun,
     );
     if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
     final sidecarPresent = _hasMetadataFile(
@@ -1771,12 +2039,7 @@ class RemoteLibraryEngine {
   }) async {
     final comicPath = config.childDirectoryPath(id);
     final entries = List<RemoteLibraryEntry>.from(
-      rootEntries ??
-          await _readDirectory(
-            config,
-            comicPath,
-            refresh: syncRun?.refresh ?? false,
-          ),
+      rootEntries ?? await _readSnapshotDirectory(config, comicPath, syncRun),
     );
     if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
     final rootImages = _imageEntries(
@@ -1835,11 +2098,7 @@ class RemoteLibraryEngine {
           );
           try {
             chapterEntries = List<RemoteLibraryEntry>.from(
-              await _readDirectory(
-                config,
-                chapterPath,
-                refresh: syncRun?.refresh ?? false,
-              ),
+              await _readSnapshotDirectory(config, chapterPath, syncRun),
             );
             if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
             inspectedChapterEntries[directory.name] = chapterEntries;

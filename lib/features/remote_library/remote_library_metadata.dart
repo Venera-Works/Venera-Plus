@@ -10,6 +10,7 @@ class _RemoteLibraryMetadataPipeline {
   final _completions = <String, Future<void> Function()>{};
   final _scrapes = <String, Future<void> Function()>{};
   final _scrapeKeys = <String>{};
+  final _discoveryPauses = <_RemoteLibrarySyncRun>{};
   final _active = <Future<void>>{};
   final _operations = <Future<void>>{};
   final _pendingSnapshots =
@@ -27,6 +28,27 @@ class _RemoteLibraryMetadataPipeline {
   int _scrapeWorkers = 0;
   int? _snapshotGeneration;
   final _cancelled = Completer<void>();
+
+  int get pendingCompletionCount => _completions.length + _completionWorkers;
+
+  void discardObsoleteTasks(int generation) {
+    final prefix = '$generation:';
+    _completions.removeWhere((key, _) => !key.startsWith(prefix));
+    _scrapes.removeWhere((key, _) {
+      if (key.startsWith(prefix)) return false;
+      _scrapeKeys.remove(key);
+      return true;
+    });
+  }
+
+  void pauseDuringDiscovery(_RemoteLibrarySyncRun run) {
+    _discoveryPauses.add(run);
+  }
+
+  void resumeAfterDiscovery(_RemoteLibrarySyncRun run) {
+    _discoveryPauses.remove(run);
+    _pump();
+  }
 
   void enqueueCompletion(
     RemoteLibraryConfig config,
@@ -59,6 +81,7 @@ class _RemoteLibraryMetadataPipeline {
       );
       enqueueScrape(config, directory.id, snapshot, run: run);
     };
+    _engine._updateSyncActivity();
     _pump();
   }
 
@@ -208,7 +231,7 @@ class _RemoteLibraryMetadataPipeline {
   }
 
   void _pump() {
-    if (_engine._state.disposed) return;
+    if (_engine._state.disposed || _discoveryPauses.isNotEmpty) return;
     while (_completionWorkers < 2 && _completions.isNotEmpty) {
       final key = _completions.keys.first;
       final action = _completions.remove(key)!;
@@ -242,6 +265,7 @@ class _RemoteLibraryMetadataPipeline {
             _scrapeWorkers--;
           } else {
             _completionWorkers--;
+            _engine._updateSyncActivity();
           }
           _active.remove(task);
           _pump();

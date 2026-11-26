@@ -100,7 +100,10 @@ class RemoteStorageException implements Exception {
       code == 'rate_limited' ||
       code == '429' ||
       RegExp(
-        r'(?:HTTP|status(?: code)?|code)[:\s]+429\b|too many requests|rate.?limit|请求(?:过于)?频繁|访问(?:过于)?频繁|操作(?:过于)?频繁|限流|频控',
+        r'(?:HTTP|status(?: code)?|code)[:\s]+429\b|too many requests|rate.?limit|'
+        r'\berrno"?[:\s]+(?:31034|20012)\b|\bcode"?[:\s]+(?:5113|406)\b|'
+        r'throttl|quota.?exceeded|exceed.?max.?concurrency|'
+        r'请求(?:过于)?频繁|访问(?:过于)?频繁|操作(?:过于)?频繁|限流|频控',
         caseSensitive: false,
       ).hasMatch(message);
   bool get isAuthorizationFailure =>

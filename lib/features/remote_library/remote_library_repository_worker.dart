@@ -20,8 +20,11 @@ enum _RemoteLibraryOperation {
   setLastSuccessfulSync,
   clear,
   directoryEntries,
+  directoryEntriesBatch,
   cacheDirectoryEntries,
+  cacheDirectoryEntriesBatch,
   invalidateDirectoryEntries,
+  invalidateDirectorySubtrees,
   close,
 }
 
@@ -160,6 +163,12 @@ class _RemoteLibraryDatabase {
 
   final Database db;
 
+  static const _upsertDirectoryCacheSql = '''
+    INSERT INTO remote_library_directory_cache VALUES (?, ?, ?, ?)
+    ON CONFLICT(config_key, path) DO UPDATE SET
+      entries_json = excluded.entries_json, fetched_at = excluded.fetched_at;
+  ''';
+
   static _RemoteLibraryDatabase open(String dataPath) {
     final db = openSqliteDatabase('$dataPath/remote_library.db');
     try {
@@ -205,6 +214,8 @@ class _RemoteLibraryDatabase {
         remote_etag TEXT,
         remote_modified_at INTEGER,
         updated_at INTEGER NOT NULL,
+        discovered_at INTEGER NOT NULL DEFAULT 0,
+        source_modified_at INTEGER,
         PRIMARY KEY (config_key, id)
       );
       CREATE TABLE IF NOT EXISTS remote_library_root_membership (
@@ -240,14 +251,29 @@ class _RemoteLibraryDatabase {
         PRIMARY KEY (config_key, path)
       );
     ''');
-    if (!_columns(
-      'main',
-      'remote_library_comics',
-    ).contains('snapshot_state_json')) {
+    final comicColumns = _columns('main', 'remote_library_comics');
+    if (!comicColumns.contains('snapshot_state_json')) {
       db.execute(
         'ALTER TABLE remote_library_comics ADD COLUMN snapshot_state_json TEXT;',
       );
     }
+    if (!comicColumns.contains('discovered_at')) {
+      db.execute('''
+        ALTER TABLE remote_library_comics
+          ADD COLUMN discovered_at INTEGER NOT NULL DEFAULT 0;
+        UPDATE remote_library_comics SET discovered_at = updated_at
+          WHERE discovered_at = 0;
+      ''');
+    }
+    if (!comicColumns.contains('source_modified_at')) {
+      db.execute(
+        'ALTER TABLE remote_library_comics ADD COLUMN source_modified_at INTEGER;',
+      );
+    }
+    db.execute('''
+      CREATE INDEX IF NOT EXISTS remote_library_comics_discovered
+        ON remote_library_comics(config_key, discovered_at DESC, sort_index, id);
+    ''');
     if (!_columns(
       'main',
       'remote_library_state',
@@ -294,10 +320,10 @@ class _RemoteLibraryDatabase {
         db.execute('''
           INSERT INTO remote_library_comics (
             config_key, id, sort_index, title, author, tags, cover,
-            snapshot_json, remote_etag, remote_modified_at, updated_at
+            snapshot_json, remote_etag, remote_modified_at, updated_at, discovered_at
           )
           SELECT config_key, id, sort_index, title, author, tags, cover,
-            snapshot_json, remote_etag, remote_modified_at, updated_at
+            snapshot_json, remote_etag, remote_modified_at, updated_at, updated_at
           FROM $schema.${prefix}_comics WHERE true
           ON CONFLICT(config_key, id) DO UPDATE SET
             sort_index = excluded.sort_index,
@@ -309,7 +335,8 @@ class _RemoteLibraryDatabase {
             snapshot_state_json = NULL,
             remote_etag = excluded.remote_etag,
             remote_modified_at = excluded.remote_modified_at,
-            updated_at = excluded.updated_at
+            updated_at = excluded.updated_at,
+            $_discoveryUpdates
           WHERE (excluded.snapshot_json IS NOT NULL
                  AND remote_library_comics.snapshot_json IS NULL)
              OR ((excluded.snapshot_json IS NULL) =
@@ -423,6 +450,7 @@ class _RemoteLibraryDatabase {
           _catalogFilter(configKey, arguments[3] as List<String>?),
           page: arguments[1] as int,
           pageSize: arguments[2] as int,
+          sort: arguments[4] as RemoteLibrarySort,
         );
       case _RemoteLibraryOperation.pageWithCount:
         final filter = _catalogFilter(
@@ -437,6 +465,7 @@ class _RemoteLibraryDatabase {
             filter,
             page: arguments[1] as int,
             pageSize: arguments[2] as int,
+            sort: arguments[6] as RemoteLibrarySort,
           ),
         );
       case _RemoteLibraryOperation.availableTags:
@@ -571,20 +600,49 @@ class _RemoteLibraryDatabase {
         if (rows.isEmpty) return null;
         return (jsonDecode(rows.single['entries_json'] as String) as List)
             .cast<Map<String, dynamic>>();
-      case _RemoteLibraryOperation.cacheDirectoryEntries:
-        db.execute(
-          '''
-          INSERT INTO remote_library_directory_cache VALUES (?, ?, ?, ?)
-          ON CONFLICT(config_key, path) DO UPDATE SET
-            entries_json = excluded.entries_json, fetched_at = excluded.fetched_at;
-        ''',
-          [
-            configKey,
-            arguments[1] as String,
-            jsonEncode(arguments[2]),
-            arguments[3] as int,
-          ],
+      case _RemoteLibraryOperation.directoryEntriesBatch:
+        final paths = arguments[1] as List<String>;
+        final now = arguments[2] as int?;
+        final maxAge = arguments[3] as int?;
+        return directoryEntriesBatch(
+          configKey,
+          paths,
+          now: now,
+          maxAge: maxAge,
         );
+      case _RemoteLibraryOperation.cacheDirectoryEntries:
+        db.execute(_upsertDirectoryCacheSql, [
+          configKey,
+          arguments[1] as String,
+          jsonEncode(arguments[2]),
+          arguments[3] as int,
+        ]);
+        return null;
+      case _RemoteLibraryOperation.cacheDirectoryEntriesBatch:
+        final items =
+            arguments[1]
+                as List<
+                  ({
+                    String path,
+                    List<Map<String, dynamic>> entries,
+                    int fetchedAt,
+                  })
+                >;
+        _transaction(() {
+          final upsert = db.prepare(_upsertDirectoryCacheSql);
+          try {
+            for (final item in items) {
+              upsert.execute([
+                configKey,
+                item.path,
+                jsonEncode(item.entries),
+                item.fetchedAt,
+              ]);
+            }
+          } finally {
+            upsert.close();
+          }
+        });
         return null;
       case _RemoteLibraryOperation.invalidateDirectoryEntries:
         db.execute(
@@ -592,9 +650,66 @@ class _RemoteLibraryDatabase {
           [configKey, arguments[1] as String],
         );
         return null;
+      case _RemoteLibraryOperation.invalidateDirectorySubtrees:
+        final paths = arguments[1] as List<String>;
+        _transaction(() {
+          final remove = db.prepare('''
+            DELETE FROM remote_library_directory_cache
+            WHERE config_key = ? AND path >= ? AND path < ?;
+          ''');
+          try {
+            for (final path in paths) {
+              // 末尾的斜杠与 ASCII 的 0 相邻，这个范围精确匹配目录及其子树。
+              remove.execute([
+                configKey,
+                path,
+                '${path.substring(0, path.length - 1)}0',
+              ]);
+            }
+          } finally {
+            remove.close();
+          }
+        });
+        return null;
       case _RemoteLibraryOperation.close:
         throw StateError('关闭请求应由 worker 处理');
     }
+  }
+
+  Map<String, List<Map<String, dynamic>>> directoryEntriesBatch(
+    String configKey,
+    List<String> paths, {
+    required int? now,
+    required int? maxAge,
+  }) {
+    final result = <String, List<Map<String, dynamic>>>{};
+    final filterByAge = now != null && maxAge != null;
+    const pageSize = 200;
+    for (var start = 0; start < paths.length; start += pageSize) {
+      final end = start + pageSize;
+      final batch = paths.sublist(
+        start,
+        end < paths.length ? end : paths.length,
+      );
+      final rows = db.select(
+        '''
+        SELECT path, entries_json FROM remote_library_directory_cache
+        WHERE config_key = ? AND path IN (${List.filled(batch.length, '?').join(', ')})
+        ${filterByAge ? 'AND fetched_at <= ? AND fetched_at > ?' : ''};
+      ''',
+        [
+          configKey,
+          ...batch,
+          if (filterByAge) ...[now, now - maxAge],
+        ],
+      );
+      for (final row in rows) {
+        result[row['path']
+            as String] = (jsonDecode(row['entries_json'] as String) as List)
+            .cast<Map<String, dynamic>>();
+      }
+    }
+    return result;
   }
 
   // EXISTS 避免重叠根产生重复行，也避免 DISTINCT 将大快照带入临时排序。
@@ -653,15 +768,23 @@ class _RemoteLibraryDatabase {
     ({String sql, List<Object?> parameters}) filter, {
     required int page,
     required int pageSize,
+    required RemoteLibrarySort sort,
   }) {
+    final order = switch (sort) {
+      RemoteLibrarySort.name => 'c.sort_index, c.id',
+      RemoteLibrarySort.recentlyAdded =>
+        'c.discovered_at DESC, c.sort_index ASC, c.id ASC',
+      RemoteLibrarySort.recentlyModified =>
+        'COALESCE(c.source_modified_at, c.discovered_at) DESC, c.sort_index ASC, c.id ASC',
+    };
     return db
         .select(
           '''
       SELECT c.id, c.sort_index, c.title, c.author, c.tags, c.cover,
-        c.remote_etag, c.remote_modified_at, c.snapshot_state_json
+        c.remote_etag, c.remote_modified_at, c.snapshot_state_json, c.source_modified_at
       FROM remote_library_comics c
       ${filter.sql}
-      ORDER BY c.sort_index, c.id LIMIT ? OFFSET ?;
+      ORDER BY $order LIMIT ? OFFSET ?;
     ''',
           [...filter.parameters, pageSize, (page - 1) * pageSize],
         )
@@ -689,7 +812,7 @@ class _RemoteLibraryDatabase {
   Map<String, RemoteLibraryCachedComic> versions(String configKey) => {
     for (final row in db.select(
       '''
-      SELECT id, sort_index, remote_etag, remote_modified_at, snapshot_state_json
+      SELECT id, sort_index, remote_etag, remote_modified_at, snapshot_state_json, source_modified_at
       FROM remote_library_comics WHERE config_key = ?;
     ''',
       [configKey],
@@ -717,16 +840,29 @@ class _RemoteLibraryDatabase {
           : Map<String, dynamic>.from(jsonDecode(snapshotText) as Map),
       remoteETag: row['remote_etag'] as String?,
       remoteModifiedAt: row['remote_modified_at'] as int?,
+      sourceModifiedAt: row['source_modified_at'] as int?,
     );
   }
 
-  static const _directoryUpsert = '''
+  static const _discoveryUpdates = '''
+    discovered_at = CASE WHEN remote_library_comics.discovered_at > 0
+      THEN remote_library_comics.discovered_at ELSE excluded.discovered_at END,
+    source_modified_at = COALESCE(excluded.source_modified_at, remote_library_comics.source_modified_at)
+  ''';
+
+  static const _discoveryChanged = '''
+    remote_library_comics.discovered_at <= 0 OR (excluded.source_modified_at IS NOT NULL
+      AND remote_library_comics.source_modified_at IS NOT excluded.source_modified_at)
+  ''';
+
+  static const _directoryUpsert =
+      '''
     INSERT INTO remote_library_comics (
       config_key, id, sort_index, title, author, tags, cover,
-      remote_etag, remote_modified_at, updated_at
-    ) VALUES (?, ?, ?, ?, '', '[]', '', ?, ?, ?)
-    ON CONFLICT(config_key, id) DO UPDATE SET sort_index = excluded.sort_index
-    WHERE remote_library_comics.sort_index != excluded.sort_index;
+      remote_etag, remote_modified_at, updated_at, discovered_at, source_modified_at
+    ) VALUES (?, ?, ?, ?, '', '[]', '', ?, ?, ?, ?, ?)
+    ON CONFLICT(config_key, id) DO UPDATE SET $_discoveryUpdates, sort_index = excluded.sort_index
+    WHERE remote_library_comics.sort_index != excluded.sort_index OR $_discoveryChanged;
   ''';
 
   void replaceDirectoryIndex(
@@ -777,6 +913,8 @@ class _RemoteLibraryDatabase {
           directory.eTag,
           directory.modifiedAt,
           now,
+          now,
+          directory.sourceModifiedAt,
         ]);
       }
     } finally {
@@ -860,6 +998,7 @@ class _RemoteLibraryDatabase {
           updated_at = CASE WHEN remote_library_comics.snapshot_json IS NULL
             THEN excluded.updated_at ELSE remote_library_comics.updated_at END
           WHERE remote_library_comics.sort_index IS NOT excluded.sort_index
+            OR $_discoveryChanged
             OR (remote_library_comics.snapshot_json IS NULL AND (
               remote_library_comics.title IS NOT excluded.title
               OR remote_library_comics.author IS NOT excluded.author
@@ -885,9 +1024,9 @@ class _RemoteLibraryDatabase {
         INSERT INTO remote_library_comics (
           config_key, id, sort_index, title, author, tags, cover,
           snapshot_json, snapshot_state_json, remote_etag, remote_modified_at,
-          updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(config_key, id) DO UPDATE SET $updates;
+          updated_at, discovered_at, source_modified_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(config_key, id) DO UPDATE SET $_discoveryUpdates, $updates;
       ''');
       PreparedStatement? membership;
       try {
@@ -913,6 +1052,8 @@ class _RemoteLibraryDatabase {
             comic.remoteETag,
             comic.remoteModifiedAt,
             now,
+            now,
+            comic.sourceModifiedAt,
           ]);
           membership?.execute([configKey, rootPath, comic.id]);
         }

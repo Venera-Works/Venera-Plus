@@ -16,6 +16,25 @@ import '../webdav.dart';
 const remoteStorageAccountsSetting = 'remoteStorageAccounts';
 const remoteLibrariesSetting = 'remoteLibraries';
 
+class RemoteReadPolicy {
+  const RemoteReadPolicy({
+    required this.maxConcurrent,
+    required this.minInterval,
+    required this.backgroundMinInterval,
+    this.cooldownSteps = const [
+      Duration(seconds: 30),
+      Duration(minutes: 2),
+      Duration(minutes: 5),
+      Duration(minutes: 15),
+    ],
+  });
+
+  final int maxConcurrent;
+  final Duration minInterval;
+  final Duration backgroundMinInterval;
+  final List<Duration> cooldownSteps;
+}
+
 class RemoteStorageAccounts with ChangeNotifier {
   RemoteStorageAccounts({OpenListRpcClient? openListRpc})
     : _openListRpc = openListRpc;
@@ -32,14 +51,70 @@ class RemoteStorageAccounts with ChangeNotifier {
   final _readSchedulers = <String, RemoteReadScheduler>{};
   final _pendingNativeWrites = <String, Future<void>>{};
 
+  RemoteReadPolicy readPolicyFor(StorageAccount account) {
+    if (account.backend == StorageBackend.webdav) {
+      return const RemoteReadPolicy(
+        maxConcurrent: 8,
+        minInterval: Duration.zero,
+        backgroundMinInterval: Duration.zero,
+        cooldownSteps: [
+          Duration(seconds: 10),
+          Duration(seconds: 30),
+          Duration(minutes: 2),
+          Duration(minutes: 5),
+        ],
+      );
+    }
+    return switch (account.driver) {
+      '115 Open' => const RemoteReadPolicy(
+        maxConcurrent: 2,
+        minInterval: Duration(milliseconds: 500),
+        backgroundMinInterval: Duration(milliseconds: 800),
+        cooldownSteps: [
+          Duration(seconds: 60),
+          Duration(minutes: 3),
+          Duration(minutes: 10),
+          Duration(minutes: 15),
+        ],
+      ),
+      'BaiduNetdisk' => const RemoteReadPolicy(
+        maxConcurrent: 3,
+        minInterval: Duration(milliseconds: 200),
+        backgroundMinInterval: Duration(milliseconds: 350),
+      ),
+      '123 Open' => const RemoteReadPolicy(
+        maxConcurrent: 3,
+        minInterval: Duration(milliseconds: 200),
+        backgroundMinInterval: Duration(milliseconds: 300),
+      ),
+      'Quark' => const RemoteReadPolicy(
+        maxConcurrent: 3,
+        minInterval: Duration(milliseconds: 100),
+        backgroundMinInterval: Duration(milliseconds: 180),
+      ),
+      'Onedrive' || 'GoogleDrive' => const RemoteReadPolicy(
+        maxConcurrent: 4,
+        minInterval: Duration(milliseconds: 80),
+        backgroundMinInterval: Duration(milliseconds: 120),
+      ),
+      _ => const RemoteReadPolicy(
+        maxConcurrent: 4,
+        minInterval: Duration(milliseconds: 150),
+        backgroundMinInterval: Duration(milliseconds: 200),
+      ),
+    };
+  }
+
   RemoteReadScheduler readSchedulerFor(StorageAccount account) =>
       _readSchedulers.putIfAbsent('${App.dataPath}:${account.id}', () {
         final raw = appdata.implicitData['remoteStorageCooldowns'];
         final until = raw is Map ? raw[account.id] : null;
+        final policy = readPolicyFor(account);
         return RemoteReadScheduler(
-          minInterval: account.backend == StorageBackend.webdav
-              ? Duration.zero
-              : const Duration(milliseconds: 150),
+          maxConcurrent: policy.maxConcurrent,
+          minInterval: policy.minInterval,
+          backgroundMinInterval: policy.backgroundMinInterval,
+          cooldownSteps: policy.cooldownSteps,
           rateLimitDelay: const Duration(minutes: 15),
           failDuringCooldown: true,
           cooldownUntil: until is int
