@@ -69,7 +69,8 @@ class _ContentSourcesPageState extends State<ContentSourcesPage>
     final storage = RemoteStorageAccounts.instance;
     return Scaffold(
       appBar: Appbar(
-        title: Text('Content Sources'.tl),
+        title: Text('Sources'.tl),
+        leading: Navigator.of(context).canPop() ? null : const SizedBox(),
         actions: [
           TextButton.icon(
             style: actionButtonStyle,

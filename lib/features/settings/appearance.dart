@@ -1,27 +1,19 @@
-import 'package:venera_plus/components/window_hotkey_scope.dart';
-import 'window_hotkey_setting.dart';
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/settings/setting_components.dart';
 import 'package:venera_plus/foundation/app.dart';
-import 'package:venera_plus/foundation/navigation_settings.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 
-class AppearanceSettings extends StatefulWidget {
+class AppearanceSettings extends StatelessWidget {
   const AppearanceSettings({super.key});
 
-  @override
-  State<AppearanceSettings> createState() => _AppearanceSettingsState();
-}
-
-class _AppearanceSettingsState extends State<AppearanceSettings> {
   @override
   Widget build(BuildContext context) {
     return SmoothCustomScrollView(
       slivers: [
-        SliverAppbar(title: Text("Appearance and Interface".tl)),
+        SliverAppbar(title: Text('Appearance'.tl)),
         SettingPartTitle(title: "Theme".tl, icon: Icons.palette_outlined),
         SelectSetting(
           title: "Theme Mode".tl,
@@ -53,70 +45,44 @@ class _AppearanceSettingsState extends State<AppearanceSettings> {
           },
         ).toSliver(),
         SettingPartTitle(
-          title: "Interface".tl,
-          icon: Icons.dashboard_customize_outlined,
+          title: 'Comic Cards'.tl,
+          icon: Icons.grid_view_outlined,
         ),
         SelectSetting(
-          title: "Language".tl,
-          settingKey: "language",
-          optionTranslation: const {
-            "system": "System",
-            "zh-CN": "简体中文",
-            "zh-TW": "繁體中文",
-            "en-US": "English",
-          },
-          onChanged: () {
-            App.forceRebuild();
-          },
-        ).toSliver(),
-        SelectSetting(
-          title: "Startup Page".tl,
-          settingKey: "initialPage",
-          optionTranslation: {
-            StartupPage.home.id: "Home".tl,
-            StartupPage.library.id: "Library (restore last)".tl,
-            StartupPage.favorites.id: "Comic Favorites".tl,
-            StartupPage.browse.id: "Explore / Browse".tl,
-            StartupPage.categories.id: "Explore / Categories".tl,
-          },
-        ).toSliver(),
-        SelectSetting(
-          title: "Display mode of comic tile".tl,
+          title: 'Card style'.tl,
           settingKey: "comicDisplayMode",
           optionTranslation: {"detailed": "Detailed".tl, "brief": "Brief".tl},
         ).toSliver(),
         SliderSetting(
-          title: "Size of comic tile".tl,
+          title: 'Card scale'.tl,
           settingsIndex: "comicTileScale",
           interval: 0.05,
           min: 0.5,
           max: 1.5,
         ).toSliver(),
         SelectSetting(
-          title: "Display mode of comic list".tl,
+          title: 'List loading mode'.tl,
           settingKey: "comicListDisplayMode",
           optionTranslation: {
             "paging": "Paging".tl,
             "Continuous": "Continuous".tl,
           },
         ).toSliver(),
-        if (App.isWindows && WindowHotkeyScope.maybeOf(context) != null) ...[
-          SettingPartTitle(title: 'Window'.tl, icon: Icons.window),
-          WindowHotkeySetting(
-            controller: WindowHotkeyScope.maybeOf(context)!,
-          ).toSliver(),
-        ],
         SettingPartTitle(title: "Status Badges".tl, icon: Icons.badge_outlined),
         SwitchSetting(
-          title: "Show favorite status on comic tile".tl,
+          title: 'Show favorite status'.tl,
           settingKey: "showFavoriteStatusOnTile",
         ).toSliver(),
         SwitchSetting(
-          title: "Show history on comic tile".tl,
+          title: 'Show reading history'.tl,
           settingKey: "showHistoryStatusOnTile",
         ).toSliver(),
         SwitchSetting(
-          title: "Show update status on comic tile".tl,
+          title: 'Show detailed reading progress'.tl,
+          settingKey: 'showDetailedReadingProgress',
+        ).toSliver(),
+        SwitchSetting(
+          title: 'Show update status'.tl,
           settingKey: "showUpdateStatusOnTile",
         ).toSliver(),
       ],

@@ -1,8 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:local_auth/local_auth.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/button.dart';
@@ -10,96 +8,31 @@ import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/bangumi/bangumi.dart';
-import 'package:venera_plus/features/history/history.dart';
-import 'package:venera_plus/features/local_comics/local_comics.dart';
-import 'package:venera_plus/features/settings/data_sync_schedule_fields.dart';
-import 'package:venera_plus/features/settings/setting_components.dart';
+import 'package:venera_plus/features/remote_library/remote_library.dart';
 import 'package:venera_plus/features/storage/storage.dart';
 import 'package:venera_plus/features/sync/sync.dart';
-import 'package:venera_plus/features/remote_library/remote_library.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
-import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/file_interaction.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/res.dart';
-import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
+import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 
 import 'content_sources_page.dart';
+import 'data_sync_schedule_fields.dart';
+import 'setting_components.dart';
 
-class SourcesAndServicesSettings extends StatefulWidget {
-  const SourcesAndServicesSettings({super.key});
-
-  @override
-  State<SourcesAndServicesSettings> createState() =>
-      _SourcesAndServicesSettingsState();
-}
-
-class _SourcesAndServicesSettingsState
-    extends State<SourcesAndServicesSettings> {
-  @override
-  Widget build(BuildContext context) {
-    final rawBangumiUsername = appdata.settings['bangumiUsername'];
-    final bangumiUsername = rawBangumiUsername is String
-        ? rawBangumiUsername
-        : '';
-    return SmoothCustomScrollView(
-      slivers: [
-        SliverAppbar(title: Text("Sources and Services".tl)),
-        SettingPartTitle(
-          title: "Comic Sources".tl,
-          icon: Icons.source_outlined,
-        ),
-        ListTile(
-          title: Text("Content Sources".tl),
-          subtitle: Text('Website sources and remote comic libraries.'.tl),
-          trailing: const Icon(Icons.arrow_right),
-          onTap: () {
-            context.to(() => const ContentSourcesPage());
-          },
-        ).toSliver(),
-        SettingPartTitle(
-          title: "Online Services".tl,
-          icon: Icons.cloud_outlined,
-        ),
-        CallbackSetting(
-          key: const Key('bangumi-settings-entry'),
-          title: 'Bangumi',
-          subtitle: bangumiUsername.isEmpty
-              ? 'Not connected'.tl
-              : bangumiUsername,
-          callback: () async {
-            await showPopUpWidget(
-              context,
-              BangumiSettingsPage(
-                onConnectionChanged: () {
-                  if (BangumiService().isConnected) {
-                    unawaited(RemoteLibraryEngines.refreshAll());
-                  }
-                  if (mounted) setState(() {});
-                },
-              ),
-            );
-            if (mounted) setState(() {});
-          },
-          actionTitle: 'Set'.tl,
-        ).toSliver(),
-      ],
-    );
-  }
-}
-
-class StorageAndSyncSettings extends StatefulWidget {
-  const StorageAndSyncSettings({super.key});
+class SyncSettings extends StatefulWidget {
+  const SyncSettings({super.key});
 
   @override
-  State<StorageAndSyncSettings> createState() => _StorageAndSyncSettingsState();
+  State<SyncSettings> createState() => _SyncSettingsState();
 }
 
-class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
+class _SyncSettingsState extends State<SyncSettings> {
   final _storage = RemoteStorageAccounts.instance;
   final _sync = DataSync();
 
@@ -130,15 +63,16 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
     return '${account?.name ?? 'Account unavailable'.tl} · ${location.directory}';
   }
 
-  Widget _group(List<Widget> children) => SliverList.list(children: children);
-
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
       listenable: Listenable.merge([_storage, _sync, appdata.settings]),
       builder: (context, _) {
         final accounts = _storage.accounts;
-        final libraries = _storage.libraries;
+        final rawBangumiUsername = appdata.settings['bangumiUsername'];
+        final bangumiUsername = rawBangumiUsername is String
+            ? rawBangumiUsername
+            : '';
         final status = _sync.statusSnapshot;
         final mode = switch (DataSync.mode) {
           DataSyncMode.manual => 'Manual'.tl,
@@ -154,315 +88,121 @@ class _StorageAndSyncSettingsState extends State<StorageAndSyncSettings> {
             : 'Not synced yet'.tl;
         return SmoothCustomScrollView(
           slivers: [
-            SliverAppbar(title: Text('Storage and Sync'.tl)),
+            SliverAppbar(title: Text('Sync'.tl)),
             SettingPartTitle(
-              title: 'Cloud Storage Accounts'.tl,
+              title: 'Cloud Accounts'.tl,
               icon: Icons.cloud_outlined,
             ),
-            _group([
-              ListTile(
-                title: Text(
-                  '@count accounts'.tlParams({'count': accounts.length}),
-                ),
-                subtitle: Text(
-                  accounts.isEmpty
-                      ? 'Add Cloud Storage Account'.tl
-                      : accounts.map((a) => a.name).join(' · '),
-                ),
-                trailing: const Icon(Icons.arrow_right),
-                onTap: _manageAccounts,
+            ListTile(
+              title: Text(
+                '@count accounts'.tlParams({'count': accounts.length}),
               ),
-            ]),
+              subtitle: Text(
+                accounts.isEmpty
+                    ? 'Add Cloud Storage Account'.tl
+                    : accounts.map((account) => account.name).join(' · '),
+              ),
+              trailing: const Icon(Icons.arrow_right),
+              onTap: _manageAccounts,
+            ).toSliver(),
             SettingPartTitle(
-              title: 'Cloud Storage Uses'.tl,
-              icon: Icons.folder_open_outlined,
+              title: 'Cloud Services'.tl,
+              icon: Icons.cloud_sync_outlined,
             ),
-            _group([
-              ListTile(
-                key: const Key('comic-libraries-entry'),
-                title: Text('Cloud Comic Libraries'.tl),
-                subtitle: Text(
-                  '@count comic libraries'.tlParams({
-                    'count': libraries.length,
-                  }),
-                ),
-                trailing: const Icon(Icons.arrow_right),
-                onTap: () => context.to(
-                  () => const ContentSourcesPage(
-                    initialSection: ContentSourceSection.cloudLibraries,
-                  ),
+            ListTile(
+              key: const Key('data-sync-entry'),
+              title: Text('App Data Sync'.tl),
+              subtitle: Text(
+                '${_locationSummary('syncRemoteLocation')}'
+                '${status.isConfigured ? '\n$mode · $syncStatus' : ''}',
+              ),
+              trailing: const Icon(Icons.arrow_right),
+              onTap: () => showDataSyncSettings(context),
+            ).toSliver(),
+            ListTile(
+              key: const Key('comic-backup-entry'),
+              title: Text('Comic Archive Backup'.tl),
+              subtitle: Text(_locationSummary('backupRemoteLocation')),
+              trailing: const Icon(Icons.arrow_right),
+              onTap: () async {
+                await _storage.migrateLegacyWebDavLocations();
+                if (context.mounted) {
+                  await showPopUpWidget(context, const _BackupWebdavSetting());
+                }
+              },
+            ).toSliver(),
+            SettingPartTitle(
+              title: 'Progress Tracking'.tl,
+              icon: Icons.track_changes_outlined,
+            ),
+            CallbackSetting(
+              key: const Key('bangumi-settings-entry'),
+              title: 'Bangumi',
+              subtitle: bangumiUsername.isEmpty
+                  ? 'Not connected'.tl
+                  : bangumiUsername,
+              callback: () => showPopUpWidget(
+                context,
+                BangumiSettingsPage(
+                  onConnectionChanged: () {
+                    if (BangumiService().isConnected) {
+                      unawaited(RemoteLibraryEngines.refreshAll());
+                    }
+                  },
                 ),
               ),
-              ListTile(
-                key: const Key('data-sync-entry'),
-                title: Text('App Data Sync'.tl),
-                subtitle: Text(
-                  '${_locationSummary('syncRemoteLocation')}'
-                  '${status.isConfigured ? '\n$mode · $syncStatus' : ''}',
-                ),
-                trailing: const Icon(Icons.arrow_right),
-                onTap: () => showDataSyncSettings(context),
-              ),
-              ListTile(
-                key: const Key('comic-backup-entry'),
-                title: Text('Comic Archive Backup'.tl),
-                subtitle: Text(_locationSummary('backupRemoteLocation')),
-                trailing: const Icon(Icons.arrow_right),
-                onTap: () async {
-                  await _storage.migrateLegacyWebDavLocations();
-                  if (context.mounted) {
-                    await showPopUpWidget(
-                      context,
-                      const _BackupWebdavSetting(),
-                    );
+              actionTitle: 'Set'.tl,
+            ).toSliver(),
+            SettingPartTitle(
+              title: 'Local Backup'.tl,
+              icon: Icons.save_alt_outlined,
+            ),
+            CallbackSetting(
+              title: 'Export App Data'.tl,
+              callback: () async {
+                final controller = showLoadingDialog(context);
+                final file = await exportAppData(false);
+                await saveFile(filename: 'data.venera', file: file);
+                controller.close();
+              },
+              actionTitle: 'Export'.tl,
+            ).toSliver(),
+            CallbackSetting(
+              title: 'Import App Data'.tl,
+              subtitle:
+                  'This overwrites local app data. If import fails, already-applied changes are not rolled back.'
+                      .tl,
+              callback: () async {
+                final controller = showLoadingDialog(context);
+                final file = await selectFile(ext: ['venera', 'picadata']);
+                if (file != null) {
+                  final cacheFile = File(
+                    FilePath.join(App.cachePath, 'import_data_temp'),
+                  );
+                  await file.saveTo(cacheFile.path);
+                  try {
+                    if (file.name.endsWith('picadata')) {
+                      await importPicaData(cacheFile);
+                    } else {
+                      await importAppData(cacheFile);
+                    }
+                  } catch (e, s) {
+                    Log.error('Import data', e.toString(), s);
+                    if (context.mounted) {
+                      context.showMessage(message: 'Failed to import data'.tl);
+                    }
+                  } finally {
+                    cacheFile.deleteIgnoreError();
+                    App.forceRebuild();
                   }
-                },
-              ),
-            ]),
-            SettingPartTitle(
-              title: 'On This Device'.tl,
-              icon: Icons.devices_outlined,
-            ),
-            _group([
-              ListTile(
-                title: Text('Local Storage and Downloads'.tl),
-                subtitle: Text(
-                  'Comic storage path, cache and download threads.'.tl,
-                ),
-                trailing: const Icon(Icons.arrow_right),
-                onTap: () => context.to(() => const _LocalStorageSettings()),
-              ),
-              ListTile(
-                title: Text('App Data Import and Export'.tl),
-                subtitle: Text('Save or restore a local app-data file.'.tl),
-                trailing: const Icon(Icons.arrow_right),
-                onTap: () => context.to(() => const _AppDataTransferSettings()),
-              ),
-            ]),
+                }
+                controller.close();
+              },
+              actionTitle: 'Import'.tl,
+            ).toSliver(),
           ],
         );
       },
-    );
-  }
-}
-
-class _LocalStorageSettings extends StatefulWidget {
-  const _LocalStorageSettings();
-
-  @override
-  State<_LocalStorageSettings> createState() => _LocalStorageSettingsState();
-}
-
-class _LocalStorageSettingsState extends State<_LocalStorageSettings> {
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    body: SmoothCustomScrollView(
-      slivers: [
-        SliverAppbar(title: Text('Local Storage and Downloads'.tl)),
-        ListTile(
-          title: Text("Storage Path for local comics".tl),
-          subtitle: Text(LocalManager().path, softWrap: false),
-          trailing: IconButton(
-            icon: const Icon(Icons.copy),
-            onPressed: () {
-              Clipboard.setData(ClipboardData(text: LocalManager().path));
-              context.showMessage(message: "Path copied to clipboard".tl);
-            },
-          ),
-        ).toSliver(),
-        CallbackSetting(
-          title: "Set New Storage Path".tl,
-          actionTitle: "Set".tl,
-          callback: () async {
-            String? result;
-            if (App.isAndroid) {
-              var picker = DirectoryPicker();
-              result = (await picker.pickDirectory())?.path;
-            } else if (App.isIOS) {
-              result = await selectDirectoryIOS();
-            } else {
-              result = await selectDirectory();
-            }
-            if (result == null) return;
-            var loadingDialog = showLoadingDialog(
-              App.rootContext,
-              barrierDismissible: false,
-              allowCancel: false,
-            );
-            var res = await LocalManager().setNewPath(result);
-            loadingDialog.close();
-            if (res != null) {
-              context.showMessage(message: res);
-            } else {
-              context.showMessage(message: "Path set successfully".tl);
-              setState(() {});
-            }
-          },
-        ).toSliver(),
-        ListTile(
-          title: Text("Cache Size".tl),
-          subtitle: Text(bytesToReadableString(CacheManager().currentSize)),
-        ).toSliver(),
-        CallbackSetting(
-          title: "Clear Cache".tl,
-          actionTitle: "Clear".tl,
-          callback: () async {
-            var loadingDialog = showLoadingDialog(
-              App.rootContext,
-              barrierDismissible: false,
-              allowCancel: false,
-            );
-            await CacheManager().clear();
-            loadingDialog.close();
-            context.showMessage(message: "Cache cleared".tl);
-            setState(() {});
-          },
-        ).toSliver(),
-        CallbackSetting(
-          title: "Cache Limit".tl,
-          subtitle: "${appdata.settings['cacheSize']} MB",
-          callback: () {
-            showInputDialog(
-              context: context,
-              title: "Set Cache Limit".tl,
-              hintText: "Size in MB".tl,
-              inputValidator: RegExp(r"^\d+$"),
-              onConfirm: (value) {
-                appdata.settings['cacheSize'] = int.parse(value);
-                appdata.saveData();
-                setState(() {});
-                CacheManager().setLimitSize(appdata.settings['cacheSize']);
-                return null;
-              },
-            );
-          },
-          actionTitle: 'Set'.tl,
-        ).toSliver(),
-        SliderSetting(
-          title: "Download Threads".tl,
-          settingsIndex: 'downloadThreads',
-          interval: 1,
-          min: 1,
-          max: 16,
-        ).toSliver(),
-        SwitchSetting(
-          title: 'Continue past unavailable images by default'.tl,
-          settingKey: 'skipUnavailableDownloadImages',
-        ).toSliver(),
-      ],
-    ),
-  );
-}
-
-class _AppDataTransferSettings extends StatelessWidget {
-  const _AppDataTransferSettings();
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    body: SmoothCustomScrollView(
-      slivers: [
-        SliverAppbar(title: Text('App Data Import and Export'.tl)),
-        CallbackSetting(
-          title: "Export App Data".tl,
-          callback: () async {
-            var controller = showLoadingDialog(context);
-            var file = await exportAppData(false);
-            await saveFile(filename: "data.venera", file: file);
-            controller.close();
-          },
-          actionTitle: 'Export'.tl,
-        ).toSliver(),
-        CallbackSetting(
-          title: "Import App Data".tl,
-          subtitle:
-              "This overwrites local app data. If import fails, already-applied changes are not rolled back."
-                  .tl,
-          callback: () async {
-            var controller = showLoadingDialog(context);
-            var file = await selectFile(ext: ['venera', 'picadata']);
-            if (file != null) {
-              var cacheFile = File(
-                FilePath.join(App.cachePath, "import_data_temp"),
-              );
-              await file.saveTo(cacheFile.path);
-              try {
-                if (file.name.endsWith('picadata')) {
-                  await importPicaData(cacheFile);
-                } else {
-                  await importAppData(cacheFile);
-                }
-              } catch (e, s) {
-                Log.error("Import data", e.toString(), s);
-                context.showMessage(message: "Failed to import data".tl);
-              } finally {
-                cacheFile.deleteIgnoreError();
-                App.forceRebuild();
-              }
-            }
-            controller.close();
-          },
-          actionTitle: 'Import'.tl,
-        ).toSliver(),
-      ],
-    ),
-  );
-}
-
-class PrivacyAndSecuritySettings extends StatefulWidget {
-  const PrivacyAndSecuritySettings({super.key});
-
-  @override
-  State<PrivacyAndSecuritySettings> createState() =>
-      _PrivacyAndSecuritySettingsState();
-}
-
-class _PrivacyAndSecuritySettingsState
-    extends State<PrivacyAndSecuritySettings> {
-  @override
-  Widget build(BuildContext context) {
-    return SmoothCustomScrollView(
-      slivers: [
-        SliverAppbar(title: Text("Privacy and Security".tl)),
-        if (!App.isLinux) ...[
-          SettingPartTitle(title: "Security".tl, icon: Icons.security),
-          SwitchSetting(
-            title: "Authorization Required".tl,
-            settingKey: "authorizationRequired",
-            onChanged: () async {
-              var current = appdata.settings['authorizationRequired'];
-              if (current) {
-                final auth = LocalAuthentication();
-                final bool canAuthenticateWithBiometrics =
-                    await auth.canCheckBiometrics;
-                final bool canAuthenticate =
-                    canAuthenticateWithBiometrics ||
-                    await auth.isDeviceSupported();
-                if (!canAuthenticate) {
-                  context.showMessage(message: "Biometrics not supported".tl);
-                  setState(() {
-                    appdata.settings['authorizationRequired'] = false;
-                  });
-                  appdata.saveData();
-                  return;
-                }
-              }
-            },
-          ).toSliver(),
-        ],
-        SettingPartTitle(title: "History".tl, icon: Icons.history),
-        SliderSetting(
-          title: "Auto Clear History".tl,
-          settingsIndex: "historyRetentionDays",
-          interval: 7,
-          min: 0,
-          max: 182,
-          onChanged: () {
-            final retentionDays =
-                (appdata.settings['historyRetentionDays'] as num).round();
-            HistoryManager().clearExpiredHistory(retentionDays);
-          },
-        ).toSliver(),
-      ],
     );
   }
 }

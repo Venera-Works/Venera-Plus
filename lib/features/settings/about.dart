@@ -57,6 +57,10 @@ class _AboutSettingsState extends State<AboutSettings> {
             const SizedBox(height: 8),
           ],
         ).toSliver(),
+        SettingPartTitle(
+          title: 'Updates'.tl,
+          icon: Icons.system_update_outlined,
+        ),
         ListTile(
           title: Text("Check for updates".tl),
           trailing: FilledButton(
@@ -79,13 +83,6 @@ class _AboutSettingsState extends State<AboutSettings> {
             ),
           ),
         ).toSliver(),
-        ListTile(
-          title: Text("Changelog".tl),
-          trailing: const Icon(Icons.arrow_right),
-          onTap: () {
-            context.to(() => const ChangelogPage());
-          },
-        ).toSliver(),
         SwitchSetting(
           title: "Check for updates on startup".tl,
           settingKey: "checkUpdateOnStart",
@@ -101,8 +98,14 @@ class _AboutSettingsState extends State<AboutSettings> {
             optionTranslation: {'stable': 'Stable'.tl, 'beta': 'Beta'.tl},
           ),
         ),
+        SettingPartTitle(title: 'Information'.tl, icon: Icons.info_outline),
         ListTile(
-          title: const Text("Github"),
+          title: Text('Changelog'.tl),
+          trailing: const Icon(Icons.arrow_right),
+          onTap: () => context.to(() => const ChangelogPage()),
+        ).toSliver(),
+        ListTile(
+          title: Text('GitHub'.tl),
           trailing: const Icon(Icons.open_in_new),
           onTap: () {
             launchUrlString("https://github.com/Venera-Works/Venera-Plus");

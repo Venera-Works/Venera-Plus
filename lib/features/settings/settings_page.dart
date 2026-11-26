@@ -1,38 +1,46 @@
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/gesture.dart';
 import 'package:venera_plus/components/scroll.dart';
+import 'package:venera_plus/features/settings/about.dart';
+import 'package:venera_plus/features/settings/app.dart';
+import 'package:venera_plus/features/settings/appearance.dart';
+import 'package:venera_plus/features/settings/content_sources_page.dart';
+import 'package:venera_plus/features/settings/debug.dart';
+import 'package:venera_plus/features/settings/explore_settings.dart';
+import 'package:venera_plus/features/settings/general.dart';
+import 'package:venera_plus/features/settings/library.dart';
+import 'package:venera_plus/features/settings/network.dart';
+import 'package:venera_plus/features/settings/reader.dart';
+import 'package:venera_plus/features/settings/storage.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
-import 'package:venera_plus/features/settings/about.dart';
-import 'package:venera_plus/features/settings/appearance.dart';
-import 'package:venera_plus/features/settings/app.dart';
-import 'package:venera_plus/features/settings/debug.dart';
-import 'package:venera_plus/features/settings/explore_settings.dart';
-import 'package:venera_plus/features/settings/network.dart';
-import 'package:venera_plus/features/settings/reader.dart';
 
 enum SettingsDestination {
-  reading,
+  general,
   appearance,
-  browsing,
+  reader,
+  library,
+  explore,
   sources,
   storage,
+  sync,
   network,
-  privacy,
   advanced,
   about,
 }
 
 Widget _buildSettingsContent(SettingsDestination destination) {
   final content = switch (destination) {
-    SettingsDestination.reading => const ReaderSettings(),
+    SettingsDestination.general => const GeneralSettings(),
     SettingsDestination.appearance => const AppearanceSettings(),
-    SettingsDestination.browsing => const BrowsingAndFavoritesSettings(),
-    SettingsDestination.sources => const SourcesAndServicesSettings(),
-    SettingsDestination.storage => const StorageAndSyncSettings(),
+    SettingsDestination.reader => const ReaderSettings(),
+    SettingsDestination.library => const LibrarySettings(),
+    SettingsDestination.explore => const ExploreSettings(),
+    SettingsDestination.sources => const ContentSourcesPage(),
+    SettingsDestination.storage => const StorageSettings(),
+    SettingsDestination.sync => const SyncSettings(),
     SettingsDestination.network => const NetworkSettings(),
-    SettingsDestination.privacy => const PrivacyAndSecuritySettings(),
     SettingsDestination.advanced => const AdvancedSettings(),
     SettingsDestination.about => const AboutSettings(),
   };
@@ -204,61 +212,76 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget buildCategories() {
     final groups = [
       _SettingsGroup(
-        title: "Reading & Browsing".tl,
+        title: 'Preferences'.tl,
         destinations: [
           _SettingsItem(
-            destination: SettingsDestination.reading,
-            title: "Reading".tl,
-            icon: Icons.menu_book,
+            destination: SettingsDestination.general,
+            title: 'General'.tl,
+            icon: Icons.settings_outlined,
           ),
           _SettingsItem(
             destination: SettingsDestination.appearance,
-            title: "Appearance and Interface".tl,
+            title: 'Appearance'.tl,
             icon: Icons.palette_outlined,
           ),
           _SettingsItem(
-            destination: SettingsDestination.browsing,
-            title: "Browsing and Favorites".tl,
-            icon: Icons.explore_outlined,
+            destination: SettingsDestination.reader,
+            title: 'Reader'.tl,
+            icon: Icons.menu_book_outlined,
           ),
         ],
       ),
       _SettingsGroup(
-        title: "Sources & Data".tl,
+        title: 'Content'.tl,
         destinations: [
           _SettingsItem(
-            destination: SettingsDestination.storage,
-            title: "Storage and Sync".tl,
-            icon: Icons.storage_outlined,
+            destination: SettingsDestination.library,
+            title: 'Library'.tl,
+            icon: Icons.collections_bookmark_outlined,
+          ),
+          _SettingsItem(
+            destination: SettingsDestination.explore,
+            title: 'Explore'.tl,
+            icon: Icons.explore_outlined,
           ),
           _SettingsItem(
             destination: SettingsDestination.sources,
-            title: "Sources and Services".tl,
+            title: 'Sources'.tl,
             icon: Icons.extension_outlined,
-          ),
-          _SettingsItem(
-            destination: SettingsDestination.network,
-            title: "Network".tl,
-            icon: Icons.public,
           ),
         ],
       ),
       _SettingsGroup(
-        title: "System".tl,
+        title: 'Data'.tl,
         destinations: [
           _SettingsItem(
-            destination: SettingsDestination.privacy,
-            title: "Privacy and Security".tl,
-            icon: Icons.lock_outline,
+            destination: SettingsDestination.storage,
+            title: 'Storage'.tl,
+            icon: Icons.storage_outlined,
+          ),
+          _SettingsItem(
+            destination: SettingsDestination.sync,
+            title: 'Sync'.tl,
+            icon: Icons.cloud_sync_outlined,
+          ),
+        ],
+      ),
+      _SettingsGroup(
+        title: 'System'.tl,
+        destinations: [
+          _SettingsItem(
+            destination: SettingsDestination.network,
+            title: 'Network'.tl,
+            icon: Icons.public,
           ),
           _SettingsItem(
             destination: SettingsDestination.advanced,
-            title: "Advanced and Diagnostics".tl,
+            title: 'Advanced'.tl,
             icon: Icons.tune,
           ),
           _SettingsItem(
             destination: SettingsDestination.about,
-            title: "About".tl,
+            title: 'About'.tl,
             icon: Icons.info_outline,
           ),
         ],

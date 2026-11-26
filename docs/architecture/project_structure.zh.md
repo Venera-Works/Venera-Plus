@@ -38,7 +38,7 @@
 - `local_comics/`：本地漫画库管理、下载任务，以及 `import_export/` 下的 CBZ、EPUB、PDF 导入导出工具（浏览与管理入口归入书库）。
 - `reader/`：阅读器页面、手势、章节、图片加载、瀑布流阅读实现，以及图片剪贴板写入、音量键监听等阅读场景专用平台交互。
 - `search/`：搜索首页、搜索结果页、聚合搜索页面和搜索查询过滤规则。
-- `settings/`：设置页面、阅读设置、设置页共享控件和九大结构化设置页面（按“阅读与浏览”、“来源与数据”、“系统”分组，个人内容移入书库，废弃独立设置类已清理）。
+- `settings/`：设置导航、共享设置控件和 11 个设置页面，按“偏好”“内容”“数据”“系统”分组。
 - `storage/`：统一网盘与 WebDAV 账号管理、授权信息导入、网页登录和远端目录选择界面。
 - `sync/`：基于统一网盘或 WebDAV 账号的应用数据同步、顶栏 `SyncActionButton`、应用数据导入导出和本地漫画备份恢复；所有同步数据通过完整快照传输，云端恢复时合并快照与本机的追更状态，不再使用独立的设备状态文件。
 - `remote_library/`：网盘与 WebDAV 在线漫画库的远端目录发现、作品聚合、元数据、按需阅读及本地索引。
@@ -67,7 +67,7 @@ test/features/<domain>/
 - 图片收藏功能通过 `features/image_favorites/image_favorites.dart` 暴露图片收藏页面和排序类型。
 - 阅读器通过 `features/reader/reader.dart` 暴露阅读页面、加载入口、章节评论页、章节完成事件和瀑布流模型。
 - 搜索功能通过 `features/search/search.dart` 暴露搜索首页、搜索结果页、聚合搜索页和搜索查询过滤规则。
-- 设置功能通过 `features/settings/settings.dart` 暴露 `SettingsPage` 与结构化设置组件（包括 `ReadingSettings`、`AppearanceSettings`、`BrowsingAndFavoritesSettings`、`SourcesAndServicesSettings`、`StorageAndSyncSettings`、`PrivacyAndSecuritySettings` 等）。
+- 设置功能通过 `features/settings/settings.dart` 暴露 `SettingsPage` 和各组页面。偏好组包含 `GeneralSettings`、`AppearanceSettings`、`ReaderSettings`，内容组包含 `LibrarySettings`、`ExploreSettings`、`ContentSourcesPage`，数据组包含 `StorageSettings`、`SyncSettings`，系统组包含 `NetworkSettings`、`AdvancedSettings`、`AboutSettings`。
 - 同步功能通过 `features/sync/sync.dart` 暴露数据同步、顶栏 `SyncActionButton`、数据迁移、漫画备份和漫画归档页面。
 - 存储配置界面通过 `features/storage/storage.dart` 暴露账号管理、令牌导入、目录选择和远端位置字段。
 - 本地漫画通过 `features/local_comics/local_comics.dart` 暴露本地库、下载任务、本地漫画页面和下载队列弹窗，通过 `features/local_comics/import_export/import_export.dart` 暴露导入导出工具。

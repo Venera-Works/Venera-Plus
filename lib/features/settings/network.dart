@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/appbar.dart';
@@ -11,28 +13,47 @@ import 'package:venera_plus/foundation/js_engine.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 
-class NetworkSettings extends StatefulWidget {
+class NetworkSettings extends StatelessWidget {
   const NetworkSettings({super.key});
 
   @override
-  State<NetworkSettings> createState() => _NetworkSettingsState();
-}
-
-class _NetworkSettingsState extends State<NetworkSettings> {
-  @override
   Widget build(BuildContext context) {
-    return SmoothCustomScrollView(
-      slivers: [
-        SliverAppbar(title: Text("Network".tl)),
-        PopupWindowSetting(
-          title: "Proxy".tl,
-          builder: () => const _ProxySettingView(),
-        ).toSliver(),
-        PopupWindowSetting(
-          title: "DNS Overrides".tl,
-          builder: () => const _DNSOverrides(),
-        ).toSliver(),
-      ],
+    return ListenableBuilder(
+      listenable: appdata.settings,
+      builder: (context, _) {
+        final proxy = switch (appdata.settings['proxy']) {
+          'direct' => 'Direct'.tl,
+          'system' => 'System'.tl,
+          _ => 'Manual'.tl,
+        };
+        final dns = appdata.settings['enableDnsOverrides'] == true
+            ? 'Enabled · @count rules'.tlParams({
+                'count': (appdata.settings['dnsOverrides'] as Map).length,
+              })
+            : 'Off'.tl;
+        return SmoothCustomScrollView(
+          slivers: [
+            SliverAppbar(title: Text('Network'.tl)),
+            PopupWindowSetting(
+              title: 'Proxy'.tl,
+              subtitle: proxy,
+              builder: () => const _ProxySettingView(),
+            ).toSliver(),
+            PopupWindowSetting(
+              title: 'DNS Overrides'.tl,
+              subtitle: dns,
+              builder: () => const _DNSOverrides(),
+            ).toSliver(),
+            SwitchSetting(
+              title: 'Ignore Certificate Errors'.tl,
+              subtitle:
+                  'Skip HTTPS certificate verification. Enable only if needed.'
+                      .tl,
+              settingKey: 'ignoreBadCertificate',
+            ).toSliver(),
+          ],
+        );
+      },
     );
   }
 }
@@ -257,9 +278,12 @@ class __DNSOverridesState extends State<_DNSOverrides> {
     for (var entry in overrides) {
       map[entry.$1.text] = entry.$2.text;
     }
-    appdata.settings['dnsOverrides'] = map;
-    appdata.saveData();
-    JsEngine().resetDio();
+    // Updating the setting notifies the overview after the widget tree unlocks.
+    scheduleMicrotask(() {
+      appdata.settings['dnsOverrides'] = map;
+      appdata.saveData();
+      JsEngine().resetDio();
+    });
     super.dispose();
   }
 
@@ -274,7 +298,10 @@ class __DNSOverridesState extends State<_DNSOverrides> {
               title: "Enable DNS Overrides".tl,
               settingKey: "enableDnsOverrides",
             ),
-            SwitchSetting(title: "Server Name Indication", settingKey: "sni"),
+            SwitchSetting(
+              title: 'Server Name Indication'.tl,
+              settingKey: 'sni',
+            ),
             const SizedBox(height: 8),
             Container(
               height: 1,
