@@ -66,17 +66,43 @@ class CachedImageProvider
   }
 
   @override
-  Future<Uint8List> load(chunkEvents, checkStop) {
+  Future<Uint8List> load(chunkEvents, checkStop) => _loadBytes(
+    chunkEvents: chunkEvents,
+    checkStop: checkStop,
+    allowEmpty: true, // BaseImageProvider retries empty data.
+  );
+
+  /// 读取原始图片字节，不解码也不缩放。
+  Future<Uint8List> loadOriginalBytes() => _loadBytes(allowEmpty: false);
+
+  Future<Uint8List> _loadBytes({
+    StreamController<ImageChunkEvent>? chunkEvents,
+    void Function()? checkStop,
+    required bool allowEmpty,
+  }) {
+    Future<Uint8List> ensureValid(Future<Uint8List> Function() action) async {
+      final data = await action();
+      if (allowEmpty || data.isNotEmpty) return data;
+      checkStop?.call();
+      throw 'Error: Empty response body.';
+    }
+
     if (url.startsWith('file://')) {
       return _loadWithFallback(
-        () => File(url.substring(7)).readAsBytes(),
+        () => ensureValid(() => File(url.substring(7)).readAsBytes()),
         checkStop,
       );
     }
 
-    final cancelSignal = BaseImageProvider.cancelSignalOf(checkStop);
-    Future<Uint8List> loadImage() =>
-        _loadImage(chunkEvents, checkStop, cancelSignal);
+    final cancelSignal = checkStop == null
+        ? null
+        : BaseImageProvider.cancelSignalOf(checkStop);
+    Future<Uint8List> loadImage() => _loadImage(
+      chunkEvents: chunkEvents,
+      checkStop: checkStop,
+      cancelSignal: cancelSignal,
+      allowEmpty: allowEmpty,
+    );
 
     final source = sourceKey;
     if (source == null ||
@@ -90,8 +116,11 @@ class CachedImageProvider
 
     return _loadWithFallback(() async {
       final cache = await CacheManager().findCache(diskCacheKey);
-      checkStop();
-      if (cache != null) return cache.readAsBytes();
+      checkStop?.call();
+      if (cache != null) {
+        final cached = await cache.readAsBytes();
+        if (allowEmpty || cached.isNotEmpty) return cached;
+      }
 
       // 同一云端库先排自己的队，避免批量慢封面占满全局槽位。
       final slots = _remoteThumbnailLoadSlots.putIfAbsent(
@@ -112,44 +141,45 @@ class CachedImageProvider
 
   Future<Uint8List> _loadWithFallback(
     Future<Uint8List> Function() load,
-    void Function() checkStop,
+    void Function()? checkStop,
   ) async {
-    checkStop();
+    checkStop?.call();
     try {
       return await load();
     } catch (_) {
-      checkStop();
+      checkStop?.call();
       final fallbackImage = await fallback?.call();
-      if (fallbackImage != null) {
-        if (fallbackImage.isNotEmpty) {
-          return fallbackImage;
-        }
+      if (fallbackImage != null && fallbackImage.isNotEmpty) {
+        return fallbackImage;
       }
       rethrow;
     }
   }
 
-  Future<Uint8List> _loadImage(
-    StreamController<ImageChunkEvent> chunkEvents,
-    void Function() checkStop,
-    Future<void> cancelSignal,
-  ) async {
+  Future<Uint8List> _loadImage({
+    StreamController<ImageChunkEvent>? chunkEvents,
+    void Function()? checkStop,
+    Future<void>? cancelSignal,
+    required bool allowEmpty,
+  }) async {
     await for (final progress in ImageDownloader.loadThumbnail(
       url,
       sourceKey,
       cid,
       cancelSignal,
     )) {
-      checkStop();
-      chunkEvents.add(
+      checkStop?.call();
+      chunkEvents?.add(
         ImageChunkEvent(
           cumulativeBytesLoaded: progress.currentBytes,
           expectedTotalBytes: progress.totalBytes,
         ),
       );
-      if (progress.imageBytes != null) return progress.imageBytes!;
+      final data = progress.imageBytes;
+      if (data != null && (allowEmpty || data.isNotEmpty)) return data;
+      if (data != null) break;
     }
-    checkStop();
+    checkStop?.call();
     throw 'Error: Empty response body.';
   }
 

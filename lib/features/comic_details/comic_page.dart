@@ -1,5 +1,3 @@
-import 'dart:async';
-import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shimmer_animation/shimmer_animation.dart';
@@ -29,8 +27,6 @@ import 'package:venera_plus/foundation/image_provider/cached_image.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/features/reader/reader.dart';
-import 'package:venera_plus/foundation/file_type.dart';
-import 'package:venera_plus/foundation/file_interaction.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 
@@ -106,6 +102,7 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
   bool _needsHistoryRefresh = false;
   bool _openedLinkPage = false;
   int _coverRevision = 0;
+  bool _isSavingCover = false;
 
   bool get _isVisible => _tickerModeEnabled && (_route?.isCurrent ?? true);
 
@@ -1003,7 +1000,9 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
     );
   }
 
-  void _saveCover(BuildContext context) async {
+  Future<void> _saveCover(BuildContext context) async {
+    if (_isSavingCover) return;
+    _isSavingCover = true;
     try {
       final cover = _cover;
       if (cover == null) {
@@ -1015,27 +1014,13 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
         cid: comic.id,
       );
 
-      final imageStream = imageProvider.resolve(const ImageConfiguration());
-      final completer = Completer<Uint8List>();
-
-      imageStream.addListener(
-        ImageStreamListener((ImageInfo info, bool _) async {
-          final byteData = await info.image.toByteData(
-            format: ImageByteFormat.png,
-          );
-          if (byteData != null) {
-            completer.complete(byteData.buffer.asUint8List());
-          }
-        }),
-      );
-
-      final data = await completer.future;
-      final fileType = detectFileType(data);
-      await saveFile(filename: "cover${fileType.ext}", data: data);
-    } catch (e) {
+      await saveComicCover(imageProvider);
+    } catch (_) {
       if (context.mounted) {
         context.showMessage(message: "Error".tl);
       }
+    } finally {
+      _isSavingCover = false;
     }
   }
 
