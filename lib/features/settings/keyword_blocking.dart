@@ -102,6 +102,7 @@ class _KeywordBlockingSettingsState extends State<KeywordBlockingSettings> {
   @override
   Widget build(BuildContext context) {
     final rules = store.rules(target);
+    final secondaryColor = Theme.of(context).colorScheme.onSurfaceVariant;
     return PopUpWidgetScaffold(
       title:
           (widget.comments
@@ -139,29 +140,54 @@ class _KeywordBlockingSettingsState extends State<KeywordBlockingSettings> {
           if (_error != null)
             Padding(padding: const EdgeInsets.all(12), child: Text(_error!)),
           Expanded(
-            child: ListView.builder(
-              itemCount: rules.length,
-              itemBuilder: (context, index) {
-                final rule = rules[index];
-                return ListTile(
-                  title: Text(
-                    rule.keyword.isEmpty ? 'Empty keyword'.tl : rule.keyword,
+            child: rules.isEmpty
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.filter_alt_outlined,
+                            size: 40,
+                            color: secondaryColor,
+                          ),
+                          const SizedBox(height: 12),
+                          Text(
+                            'No keywords are blocked here. Add a rule to filter by keyword.'
+                                .tl,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: secondaryColor),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                : ListView.builder(
+                    itemCount: rules.length,
+                    itemBuilder: (context, index) {
+                      final rule = rules[index];
+                      return ListTile(
+                        title: Text(
+                          rule.keyword.isEmpty
+                              ? 'Empty keyword'.tl
+                              : rule.keyword,
+                        ),
+                        subtitle: Text(keywordRuleSummary(rule)),
+                        onTap: () => showKeywordRuleEditor(
+                          context,
+                          target: target,
+                          rule: rule,
+                          store: store,
+                        ),
+                        trailing: IconButton(
+                          tooltip: 'Delete'.tl,
+                          icon: const Icon(Icons.close),
+                          onPressed: () => _delete(rule),
+                        ),
+                      );
+                    },
                   ),
-                  subtitle: Text(keywordRuleSummary(rule)),
-                  onTap: () => showKeywordRuleEditor(
-                    context,
-                    target: target,
-                    rule: rule,
-                    store: store,
-                  ),
-                  trailing: IconButton(
-                    tooltip: 'Delete'.tl,
-                    icon: const Icon(Icons.close),
-                    onPressed: () => _delete(rule),
-                  ),
-                );
-              },
-            ),
           ),
         ],
       ),
@@ -196,6 +222,13 @@ class _KeywordRuleEditorState extends State<KeywordRuleEditor> {
   bool _failed = false;
   bool _stale = false;
   String? _error;
+  TextStyle? get _hintStyle {
+    final theme = Theme.of(context);
+    return theme.textTheme.bodySmall?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant,
+    );
+  }
+
   bool get comments => widget.target == BlockedKeywordList.comments;
   KeywordRule get candidate {
     final original = widget.initialRule;
@@ -284,7 +317,8 @@ class _KeywordRuleEditorState extends State<KeywordRuleEditor> {
           minLines: 1,
           maxLines: 3,
           decoration: InputDecoration(
-            border: const OutlineInputBorder(),
+            isDense: true,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
             labelText:
                 (comments
                         ? 'Sample comment'
@@ -300,7 +334,7 @@ class _KeywordRuleEditorState extends State<KeywordRuleEditor> {
           Text((match == null ? 'Will stay visible' : 'Will be hidden').tl),
           if (match != null) KeywordMatchPreview(match: match),
         ] else
-          Text('Enter sample text to check this rule.'.tl),
+          Text('Enter sample text to check this rule.'.tl, style: _hintStyle),
       ],
     );
   }
@@ -322,7 +356,10 @@ class _KeywordRuleEditorState extends State<KeywordRuleEditor> {
             autofocus: true,
             decoration: InputDecoration(
               labelText: 'Keyword'.tl,
-              border: const OutlineInputBorder(),
+              isDense: true,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
             ),
             onSubmitted: (_) => _save(),
             onChanged: (_) => setState(() {
@@ -333,28 +370,38 @@ class _KeywordRuleEditorState extends State<KeywordRuleEditor> {
             }),
           ),
           const SizedBox(height: 16),
-          DropdownButtonFormField<KeywordMatchMode>(
-            initialValue: _mode,
-            key: ValueKey(_mode),
-            isExpanded: true,
-            decoration: InputDecoration(
-              labelText: 'Match mode'.tl,
-              border: const OutlineInputBorder(),
+          ButtonTheme(
+            alignedDropdown: true,
+            child: DropdownButtonFormField<KeywordMatchMode>(
+              initialValue: _mode,
+              key: ValueKey(_mode),
+              isExpanded: true,
+              isDense: true,
+              borderRadius: BorderRadius.circular(12),
+              dropdownColor: Theme.of(context).colorScheme.surfaceContainerHigh,
+              menuMaxHeight: 320,
+              decoration: InputDecoration(
+                labelText: 'Match mode'.tl,
+                isDense: true,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              items: [
+                for (final mode in KeywordMatchMode.values)
+                  if (!comments || mode != KeywordMatchMode.tag)
+                    DropdownMenuItem(
+                      value: mode,
+                      child: Text(keywordModeLabel(mode)),
+                    ),
+              ],
+              onChanged: _saving || _failed || _stale
+                  ? null
+                  : (mode) => setState(() {
+                      _mode = mode!;
+                      _chosen = true;
+                    }),
             ),
-            items: [
-              for (final mode in KeywordMatchMode.values)
-                if (!comments || mode != KeywordMatchMode.tag)
-                  DropdownMenuItem(
-                    value: mode,
-                    child: Text(keywordModeLabel(mode)),
-                  ),
-            ],
-            onChanged: _saving || _failed || _stale
-                ? null
-                : (mode) => setState(() {
-                    _mode = mode!;
-                    _chosen = true;
-                  }),
           ),
           if (widget.initialRule == null &&
               KeywordRule.isShortAbbreviation(_word.text))
@@ -362,6 +409,7 @@ class _KeywordRuleEditorState extends State<KeywordRuleEditor> {
               padding: const EdgeInsets.only(top: 8),
               child: Text(
                 'Whole word is recommended for short abbreviations.'.tl,
+                style: _hintStyle,
               ),
             ),
           SwitchListTile(
@@ -374,7 +422,10 @@ class _KeywordRuleEditorState extends State<KeywordRuleEditor> {
                     _sensitive = !value;
                   }),
           ),
-          Text('Keywords are literal text, not regular expressions.'.tl),
+          Text(
+            'Keywords are literal text, not regular expressions.'.tl,
+            style: _hintStyle,
+          ),
           Align(
             alignment: AlignmentDirectional.centerStart,
             child: TextButton(

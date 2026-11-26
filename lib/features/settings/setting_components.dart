@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter_reorderable_grid_view/widgets/reorderable_builder.dart';
@@ -198,7 +200,7 @@ class _DoubleLineSelectSettingsState extends State<_DoubleLineSelectSettings> {
     return ListTile(
       title: Row(
         children: [
-          Text(widget.title),
+          Flexible(child: Text(widget.title)),
           const SizedBox(width: 4),
           if (widget.help != null)
             Button.icon(
@@ -229,55 +231,78 @@ class _DoubleLineSelectSettingsState extends State<_DoubleLineSelectSettings> {
       ),
       subtitle: Text(widget.optionTranslation[value] ?? "None"),
       trailing: const Icon(Icons.arrow_drop_down),
-      onTap: () {
-        var renderBox = context.findRenderObject() as RenderBox;
-        var offset = renderBox.localToGlobal(Offset.zero);
-        var size = renderBox.size;
-        var rect = offset & size;
-        showMenu(
-          elevation: 3,
-          color: context.brightness == Brightness.light
-              ? const Color(0xFFF6F6F6)
-              : const Color(0xFF1E1E1E),
-          context: context,
-          position: RelativeRect.fromRect(
-            rect,
-            Offset.zero & MediaQuery.of(context).size,
-          ),
-          items: widget.optionTranslation.keys
-              .map(
-                (key) => PopupMenuItem(
-                  value: key,
-                  height: App.isMobile ? 46 : 40,
-                  child: Text(widget.optionTranslation[key]!),
-                ),
-              )
-              .toList(),
-        ).then((value) {
-          if (value != null) {
-            setState(() {
-              if (widget.comicId != null) {
-                appdata.settings.setReaderSetting(
-                  widget.comicId!,
-                  widget.comicSource!,
-                  widget.settingKey,
-                  value,
-                );
-              } else if (widget.useDeviceSettings) {
-                appdata.settings.setDeviceReaderSetting(
-                  widget.settingKey,
-                  value,
-                );
-              } else {
-                appdata.settings[widget.settingKey] = value;
-              }
-            });
-            appdata.saveData();
-            widget.onChanged?.call();
-          }
-        });
-      },
+      onTap: widget.optionTranslation.isEmpty
+          ? null
+          : () => _selectOption(value),
     );
+  }
+
+  Future<void> _selectOption(Object? value) async {
+    final renderBox = context.findRenderObject() as RenderBox;
+    final navigator = Navigator.of(context, rootNavigator: true);
+    final overlay = navigator.overlay!.context.findRenderObject() as RenderBox;
+    final offset = renderBox.localToGlobal(Offset.zero, ancestor: overlay);
+    final screenSize = overlay.size;
+    final colors = context.colorScheme;
+    final maxWidth = math.max(0.0, math.min(280.0, screenSize.width - 32));
+    final selection = await showMenu<String>(
+      context: context,
+      useRootNavigator: true,
+      elevation: 3,
+      color: colors.surfaceContainerHigh,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      clipBehavior: Clip.antiAlias,
+      constraints: BoxConstraints(
+        minWidth: math.min(136.0, maxWidth),
+        maxWidth: maxWidth,
+        maxHeight: math.min(360.0, screenSize.height * 0.6),
+      ),
+      position: RelativeRect.fromRect(
+        offset & renderBox.size,
+        Offset.zero & screenSize,
+      ),
+      initialValue: value is String ? value : null,
+      items: [
+        for (final option in widget.optionTranslation.entries)
+          PopupMenuItem<String>(
+            value: option.key,
+            height: App.isMobile ? 46 : 40,
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    option.value,
+                    style: option.key == value
+                        ? TextStyle(color: colors.primary)
+                        : null,
+                  ),
+                ),
+                if (option.key == value) ...[
+                  const SizedBox(width: 8),
+                  Icon(Icons.check, size: 18, color: colors.primary),
+                ],
+              ],
+            ),
+          ),
+      ],
+    );
+    if (selection == null || !mounted) return;
+    setState(() {
+      if (widget.comicId != null) {
+        appdata.settings.setReaderSetting(
+          widget.comicId!,
+          widget.comicSource!,
+          widget.settingKey,
+          selection,
+        );
+      } else if (widget.useDeviceSettings) {
+        appdata.settings.setDeviceReaderSetting(widget.settingKey, selection);
+      } else {
+        appdata.settings[widget.settingKey] = selection;
+      }
+    });
+    appdata.saveData();
+    widget.onChanged?.call();
   }
 }
 
@@ -330,7 +355,7 @@ class _EndSelectorSelectSettingState extends State<_EndSelectorSelectSetting> {
     return ListTile(
       title: Row(
         children: [
-          Text(widget.title),
+          Flexible(child: Text(widget.title)),
           const SizedBox(width: 4),
           if (widget.help != null)
             Button.icon(
@@ -362,6 +387,7 @@ class _EndSelectorSelectSettingState extends State<_EndSelectorSelectSetting> {
       trailing: Select(
         current: options[value],
         values: options.values.toList(),
+        selectedIndex: options.keys.toList().indexWhere((key) => key == value),
         minWidth: 64,
         onTap: (index) {
           setState(() {

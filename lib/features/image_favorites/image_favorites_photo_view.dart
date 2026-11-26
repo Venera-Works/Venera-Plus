@@ -230,7 +230,8 @@ class _ImageFavoritesPhotoViewState extends State<ImageFavoritesPhotoView> {
   }
 
   void showMenu() {
-    showMenuX(context, Offset(context.width, context.padding.top), [
+    final location = Offset(context.width, context.padding.top + 52);
+    showMenuX(context, location, [
       MenuEntry(
         icon: Icons.image_outlined,
         text: "Save Image".tl,

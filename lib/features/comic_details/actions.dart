@@ -708,7 +708,8 @@ abstract mixin class ComicPageActions {
 
   void showMoreActions() {
     var context = App.rootContext;
-    showMenuX(context, Offset(context.width - 16, context.padding.top), [
+    final location = Offset(context.width - 16, context.padding.top + 52);
+    showMenuX(context, location, [
       MenuEntry(
         icon: Icons.swap_horiz,
         text: 'Switch source'.tl,

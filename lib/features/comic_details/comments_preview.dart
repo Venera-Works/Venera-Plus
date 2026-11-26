@@ -37,6 +37,12 @@ class _ComicCommentsPreviewState extends State<ComicCommentsPreview> {
   }
 
   @override
+  void dispose() {
+    scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return MultiSliver(
       children: [
@@ -47,6 +53,9 @@ class _ComicCommentsPreviewState extends State<ComicCommentsPreview> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 IconButton(
+                  tooltip: MaterialLocalizations.of(
+                    context,
+                  ).previousPageTooltip,
                   icon: const Icon(Icons.chevron_left),
                   onPressed: () {
                     scrollController.animateTo(
@@ -57,6 +66,7 @@ class _ComicCommentsPreviewState extends State<ComicCommentsPreview> {
                   },
                 ),
                 IconButton(
+                  tooltip: MaterialLocalizations.of(context).nextPageTooltip,
                   icon: const Icon(Icons.chevron_right),
                   onPressed: () {
                     scrollController.animateTo(

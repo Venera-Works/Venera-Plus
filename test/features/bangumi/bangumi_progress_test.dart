@@ -223,7 +223,7 @@ void main() {
       expect(tester.getRect(scrollableFinder), initialViewportRect);
 
       // Pop sidebar route to cleanly close the panel.
-      await tester.tap(find.byIcon(Icons.arrow_back_sharp));
+      await tester.tap(find.byIcon(Icons.arrow_back));
       await tester.pumpAndSettle();
       expect(find.byType(BangumiProgressPanel), findsNothing);
     },

@@ -337,6 +337,7 @@ class _CommentsPageState extends State<CommentsPage> {
                   )
                 else
                   IconButton(
+                    tooltip: 'Submit'.tl,
                     onPressed: () async {
                       if (controller.text.isEmpty) {
                         return;

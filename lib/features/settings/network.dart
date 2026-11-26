@@ -67,10 +67,12 @@ class _ProxySettingView extends StatefulWidget {
 
 class _ProxySettingViewState extends State<_ProxySettingView> {
   String type = '';
-  String host = '';
-  String port = '';
-  String username = '';
-  String password = '';
+  late final TextEditingController _hostController;
+  late final TextEditingController _portController;
+  late final TextEditingController _usernameController;
+  late final TextEditingController _passwordController;
+  final _formKey = GlobalKey<FormState>();
+  bool _passwordVisible = false;
 
   // USERNAME:PASSWORD@HOST:PORT
   String toProxyStr() {
@@ -79,6 +81,10 @@ class _ProxySettingViewState extends State<_ProxySettingView> {
     } else if (type == 'system') {
       return 'system';
     }
+    final host = _hostController.text;
+    final port = _portController.text;
+    final username = _usernameController.text;
+    final password = _passwordController.text;
     var res = '';
     if (username.isNotEmpty) {
       res += username;
@@ -107,28 +113,40 @@ class _ProxySettingViewState extends State<_ProxySettingView> {
     if (parts.length == 2) {
       var auth = parts[0].split(':');
       if (auth.length == 2) {
-        username = auth[0];
-        password = auth[1];
+        _usernameController.text = auth[0];
+        _passwordController.text = auth[1];
       }
       parts = parts[1].split(':');
       if (parts.length == 2) {
-        host = parts[0];
-        port = parts[1];
+        _hostController.text = parts[0];
+        _portController.text = parts[1];
       }
     } else {
       parts = proxy.split(':');
       if (parts.length == 2) {
-        host = parts[0];
-        port = parts[1];
+        _hostController.text = parts[0];
+        _portController.text = parts[1];
       }
     }
   }
 
   @override
   void initState() {
-    var proxy = appdata.settings['proxy'];
-    parseProxyString(proxy);
     super.initState();
+    _hostController = TextEditingController();
+    _portController = TextEditingController();
+    _usernameController = TextEditingController();
+    _passwordController = TextEditingController();
+    parseProxyString(appdata.settings['proxy']);
+  }
+
+  @override
+  void dispose() {
+    _hostController.dispose();
+    _portController.dispose();
+    _usernameController.dispose();
+    _passwordController.dispose();
+    super.dispose();
   }
 
   @override
@@ -160,22 +178,22 @@ class _ProxySettingViewState extends State<_ProxySettingView> {
     );
   }
 
-  var formKey = GlobalKey<FormState>();
+  InputDecoration _proxyFieldDecoration(String label, {Widget? suffixIcon}) =>
+      InputDecoration(
+        labelText: label.tl,
+        isDense: true,
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+        suffixIcon: suffixIcon,
+      );
 
   Widget buildManualProxy() {
     return Form(
-      key: formKey,
+      key: _formKey,
       child: Column(
         children: [
           TextFormField(
-            decoration: InputDecoration(
-              border: const OutlineInputBorder(),
-              labelText: "Host".tl,
-            ),
-            controller: TextEditingController(text: host),
-            onChanged: (v) {
-              host = v;
-            },
+            decoration: _proxyFieldDecoration('Host'),
+            controller: _hostController,
             validator: (v) {
               if (v?.isEmpty ?? false) {
                 return "Host cannot be empty".tl;
@@ -183,16 +201,10 @@ class _ProxySettingViewState extends State<_ProxySettingView> {
               return null;
             },
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 12),
           TextFormField(
-            decoration: InputDecoration(
-              border: const OutlineInputBorder(),
-              labelText: "Port".tl,
-            ),
-            controller: TextEditingController(text: port),
-            onChanged: (v) {
-              port = v;
-            },
+            decoration: _proxyFieldDecoration('Port'),
+            controller: _portController,
             validator: (v) {
               if (v?.isEmpty ?? true) {
                 return null;
@@ -203,39 +215,42 @@ class _ProxySettingViewState extends State<_ProxySettingView> {
               return null;
             },
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 12),
           TextFormField(
-            decoration: InputDecoration(
-              border: const OutlineInputBorder(),
-              labelText: "Username".tl,
-            ),
-            controller: TextEditingController(text: username),
-            onChanged: (v) {
-              username = v;
-            },
+            decoration: _proxyFieldDecoration('Username'),
+            controller: _usernameController,
             validator: (v) {
-              if ((v?.isEmpty ?? false) && password.isNotEmpty) {
+              if ((v?.isEmpty ?? false) &&
+                  _passwordController.text.isNotEmpty) {
                 return "Username cannot be empty".tl;
               }
               return null;
             },
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 12),
           TextFormField(
-            decoration: InputDecoration(
-              border: const OutlineInputBorder(),
-              labelText: "Password".tl,
+            controller: _passwordController,
+            obscureText: !_passwordVisible,
+            autocorrect: false,
+            enableSuggestions: false,
+            decoration: _proxyFieldDecoration(
+              'Password',
+              suffixIcon: IconButton(
+                tooltip:
+                    (_passwordVisible ? 'Hide password' : 'Show password').tl,
+                icon: Icon(
+                  _passwordVisible ? Icons.visibility_off : Icons.visibility,
+                ),
+                onPressed: () =>
+                    setState(() => _passwordVisible = !_passwordVisible),
+              ),
             ),
-            controller: TextEditingController(text: password),
-            onChanged: (v) {
-              password = v;
-            },
           ),
           const SizedBox(height: 16),
           FilledButton(
             style: actionButtonStyle,
             onPressed: () {
-              if (formKey.currentState?.validate() ?? false) {
+              if (_formKey.currentState?.validate() ?? false) {
                 appdata.settings['proxy'] = toProxyStr();
                 appdata.saveData();
                 App.rootContext.pop();

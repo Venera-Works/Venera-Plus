@@ -161,37 +161,31 @@ class _FavoritesPageState extends State<FavoritesPage> {
 
   @override
   Widget build(BuildContext context) {
-    return IconTheme(
-      data: IconThemeData(color: Theme.of(context).colorScheme.secondary),
-      child: Stack(
-        children: [
-          AnimatedPositioned(
-            left: context.width <= favoritesTwoPanelChangeWidth
-                ? -_kLeftBarWidth
-                : 0,
-            top: 0,
-            bottom: 0,
-            duration: const Duration(milliseconds: 200),
-            child: FavoritesFolderSidebar(
-              selectedFolder: folder,
-              isNetworkSelected: isNetwork,
-              onFolderSelected: setFolder,
-              onFolderListReady: (list) {
-                folderList = list;
-              },
-            ).fixWidth(_kLeftBarWidth),
-          ),
-          Positioned(
-            top: 0,
-            left: context.width <= favoritesTwoPanelChangeWidth
-                ? 0
-                : _kLeftBarWidth,
-            right: 0,
-            bottom: 0,
-            child: buildBody(),
-          ),
-        ],
-      ),
+    final narrow = context.width <= favoritesTwoPanelChangeWidth;
+    return Stack(
+      children: [
+        AnimatedPositioned(
+          left: narrow ? -_kLeftBarWidth : 0,
+          top: 0,
+          bottom: 0,
+          duration: const Duration(milliseconds: 200),
+          child: FavoritesFolderSidebar(
+            selectedFolder: folder,
+            isNetworkSelected: isNetwork,
+            onFolderSelected: setFolder,
+            onFolderListReady: (list) {
+              folderList = list;
+            },
+          ).fixWidth(_kLeftBarWidth),
+        ),
+        Positioned(
+          top: 0,
+          left: narrow ? 0 : _kLeftBarWidth,
+          right: 0,
+          bottom: 0,
+          child: buildBody(),
+        ),
+      ],
     );
   }
 

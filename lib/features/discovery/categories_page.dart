@@ -21,6 +21,12 @@ class SourceCategoryView extends StatefulWidget {
   final String sourceKey;
   final CategoryData data;
 
+  static bool canRefresh(CategoryData? data) =>
+      data?.categories.any(
+        (part) => part.enableRandom || part is DynamicCategoryPart,
+      ) ??
+      false;
+
   @override
   State<SourceCategoryView> createState() => SourceCategoryViewState();
 }
@@ -31,6 +37,9 @@ class SourceCategoryViewState extends AutomaticGlobalState<SourceCategoryView>
   Object? get key => 'category:${widget.sourceKey}';
 
   final ScrollController _scrollController = ScrollController();
+
+  ScrollController get scrollController => _scrollController;
+
   void toTop() {
     if (_scrollController.hasClients) {
       _scrollController.animateTo(
@@ -123,6 +132,7 @@ class SourceCategoryViewState extends AutomaticGlobalState<SourceCategoryView>
             children: children,
           ),
         ),
+        const SliverPadding(padding: EdgeInsets.only(bottom: 24)),
       ],
     );
   }

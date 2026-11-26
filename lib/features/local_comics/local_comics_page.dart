@@ -574,7 +574,20 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
                         ),
                         onChanged: (_) => update(),
                       ),
-                actions: multiSelectMode ? selectActions : null,
+                actions: multiSelectMode
+                    ? selectActions
+                    : [
+                        if (_searchController.text.isNotEmpty)
+                          IconButton(
+                            tooltip: 'Clear'.tl,
+                            iconSize: 20,
+                            icon: const Icon(Icons.clear),
+                            onPressed: () {
+                              _searchController.clear();
+                              update();
+                            },
+                          ),
+                      ],
               ),
             if (!multiSelectMode) SliverToBoxAdapter(child: _buildFilters()),
             if (comics.isEmpty)
@@ -680,20 +693,6 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
                           c.comicType,
                         )!;
                         localComic.read();
-                      },
-                    ),
-                    MenuEntry(
-                      icon: Icons.info_outline,
-                      text: "Details".tl,
-                      onClick: () {
-                        context.to(
-                          () => ComicPage(
-                            id: c.id,
-                            sourceKey: c.sourceKey,
-                            title: c.title,
-                            cover: c.cover,
-                          ),
-                        );
                       },
                     ),
                     MenuEntry(

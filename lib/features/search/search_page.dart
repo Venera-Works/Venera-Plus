@@ -7,7 +7,6 @@ import 'package:sliver_tools/sliver_tools.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/gesture.dart';
 import 'package:venera_plus/components/loading.dart';
-import 'package:venera_plus/components/menu.dart';
 import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/components/select.dart';
@@ -323,6 +322,7 @@ class _SearchPageState extends State<SearchPage> {
               leading: const Icon(Icons.search),
               title: Text("Search in".tl),
               trailing: IconButton(
+                tooltip: 'Search Sources'.tl,
                 icon: const Icon(Icons.settings),
                 onPressed: manageSearchSources,
               ),
@@ -770,23 +770,44 @@ class _SearchHistoryState extends State<_SearchHistory> {
       }
     }
 
-    void showMenu(Offset offset) => showMenuX(context, offset, [
-      MenuEntry(
-        icon: Icons.copy,
-        text: 'Copy'.tl,
-        onClick: () => action('copy'),
-      ),
-      MenuEntry(
-        icon: Icons.delete,
-        text: 'Delete'.tl,
-        onClick: () => action('delete'),
-      ),
-    ]);
+    List<PopupMenuEntry<String>> menuItems(BuildContext context) => [
+      for (final (value, icon, label) in const [
+        ('copy', Icons.copy, 'Copy'),
+        ('delete', Icons.delete_outline, 'Delete'),
+      ])
+        PopupMenuItem(
+          value: value,
+          child: Row(
+            children: [
+              Icon(icon, size: 18),
+              const SizedBox(width: 12),
+              Text(label.tl),
+            ],
+          ),
+        ),
+    ];
+
+    Future<void> showHistoryMenu(Offset globalPosition) async {
+      final overlay = Navigator.of(context, rootNavigator: true).overlay!;
+      final overlayBox = overlay.context.findRenderObject() as RenderBox;
+      final selected = await showMenu<String>(
+        context: context,
+        useRootNavigator: true,
+        position: RelativeRect.fromSize(
+          overlayBox.globalToLocal(globalPosition) & Size.zero,
+          overlayBox.size,
+        ),
+        items: menuItems(context),
+      );
+      if (mounted && selected != null) action(selected);
+    }
+
     return ClickInkWell(
       onTap: () => entry == null
           ? widget.search(word)
           : unawaited(widget.openHistory(entry)),
-      onSecondaryTapUp: (details) => showMenu(details.globalPosition),
+      onSecondaryTapUp: (details) =>
+          unawaited(showHistoryMenu(details.globalPosition)),
       child: Row(
         children: [
           Expanded(
@@ -836,11 +857,9 @@ class _SearchHistoryState extends State<_SearchHistory> {
           ),
           PopupMenuButton<String>(
             tooltip: 'More'.tl,
+            useRootNavigator: true,
             onSelected: action,
-            itemBuilder: (context) => [
-              PopupMenuItem(value: 'copy', child: Text('Copy'.tl)),
-              PopupMenuItem(value: 'delete', child: Text('Delete'.tl)),
-            ],
+            itemBuilder: menuItems,
           ),
         ],
       ),

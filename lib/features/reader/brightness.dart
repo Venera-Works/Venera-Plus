@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/effects.dart';
 import 'package:venera_plus/foundation/translations.dart';
 
 const int readerBrightnessMin = 20;
@@ -134,6 +135,7 @@ class ReaderBrightnessBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final value = normalizeReaderBrightness(brightness);
+    final borderRadius = BorderRadius.circular(16);
     return Material(
       color: Colors.transparent,
       child: SizedBox(
@@ -146,10 +148,17 @@ class ReaderBrightnessBar extends StatelessWidget {
               bottom: 0,
               left: 8,
               right: 8,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: colors.surface.withValues(alpha: 0.2),
-                  borderRadius: BorderRadius.circular(16),
+              child: BlurEffect(
+                borderRadius: borderRadius,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: colors.surfaceContainerHigh.withValues(alpha: 0.88),
+                    borderRadius: borderRadius,
+                    border: Border.all(
+                      color: colors.outlineVariant,
+                      width: 0.5,
+                    ),
+                  ),
                 ),
               ),
             ),

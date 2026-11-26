@@ -544,13 +544,13 @@ class ReaderGestureDetectorState
           onClick: () => context.readerScaffold.openSetting(),
         ),
         MenuEntry(
-          icon: Icons.menu,
+          icon: Icons.library_books,
           text: "Chapters".tl,
           onClick: () => context.readerScaffold.openChapterDrawer(),
         ),
         MenuEntry(
           icon: Icons.fullscreen,
-          text: "Fullscreen".tl,
+          text: "Full Screen".tl,
           onClick: () => context.reader.fullscreen(),
         ),
         MenuEntry(

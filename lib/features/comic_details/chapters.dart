@@ -158,13 +158,13 @@ class _NormalComicChaptersState extends State<_NormalComicChapters> {
                 return Padding(
                   padding: const EdgeInsets.fromLTRB(4, 4, 4, 4),
                   child: Material(
-                    color: context.colorScheme.surfaceContainer,
-                    borderRadius: BorderRadius.circular(16),
+                    color: context.colorScheme.surfaceContainerLow,
+                    borderRadius: BorderRadius.circular(12),
                     child: ClickInkWell(
                       onTap: widget.readChapter == null
                           ? null
                           : () => widget.readChapter!(chapter, null),
-                      borderRadius: BorderRadius.circular(16),
+                      borderRadius: BorderRadius.circular(12),
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 8),
                         child: Center(

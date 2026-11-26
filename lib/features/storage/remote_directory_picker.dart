@@ -30,7 +30,7 @@ class _RemoteDirectoryPickerState extends State<RemoteDirectoryPicker> {
         ? widget.initialDirectories
         : widget.initialDirectories.take(1),
   );
-  Future<List<RemoteEntry>>? _entries;
+  late Future<List<RemoteEntry>> _entries;
   @override
   void initState() {
     super.initState();
@@ -46,9 +46,9 @@ class _RemoteDirectoryPickerState extends State<RemoteDirectoryPicker> {
     super.dispose();
   }
 
-  void _open(String path) => setState(() {
+  void _open(String path, {bool refresh = false}) => setState(() {
     _directory = normalizeRemoteDirectory(path);
-    _entries = widget.store.list(_directory);
+    _entries = widget.store.list(_directory, refresh: refresh);
   });
   void _select(String path) => setState(() {
     if (_selected.contains(path)) {
@@ -79,9 +79,46 @@ class _RemoteDirectoryPickerState extends State<RemoteDirectoryPicker> {
           Checkbox(value: selected, onChanged: (_) => _select(normalizedPath)),
         ],
       ),
-      onTap: current ? null : () => _open(normalizedPath),
+      onTap: current
+          ? () => _select(normalizedPath)
+          : () => _open(normalizedPath),
     );
   }
+
+  Widget _folderState({
+    required IconData icon,
+    required Color color,
+    required String message,
+    VoidCallback? retry,
+  }) => SliverFillRemaining(
+    hasScrollBody: false,
+    child: Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: color, size: 36),
+            const SizedBox(height: 12),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: TextStyle(color: color),
+            ),
+            if (retry != null) ...[
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                style: actionButtonStyle,
+                onPressed: retry,
+                icon: const Icon(Icons.refresh),
+                label: Text('Retry'.tl),
+              ),
+            ],
+          ],
+        ),
+      ),
+    ),
+  );
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -109,31 +146,47 @@ class _RemoteDirectoryPickerState extends State<RemoteDirectoryPicker> {
                 if (snapshot.connectionState != ConnectionState.done) {
                   return const Center(child: CircularProgressIndicator());
                 }
-                if (snapshot.hasError) {
-                  return Center(child: Text('${snapshot.error}'));
-                }
-                final directories = snapshot.data!
-                    .where((entry) => entry.isDirectory)
-                    .toList();
-                return ListView(
-                  children: [
+                final colors = Theme.of(context).colorScheme;
+                final directories =
+                    snapshot.data
+                        ?.where((entry) => entry.isDirectory)
+                        .toList() ??
+                    const <RemoteEntry>[];
+                return CustomScrollView(
+                  slivers: [
                     if (_directory != '/')
-                      ListTile(
-                        leading: const Icon(Icons.arrow_upward),
-                        title: Text('Parent directory'.tl),
-                        onTap: () {
-                          final parts = _directory.split('/')
-                            ..removeWhere((item) => item.isEmpty);
-                          parts.removeLast();
-                          _open(parts.isEmpty ? '/' : '/${parts.join('/')}/');
-                        },
+                      SliverToBoxAdapter(
+                        child: ListTile(
+                          leading: const Icon(Icons.arrow_upward),
+                          title: Text('Parent directory'.tl),
+                          onTap: () {
+                            final parts = _directory.split('/')
+                              ..removeWhere((item) => item.isEmpty);
+                            parts.removeLast();
+                            _open(parts.isEmpty ? '/' : '/${parts.join('/')}/');
+                          },
+                        ),
                       ),
-                    for (final entry in directories)
-                      _folderTile(entry.path, entry.name),
-                    if (directories.isEmpty)
-                      Padding(
-                        padding: const EdgeInsets.all(24),
-                        child: Text('No subfolders'.tl),
+                    if (snapshot.hasError)
+                      _folderState(
+                        icon: Icons.error_outline,
+                        color: colors.error,
+                        message: '${snapshot.error}',
+                        retry: () => _open(_directory, refresh: true),
+                      )
+                    else if (directories.isEmpty)
+                      _folderState(
+                        icon: Icons.folder_outlined,
+                        color: colors.onSurfaceVariant,
+                        message: 'No subfolders'.tl,
+                      )
+                    else
+                      SliverList.builder(
+                        itemCount: directories.length,
+                        itemBuilder: (context, index) {
+                          final entry = directories[index];
+                          return _folderTile(entry.path, entry.name);
+                        },
                       ),
                   ],
                 );

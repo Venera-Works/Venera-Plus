@@ -28,72 +28,40 @@ class _LogsPageState extends State<LogsPage> {
       appBar: Appbar(
         title: Text("Logs".tl),
         actions: [
-          IconButton(
-            onPressed: () => setState(() {
-              final RelativeRect position = RelativeRect.fromLTRB(
-                MediaQuery.of(context).size.width,
-                MediaQuery.of(context).padding.top + kToolbarHeight,
-                0.0,
-                0.0,
-              );
-              showMenu(
-                context: context,
-                position: position,
-                items: [
-                  PopupMenuItem(
-                    child: Text("All".tl),
-                    onTap: () => setState(() => logLevelToShow = "all"),
-                  ),
-                  PopupMenuItem(
-                    child: Text("Information".tl),
-                    onTap: () => setState(() => logLevelToShow = "info"),
-                  ),
-                  PopupMenuItem(
-                    child: Text("Warning".tl),
-                    onTap: () => setState(() => logLevelToShow = "warning"),
-                  ),
-                  PopupMenuItem(
-                    child: Text("Error".tl),
-                    onTap: () => setState(() => logLevelToShow = "error"),
-                  ),
-                ],
-              );
-            }),
+          PopupMenuButton<String>(
+            tooltip: 'Filter'.tl,
             icon: const Icon(Icons.filter_list_outlined),
+            position: PopupMenuPosition.under,
+            onSelected: (level) => setState(() => logLevelToShow = level),
+            itemBuilder: (context) => [
+              PopupMenuItem(value: 'all', child: Text('All'.tl)),
+              PopupMenuItem(value: 'info', child: Text('Information'.tl)),
+              PopupMenuItem(value: 'warning', child: Text('Warning'.tl)),
+              PopupMenuItem(value: 'error', child: Text('Error'.tl)),
+            ],
           ),
-          IconButton(
-            onPressed: () => setState(() {
-              final RelativeRect position = RelativeRect.fromLTRB(
-                MediaQuery.of(context).size.width,
-                MediaQuery.of(context).padding.top + kToolbarHeight,
-                0.0,
-                0.0,
-              );
-              showMenu(
-                context: context,
-                position: position,
-                items: [
-                  PopupMenuItem(
-                    child: Text("Clear".tl),
-                    onTap: () => setState(() => Log.clear()),
-                  ),
-                  PopupMenuItem(
-                    child: Text("Disable Length Limitation".tl),
-                    onTap: () {
-                      Log.ignoreLimitation = true;
-                      context.showMessage(
-                        message: "Only valid for this run".tl,
-                      );
-                    },
-                  ),
-                  PopupMenuItem(
-                    child: Text("Export".tl),
-                    onTap: () => saveLog(Log().toString()),
-                  ),
-                ],
-              );
-            }),
+          PopupMenuButton<VoidCallback>(
+            tooltip: 'More'.tl,
             icon: const Icon(Icons.more_horiz),
+            position: PopupMenuPosition.under,
+            onSelected: (action) => action(),
+            itemBuilder: (context) => [
+              PopupMenuItem(
+                value: () => setState(Log.clear),
+                child: Text('Clear'.tl),
+              ),
+              PopupMenuItem(
+                value: () {
+                  Log.ignoreLimitation = true;
+                  context.showMessage(message: 'Only valid for this run'.tl);
+                },
+                child: Text('Disable Length Limitation'.tl),
+              ),
+              PopupMenuItem(
+                value: () => saveLog(Log().toString()),
+                child: Text('Export'.tl),
+              ),
+            ],
           ),
         ],
       ),

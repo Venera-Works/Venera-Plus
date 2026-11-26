@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/appbar.dart';
+import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/foundation/app_page_route.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/translations.dart';
@@ -80,6 +81,8 @@ class StorageAccountsPage extends StatefulWidget {
 }
 
 class _StorageAccountsPageState extends State<StorageAccountsPage> {
+  final _testingIds = <String>{};
+
   String _usage(StorageAccount account) {
     final libraries = widget.accounts.libraries
         .where((library) => library.accountId == account.id)
@@ -99,26 +102,32 @@ class _StorageAccountsPageState extends State<StorageAccountsPage> {
   }
 
   Future<void> _test(StorageAccount account) async {
-    var result = account;
-    final store = widget.accounts.storeFor(account.id);
+    if (_testingIds.contains(account.id)) return;
+    setState(() => _testingIds.add(account.id));
+    final accounts = widget.accounts;
+    RemoteFileStore? store;
     try {
-      await store.test();
-      result = account.copyWith(
-        status: StorageAuthorizationStatus.valid,
-        clearStatusMessage: true,
-      );
-    } on RemoteStorageException catch (error) {
-      result = account.copyWith(
-        status: error.isAuthorizationFailure
-            ? StorageAuthorizationStatus.invalid
-            : StorageAuthorizationStatus.unknown,
-        statusMessage: error.message,
-      );
+      StorageAccount result;
+      try {
+        store = accounts.storeFor(account.id);
+        await store.test();
+        result = account.copyWith(
+          status: StorageAuthorizationStatus.valid,
+          clearStatusMessage: true,
+        );
+      } on RemoteStorageException catch (error) {
+        result = account.copyWith(
+          status: error.isAuthorizationFailure
+              ? StorageAuthorizationStatus.invalid
+              : StorageAuthorizationStatus.unknown,
+          statusMessage: error.message,
+        );
+      }
+      await accounts.updateStatus(result);
     } finally {
-      widget.accounts.release(store);
+      if (store != null) accounts.release(store);
+      if (mounted) setState(() => _testingIds.remove(account.id));
     }
-    await widget.accounts.updateStatus(result);
-    if (mounted) setState(() {});
   }
 
   Future<void> _edit([StorageAccount? initial]) async {
@@ -157,48 +166,106 @@ class _StorageAccountsPageState extends State<StorageAccountsPage> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: Appbar(title: Text('Cloud Storage Accounts'.tl)),
-    floatingActionButton: FloatingActionButton(
-      onPressed: _edit,
-      child: const Icon(Icons.add),
-    ),
-    body: ListView(
-      children: [
-        for (final account in widget.accounts.accounts)
-          ListTile(
-            title: Text(account.name),
-            subtitle: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  account.statusMessage?.tl ??
-                      '${account.driver.tl} · ${switch (account.status) {
-                        StorageAuthorizationStatus.valid => 'Connected'.tl,
-                        StorageAuthorizationStatus.invalid => 'Authorization invalid'.tl,
-                        StorageAuthorizationStatus.unknown => 'Connection not verified'.tl,
-                      }}',
+  Widget build(BuildContext context) {
+    final accounts = widget.accounts.accounts;
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    return Scaffold(
+      appBar: Appbar(title: Text('Cloud Storage Accounts'.tl)),
+      floatingActionButton: FloatingActionButton(
+        tooltip: 'Add Cloud Storage Account'.tl,
+        heroTag: 'storage_accounts_fab',
+        onPressed: _edit,
+        child: const Icon(Icons.add),
+      ),
+      body: accounts.isEmpty
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.cloud_outlined,
+                      size: 40,
+                      color: colors.onSurfaceVariant,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'No cloud storage accounts'.tl,
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Add an account to browse cloud comics, sync app data or back up archives.'
+                          .tl,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: colors.onSurfaceVariant),
+                    ),
+                  ],
                 ),
-                Text(_usage(account)),
-              ],
-            ),
-            trailing: IconButton(
-              icon: const Icon(Icons.delete_outline),
-              onPressed: () async {
-                await widget.accounts.remove(account.id);
-                if (mounted) setState(() {});
+              ),
+            )
+          : ListView.builder(
+              padding: const EdgeInsets.only(bottom: 96),
+              itemCount: accounts.length,
+              itemBuilder: (context, index) {
+                final account = accounts[index];
+                final testing = _testingIds.contains(account.id);
+                final hasError =
+                    account.statusMessage != null ||
+                    account.status == StorageAuthorizationStatus.invalid;
+                return ListTile(
+                  title: Text(account.name),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        account.statusMessage?.tl ??
+                            '${account.driver.tl} · ${switch (account.status) {
+                              StorageAuthorizationStatus.valid => 'Connected'.tl,
+                              StorageAuthorizationStatus.invalid => 'Authorization invalid'.tl,
+                              StorageAuthorizationStatus.unknown => 'Connection not verified'.tl,
+                            }}',
+                        style: hasError ? TextStyle(color: colors.error) : null,
+                      ),
+                      Text(_usage(account)),
+                    ],
+                  ),
+                  trailing: IconButton(
+                    tooltip: 'Delete'.tl,
+                    icon: const Icon(Icons.delete_outline),
+                    onPressed: testing
+                        ? null
+                        : () => showConfirmDialog(
+                            context: context,
+                            title: 'Delete'.tl,
+                            content: account.name,
+                            confirmText: 'Delete',
+                            btnColor: colors.error,
+                            onConfirm: () async {
+                              await widget.accounts.remove(account.id);
+                              if (mounted) setState(() {});
+                            },
+                          ),
+                  ),
+                  leading: IconButton(
+                    icon: testing
+                        ? const SizedBox.square(
+                            dimension: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.refresh),
+                    tooltip: (testing ? 'Testing…' : 'Test connection').tl,
+                    onPressed: testing ? null : () => _test(account),
+                  ),
+                  onTap: testing ? null : () => _edit(account),
+                );
               },
             ),
-            leading: IconButton(
-              icon: const Icon(Icons.refresh),
-              tooltip: 'Test connection'.tl,
-              onPressed: () => _test(account),
-            ),
-            onTap: () => _edit(account),
-          ),
-      ],
-    ),
-  );
+    );
+  }
 }
 
 class _StorageProviderPage extends StatelessWidget {
@@ -310,6 +377,46 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
   String? _error;
   bool _loggingIn = false;
   CancelToken? _googleLogin;
+  final _visibleSecrets = <TextEditingController>{};
+
+  InputDecoration _fieldDecoration(String label, {Widget? suffixIcon}) =>
+      InputDecoration(
+        labelText: label.tl,
+        isDense: true,
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+        suffixIcon: suffixIcon,
+      );
+
+  Widget _secretField(
+    TextEditingController controller,
+    String label, {
+    bool readOnly = false,
+    ValueChanged<String>? onChanged,
+  }) {
+    final visible = _visibleSecrets.contains(controller);
+    return TextField(
+      controller: controller,
+      readOnly: readOnly,
+      onChanged: onChanged,
+      obscureText: !visible,
+      autocorrect: false,
+      enableSuggestions: false,
+      decoration: _fieldDecoration(
+        label,
+        suffixIcon: IconButton(
+          tooltip: (visible ? 'Hide' : 'Show').tl,
+          icon: Icon(visible ? Icons.visibility_off : Icons.visibility),
+          onPressed: () => setState(() {
+            if (visible) {
+              _visibleSecrets.remove(controller);
+            } else {
+              _visibleSecrets.add(controller);
+            }
+          }),
+        ),
+      ),
+    );
+  }
 
   @override
   void dispose() {
@@ -352,25 +459,21 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                   TextField(
                     controller: _name,
                     readOnly: _isGoogleDrive && _loggingIn,
-                    decoration: InputDecoration(labelText: 'Name'.tl),
+                    decoration: _fieldDecoration('Name'),
                   ),
                   const SizedBox(height: 16),
                   if (webdav) ...[
                     TextField(
                       controller: _url,
-                      decoration: InputDecoration(labelText: 'URL'.tl),
+                      decoration: _fieldDecoration('URL'),
                     ),
                     const SizedBox(height: 16),
                     TextField(
                       controller: _user,
-                      decoration: InputDecoration(labelText: 'Username'.tl),
+                      decoration: _fieldDecoration('Username'),
                     ),
                     const SizedBox(height: 16),
-                    TextField(
-                      controller: _password,
-                      obscureText: true,
-                      decoration: InputDecoration(labelText: 'Password'.tl),
-                    ),
+                    _secretField(_password, 'Password'),
                   ] else ...[
                     if (_isGoogleDrive) ...[
                       TextField(
@@ -378,18 +481,13 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                         readOnly: _loggingIn,
                         autocorrect: false,
                         enableSuggestions: false,
-                        decoration: InputDecoration(labelText: 'Client ID'.tl),
+                        decoration: _fieldDecoration('Client ID'),
                       ),
                       const SizedBox(height: 16),
-                      TextField(
-                        controller: _clientSecret,
+                      _secretField(
+                        _clientSecret,
+                        'Client Secret',
                         readOnly: _loggingIn,
-                        obscureText: true,
-                        autocorrect: false,
-                        enableSuggestions: false,
-                        decoration: InputDecoration(
-                          labelText: 'Client Secret'.tl,
-                        ),
                       ),
                     ],
                     if (_hasProviderLogin) ...[
@@ -418,31 +516,18 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                     ],
                     if (!_autoSaveAfterLogin) ...[
                       if (quark)
-                        TextField(
-                          controller: _cookie,
-                          obscureText: true,
-                          autocorrect: false,
-                          enableSuggestions: false,
-                          decoration: InputDecoration(labelText: 'Cookie'.tl),
-                        )
+                        _secretField(_cookie, 'Cookie')
                       else ...[
                         if (_driver == '115 Open') ...[
-                          TextField(
-                            controller: _accessToken,
-                            decoration: InputDecoration(
-                              labelText: 'Access Token'.tl,
-                            ),
-                          ),
+                          _secretField(_accessToken, 'Access Token'),
                           const SizedBox(height: 16),
                         ],
-                        TextField(
-                          controller: _refreshToken,
+                        _secretField(
+                          _refreshToken,
+                          'Refresh Token',
                           onChanged: _driver == '115 Open'
                               ? null
                               : (_) => _accessToken.clear(),
-                          decoration: InputDecoration(
-                            labelText: 'Refresh Token'.tl,
-                          ),
                         ),
                       ],
                     ],

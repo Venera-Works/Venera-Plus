@@ -32,6 +32,7 @@ class _StorageSettingsState extends State<StorageSettings> {
           title: Text('Storage Path'.tl),
           subtitle: Text(LocalManager().path, softWrap: false),
           trailing: IconButton(
+            tooltip: 'Copy path'.tl,
             icon: const Icon(Icons.copy),
             onPressed: () {
               Clipboard.setData(ClipboardData(text: LocalManager().path));

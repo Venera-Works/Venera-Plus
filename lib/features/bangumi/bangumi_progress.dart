@@ -118,15 +118,22 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
           ),
   );
 
+  InputDecoration _fieldDecoration(String label, {Widget? suffixIcon}) =>
+      InputDecoration(
+        labelText: label.tl,
+        isDense: true,
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+        suffixIcon: suffixIcon,
+      );
+
   Widget _buildSearch() => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
       TextField(
         key: const Key('bangumi-subject-query'),
         controller: _queryController,
-        decoration: InputDecoration(
-          labelText: 'Search Bangumi'.tl,
-          border: const OutlineInputBorder(),
+        decoration: _fieldDecoration(
+          'Search Bangumi',
           suffixIcon: IconButton(
             icon: const Icon(Icons.search),
             onPressed: _loading ? null : _search,
@@ -146,9 +153,10 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
         const SizedBox(height: 12),
         _subjectTile(_selected!),
         const SizedBox(height: 12),
-        Button.filled(
+        FilledButton(
+          style: actionButtonStyle,
           key: const Key('bangumi-bind'),
-          onPressed: _loading ? () {} : _confirmSubject,
+          onPressed: _loading ? null : _confirmSubject,
           child: Text(
             widget.selectMetadataOnly ? 'Use metadata'.tl : 'Bind'.tl,
           ),
@@ -174,6 +182,11 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
   );
 
   Widget _buildBound(BangumiBinding binding) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final detailsStyle = theme.textTheme.bodyMedium?.copyWith(
+      color: colors.onSurfaceVariant,
+    );
     final parsedResult = _localParseResult(_mode);
     final parsed = parsedResult?.progress;
     final field = _manualField(binding);
@@ -181,36 +194,39 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
-          binding.subjectTitle,
-          style: Theme.of(context).textTheme.titleLarge,
-        ),
+        Text(binding.subjectTitle, style: theme.textTheme.titleLarge),
+        const SizedBox(height: 4),
         if (binding.subjectOriginalTitle.isNotEmpty)
-          Text(binding.subjectOriginalTitle),
-        Text('Subject ID: ${binding.subjectId}'),
+          Text(binding.subjectOriginalTitle, style: detailsStyle),
+        Text('Subject ID: ${binding.subjectId}', style: detailsStyle),
         Text(
           '${'Episodes'.tl}: ${binding.totalEpisodes}    ${'Volumes'.tl}: ${binding.totalVolumes}',
+          style: detailsStyle,
         ),
         const SizedBox(height: 12),
         _statusPicker(),
         const SizedBox(height: 12),
         _modePicker(onChanged: _changeMode),
-        if (parsed != null)
+        if (parsed != null) ...[
+          const SizedBox(height: 8),
           Text(
             '${'Current chapter'.tl}: ${parsed.value} (${_fieldName(parsed.field)})',
-          )
-        else if (_mode == BangumiProgressMode.auto)
-          Text('Choose episode or volume before saving progress'.tl),
-        if (parsedResult == null)
-          Text('Current chapter title is unavailable'.tl),
-        if (parsedResult?.failure != null)
-          Text(
-            'Chapter title cannot be parsed: @reason'.tlParams({
-              'reason': _parseFailureName(parsedResult!.failure!),
-            }),
+            style: detailsStyle,
           ),
+        ],
+        if (parsedResult == null)
+          _progressNotice('Current chapter title is unavailable'.tl),
+        if (parsedResult?.failure case final failure?)
+          _progressNotice(
+            'Chapter title cannot be parsed: @reason'.tlParams({
+              'reason': _parseFailureName(failure),
+            }),
+            error: true,
+          ),
+        if (autoAmbiguous)
+          _progressNotice('Choose episode or volume before saving progress'.tl),
         if (_service.hasPendingProgress(widget.sourceKey, widget.comicId))
-          Text('Bangumi progress is waiting to retry'.tl),
+          _progressNotice('Bangumi progress is waiting to retry'.tl),
         const SizedBox(height: 12),
         TextField(
           key: const Key('bangumi-progress-field'),
@@ -218,10 +234,7 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
           enabled: !_loading && !autoAmbiguous,
           keyboardType: TextInputType.number,
           inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          decoration: InputDecoration(
-            labelText: 'Progress'.tl,
-            border: const OutlineInputBorder(),
-          ),
+          decoration: _fieldDecoration('Progress'),
         ),
         const SizedBox(height: 12),
         TextField(
@@ -230,31 +243,33 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
           enabled: !_loading,
           keyboardType: TextInputType.number,
           inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          decoration: InputDecoration(
-            labelText: 'Rating (0-10)'.tl,
-            border: const OutlineInputBorder(),
-          ),
+          decoration: _fieldDecoration('Rating (0-10)'),
         ),
         if (_error != null) _errorText(),
         const SizedBox(height: 12),
-        Button.filled(
+        if (_loading) ...[
+          const LinearProgressIndicator(),
+          const SizedBox(height: 12),
+        ],
+        FilledButton(
+          style: actionButtonStyle,
           key: const Key('bangumi-save'),
-          isLoading: _loading,
-          onPressed: _loading ? () {} : () => _save(),
+          onPressed: _loading ? null : _save,
           child: Text('Save'.tl),
         ),
         const SizedBox(height: 8),
-        Button.outlined(
+        OutlinedButton(
+          style: actionButtonStyle,
           key: const Key('bangumi-sync-now'),
-          isLoading: _loading,
-          onPressed: _loading ? () {} : () => _syncNow(),
+          onPressed: _loading ? null : _syncNow,
           child: Text('Refresh / Sync now'.tl),
         ),
         const SizedBox(height: 8),
-        Button.outlined(
+        OutlinedButton(
+          style: actionButtonStyle,
           key: const Key('bangumi-rebind'),
           onPressed: _loading
-              ? () {}
+              ? null
               : () => setState(() {
                   _rebinding = true;
                   _selected = null;
@@ -264,9 +279,12 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
           child: Text('Rebind'.tl),
         ),
         const SizedBox(height: 8),
-        Button.outlined(
+        OutlinedButton(
+          style: actionButtonStyle.merge(
+            OutlinedButton.styleFrom(foregroundColor: colors.error),
+          ),
           key: const Key('bangumi-unbind'),
-          onPressed: _loading ? () {} : () => _unbind(),
+          onPressed: _loading ? null : _unbind,
           child: Text('Unbind'.tl),
         ),
       ],
@@ -308,66 +326,88 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
 
   Widget _statusPicker() => KeyedSubtree(
     key: const Key('bangumi-status'),
-    child: DropdownButtonFormField<BangumiCollectionStatus>(
-      key: ValueKey(_status),
-      initialValue: _status,
-      decoration: InputDecoration(
-        labelText: 'Status'.tl,
-        border: const OutlineInputBorder(),
+    child: ButtonTheme(
+      alignedDropdown: true,
+      child: DropdownButtonFormField<BangumiCollectionStatus>(
+        key: ValueKey(_status),
+        initialValue: _status,
+        isExpanded: true,
+        borderRadius: BorderRadius.circular(12),
+        dropdownColor: Theme.of(context).colorScheme.surfaceContainerHigh,
+        menuMaxHeight: 320,
+        decoration: _fieldDecoration('Status'),
+        items: [
+          for (final status in BangumiCollectionStatus.values)
+            DropdownMenuItem(value: status, child: Text(_statusName(status))),
+        ],
+        onChanged: _loading
+            ? null
+            : (status) {
+                if (status != null) {
+                  setState(() => _status = status);
+                }
+              },
       ),
-      items: BangumiCollectionStatus.values
-          .map(
-            (status) => DropdownMenuItem(
-              value: status,
-              child: Text(_statusName(status)),
-            ),
-          )
-          .toList(),
-      onChanged: _loading
-          ? null
-          : (status) {
-              if (status != null) {
-                setState(() => _status = status);
-              }
-            },
     ),
   );
 
   Widget _modePicker({ValueChanged<BangumiProgressMode>? onChanged}) =>
       KeyedSubtree(
         key: const Key('bangumi-mode'),
-        child: DropdownButtonFormField<BangumiProgressMode>(
-          key: ValueKey(_mode),
-          initialValue: _mode,
-          decoration: InputDecoration(
-            labelText: 'Sync mode'.tl,
-            border: const OutlineInputBorder(),
+        child: ButtonTheme(
+          alignedDropdown: true,
+          child: DropdownButtonFormField<BangumiProgressMode>(
+            key: ValueKey(_mode),
+            initialValue: _mode,
+            isExpanded: true,
+            borderRadius: BorderRadius.circular(12),
+            dropdownColor: Theme.of(context).colorScheme.surfaceContainerHigh,
+            menuMaxHeight: 320,
+            decoration: _fieldDecoration('Sync mode'),
+            items: [
+              for (final mode in BangumiProgressMode.values)
+                DropdownMenuItem(value: mode, child: Text(_modeName(mode))),
+            ],
+            onChanged: _loading
+                ? null
+                : (mode) {
+                    if (mode != null) {
+                      (onChanged ?? (value) => setState(() => _mode = value))(
+                        mode,
+                      );
+                    }
+                  },
           ),
-          items: BangumiProgressMode.values
-              .map(
-                (mode) =>
-                    DropdownMenuItem(value: mode, child: Text(_modeName(mode))),
-              )
-              .toList(),
-          onChanged: _loading
-              ? null
-              : (mode) {
-                  if (mode != null) {
-                    (onChanged ?? (value) => setState(() => _mode = value))(
-                      mode,
-                    );
-                  }
-                },
         ),
       );
 
-  Widget _errorText() => Padding(
-    padding: const EdgeInsets.only(top: 12),
-    child: Text(
-      _error!,
-      style: TextStyle(color: Theme.of(context).colorScheme.error),
-    ),
-  );
+  Widget _errorText() => _progressNotice(_error!, error: true);
+
+  Widget _progressNotice(String message, {bool error = false}) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final color = error ? colors.error : colors.tertiary;
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            error ? Icons.error_outline : Icons.warning_amber_rounded,
+            color: color,
+            size: 18,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              message,
+              style: theme.textTheme.bodySmall?.copyWith(color: color),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Future<void> _preselectInitialSubject() async {
     final subjectId = widget.initialSubjectId;
@@ -427,7 +467,7 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
 
   Future<void> _confirmSubject() async {
     final subject = _selected;
-    if (subject == null) return;
+    if (_loading || subject == null) return;
     setState(() {
       _loading = true;
       _error = null;
@@ -519,6 +559,7 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
   }
 
   Future<void> _save({bool allowDecrease = false}) async {
+    if (_loading) return;
     final binding = _binding;
     final field = binding == null ? null : _manualField(binding);
     final progressChanged =
@@ -574,7 +615,7 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
 
   Future<void> _syncNow() async {
     final binding = _binding;
-    if (binding == null) return;
+    if (_loading || binding == null) return;
     setState(() {
       _loading = true;
       _error = null;
@@ -605,6 +646,7 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
   }
 
   Future<void> _unbind() async {
+    if (_loading) return;
     setState(() {
       _loading = true;
       _error = null;

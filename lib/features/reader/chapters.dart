@@ -112,6 +112,7 @@ class ReaderChaptersViewState extends State<ReaderChaptersView>
 
   @override
   Widget build(BuildContext context) {
+    const tabLabelStyle = TextStyle(fontSize: 16, fontWeight: FontWeight.w500);
     final canDownload =
         ComicSource.find(widget.reader.type.sourceKey)?.loadComicPages != null;
     return Scaffold(
@@ -125,14 +126,8 @@ class ReaderChaptersViewState extends State<ReaderChaptersView>
           indicatorColor: context.colorScheme.primary,
           indicatorWeight: 3,
           labelPadding: const EdgeInsets.symmetric(horizontal: 4),
-          labelStyle: const TextStyle(
-            fontSize: 20,
-            fontWeight: FontWeight.w500,
-          ),
-          unselectedLabelStyle: const TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w500,
-          ),
+          labelStyle: tabLabelStyle,
+          unselectedLabelStyle: tabLabelStyle,
           tabs: [
             Tab(
               child: FittedBox(
@@ -171,6 +166,7 @@ class ReaderChaptersViewState extends State<ReaderChaptersView>
       floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
       floatingActionButton: canDownload && _activeTab == 0
           ? FloatingActionButton(
+              heroTag: 'reader_chapters_download_fab',
               tooltip: 'Download'.tl,
               onPressed: _openingDownload ? null : _download,
               child: _openingDownload

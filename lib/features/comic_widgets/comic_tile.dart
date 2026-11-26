@@ -240,7 +240,7 @@ class ComicTile extends StatelessWidget {
     );
   }
 
-  void _onLongPressed(context) {
+  void _onLongPressed(BuildContext context) {
     if (onLongPressed != null) {
       onLongPressed!();
       return;
@@ -249,20 +249,23 @@ class ComicTile extends StatelessWidget {
   }
 
   void onLongPress(BuildContext context) {
-    var renderBox = context.findRenderObject() as RenderBox;
-    var size = renderBox.size;
-    var location = renderBox.localToGlobal(
-      Offset((size.width - 242) / 2, size.height / 2),
+    final renderBox = context.findRenderObject() as RenderBox;
+    final location = renderBox.localToGlobal(
+      renderBox.size.center(Offset.zero),
     );
-    showMenu(location, context);
+    showMenu(location, context, centerHorizontally: true);
   }
 
   void onSecondaryTap(TapDownDetails details, BuildContext context) {
     showMenu(details.globalPosition, context);
   }
 
-  void showMenu(Offset location, BuildContext context) {
-    showMenuX(App.rootContext, location, [
+  void showMenu(
+    Offset location,
+    BuildContext context, {
+    bool centerHorizontally = false,
+  }) {
+    final entries = [
       MenuEntry(
         icon: Icons.chrome_reader_mode_outlined,
         text: 'Details'.tl,
@@ -289,7 +292,13 @@ class ComicTile extends StatelessWidget {
         onClick: () => block(context),
       ),
       ...?menuOptions,
-    ]);
+    ];
+    showMenuX(
+      App.rootContext,
+      location,
+      entries,
+      centerHorizontally: centerHorizontally,
+    );
   }
 
   @override
@@ -590,7 +599,7 @@ class ComicTile extends StatelessWidget {
                 child: Text(
                   comic.title.replaceAll('\n', ''),
                   maxLines: 1,
-                  overflow: TextOverflow.clip,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontWeight: FontWeight.w500),
                 ),
               ),

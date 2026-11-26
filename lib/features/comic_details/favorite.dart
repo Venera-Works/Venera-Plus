@@ -398,9 +398,15 @@ class _NetworkSectionState extends State<_NetworkSection> {
           return ListTile(
             title: Row(
               children: [
-                Text(name),
-                const SizedBox(width: 8),
-                if (isAdded)
+                Flexible(
+                  child: Text(
+                    name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (isAdded) ...[
+                  const SizedBox(width: 8),
                   Container(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 8,
@@ -412,6 +418,7 @@ class _NetworkSectionState extends State<_NetworkSection> {
                     ),
                     child: Text("Added".tl, style: ts.s12),
                   ),
+                ],
               ],
             ),
             trailing: (_itemLoading[id] ?? false)

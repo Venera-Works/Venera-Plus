@@ -33,7 +33,7 @@ class Appbar extends StatefulWidget implements PreferredSizeWidget {
   State<Appbar> createState() => _AppbarState();
 
   @override
-  Size get preferredSize => const Size.fromHeight(56);
+  Size get preferredSize => const Size.fromHeight(_kAppBarHeight);
 }
 
 class _AppbarState extends State<Appbar> {
@@ -289,7 +289,10 @@ class AppTabBar extends StatefulWidget {
 }
 
 class _AppTabBarState extends State<AppTabBar> {
-  late TabController _controller;
+  TabController? _tabController;
+  TabController get _controller => _tabController!;
+
+  Animation<double>? _tabAnimation;
 
   late List<GlobalKey> keys;
 
@@ -301,7 +304,7 @@ class _AppTabBarState extends State<AppTabBar> {
 
   _IndicatorPainter? painter;
 
-  var scrollController = ScrollController();
+  final scrollController = ScrollController();
 
   var tabBarKey = GlobalKey();
 
@@ -315,6 +318,8 @@ class _AppTabBarState extends State<AppTabBar> {
 
   @override
   void dispose() {
+    _tabAnimation?.removeListener(onTabChanged);
+    scrollController.dispose();
     super.dispose();
   }
 
@@ -322,27 +327,43 @@ class _AppTabBarState extends State<AppTabBar> {
 
   @override
   void didChangeDependencies() {
-    _controller = widget.controller ?? DefaultTabController.of(context);
-    initPainter();
     super.didChangeDependencies();
-    var prevIndex = bucket.readState(context) as int?;
-    if (prevIndex != null &&
-        prevIndex != _controller.index &&
-        prevIndex >= 0 &&
-        prevIndex < widget.tabs.length) {
-      _controller.index = prevIndex;
-    }
-    _controller.animation!.addListener(onTabChanged);
+    _updateController();
+    initPainter();
   }
 
   @override
   void didUpdateWidget(covariant AppTabBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.tabs.length != oldWidget.tabs.length) {
+      keys = widget.tabs.map((e) => GlobalKey()).toList();
+      offsets = [];
+    }
     if (widget.controller != oldWidget.controller) {
-      _controller = widget.controller ?? DefaultTabController.of(context);
-      _controller.animation!.addListener(onTabChanged);
+      _updateController();
       initPainter();
     }
-    super.didUpdateWidget(oldWidget);
+  }
+
+  void _updateController() {
+    final controller = widget.controller ?? DefaultTabController.of(context);
+    if (identical(controller, _tabController)) return;
+
+    // DefaultTabController 调整长度时会把动画转交给新控制器。
+    _tabAnimation?.removeListener(onTabChanged);
+    if (_tabController == null) {
+      final storedIndex = bucket.readState(context) as int?;
+      if (storedIndex != null &&
+          storedIndex >= 0 &&
+          storedIndex < widget.tabs.length &&
+          storedIndex < controller.length) {
+        controller.index = storedIndex;
+      }
+    }
+    _tabController = controller;
+    previousIndex = null;
+    _tabAnimation = controller.animation;
+    _tabAnimation?.addListener(onTabChanged);
   }
 
   void initPainter() {
@@ -425,6 +446,11 @@ class _AppTabBarState extends State<AppTabBar> {
   }
 
   void updateScrollOffset(int i) {
+    if (!scrollController.hasClients ||
+        !scrollController.position.hasContentDimensions ||
+        i + 1 >= offsets.length) {
+      return;
+    }
     // try to scroll to center the tab
     final RenderBox tabBarBox =
         tabBarKey.currentContext!.findRenderObject() as RenderBox;
@@ -599,8 +625,8 @@ class _IndicatorPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) {
-    return false;
+  bool shouldRepaint(covariant _IndicatorPainter oldDelegate) {
+    return controller != oldDelegate.controller || color != oldDelegate.color;
   }
 }
 
@@ -684,6 +710,8 @@ class SliverSearchBar extends StatefulWidget {
     this.focusNode,
   });
 
+  static const toolbarHeight = _kAppBarHeight;
+
   final SearchBarController controller;
 
   final void Function(String)? onChanged;
@@ -758,8 +786,6 @@ class _SliverSearchBarDelegate extends SliverPersistentHeaderDelegate {
     this.focusNode,
   });
 
-  static const _kAppBarHeight = 52.0;
-
   @override
   Widget build(
     BuildContext context,
@@ -805,6 +831,7 @@ class _SliverSearchBarDelegate extends SliverPersistentHeaderDelegate {
               return editingController.text.isEmpty
                   ? const SizedBox()
                   : IconButton(
+                      tooltip: 'Clear'.tl,
                       iconSize: 20,
                       icon: const Icon(Icons.clear),
                       onPressed: () {
@@ -814,7 +841,7 @@ class _SliverSearchBarDelegate extends SliverPersistentHeaderDelegate {
                     );
             },
           ),
-          if (action != null) action!,
+          ?action,
           const SizedBox(width: 8),
         ],
       ),
@@ -895,6 +922,7 @@ class _SearchBarState extends State<AppSearchBar> with _SearchBarMixin {
       width: double.infinity,
       padding: EdgeInsets.only(top: topPadding),
       decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
         border: Border(
           bottom: BorderSide(
             color: Theme.of(context).colorScheme.outlineVariant,
@@ -928,6 +956,7 @@ class _SearchBarState extends State<AppSearchBar> with _SearchBarMixin {
               return _editingController.text.isEmpty
                   ? const SizedBox()
                   : IconButton(
+                      tooltip: 'Clear'.tl,
                       iconSize: 20,
                       icon: const Icon(Icons.clear),
                       onPressed: () {

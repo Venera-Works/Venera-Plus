@@ -305,9 +305,10 @@ class _ComicSourcesSliverListState extends State<ComicSourcesSliverList> {
         ),
         if (sources.isEmpty)
           SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Text('No Website Sources'.tl),
+            child: SourceManagementEmptyState(
+              icon: Icons.language_outlined,
+              title: 'No Website Sources'.tl,
+              description: 'Install from a repository, link or file.'.tl,
             ),
           ),
         for (var source in sources)
@@ -351,8 +352,9 @@ class _ComicSourcesSliverListState extends State<ComicSourcesSliverList> {
                 onPressed: () => Navigator.pop(context),
                 child: Text("Cancel".tl),
               ),
-              TextButton(
+              FilledButton(
                 onPressed: () async {
+                  Navigator.pop(context);
                   await ComicSourceManager().reload();
                   App.forceRebuild();
                 },
@@ -919,6 +921,7 @@ class _LoginPageState extends State<_LoginPage> {
   String username = "";
   String password = "";
   bool loading = false;
+  bool _obscurePassword = true;
 
   final Map<String, String> _cookies = {};
 
@@ -927,96 +930,117 @@ class _LoginPageState extends State<_LoginPage> {
     return Scaffold(
       appBar: const Appbar(title: Text('')),
       body: Center(
-        child: Container(
-          padding: const EdgeInsets.all(16),
+        child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 400),
-          child: AutofillGroup(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text("Login".tl, style: const TextStyle(fontSize: 24)),
-                const SizedBox(height: 32),
-                if (widget.config.cookieFields == null)
-                  TextField(
-                    decoration: InputDecoration(
-                      labelText: "Username".tl,
-                      border: const OutlineInputBorder(),
-                    ),
-                    enabled: widget.config.login != null,
-                    onChanged: (s) {
-                      username = s;
-                    },
-                    autofillHints: const [AutofillHints.username],
-                  ).paddingBottom(16),
-                if (widget.config.cookieFields == null)
-                  TextField(
-                    decoration: InputDecoration(
-                      labelText: "Password".tl,
-                      border: const OutlineInputBorder(),
-                    ),
-                    obscureText: true,
-                    enabled: widget.config.login != null,
-                    onChanged: (s) {
-                      password = s;
-                    },
-                    onSubmitted: (s) => login(),
-                    autofillHints: const [AutofillHints.password],
-                  ).paddingBottom(16),
-                for (var field in widget.config.cookieFields ?? <String>[])
-                  TextField(
-                    decoration: InputDecoration(
-                      labelText: field,
-                      border: const OutlineInputBorder(),
-                    ),
-                    obscureText: true,
-                    enabled: widget.config.validateCookies != null,
-                    onChanged: (s) {
-                      _cookies[field] = s;
-                    },
-                  ).paddingBottom(16),
-                if (widget.config.login == null &&
-                    widget.config.cookieFields == null)
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.error_outline),
-                      const SizedBox(width: 8),
-                      Text("Login with password is disabled".tl),
-                    ],
-                  )
-                else
-                  Button.filled(
-                    isLoading: loading,
-                    onPressed: login,
-                    child: Text("Continue".tl),
-                  ),
-                const SizedBox(height: 24),
-                if (widget.config.loginWebsite != null)
-                  TextButton(
-                    onPressed: () {
-                      if (App.isLinux) {
-                        loginWithWebview2();
-                      } else {
-                        loginWithWebview();
-                      }
-                    },
-                    child: Text("Login with webview".tl),
-                  ),
-                const SizedBox(height: 8),
-                if (widget.config.registerWebsite != null)
-                  TextButton(
-                    onPressed: () =>
-                        launchUrlString(widget.config.registerWebsite!),
-                    child: Row(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: AutofillGroup(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text("Login".tl, style: const TextStyle(fontSize: 24)),
+                  const SizedBox(height: 32),
+                  if (widget.config.cookieFields == null)
+                    TextField(
+                      decoration: InputDecoration(
+                        labelText: "Username".tl,
+                        border: const OutlineInputBorder(),
+                      ),
+                      enabled: widget.config.login != null,
+                      onChanged: (s) {
+                        username = s;
+                      },
+                      autofillHints: const [AutofillHints.username],
+                    ).paddingBottom(16),
+                  if (widget.config.cookieFields == null)
+                    TextField(
+                      decoration: InputDecoration(
+                        labelText: "Password".tl,
+                        border: const OutlineInputBorder(),
+                        suffixIcon: IconButton(
+                          tooltip:
+                              (_obscurePassword
+                                      ? 'Show password'
+                                      : 'Hide password')
+                                  .tl,
+                          icon: Icon(
+                            _obscurePassword
+                                ? Icons.visibility_outlined
+                                : Icons.visibility_off_outlined,
+                          ),
+                          onPressed: widget.config.login == null
+                              ? null
+                              : () => setState(
+                                  () => _obscurePassword = !_obscurePassword,
+                                ),
+                        ),
+                      ),
+                      obscureText: _obscurePassword,
+                      enabled: widget.config.login != null,
+                      onChanged: (s) {
+                        password = s;
+                      },
+                      onSubmitted: (s) => login(),
+                      autofillHints: const [AutofillHints.password],
+                    ).paddingBottom(16),
+                  for (var field in widget.config.cookieFields ?? <String>[])
+                    TextField(
+                      decoration: InputDecoration(
+                        labelText: field,
+                        border: const OutlineInputBorder(),
+                      ),
+                      obscureText: true,
+                      enabled: widget.config.validateCookies != null,
+                      onChanged: (s) {
+                        _cookies[field] = s;
+                      },
+                    ).paddingBottom(16),
+                  if (widget.config.login == null &&
+                      widget.config.cookieFields == null)
+                    Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.link),
+                        const Icon(Icons.error_outline),
                         const SizedBox(width: 8),
-                        Text("Create Account".tl),
+                        Flexible(
+                          child: Text("Login with password is disabled".tl),
+                        ),
                       ],
+                    )
+                  else
+                    Button.filled(
+                      isLoading: loading,
+                      onPressed: login,
+                      child: Text("Continue".tl),
                     ),
-                  ),
-              ],
+                  const SizedBox(height: 24),
+                  if (widget.config.loginWebsite != null)
+                    TextButton(
+                      onPressed: () {
+                        if (App.isLinux) {
+                          loginWithWebview2();
+                        } else {
+                          loginWithWebview();
+                        }
+                      },
+                      child: Text("Login with webview".tl),
+                    ),
+                  const SizedBox(height: 8),
+                  if (widget.config.registerWebsite != null)
+                    TextButton(
+                      onPressed: () =>
+                          launchUrlString(widget.config.registerWebsite!),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.link),
+                          const SizedBox(width: 8),
+                          Text("Create Account".tl),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
         ),
