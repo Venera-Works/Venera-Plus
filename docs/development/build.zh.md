@@ -274,6 +274,8 @@ fvm flutter build ios --release --no-codesign --no-pub
 
 macOS 与 iOS CI 在 ARM64 runner 上使用 ARM64 Flutter SDK。iOS CI 在安装串行化 Rustup 包装脚本前创建 `~/.cargo/bin`，并将其加入后续步骤的 `PATH`，兼容不预建该目录的 macOS 运行器。预发布版本通过 `--build-name` 和 `--build-number` 设置 iOS 包版本，保留 `pubspec.yaml` 中供应用读取的完整 Beta 版本号。
 
+macOS CI 执行一次 `flutter build macos --release --no-pub` 生成 Universal 应用。`.github/scripts/package_macos_dmg.py` 按架构瘦身并校验应用内的二进制文件，由内而外重新签名，使用 Release entitlements 签署外层应用并严格校验签名。CI 只生成 `VeneraPlus-<version>-macos-arm64.dmg`（Apple Silicon）和 `VeneraPlus-<version>-macos-x86_64.dmg`（Intel）。`<version>` 取自 `pubspec.yaml` 的版本号，去掉 `+build` 后缀。
+
 ### Linux Debian 打包
 
 Linux Debian 安装包使用系统自带的 `dpkg-deb` 工具与项目脚本 `debian/build.py` 打包：
@@ -310,9 +312,9 @@ python .github/scripts/release_version.py --check --tag v1.2.3
 
 `代码分析` 工作流会运行版本与结构检查、Python 脚本测试、Dart 格式检查（`lib`、`test` 与 `tool`，覆盖子目录）、`flutter analyze`、完整 Dart 测试及覆盖率汇总。`依赖安全审查` 会检查 PR 新增或升级的依赖，`PR 平台冒烟构建` 会按改动范围验证 Android 和 Windows 的编译与原生数据库集成测试场景，也可通过手动触发验证已发布的内核。
 
-`构建`（`.github/workflows/build.yml`）同时提供手动平台选择和可复用构建入口，统一维护 Android、Windows、macOS、iOS、Linux x64/ARM64 的构建、产物校验与 Actions 产物上传。手动运行时默认选择 Android 和 Windows。普通手动构建将 Android 四种 APK、Windows 安装版 EXE 和完整便携版 ZIP 分别原样上传，使用完整文件名作为产物名，不再额外套一层 ZIP；产物保留 7 天。缺少 Android 正式签名时生成临时签名。
+`构建`（`.github/workflows/build.yml`）同时提供手动平台选择和可复用构建入口，统一维护 Android、Windows、macOS、iOS、Linux x64/ARM64 的构建、产物校验与 Actions 产物上传。手动运行时默认选择 Android 和 Windows。普通手动构建将 Android 四种 APK、Windows 安装版 EXE 和完整便携版 ZIP、macOS 两个分架构 DMG 分别原样上传，使用完整文件名作为产物名，保留 7 天。缺少 Android 正式签名时生成临时签名。
 
-`完整构建`（`.github/workflows/main.yml`）负责发布元数据校验、Release 准备与收尾，通过内部参数 `release_mode: true` 调用共享构建。默认构建 Android、Windows、macOS、iOS、Linux x64/ARM64。发布模式将 Android 汇总为 `apks`、Windows 汇总为 `windows_build`，供对应的 Release 附件上传任务下载。macOS 上传任务从 `macos_build` 下载 DMG，并将其添加到对应的 Release。发布构建必须提供 Android 正式签名，缺少时失败。用于上传 Release 附件的 Actions 产物采用仓库默认保留期。
+`完整构建`（`.github/workflows/main.yml`）负责发布元数据校验、Release 准备与收尾，通过内部参数 `release_mode: true` 调用共享构建。默认构建 Android、Windows、macOS、iOS、Linux x64/ARM64。发布模式将 Android 汇总为 `apks`，Windows 汇总为 `windows_build`，macOS 的两个 DMG 汇总为 `macos_build`，供对应任务下载校验并上传到 Release。发布构建必须提供 Android 正式签名，缺少时失败。用于上传 Release 附件的 Actions 产物采用仓库默认保留期。
 
 只有推送 `v*` tag 时才创建或恢复 prerelease 并上传 Release 附件。共享工作流中的 Release 附件上传任务仅依赖对应构建任务，完成后即可追加附件；全部所需构建与上传成功后，`完整构建` 才完成 Release，否则标记为构建未完成。手动运行 `完整构建` 仍要求合法发布 tag，且仅生成 Actions 产物。发布模式不会自动取消进行中的构建；普通手动构建继续允许新运行取消旧运行。
 

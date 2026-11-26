@@ -410,8 +410,8 @@ jobs:
       CARGO_INCREMENTAL: "0"
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
     steps:
-      - uses: actions/checkout@v7
-      - uses: subosito/flutter-action@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: "stable"
           flutter-version-file: pubspec.yaml
@@ -458,28 +458,55 @@ jobs:
       - name: 校验 macOS 包含 OpenList 内核
         run: |
           test -s build/macos/Build/Products/Release/VeneraPlus.app/Contents/Frameworks/libvenera_openlist.dylib
-      - name: 创建 DMG
+      - name: 打包 macOS 分架构 DMG
         run: |
-          mkdir -p dist
-          mkdir -p dist/dmg_contents
-          cp -R build/macos/Build/Products/Release/VeneraPlus.app dist/dmg_contents/
-          ln -s /Applications dist/dmg_contents/Applications
-          hdiutil create -volname "VeneraPlus" -srcfolder dist/dmg_contents -ov -format UDZO "dist/VeneraPlus.dmg"
-      - name: 将版本号写入文件名
+          python3 .github/scripts/package_macos_dmg.py \
+            --app build/macos/Build/Products/Release/VeneraPlus.app \
+            --entitlements macos/Runner/Release.entitlements \
+            --output-dir result \
+            --arch arm64 \
+            --arch x86_64
+      - name: 校验 macOS 构建产物
+        shell: bash
         run: |
-          APP_VERSION=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | tr -d '\r\n')
-          mkdir -p result
-          mv dist/VeneraPlus.dmg "result/VeneraPlus-$APP_VERSION.dmg"
+          shopt -s nullglob dotglob
+          files=(result/*.dmg)
+          arm64=(result/VeneraPlus-*-macos-arm64.dmg)
+          x86_64=(result/VeneraPlus-*-macos-x86_64.dmg)
+          (( ${#files[@]} == 2 && ${#arm64[@]} == 1 && ${#x86_64[@]} == 1 )) || {
+            echo "macOS DMG 数量异常：共 ${#files[@]} 个，arm64 ${#arm64[@]} 个，x86_64 ${#x86_64[@]} 个。" >&2
+            exit 1
+          }
+          for file in "${files[@]}"; do
+            [[ -f "$file" && -s "$file" ]] || { echo "macOS DMG 缺失或为空：$file" >&2; exit 1; }
+          done
       - name: sccache 统计
         if: ${{ always() && steps.sccache.outcome == 'success' }}
         run: sccache --show-stats
-      - name: 上传 DMG
-        uses: actions/upload-artifact@v7
+      - name: 上传 macOS DMG (arm64)
+        if: ${{ !inputs.release_mode }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: result/VeneraPlus-*-macos-arm64.dmg
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+      - name: 上传 macOS DMG (x86_64)
+        if: ${{ !inputs.release_mode }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: result/VeneraPlus-*-macos-x86_64.dmg
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+      - name: 上传 macOS 发布构建产物
+        if: ${{ inputs.release_mode }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: macos_build
-          path: result/
+          path: result/*.dmg
           if-no-files-found: error
-          retention-days: ${{ !inputs.release_mode && 7 || 0 }}
+          retention-days: 0
 
   Upload_MacOS:
     runs-on: ubuntu-22.04
@@ -493,22 +520,32 @@ jobs:
         with:
           name: macos_build
           path: outputs
-      - name: 上传 DMG 到 Release
+      - name: 校验并上传 macOS DMG 到 Release
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          shopt -s nullglob
+          shopt -s nullglob dotglob
           files=(outputs/*.dmg)
-          (( ${#files[@]} == 1 )) || { echo "应当恰好有一个 macOS DMG，实际 ${#files[@]} 个。" >&2; exit 1; }
+          arm64=(outputs/VeneraPlus-*-macos-arm64.dmg)
+          x86_64=(outputs/VeneraPlus-*-macos-x86_64.dmg)
+          (( ${#files[@]} == 2 && ${#arm64[@]} == 1 && ${#x86_64[@]} == 1 )) || {
+            echo "macOS DMG 数量异常：共 ${#files[@]} 个，arm64 ${#arm64[@]} 个，x86_64 ${#x86_64[@]} 个。" >&2
+            exit 1
+          }
+          for file in "${files[@]}"; do
+            [[ -f "$file" && -s "$file" ]] || { echo "macOS DMG 缺失或为空：$file" >&2; exit 1; }
+          done
           existing=$(gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets[] | select(.state == "uploaded") | .name')
-          name=$(basename "${files[0]}")
-          if grep -Fxq "$name" <<<"$existing"; then
-            echo "Release 已包含 $name，本次跳过上传。"
-          else
-            gh release upload "${GITHUB_REF_NAME}" "${files[0]}"
-          fi
+          for file in "${files[@]}"; do
+            name=$(basename "$file")
+            if grep -Fxq "$name" <<<"$existing"; then
+              echo "Release 已包含 $name，本次跳过上传。"
+            else
+              gh release upload "${GITHUB_REF_NAME}" "$file"
+            fi
+          done
 
   Build_IOS:
     if: ${{ inputs.build_ios }}
