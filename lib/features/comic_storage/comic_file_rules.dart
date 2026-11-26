@@ -36,6 +36,41 @@ bool isNamedComicCover(String name) {
       comicFileStem(name).toLowerCase() == 'cover';
 }
 
+bool isSidecarComicCover(String name) {
+  return !isIgnoredComicStorageEntry(name) &&
+      isComicImageFileName(name) &&
+      comicFileStem(name).toLowerCase().endsWith('.cover');
+}
+
+bool isComicCoverFileName(String name) =>
+    isNamedComicCover(name) || isSidecarComicCover(name);
+
+bool matchesComicCoverFileName(String name, {String? prefix}) {
+  if (prefix == null || prefix.isEmpty) return isNamedComicCover(name);
+  return !isIgnoredComicStorageEntry(name) &&
+      isComicImageFileName(name) &&
+      comicFileStem(name).toLowerCase() == '${prefix.toLowerCase()}.cover';
+}
+
+List<T> findMatchingComicCovers<T>(
+  Iterable<T> entries, {
+  required String Function(T entry) nameOf,
+  String? prefix,
+}) => entries
+    .where((entry) => matchesComicCoverFileName(nameOf(entry), prefix: prefix))
+    .toList();
+
+T? findMatchingComicCover<T>(
+  Iterable<T> entries, {
+  required String Function(T entry) nameOf,
+  String? prefix,
+}) {
+  for (final entry in entries) {
+    if (matchesComicCoverFileName(nameOf(entry), prefix: prefix)) return entry;
+  }
+  return null;
+}
+
 bool isIgnoredComicStorageEntry(String name) {
   final baseName = _baseName(name);
   return baseName == '__MACOSX' ||

@@ -173,6 +173,16 @@ The reader loads and decodes upcoming pages according to the effective **Number 
 
 Comic-library configuration is included when settings are saved to or restored from `.venera` app-data snapshots. Saved cloud accounts and their credentials are synchronized as well. Use app-data sync only with a trusted storage service, and check the account information included before sharing a backup. See [App Data Synchronization](data_sync.en.md#sync-boundaries) for the synchronization scope.
 
+### Custom Covers
+
+- Image directories and multi-volume works with their own folder use `cover.<ext>` in the comic root.
+- A standalone ZIP, CBZ, image-based EPUB, or PDF uses `<full filename>.cover.<ext>` next to the original file, for example `Book.cbz.cover.jpg`.
+- Multi-volume works grouped by title in a flat folder use `<work title>.cover.<ext>` next to the volumes, for example `Book.cover.png`.
+
+Supported extensions are `jpg`, `jpeg`, `png`, `webp`, `gif`, `jpe`, and `avif`. Choose **Replace cover** in the comic details menu or the full-screen cover viewer to upload an image. The app uploads the new cover before removing the work's old cover files.
+
+When a work has a custom cover, both locations offer **Restore default cover**. After you confirm, the app removes the work's separate cover files and falls back to a directory image, the archive's own cover, or the first volume's cover. Uploading and deleting require the corresponding permissions on the cloud account.
+
 ### Plain Directory Mode
 
 Recommended structure:
@@ -194,7 +204,7 @@ Plain directory rules:
 - The comic title defaults to the comic folder name.
 - Child directories are chapters. Root-level images can also form a single-chapter comic.
 - Pages and chapters are sorted by file name. Zero-padded names such as `0001.jpg` and `0002.jpg` are recommended.
-- The preferred cover is a root image whose base name is `cover`. Supported extensions are `jpg`, `jpeg`, `png`, `webp`, `gif`, `jpe`, and `avif`. Without one, the app tries the first root page, then `cover.*` or the first page in the first readable chapter.
+- The preferred cover is `cover.<ext>` in the root. Without one, the app tries the first root page, then `cover.*` or the first page in the first readable chapter.
 - Neither `metadata.json` nor `ComicInfo.xml` is required.
 
 ### Automatic Bangumi Scraping
@@ -355,13 +365,13 @@ Directory works use root-level `metadata.json` for title, author, description, a
 
 The app locates the OPF through `META-INF/container.xml` and expands comic pages in OPF manifest and spine reading order, **not image file-name order**. Supported spine items include direct raster images and static XHTML `img` or SVG wrapper `image` references to images within the book. Multiple images in one document follow document order, repeated image references retain their reading positions, and `linear="no"` non-body items and blank pages are skipped.
 
-Multiple valid chapter markers from an EPUB 3 nav table of contents or EPUB 2 NCX create chapters at the corresponding spine-document boundaries. Page-number entries such as `第 001 页／頁` or `Page 001`, and generator credits, are not chapter markers. Without explicit divisions, the app provides continuous reading for the whole file instead of guessing chapters from image counts. An OPF-declared cover takes priority, and an explicit cover page is not counted again as a body page. Without a cover declaration, the first body image is used. Basic title, author, description, and tags come from OPF and can be overridden by sidecar fields.
+Multiple valid chapter markers from an EPUB 3 nav table of contents or EPUB 2 NCX create chapters at the corresponding spine-document boundaries. Page-number entries such as `第 001 页／頁` or `Page 001`, and generator credits, are not chapter markers. Without explicit divisions, the app provides continuous reading for the whole file instead of guessing chapters from image counts. The default cover is the OPF-declared cover or the first body image when there is no cover declaration. An explicit cover page is not counted again as a body page. Basic title, author, description, and tags come from OPF and can be overridden by sidecar fields.
 
 Initial parsing reads only the required container, OPF, navigation, and XHTML/SVG control documents; reading these entries does not prefetch neighboring images. Adjacent body control documents are read in batches to reduce first-open delays from per-page requests, without spanning image or unused entries. Covers and body images load when displayed and reuse the same account's request queue, range cache, and image cache. Text-based EPUBs, pages with body text, scripts or complex layouts, directly drawn SVG content, and DRM/encrypted books are unsupported. External images, `data:` images, and paths escaping the book are rejected without silently discarding text or downloading the entire archive.
 
 #### PDF
 
-Ordinary readable PDFs are supported, including image, text, and vector pages. The app renders page content rather than extracting embedded images. Reading order and page totals retain the PDF's original numbering: **page 1 is both the cover and body page 1**. The title defaults to the file name. Embedded PDF title and author fields are not read automatically; use a sidecar or manual Bangumi binding to supply them.
+Ordinary readable PDFs are supported, including image, text, and vector pages. The app renders page content rather than extracting embedded images. The PDF's first page serves as both the default cover and body page 1. Reading order and page totals retain the original numbering. The title defaults to the file name. Use a sidecar or manual Bangumi binding to supply the title and author.
 
 Multiple bookmarks pointing to different valid pages form chapters at their destination pages. Cover or introductory pages before the first bookmark remain included. Without usable divisions, the app provides a full-book entry. A sibling `Book.pdf.metadata.json` can override fields such as title and author or define one-based chapter ranges over the original PDF pages, including the first page. For example, a 16-page PDF can use:
 

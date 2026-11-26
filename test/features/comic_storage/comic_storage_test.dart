@@ -15,6 +15,75 @@ void main() {
       expect(isIgnoredComicStorageEntry('__MACOSX'), isTrue);
     });
 
+    test('区分根封面、旁车封面与普通文件', () {
+      const archiveCover = '[松本痙] メスの烙淫 [中国翻訳] [DL版].zip.cover.png';
+      const familyCover = '作品名.cover.webp';
+
+      expect(isSidecarComicCover('cover.jpg'), isFalse);
+      expect(isComicCoverFileName('cover.jpg'), isTrue);
+      for (final name in [archiveCover, familyCover]) {
+        expect(isSidecarComicCover(name), isTrue, reason: name);
+        expect(isComicCoverFileName(name), isTrue, reason: name);
+      }
+      for (final name in [
+        '001.jpg',
+        'cover_art.jpg',
+        '.cover.jpg',
+        '.hidden.cover.jpg',
+        'book.zip.cover.txt',
+      ]) {
+        expect(isSidecarComicCover(name), isFalse, reason: name);
+        expect(isComicCoverFileName(name), isFalse, reason: name);
+      }
+    });
+
+    test('按完整前缀查找封面并忽略大小写', () {
+      final entries = [
+        (name: 'cover.jpg', id: 1),
+        (name: 'Book A.COVER.PNG', id: 2),
+        (name: 'Book A.cover.webp', id: 3),
+        (name: 'Book AB.cover.jpg', id: 4),
+        (name: 'Book B.cover.jpg', id: 5),
+        (name: 'Book A.zip.cover.jpg', id: 6),
+      ];
+
+      expect(matchesComicCoverFileName('COVER.JPG', prefix: ''), isTrue);
+      expect(matchesComicCoverFileName('Book A.cover.jpg'), isFalse);
+      expect(matchesComicCoverFileName('cover.jpg', prefix: 'Book A'), isFalse);
+      expect(
+        matchesComicCoverFileName('Book B.cover.jpg', prefix: 'Book A'),
+        isFalse,
+      );
+      expect(
+        findMatchingComicCover(entries, nameOf: (entry) => entry.name),
+        entries.first,
+      );
+      expect(
+        findMatchingComicCover(
+          entries,
+          nameOf: (entry) => entry.name,
+          prefix: 'BOOK a',
+        ),
+        entries[1],
+      );
+      expect(
+        findMatchingComicCovers(
+          entries,
+          nameOf: (entry) => entry.name,
+          prefix: 'BOOK a',
+        ).map((entry) => entry.id),
+        [2, 3],
+      );
+      expect(
+        findMatchingComicCover(
+          entries,
+          nameOf: (entry) => entry.name,
+          prefix: 'Book C',
+        ),
+        isNull,
+      );
+    });
+
     test('sorts numeric names deterministically before lexical fallback', () {
       final names = ['10.jpg', '2.jpg', '01.jpg', '1.jpg', 'page.jpg'];
 

@@ -105,6 +105,7 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
   bool _tickerModeEnabled = true;
   bool _needsHistoryRefresh = false;
   bool _openedLinkPage = false;
+  int _coverRevision = 0;
 
   bool get _isVisible => _tickerModeEnabled && (_route?.isCurrent ?? true);
 
@@ -212,14 +213,19 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
   }
 
   @override
-  Future<void> refreshDetails() async {
-    final res = await loadData();
+  Future<void> refreshDetails({bool coverOnly = false}) async {
+    // 刷新封面时跳过收藏元数据刷新与阅读进度校正。
+    final res = coverOnly
+        ? await comicSource.loadComicInfoForReading(comic.id, refresh: true)
+        : await loadData();
     if (!mounted) return;
     if (res.success) {
       data = res.data;
-      await onDataLoaded();
+      if (!coverOnly) await onDataLoaded();
       if (mounted) {
-        setState(() {});
+        setState(() {
+          if (coverOnly) _coverRevision++;
+        });
       }
     } else {
       context.showMessage(message: (res.errorMessage ?? 'Error').tl);
@@ -480,6 +486,7 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
                 child: _cover == null
                     ? const SizedBox()
                     : AnimatedImage(
+                        key: ValueKey('${_cover}_$_coverRevision'),
                         image: CachedImageProvider(
                           _cover!,
                           sourceKey: comic.sourceKey,
@@ -982,12 +989,16 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
       sourceKey: comic.sourceKey,
       cid: comic.id,
     );
+    final canEditCover = !widget.selectSource && isRemoteLibraryComic;
 
     context.to(
       () => ComicCoverViewer(
         imageProvider: imageProvider,
         title: comic.title,
         heroTag: "cover${widget.heroID}",
+        onReplaceCover: canEditCover ? replaceRemoteCover : null,
+        onRestoreDefaultCover: canEditCover ? restoreRemoteDefaultCover : null,
+        initialCanRestoreDefaultCover: canEditCover && hasRemoteCustomCover,
       ),
     );
   }

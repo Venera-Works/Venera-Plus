@@ -113,7 +113,7 @@ class BangumiMetadataHints {
       );
     }
     for (final fileName in fileNames) {
-      if (isNamedComicCover(fileName)) continue;
+      if (isComicCoverFileName(fileName)) continue;
       final parsed = _parseName(fileName, isFile: true);
       if (parsed.isEmpty) continue;
       final key = parsed

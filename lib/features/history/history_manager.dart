@@ -1290,6 +1290,25 @@ class HistoryManager with ChangeNotifier {
     notifyHistoryDataChanged();
   }
 
+  Future<void> updateCover(History history, String cover) {
+    final key = _historyKey(history.id, history.type);
+    return _enqueueAsyncWrite(() async {
+      if (!isInitialized) return;
+      _db.execute('UPDATE history SET cover = ? WHERE id = ? AND type = ?;', [
+        cover,
+        history.id,
+        history.type.value,
+      ]);
+      if (_db.updatedRows == 0) return;
+      history.cover = cover;
+      cachedHistories[key]?.cover = cover;
+      _pendingReadingProgress[key]?.cover = cover;
+      _queuedHistories[key]?.cover = cover;
+      notifyListeners();
+      notifyHistoryDataChanged();
+    });
+  }
+
   Set<String> _knownHistoryKeys() {
     final keys = <String>{
       ..._pendingReadingProgress.keys,

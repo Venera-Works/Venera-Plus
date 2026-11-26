@@ -10,12 +10,15 @@ class RemoteLibrarySource {
   static const rootChapterId = '__root__';
   static const rootChapterTitle = 'Images';
   static RemoteLibraryEngine _legacyEngine = RemoteLibraryEngine._legacy();
-  static RemoteLibraryOps _ops = _RemoteLibraryOps();
+  static RemoteLibraryOps _ops = _createDefaultOps();
   static RemoteLibraryMetadataScraper? _metadataScraper;
   static bool Function()? _metadataScrapingEnabled;
   static String _metadataScraperVersion = _defaultScraperVersion;
   static RemoteLibraryMetadataWriteGuard? _metadataWriteGuard;
   static RemoteLibraryMetadataSubjectHandler? _metadataSubjectHandler;
+
+  static RemoteLibraryOps _createDefaultOps() =>
+      _RemoteLibraryOps(() => _legacyEngine._state.lifetimeToken);
 
   @visibleForTesting
   static int? discoveryDirectoryLimitOverride;
@@ -70,7 +73,7 @@ class RemoteLibrarySource {
   }
 
   static void resetOps() {
-    _ops = _RemoteLibraryOps();
+    _ops = _createDefaultOps();
     _legacyEngine._clearMemoryCaches();
   }
 
@@ -93,6 +96,20 @@ class RemoteLibrarySource {
       _legacyEngine.loadComicInfo(id);
   static Future<Res<List<String>>> loadComicPages(String id, String? ep) =>
       _legacyEngine.loadComicPages(id, ep);
+  static bool hasCustomCover(String id, String currentCover) =>
+      _legacyEngine.hasCustomCover(id, currentCover);
+  static Future<Res<RemoteLibraryCoverUpdateResult>> replaceCover(
+    String id, {
+    required String localPath,
+    required String extension,
+  }) => _legacyEngine.replaceCover(
+    id,
+    localPath: localPath,
+    extension: extension,
+  );
+  static Future<Res<RemoteLibraryCoverUpdateResult>> restoreDefaultCover(
+    String id,
+  ) => _legacyEngine.restoreDefaultCover(id);
   static Future<Res<bool>> synchronize({bool force = false}) =>
       _legacyEngine.synchronize(force: force);
   static Future<Map<String, dynamic>> getImageLoadingConfig(
@@ -145,7 +162,7 @@ class RemoteLibrarySource {
     final old = _legacyEngine;
     await old.cancel();
     _legacyEngine = RemoteLibraryEngine._legacy();
-    _ops = _RemoteLibraryOps();
+    _ops = _createDefaultOps();
     if (previous.isValid &&
         previous.cacheKey != _legacyEngine._config.cacheKey) {
       await RemoteLibraryRepository.instance.clear(previous.cacheKey);
@@ -158,7 +175,7 @@ class RemoteLibrarySource {
   static Future<void> onSettingsImported() async {
     await _legacyEngine.cancel();
     _legacyEngine = RemoteLibraryEngine._legacy();
-    _ops = _RemoteLibraryOps();
+    _ops = _createDefaultOps();
     await _legacyEngine._loadStatus();
     _legacyEngine._notifyContent(immediate: true);
     initializeMetadataRetry();

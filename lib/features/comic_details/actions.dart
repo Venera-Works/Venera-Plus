@@ -11,8 +11,10 @@ import 'package:venera_plus/routing/comic_source_switch.dart';
 import 'package:venera_plus/features/comic_details/comic_details.dart';
 import 'package:venera_plus/features/comic_details/archive_download.dart';
 import 'package:venera_plus/features/comic_details/comments_page.dart';
+import 'package:venera_plus/features/comic_details/cover_viewer.dart';
 import 'package:venera_plus/features/comic_details/favorite.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/comic_storage/comic_storage.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/history/history.dart';
@@ -21,10 +23,16 @@ import 'package:venera_plus/features/reader/reader.dart';
 import 'package:venera_plus/features/search/search_shortcuts.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/file_interaction.dart';
+import 'package:venera_plus/foundation/file_type.dart';
+import 'package:venera_plus/foundation/image_provider/cached_image.dart';
+import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
+import 'package:venera_plus/network/cache.dart';
 import 'package:venera_plus/routing/page_jump_target.dart';
 import 'package:venera_plus/features/remote_library/remote_library.dart';
 
@@ -32,11 +40,210 @@ abstract mixin class ComicPageActions {
   BuildContext get context;
   void update();
 
-  Future<void> refreshDetails();
+  Future<void> refreshDetails({bool coverOnly = false});
 
   bool get isRemoteLibraryComic =>
       RemoteLibraryEngines.find(comic.sourceKey) != null ||
       comic.sourceKey == RemoteLibrarySource.sourceKey;
+
+  bool get hasRemoteCustomCover =>
+      isRemoteLibraryComic &&
+      comic.cover.trim().isNotEmpty &&
+      _hasRemoteCustomCover(comic, comic.cover);
+
+  bool _hasRemoteCustomCover(ComicDetails target, String cover) {
+    final engine = RemoteLibraryEngines.find(target.sourceKey);
+    return engine?.hasCustomCover(target.id, cover) ??
+        (target.sourceKey == RemoteLibrarySource.sourceKey &&
+            RemoteLibrarySource.hasCustomCover(target.id, cover));
+  }
+
+  bool _isUpdatingCover = false;
+
+  Future<ComicCoverUpdate?> replaceRemoteCover() =>
+      _updateRemoteCover(restore: false);
+
+  Future<ComicCoverUpdate?> restoreRemoteDefaultCover() =>
+      _updateRemoteCover(restore: true);
+
+  Future<ComicCoverUpdate?> _updateRemoteCover({required bool restore}) async {
+    if (_isUpdatingCover || !isRemoteLibraryComic) return null;
+    final target = comic;
+    final engine = RemoteLibraryEngines.find(target.sourceKey);
+    final pageContext = context;
+    final rootContext = App.rootContext;
+    final errorMessage = restore
+        ? 'Could not restore default cover. @error'
+        : 'Could not replace cover. @error';
+    LoadingDialogController? loading;
+    var coverChanged = false;
+    _isUpdatingCover = true;
+    try {
+      Uint8List? bytes;
+      final Res<RemoteLibraryCoverUpdateResult> response;
+      if (restore) {
+        var confirmed = false;
+        await showConfirmDialog(
+          context: rootContext,
+          title: 'Restore default cover'.tl,
+          content:
+              'This will delete the custom cover files in the cloud and restore the default cover.'
+                  .tl,
+          onConfirm: () => confirmed = true,
+        );
+        if (!confirmed || !pageContext.mounted || !rootContext.mounted) {
+          return null;
+        }
+        loading = showLoadingDialog(
+          rootContext,
+          barrierDismissible: false,
+          allowCancel: false,
+          message: 'Restoring default cover...'.tl,
+        );
+        response =
+            await (engine?.restoreDefaultCover(target.id) ??
+                RemoteLibrarySource.restoreDefaultCover(target.id));
+      } else {
+        final file = await selectFile(
+          ext: comicImageExtensions.toList(),
+          mimeType: 'image/*',
+          allowUnknownExtension: true,
+        );
+        if (file == null || !pageContext.mounted || !rootContext.mounted) {
+          return null;
+        }
+        bytes = await file.readAsBytes();
+        if (!pageContext.mounted || !rootContext.mounted) return null;
+        final fileType = detectFileType(bytes);
+        final detectedExtension = fileType.ext.substring(1).toLowerCase();
+        if (bytes.isEmpty ||
+            !fileType.mime.startsWith('image/') ||
+            !comicImageExtensions.contains(detectedExtension)) {
+          rootContext.showMessage(message: 'Select a supported image file.'.tl);
+          return null;
+        }
+        final selectedExtension = comicFileExtension(file.name);
+        final extension =
+            comicImageExtensions.contains(selectedExtension) &&
+                FileType.fromExtension(selectedExtension).mime == fileType.mime
+            ? selectedExtension
+            : detectedExtension;
+        loading = showLoadingDialog(
+          rootContext,
+          barrierDismissible: false,
+          allowCancel: false,
+          message: 'Uploading cover...'.tl,
+        );
+        response =
+            await (engine?.replaceCover(
+                  target.id,
+                  localPath: file.path,
+                  extension: extension,
+                ) ??
+                RemoteLibrarySource.replaceCover(
+                  target.id,
+                  localPath: file.path,
+                  extension: extension,
+                ));
+      }
+
+      if (response.error) {
+        if (rootContext.mounted) {
+          rootContext.showMessage(
+            message: errorMessage.tlParams({
+              'error': (response.errorMessage ?? 'Error').tl,
+            }),
+          );
+        }
+        return null;
+      }
+      final result = response.data;
+      coverChanged = result.changed;
+      if (result.changed || result.previousCover != result.cover) {
+        await _syncRemoteCover(target, result, bytes);
+      }
+      if (pageContext.mounted) await refreshDetails(coverOnly: true);
+      if (rootContext.mounted) {
+        final message = switch (result) {
+          RemoteLibraryCoverUpdateResult(changed: false) =>
+            'Already using default cover'.tl,
+          _ when restore => 'Default cover restored'.tl,
+          RemoteLibraryCoverUpdateResult(failedOldCoverRemovals: final files)
+              when files.isNotEmpty =>
+            'Cover updated, but some old cover files could not be deleted (@files).'
+                .tlParams({'files': files.join(', ')}),
+          _ => 'Cover updated'.tl,
+        };
+        rootContext.showMessage(message: message);
+      }
+      return (
+        imageProvider: result.cover.isEmpty
+            ? null
+            : CachedImageProvider(
+                result.cover,
+                sourceKey: target.sourceKey,
+                cid: target.id,
+              ),
+        hasCustomCover: _hasRemoteCustomCover(target, result.cover),
+      );
+    } catch (error, stackTrace) {
+      Log.error('Remote Library cover update', error, stackTrace);
+      if (rootContext.mounted) {
+        final message = coverChanged
+            ? 'The cloud cover changed, but the local update failed. @error'
+            : errorMessage;
+        rootContext.showMessage(message: message.tlParams({'error': error}));
+      }
+      return null;
+    } finally {
+      loading?.close();
+      _isUpdatingCover = false;
+    }
+  }
+
+  Future<void> _syncRemoteCover(
+    ComicDetails target,
+    RemoteLibraryCoverUpdateResult result,
+    Uint8List? bytes,
+  ) async {
+    final sourceKey = target.sourceKey;
+    final id = target.id;
+    final cache = CacheManager();
+    final imageCache = PaintingBinding.instance.imageCache;
+    final paths = result.invalidatedCoverPaths
+        .where((path) => path.trim().isNotEmpty)
+        .toSet();
+    List<String> cacheKeys(String path) => [
+      '$path@$sourceKey@$id',
+      '$path@$sourceKey',
+    ];
+
+    for (final path in paths) {
+      for (final key in cacheKeys(path)) {
+        await cache.delete(key);
+      }
+    }
+    if (bytes != null && result.cover.isNotEmpty) {
+      for (final key in cacheKeys(result.cover)) {
+        await cache.writeCache(key, bytes);
+      }
+    }
+    NetworkCacheManager().clear();
+    for (final path in paths) {
+      imageCache.evict(
+        CachedImageProvider(path, sourceKey: sourceKey, cid: id),
+      );
+      imageCache.evict(CachedImageProvider(path, sourceKey: sourceKey));
+    }
+
+    final histories = HistoryManager();
+    final history = histories.find(id, target.comicType);
+    if (history != null) {
+      imageCache.evict(HistoryImageProvider(history));
+      await histories.updateCover(history, result.cover);
+    }
+    LocalFavoritesManager().updateCover(id, target.comicType, result.cover);
+  }
 
   bool _isRetryingMetadataScrape = false;
 
@@ -507,12 +714,24 @@ abstract mixin class ComicPageActions {
         text: 'Switch source'.tl,
         onClick: changeSource,
       ),
-      if (isRemoteLibraryComic)
+      if (isRemoteLibraryComic) ...[
         MenuEntry(
           icon: Icons.auto_awesome,
           text: 'Rescrape metadata'.tl,
           onClick: retryMetadataScrape,
         ),
+        MenuEntry(
+          icon: Icons.add_photo_alternate_outlined,
+          text: 'Replace cover'.tl,
+          onClick: replaceRemoteCover,
+        ),
+        if (hasRemoteCustomCover)
+          MenuEntry(
+            icon: Icons.restore,
+            text: 'Restore default cover'.tl,
+            onClick: restoreRemoteDefaultCover,
+          ),
+      ],
       MenuEntry(icon: Icons.share, text: 'Share'.tl, onClick: share),
       MenuEntry(
         icon: Icons.copy,

@@ -2,17 +2,21 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dio/dio.dart' show CancelToken;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:photo_view/photo_view.dart';
 import 'package:venera_plus/components/gesture.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/custom_slider.dart';
+import 'package:venera_plus/components/image.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/window_frame.dart';
 import 'package:venera_plus/features/comic_details/comic_details.dart';
 import 'package:venera_plus/features/comic_details/chapters.dart';
+import 'package:venera_plus/features/comic_details/cover_viewer.dart';
 import 'package:venera_plus/features/comic_details/thumbnails.dart';
 import 'package:venera_plus/features/comic_storage/comic_storage.dart';
 import 'package:venera_plus/features/remote_library/remote_library.dart';
@@ -29,6 +33,8 @@ import 'package:venera_plus/features/reader/reader_page.dart';
 import 'package:venera_plus/features/reader/reader.dart' show ReaderWithLoading;
 import 'package:venera_plus/features/reader/scaffold.dart';
 import 'package:venera_plus/foundation/app_page_route.dart';
+import 'package:venera_plus/foundation/cache_manager.dart';
+import 'package:venera_plus/foundation/image_provider/cached_image.dart';
 import 'package:venera_plus/foundation/image_provider/reader_image.dart';
 import 'package:venera_plus/features/sync/data_sync.dart';
 import 'package:venera_plus/foundation/context.dart';
@@ -38,11 +44,14 @@ import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/foundation/sync_records.dart';
+import 'package:venera_plus/network/cache.dart';
+import 'package:venera_plus/network/images.dart';
 
 import '../../widget_test_io.dart';
 import '../../support/sqlite.dart';
 
 const _testRoundId = '00000000-0000-4000-8000-000000000001';
+const _remoteCoverDirectory = '/manga/flat-comic/';
 
 void main() {
   test(
@@ -1273,6 +1282,8 @@ void main() {
       await tester.tap(find.byIcon(Icons.more_horiz));
       await tester.pumpAndSettle();
       expect(find.text('Rescrape metadata'), findsNothing);
+      expect(find.text('Replace cover'), findsNothing);
+      expect(find.text('Restore default cover'), findsNothing);
     },
     skip: !isSqliteAvailable(),
   );
@@ -1384,6 +1395,296 @@ void main() {
     },
     skip: !isSqliteAvailable(),
   );
+
+  testWidgets('云端封面查看器的替换与恢复同步详情、缓存和已有收藏历史', (tester) async {
+    const defaultCover = '${_remoteCoverDirectory}001.png';
+    const customCover = '${_remoteCoverDirectory}cover.png';
+    final defaultBytes = img.encodePng(img.Image(width: 4, height: 6));
+    final customBytes = img.encodePng(img.Image(width: 6, height: 4));
+    final fixture = await _createFixture(
+      tester,
+      grouped: false,
+      sourceKey: RemoteLibrarySource.sourceKey,
+      loadComicDetails: RemoteLibrarySource.loadComicInfo,
+    );
+    final ops = _CoverActionOps()..files[defaultCover] = defaultBytes;
+    final localFile = File('${App.cachePath}/selected-cover.jpg')
+      ..writeAsBytesSync(customBytes);
+    const picker = MethodChannel('plugins.flutter.io/file_selector');
+    final messenger = tester.binding.defaultBinaryMessenger;
+    final networkCache = NetworkCacheManager();
+    final cachedUri = Uri.https('cover.test', '/thumbnail');
+    final imageCache = PaintingBinding.instance.imageCache;
+    Completer<String>? pendingNotice;
+    registerShowMessageHandler((_, message) {
+      final notice = pendingNotice;
+      if (notice != null && !notice.isCompleted) notice.complete(message);
+    });
+    LocalFavoritesManager.cache = null;
+    final favorites = LocalFavoritesManager();
+    addTearDown(() async {
+      messenger.setMockMethodCallHandler(picker, null);
+      registerShowMessageHandler((context, message) {
+        showToast(context: context, message: message);
+      });
+      await tester.pumpWidget(const SizedBox.shrink());
+      ImageDownloader.cancelAllLoadingImages();
+      await runWidgetIo(tester, () async {
+        await ImageDownloader.debugFlushImageCacheWrites();
+        await CacheManager.resetForTesting();
+        await RemoteLibrarySource.resetCacheForTesting();
+        await favorites.waitForPendingReads();
+      });
+      RemoteLibrarySource.resetOps();
+      ImageDownloader.debugResetSourceImageLoading();
+      networkCache.clear();
+      imageCache.clear();
+      imageCache.clearLiveImages();
+      favorites.close();
+    });
+    await runWidgetIo(tester, () async {
+      await RemoteLibrarySource.resetCacheForTesting();
+      await CacheManager.resetForTesting();
+      await favorites.init(reconcileReadingBinding: false);
+    });
+    CacheManager.debugDisableInitialScan = true;
+    RemoteLibrarySource.ops = ops;
+    appdata.settings['webdavComicLibrary'] = [
+      'https://example.com/dav',
+      'user',
+      'pass',
+    ];
+    appdata.settings['webdavComicLibraryPath'] = '/manga/';
+    messenger.setMockMethodCallHandler(picker, (call) async {
+      expect(call.method, 'openFile');
+      return [localFile.path];
+    });
+    ImageDownloader.configureSourceImageLoading(
+      thumbnailLoadingConfig: (_, cover) async => {
+        'loadBytes': (CancelToken token) async => ops.files[cover]!,
+      },
+    );
+
+    List<String> diskKeys(String path) => [
+      '$path@${fixture.sourceKey}@${fixture.comicId}',
+      '$path@${fixture.sourceKey}',
+    ];
+
+    await runWidgetIo(tester, () async {
+      for (final key in diskKeys(defaultCover)) {
+        await CacheManager().writeCache(key, defaultBytes);
+      }
+    });
+
+    await tester.pumpWidget(fixture.page);
+    await _waitForText(tester, 'Read');
+    final folders = [
+      favorites.createFolder('收藏甲'),
+      favorites.createFolder('收藏乙'),
+    ];
+    final savedTime = DateTime.utc(2026, 1, 1);
+    for (final folder in folders) {
+      favorites.addComic(
+        folder,
+        FavoriteItem(
+          id: fixture.comicId,
+          name: '已收藏标题',
+          coverPath: defaultCover,
+          author: '已收藏作者',
+          type: fixture.type,
+          tags: ['标签:保留'],
+          favoriteTime: savedTime,
+        ),
+      );
+    }
+    final history = fixture.makeHistory(ep: 1, page: 2)
+      ..cover = defaultCover
+      ..time = savedTime
+      ..readDurationMs = 1234
+      ..readEpisode.add('1');
+    fixture.histories.addHistory(history);
+
+    void expectSavedCover(String path) {
+      for (final folder in folders) {
+        final item = favorites.getComic(folder, fixture.comicId, fixture.type);
+        expect(item.coverPath, path);
+        expect(item.name, '已收藏标题');
+        expect(item.author, '已收藏作者');
+        expect(item.tags, ['标签:保留']);
+      }
+      final persisted = fixture.histories.getAll().single;
+      expect(persisted.cover, path);
+      expect(persisted.ep, 1);
+      expect(persisted.page, 2);
+      expect(persisted.readEpisode, {'1'});
+      expect(
+        persisted.time.millisecondsSinceEpoch,
+        savedTime.millisecondsSinceEpoch,
+      );
+      expect(persisted.readDurationMs, 1234);
+    }
+
+    List<ImageProvider> seedMemoryCache(String path) {
+      final keys = <ImageProvider>[
+        CachedImageProvider(
+          path,
+          sourceKey: fixture.sourceKey,
+          cid: fixture.comicId,
+        ),
+        CachedImageProvider(path, sourceKey: fixture.sourceKey),
+        HistoryImageProvider(history),
+      ];
+      for (final key in keys) {
+        imageCache.putIfAbsent(
+          key,
+          () => OneFrameImageStreamCompleter(Completer<ImageInfo>().future),
+        );
+        expect(imageCache.containsKey(key), isTrue);
+      }
+      networkCache.setCache(
+        NetworkCache(
+          uri: cachedUri,
+          requestHeaders: const {},
+          responseHeaders: const {},
+          data: path,
+          time: DateTime.now(),
+          size: path.length,
+        ),
+      );
+      return keys;
+    }
+
+    Future<void> expectDiskCover(String path, Uint8List? bytes) =>
+        runWidgetIo(tester, () async {
+          for (final key in diskKeys(path)) {
+            final file = await CacheManager().findCache(key);
+            expect(await file?.readAsBytes(), bytes, reason: key);
+          }
+        });
+
+    Finder detailsCover(String path) => find.byWidgetPredicate(
+      (widget) =>
+          widget is AnimatedImage &&
+          widget.image is CachedImageProvider &&
+          (widget.image as CachedImageProvider).url == path,
+    );
+
+    Future<Size> decodeCover(ImageProvider provider) async {
+      final stream = provider.resolve(const ImageConfiguration());
+      final decoded = Completer<Size>();
+      final listener = ImageStreamListener(
+        (info, _) {
+          if (!decoded.isCompleted) {
+            decoded.complete(
+              Size(info.image.width.toDouble(), info.image.height.toDouble()),
+            );
+          }
+          info.dispose();
+        },
+        onError: (error, stack) {
+          if (!decoded.isCompleted) decoded.completeError(error, stack);
+        },
+      );
+      stream.addListener(listener);
+      try {
+        return await _pumpAsyncWork(tester, decoded.future);
+      } finally {
+        stream.removeListener(listener);
+      }
+    }
+
+    Future<Size> viewerCoverSize(String cover) {
+      expect(find.byType(ComicCoverViewer), findsOneWidget);
+      final viewer = tester.widget<PhotoView>(find.byType(PhotoView));
+      final provider = viewer.imageProvider as CachedImageProvider;
+      expect(provider.url, cover);
+      return decodeCover(provider);
+    }
+
+    Future<void> openViewer(String cover) async {
+      final tapTarget = find.ancestor(
+        of: detailsCover(cover),
+        matching: find.byWidgetPredicate(
+          (widget) =>
+              widget is GestureDetector &&
+              widget.onTap != null &&
+              widget.onLongPress != null,
+        ),
+      );
+      await tester.tap(tapTarget);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await viewerCoverSize(cover);
+    }
+
+    final originalCover = tester.widget<AnimatedImage>(
+      detailsCover(defaultCover),
+    );
+    expect(await decodeCover(originalCover.image), const Size(4, 6));
+    await tester.tap(find.byIcon(Icons.more_horiz));
+    await tester.pumpAndSettle();
+    expect(find.text('Replace cover'), findsOneWidget);
+    expect(find.text('Restore default cover'), findsNothing);
+    App.rootNavigatorKey.currentState!.pop();
+    await tester.pumpAndSettle();
+
+    await openViewer(defaultCover);
+    expect(find.byTooltip('Replace cover'), findsOneWidget);
+    expect(find.byTooltip('Restore default cover'), findsNothing);
+    final beforeReplace = seedMemoryCache(defaultCover);
+    final replaceNotice = pendingNotice = Completer<String>();
+    await tester.tap(find.byTooltip('Replace cover'));
+    expect(await _pumpAsyncWork(tester, replaceNotice.future), 'Cover updated');
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(ops.files[customCover], customBytes);
+    expect(find.byTooltip('Restore default cover'), findsOneWidget);
+    expect(await viewerCoverSize(customCover), const Size(6, 4));
+    expectSavedCover(customCover);
+    await expectDiskCover(defaultCover, null);
+    await expectDiskCover(customCover, customBytes);
+    for (final key in beforeReplace) {
+      expect(imageCache.containsKey(key), isFalse);
+    }
+    expect(networkCache.getCache(cachedUri), isNull);
+
+    App.rootNavigatorKey.currentState!.pop();
+    await tester.pumpAndSettle();
+    expect(detailsCover(customCover), findsOneWidget);
+    await tester.tap(find.byIcon(Icons.more_horiz));
+    await tester.pumpAndSettle();
+    expect(find.text('Replace cover'), findsOneWidget);
+    expect(find.text('Restore default cover'), findsOneWidget);
+    App.rootNavigatorKey.currentState!.pop();
+    await tester.pumpAndSettle();
+
+    await openViewer(customCover);
+    final beforeRestore = seedMemoryCache(customCover);
+    final restoreNotice = pendingNotice = Completer<String>();
+    await tester.tap(find.byTooltip('Restore default cover'));
+    await tester.pumpAndSettle();
+    expect(ops.files[customCover], customBytes);
+    await tester.tap(find.text('Confirm'));
+    expect(
+      await _pumpAsyncWork(tester, restoreNotice.future),
+      'Default cover restored',
+    );
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(ops.files.keys, [defaultCover]);
+    expect(find.byTooltip('Replace cover'), findsOneWidget);
+    expect(find.byTooltip('Restore default cover'), findsNothing);
+    expect(await viewerCoverSize(defaultCover), const Size(4, 6));
+    expectSavedCover(defaultCover);
+    await expectDiskCover(customCover, null);
+    for (final key in beforeRestore) {
+      expect(imageCache.containsKey(key), isFalse);
+    }
+    expect(networkCache.getCache(cachedUri), isNull);
+    App.rootNavigatorKey.currentState!.pop();
+    await tester.pumpAndSettle();
+    expect(detailsCover(defaultCover), findsOneWidget);
+  }, skip: !isSqliteAvailable());
 }
 
 Future<_ComicDetailsFixture> _createFixture(
@@ -1923,5 +2224,51 @@ class _MetadataRetryOps implements RemoteLibraryOps {
     }
     metadata = content;
     return const RemoteLibraryWriteResult(eTag: '"metadata-v1"');
+  }
+}
+
+class _CoverActionOps extends Fake
+    implements RemoteLibraryOps, RemoteLibraryFileTransferOps {
+  final files = <String, Uint8List>{};
+
+  @override
+  Future<List<RemoteLibraryEntry>> readDir(
+    RemoteLibraryConfig config,
+    String remotePath, {
+    bool refresh = false,
+  }) async {
+    if (remotePath == '/manga/') {
+      return const [
+        RemoteLibraryEntry(
+          name: 'flat-comic',
+          isDirectory: true,
+          eTag: 'directory',
+        ),
+      ];
+    }
+    expect(remotePath, _remoteCoverDirectory);
+    return [
+      for (final entry in files.entries)
+        RemoteLibraryEntry(
+          name: entry.key.substring(remotePath.length),
+          isDirectory: false,
+          size: entry.value.length,
+          eTag: 'file-${entry.value.length}',
+        ),
+    ];
+  }
+
+  @override
+  Future<void> uploadFile(
+    RemoteLibraryConfig config,
+    String localPath,
+    String remotePath,
+  ) async {
+    files[remotePath] = await File(localPath).readAsBytes();
+  }
+
+  @override
+  Future<void> deleteFile(RemoteLibraryConfig config, String remotePath) async {
+    if (files.remove(remotePath) == null) throw StateError('文件不存在 $remotePath');
   }
 }

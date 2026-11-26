@@ -10,17 +10,28 @@ import 'package:venera_plus/foundation/file_type.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 
+typedef ComicCoverUpdate = ({
+  ImageProvider? imageProvider,
+  bool hasCustomCover,
+});
+
 class ComicCoverViewer extends StatefulWidget {
   const ComicCoverViewer({
     super.key,
     required this.imageProvider,
     required this.title,
     required this.heroTag,
+    this.onReplaceCover,
+    this.onRestoreDefaultCover,
+    this.initialCanRestoreDefaultCover = false,
   });
 
   final ImageProvider imageProvider;
   final String title;
   final String heroTag;
+  final Future<ComicCoverUpdate?> Function()? onReplaceCover;
+  final Future<ComicCoverUpdate?> Function()? onRestoreDefaultCover;
+  final bool initialCanRestoreDefaultCover;
 
   @override
   State<ComicCoverViewer> createState() => _ComicCoverViewerState();
@@ -28,42 +39,56 @@ class ComicCoverViewer extends StatefulWidget {
 
 class _ComicCoverViewerState extends State<ComicCoverViewer> {
   bool isAppBarShow = true;
+  late ImageProvider? _imageProvider = widget.imageProvider;
+  late bool _canRestoreDefaultCover = widget.initialCanRestoreDefaultCover;
+  bool _isUpdatingCover = false;
+  int _coverRevision = 0;
 
   @override
   Widget build(BuildContext context) {
+    final imageProvider = _imageProvider;
     return PopScope(
-      canPop: true,
+      canPop: !_isUpdatingCover,
       child: Scaffold(
         backgroundColor: context.colorScheme.surface,
         body: Stack(
           children: [
             Positioned.fill(
-              child: PhotoView(
-                imageProvider: widget.imageProvider,
-                minScale: PhotoViewComputedScale.contained * 1.0,
-                maxScale: PhotoViewComputedScale.covered * 3.0,
-                backgroundDecoration: BoxDecoration(
-                  color: context.colorScheme.surface,
-                ),
-                loadingBuilder: (context, event) => Center(
-                  child: SizedBox(
-                    width: 24.0,
-                    height: 24.0,
-                    child: CircularProgressIndicator(
-                      value: event == null || event.expectedTotalBytes == null
-                          ? null
-                          : event.cumulativeBytesLoaded /
-                                event.expectedTotalBytes!,
+              child: imageProvider == null
+                  ? const Center(
+                      child: Icon(Icons.image_not_supported_outlined),
+                    )
+                  : PhotoView(
+                      key: ValueKey(_coverRevision),
+                      imageProvider: imageProvider,
+                      minScale: PhotoViewComputedScale.contained * 1.0,
+                      maxScale: PhotoViewComputedScale.covered * 3.0,
+                      backgroundDecoration: BoxDecoration(
+                        color: context.colorScheme.surface,
+                      ),
+                      loadingBuilder: (context, event) => Center(
+                        child: SizedBox(
+                          width: 24.0,
+                          height: 24.0,
+                          child: CircularProgressIndicator(
+                            value:
+                                event == null ||
+                                    event.expectedTotalBytes == null
+                                ? null
+                                : event.cumulativeBytesLoaded /
+                                      event.expectedTotalBytes!,
+                          ),
+                        ),
+                      ),
+                      onTapUp: (context, details, controllerValue) {
+                        setState(() {
+                          isAppBarShow = !isAppBarShow;
+                        });
+                      },
+                      heroAttributes: PhotoViewHeroAttributes(
+                        tag: widget.heroTag,
+                      ),
                     ),
-                  ),
-                ),
-                onTapUp: (context, details, controllerValue) {
-                  setState(() {
-                    isAppBarShow = !isAppBarShow;
-                  });
-                },
-                heroAttributes: PhotoViewHeroAttributes(tag: widget.heroTag),
-              ),
             ),
             AnimatedPositioned(
               top: isAppBarShow ? 0 : -(context.padding.top + 52),
@@ -79,6 +104,8 @@ class _ComicCoverViewerState extends State<ComicCoverViewer> {
   }
 
   Widget _buildAppBar() {
+    final replaceCover = widget.onReplaceCover;
+    final restoreCover = widget.onRestoreDefaultCover;
     return Material(
       color: context.colorScheme.surface.toOpacity(0.72),
       child: BlurEffect(
@@ -97,9 +124,9 @@ class _ComicCoverViewerState extends State<ComicCoverViewer> {
               const SizedBox(width: 8),
               IconButton(
                 icon: const Icon(Icons.close),
-                onPressed: () {
-                  Navigator.of(context).pop();
-                },
+                onPressed: _isUpdatingCover
+                    ? null
+                    : () => Navigator.of(context).pop(),
               ),
               const SizedBox(width: 8),
               Expanded(
@@ -111,8 +138,26 @@ class _ComicCoverViewerState extends State<ComicCoverViewer> {
               ),
               IconButton(
                 icon: const Icon(Icons.save_alt),
-                onPressed: _saveCover,
+                onPressed: _isUpdatingCover || _imageProvider == null
+                    ? null
+                    : _saveCover,
               ),
+              if (replaceCover != null)
+                IconButton(
+                  icon: const Icon(Icons.add_photo_alternate_outlined),
+                  tooltip: 'Replace cover'.tl,
+                  onPressed: _isUpdatingCover
+                      ? null
+                      : () => _updateCover(replaceCover),
+                ),
+              if (_canRestoreDefaultCover && restoreCover != null)
+                IconButton(
+                  icon: const Icon(Icons.restore),
+                  tooltip: 'Restore default cover'.tl,
+                  onPressed: _isUpdatingCover
+                      ? null
+                      : () => _updateCover(restoreCover),
+                ),
               const SizedBox(width: 8),
             ],
           ),
@@ -121,11 +166,27 @@ class _ComicCoverViewerState extends State<ComicCoverViewer> {
     );
   }
 
-  void _saveCover() async {
+  Future<void> _updateCover(Future<ComicCoverUpdate?> Function() action) async {
+    if (_isUpdatingCover) return;
+    setState(() => _isUpdatingCover = true);
     try {
-      final imageStream = widget.imageProvider.resolve(
-        const ImageConfiguration(),
-      );
+      final result = await action();
+      if (!mounted || result == null) return;
+      setState(() {
+        _imageProvider = result.imageProvider;
+        _canRestoreDefaultCover = result.hasCustomCover;
+        _coverRevision++;
+      });
+    } finally {
+      if (mounted) setState(() => _isUpdatingCover = false);
+    }
+  }
+
+  void _saveCover() async {
+    final imageProvider = _imageProvider;
+    if (imageProvider == null) return;
+    try {
+      final imageStream = imageProvider.resolve(const ImageConfiguration());
       final completer = Completer<Uint8List>();
 
       imageStream.addListener(

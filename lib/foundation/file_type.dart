@@ -21,6 +21,21 @@ class FileType {
   }
 }
 
+const _avifMagicMask = [
+  0x00,
+  0x00,
+  0x00,
+  0x00,
+  0xFF,
+  0xFF,
+  0xFF,
+  0xFF,
+  0xFF,
+  0xFF,
+  0xFF,
+  0xFF,
+];
+
 final _resolver = MimeTypeResolver()
   // zip
   ..addMagicNumber([0x50, 0x4B], 'application/zip')
@@ -35,21 +50,17 @@ final _resolver = MimeTypeResolver()
   ], 'application/x-7z-compressed')
   // rar
   ..addMagicNumber([0x52, 0x61, 0x72, 0x21, 0x1A, 0x07], 'application/vnd.rar')
-  // avif
-  ..addMagicNumber([
-    0x00,
-    0x00,
-    0x00,
-    0x18,
-    0x66,
-    0x74,
-    0x79,
-    0x70,
-    0x61,
-    0x76,
-    0x69,
-    0x66,
-  ], 'image/avif');
+  // ftyp 的前四个字节是可变的 box 长度。
+  ..addMagicNumber(
+    [0, 0, 0, 0, ...'ftypavif'.codeUnits],
+    'image/avif',
+    mask: _avifMagicMask,
+  )
+  ..addMagicNumber(
+    [0, 0, 0, 0, ...'ftypavis'.codeUnits],
+    'image/avif',
+    mask: _avifMagicMask,
+  );
 
 FileType detectFileType(List<int> data) {
   var mime = _resolver.lookup('no-file', headerBytes: data);
