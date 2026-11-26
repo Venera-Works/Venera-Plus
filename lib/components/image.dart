@@ -102,7 +102,6 @@ class _AnimatedImageState extends State<AnimatedImage>
 
   @override
   void dispose() {
-    assert(_imageStream != null);
     WidgetsBinding.instance.removeObserver(this);
     _stopListeningToStream();
     _completerHandle?.dispose();
@@ -114,12 +113,14 @@ class _AnimatedImageState extends State<AnimatedImage>
   @override
   void didChangeDependencies() {
     _updateInvertColors();
-    _resolveImage();
+    final tickerEnabled = TickerMode.valuesOf(context).enabled;
+    if (tickerEnabled || _imageInfo != null) _resolveImage();
 
-    if (TickerMode.valuesOf(context).enabled) {
+    if (tickerEnabled) {
       _listenToStream();
     } else {
-      _stopListeningToStream(keepStreamAlive: true);
+      _stopListeningToStream(keepStreamAlive: _imageInfo != null);
+      if (_imageInfo == null) _imageStream = null;
     }
 
     super.didChangeDependencies();
@@ -128,8 +129,18 @@ class _AnimatedImageState extends State<AnimatedImage>
   @override
   void didUpdateWidget(AnimatedImage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.image != oldWidget.image) {
+    if (widget.image == oldWidget.image) return;
+    if (TickerMode.valuesOf(context).enabled) {
       _resolveImage();
+      return;
+    }
+
+    _stopListeningToStream();
+    _completerHandle?.dispose();
+    _completerHandle = null;
+    _imageStream = null;
+    if (!widget.gaplessPlayback) {
+      setState(() => _replaceImage(info: null));
     }
   }
 
@@ -143,7 +154,9 @@ class _AnimatedImageState extends State<AnimatedImage>
 
   @override
   void reassemble() {
-    _resolveImage(); // in case the image cache was flushed
+    if (TickerMode.valuesOf(context).enabled) {
+      _resolveImage();
+    }
     super.reassemble();
   }
 
@@ -223,8 +236,10 @@ class _AnimatedImageState extends State<AnimatedImage>
     }
 
     if (_isListeningToStream) {
-      _imageStream!.removeListener(_getListener());
+      _imageStream?.removeListener(_getListener());
     }
+    _completerHandle?.dispose();
+    _completerHandle = null;
 
     if (!widget.gaplessPlayback) {
       setState(() {
@@ -240,16 +255,17 @@ class _AnimatedImageState extends State<AnimatedImage>
 
     _imageStream = newStream;
     if (_isListeningToStream) {
-      _imageStream!.addListener(_getListener());
+      newStream.addListener(_getListener());
     }
   }
 
   void _listenToStream() {
-    if (_isListeningToStream) {
+    final stream = _imageStream;
+    if (_isListeningToStream || stream == null) {
       return;
     }
 
-    _imageStream!.addListener(_getListener());
+    stream.addListener(_getListener());
     _completerHandle?.dispose();
     _completerHandle = null;
 
@@ -264,17 +280,16 @@ class _AnimatedImageState extends State<AnimatedImage>
   /// to true, which create [ImageStreamCompleterHandle] to keep the completer
   /// alive and is compatible with the [TickerMode] being off.
   void _stopListeningToStream({bool keepStreamAlive = false}) {
-    if (!_isListeningToStream) {
+    final stream = _imageStream;
+    if (!_isListeningToStream || stream == null) {
       return;
     }
 
-    if (keepStreamAlive &&
-        _completerHandle == null &&
-        _imageStream?.completer != null) {
-      _completerHandle = _imageStream!.completer!.keepAlive();
+    if (keepStreamAlive) {
+      _completerHandle ??= stream.completer?.keepAlive();
     }
 
-    _imageStream!.removeListener(_getListener());
+    stream.removeListener(_getListener());
     _isListeningToStream = false;
   }
 

@@ -7,16 +7,18 @@ import 'remote_file_store.dart';
 
 enum RemoteReadPriority { foreground, cover, preload, background }
 
-/// 同一图片或归档操作的请求共享可提升的优先级。
+/// 同一图片或归档操作的请求共享优先级和取消信号。
 class RemoteReadContext {
   RemoteReadContext({
     RemoteReadPriority priority = RemoteReadPriority.foreground,
+    this.cancelToken,
   }) : _priority = priority;
 
   static final _zoneKey = Object();
   static RemoteReadContext get current =>
       Zone.current[_zoneKey] as RemoteReadContext? ?? RemoteReadContext();
 
+  final CancelToken? cancelToken;
   RemoteReadPriority _priority;
   Set<void Function()>? _promotionListeners;
   RemoteReadPriority get priority => _priority;

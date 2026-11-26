@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as img;
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/image_provider/cached_image.dart';
@@ -218,4 +219,168 @@ void main() {
       expect(data, [1, 2, 3]);
     },
   );
+
+  group('封面加载调度', () {
+    const remoteSource = 'remote_library_1';
+    const timeout = Duration(seconds: 5);
+    late Directory directory;
+    late StreamController<ImageChunkEvent> chunkEvents;
+
+    setUp(() async {
+      directory = await Directory.systemTemp.createTemp('thumbnail-slots-');
+      App.dataPath = App.cachePath = directory.path;
+      CacheManager.debugDisableInitialScan = true;
+      chunkEvents = StreamController<ImageChunkEvent>.broadcast();
+    });
+
+    tearDown(() async {
+      await chunkEvents.close();
+      ImageDownloader.debugResetSourceImageLoading();
+      await CacheManager.resetForTesting();
+      await directory.delete(recursive: true);
+    });
+
+    test('单个云端库只占用三个槽位，普通来源和本地封面可以返回', () async {
+      final release = Completer<Uint8List>();
+      final threeStarted = Completer<void>();
+      var slowStarts = 0;
+      final ordinaryBytes = Uint8List.fromList([4, 5, 6]);
+      final localBytes = img.encodePng(img.Image(width: 2, height: 2));
+      final file = await File(
+        '${directory.path}/local.png',
+      ).writeAsBytes(localBytes);
+      ImageDownloader.configureSourceImageLoading(
+        thumbnailLoadingConfig: (source, _) => {
+          'loadBytes': (CancelToken _) async {
+            if (source != remoteSource) return ordinaryBytes;
+            if (++slowStarts == 3) threeStarted.complete();
+            return release.future;
+          },
+        },
+      );
+
+      final pending = List.generate(6, (index) {
+        return CachedImageProvider(
+          'https://example.invalid/slow-$index.png',
+          sourceKey: remoteSource,
+        ).load(chunkEvents, () {});
+      });
+      try {
+        await threeStarted.future.timeout(timeout);
+        expect(CachedImageProvider.loadingCount, 3);
+
+        final otherCovers = await Future.wait([
+          const CachedImageProvider(
+            'https://example.invalid/ordinary.png',
+            sourceKey: 'probe',
+          ).load(chunkEvents, () {}),
+          CachedImageProvider('file://${file.path}').load(chunkEvents, () {}),
+        ]).timeout(timeout);
+
+        expect(otherCovers, [ordinaryBytes, localBytes]);
+        expect(release.isCompleted, isFalse);
+        expect(slowStarts, 3);
+        expect(CachedImageProvider.loadingCount, 3);
+      } finally {
+        release.complete(Uint8List.fromList([1, 2, 3]));
+        await Future.wait(pending);
+      }
+    });
+
+    test('同库三个槽位都忙时命中磁盘缓存仍直接返回', () async {
+      final release = Completer<Uint8List>();
+      final threeStarted = Completer<void>();
+      final resolvedUrls = <String>[];
+      const cached = CachedImageProvider(
+        'https://example.invalid/cached.png',
+        sourceKey: remoteSource,
+        cid: 'comic',
+      );
+      await CacheManager().writeCache('${cached.url}@$remoteSource@comic', [
+        8,
+        9,
+      ]);
+      ImageDownloader.configureSourceImageLoading(
+        thumbnailLoadingConfig: (_, url) {
+          resolvedUrls.add(url);
+          if (resolvedUrls.length == 3) threeStarted.complete();
+          return {'loadBytes': (CancelToken _) => release.future};
+        },
+      );
+
+      final pending = List.generate(3, (index) {
+        return CachedImageProvider(
+          'https://example.invalid/stalled-$index.png',
+          sourceKey: remoteSource,
+        ).load(chunkEvents, () {});
+      });
+      try {
+        await threeStarted.future.timeout(timeout);
+        expect(CachedImageProvider.loadingCount, 3);
+        expect(await cached.load(chunkEvents, () {}).timeout(timeout), [8, 9]);
+        expect(resolvedUrls, hasLength(3));
+        expect(resolvedUrls, isNot(contains(cached.url)));
+        expect(release.isCompleted, isFalse);
+        expect(CachedImageProvider.loadingCount, 3);
+      } finally {
+        release.complete(Uint8List.fromList([1, 2, 3]));
+        await Future.wait(pending);
+      }
+    });
+
+    test('取消全局队列中的第十张封面时无需等待槽位释放', () async {
+      final release = Completer<void>();
+      final holders = List.generate(9, (_) {
+        return CachedImageProvider.debugRunWithThumbnailSlot(
+          () => release.future,
+        );
+      });
+      final stopped = Completer<FlutterErrorDetails>();
+      final previousErrorHandler = FlutterError.onError;
+      FlutterError.onError = (details) {
+        if (!stopped.isCompleted) stopped.complete(details);
+      };
+      const provider = CachedImageProvider(
+        'https://example.invalid/queued.png',
+        sourceKey: 'probe',
+      );
+      final listener = ImageStreamListener((image, _) {
+        image.dispose();
+        fail('排队后取消的封面不应出图');
+      });
+      ImageStreamCompleter? listening;
+      try {
+        await pumpEventQueue();
+        expect(CachedImageProvider.loadingCount, 9);
+        final stream = provider.loadImage(
+          provider,
+          (_, {getTargetSize}) => throw StateError('取消的封面不应解码'),
+        );
+        stream.addListener(listener);
+        listening = stream;
+        await pumpEventQueue();
+        expect(stopped.isCompleted, isFalse);
+        expect(CacheManager.instance, isNull);
+
+        // 移除直接加载流的最后一个监听器，触发生产代码的取消信号。
+        stream.removeListener(listener);
+        listening = null;
+        final error = await stopped.future.timeout(timeout);
+        expect(
+          error.exceptionAsString(),
+          contains('_ImageLoadingStopException'),
+        );
+        expect(release.isCompleted, isFalse);
+        expect(CachedImageProvider.loadingCount, 9);
+        expect(CacheManager.instance, isNull);
+      } finally {
+        listening?.removeListener(listener);
+        release.complete();
+        await Future.wait(holders);
+        await pumpEventQueue();
+        FlutterError.onError = previousErrorHandler;
+      }
+      expect(CacheManager.instance, isNull);
+    });
+  });
 }

@@ -34,6 +34,7 @@ class _RemoteLibraryScanner {
       return current;
     }
     // 强刷建立新 generation，旧扫描和补全在提交前失效。
+    if (force) state.missingCovers.clear();
     state.syncGeneration++;
     _engine._metadata.discardObsoleteTasks(state.syncGeneration);
     state.scanToken.cancel('Remote Library scan superseded');

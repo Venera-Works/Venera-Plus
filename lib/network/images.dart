@@ -413,7 +413,10 @@ abstract class ImageDownloader {
         },
       ),
       (_) {},
-      readContext: RemoteReadContext(priority: RemoteReadPriority.cover),
+      readContext: RemoteReadContext(
+        priority: RemoteReadPriority.cover,
+        cancelToken: cancelToken,
+      ),
       onCancel: cancelToken.cancel,
     );
     cancelSignal?.then((_) => wrapper.cancel());
@@ -655,6 +658,7 @@ abstract class ImageDownloader {
       },
       readContext: RemoteReadContext(
         priority: RemoteReadContext.current.priority,
+        cancelToken: cancelToken,
       ),
       onCancel: cancelToken.cancel,
     );
@@ -706,6 +710,7 @@ abstract class ImageDownloader {
       (_) {},
       readContext: RemoteReadContext(
         priority: RemoteReadContext.current.priority,
+        cancelToken: cancelToken,
       ),
       onCancel: cancelToken.cancel,
     ).stream;

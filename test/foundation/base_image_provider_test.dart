@@ -2,15 +2,19 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:dio/dio.dart' show CancelToken;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/foundation/image_provider/base_image_provider.dart';
 import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/network/remote_storage/remote_file_store.dart';
 
 class _TestImage extends BaseImageProvider<_TestImage> {
-  _TestImage({this.emptyCount = 1, this.cacheWrite});
+  _TestImage({this.emptyCount = 1, this.cacheWrite, this.beforeLoad});
   final int emptyCount;
   final Future<void>? cacheWrite;
+  final FutureOr<void> Function(int attempt, void Function() checkStop)?
+  beforeLoad;
   int attempts = 0;
   @override
   String get key => 'test-${identityHashCode(hash)}';
@@ -21,8 +25,9 @@ class _TestImage extends BaseImageProvider<_TestImage> {
   Future<void> cacheImageAfterDecoding() => cacheWrite ?? Future.value();
   @override
   Future<Uint8List> load(chunkEvents, checkStop) async {
-    attempts++;
-    if (attempts <= emptyCount) return Uint8List(0);
+    final attempt = ++attempts;
+    if (beforeLoad case final prepare?) await prepare(attempt, checkStop);
+    if (attempt <= emptyCount) return Uint8List(0);
     return base64Decode(
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==',
     );
@@ -106,5 +111,90 @@ void main() {
       Duration.zero,
       Completer<void>().future,
     ).timeout(const Duration(seconds: 1));
+  });
+
+  test('移除最后一个界面监听后取消挂起图片，重新解析可出图', () async {
+    final started = Completer<void>();
+    final cancelled = Completer<void>();
+    final release = Completer<void>();
+    final provider = _TestImage(
+      emptyCount: 0,
+      beforeLoad: (attempt, checkStop) async {
+        if (attempt != 1) return;
+        unawaited(
+          BaseImageProvider.cancelSignalOf(checkStop).then((_) {
+            cancelled.complete();
+          }),
+        );
+        started.complete();
+        await release.future;
+        checkStop();
+      },
+    );
+    final errors = <FlutterErrorDetails>[];
+    final previousErrorHandler = FlutterError.onError;
+    FlutterError.onError = errors.add;
+    final cache = PaintingBinding.instance.imageCache;
+    final stream = provider.resolve(ImageConfiguration.empty);
+    final listeners = List.generate(
+      2,
+      (_) => ImageStreamListener((info, _) => info.dispose()),
+    );
+    for (final listener in listeners) {
+      stream.addListener(listener);
+    }
+
+    try {
+      await started.future.timeout(const Duration(seconds: 5));
+      expect(cache.statusForKey(provider).pending, isTrue);
+
+      stream.removeListener(listeners.removeLast());
+      await pumpEventQueue();
+      expect(cancelled.isCompleted, isFalse);
+      expect(cache.statusForKey(provider).pending, isTrue);
+
+      stream.removeListener(listeners.removeLast());
+      expect(cache.statusForKey(provider).pending, isTrue);
+      await cancelled.future.timeout(const Duration(seconds: 5));
+      expect(cache.statusForKey(provider).pending, isFalse);
+      release.complete();
+      await pumpEventQueue();
+      expect(errors, isEmpty);
+
+      expect(await resolveImage(provider), isNull);
+      expect(provider.attempts, 2);
+      expect(errors, isEmpty);
+    } finally {
+      for (final listener in listeners) {
+        stream.removeListener(listener);
+      }
+      if (!release.isCompleted) release.complete();
+      await pumpEventQueue();
+      await provider.evict();
+      FlutterError.onError = previousErrorHandler;
+    }
+  });
+
+  test('远端缺失、限流、鉴权失败、取消和漫画源缺失均不重试', () async {
+    final muted = Log.isMuted;
+    Log.isMuted = true;
+    addTearDown(() => Log.isMuted = muted);
+
+    const notFound = RemoteStorageException('failed get dir: object not found');
+    expect(notFound.isNotFound, isTrue);
+    final token = CancelToken()..cancel('主动取消');
+    final failures = <Object>[
+      notFound,
+      const RemoteStorageException('请求暂缓', code: '429'),
+      const RemoteStorageException('凭据失效', code: '401'),
+      token.cancelError!,
+      'Comic source not found.',
+    ];
+
+    for (final failure in failures) {
+      final provider = _TestImage(beforeLoad: (_, _) => throw failure);
+      expect(await resolveImage(provider), same(failure));
+      expect(provider.attempts, 1, reason: failure.toString());
+    }
   });
 }
