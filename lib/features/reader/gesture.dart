@@ -550,7 +550,7 @@ class ReaderGestureDetectorState
         ),
         MenuEntry(
           icon: Icons.fullscreen,
-          text: "Full Screen".tl,
+          text: "Fullscreen".tl,
           onClick: () => context.reader.fullscreen(),
         ),
         MenuEntry(
