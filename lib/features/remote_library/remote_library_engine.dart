@@ -114,6 +114,9 @@ class RemoteLibraryEngine {
   Timer? _directoryCacheTimer;
   Timer? _autoRefreshTimer;
   Dio? _imageDio;
+  RemoteLibrarySort? _sort;
+  RemoteReadScheduler? _cooldownScheduler;
+  StreamSubscription<DateTime?>? _cooldownSubscription;
 
   // 同一账号的目录、元数据和 Range 请求共用一个调度器。
   static final _archiveAccounts =
@@ -132,28 +135,102 @@ class RemoteLibraryEngine {
   List<RemoteLibraryMetadataPendingStatus> get metadataPendingStatuses =>
       _metadata.metadataPendingStatuses;
   Map<String, String> get failedRoots => Map.unmodifiable(_state.failedRoots);
-  String? get statusMessage => failedRoots.isEmpty
-      ? null
-      : 'Failed directories: ${failedRoots.keys.join(', ')}';
+
+  String get _sortKey => 'remote_library_sort_${library.id}';
+
+  RemoteLibrarySort get sort => _sort ??= RemoteLibrarySort.fromString(
+    switch (appdata.implicitData[_sortKey]) {
+      String value => value,
+      _ => null,
+    },
+  );
+
+  Future<void> setSort(RemoteLibrarySort value) async {
+    if (value == sort) return;
+    _sort = value;
+    appdata.implicitData[_sortKey] = value.value;
+    await appdata.writeImplicitData();
+    _notifyContent(immediate: true);
+  }
+
+  String? get statusMessage {
+    final status = syncStatus.value;
+    final scheduler = _cooldownScheduler;
+    final until = scheduler == null
+        ? status.cooldownUntil
+        : scheduler.cooldownUntil;
+    final cooldownMessage = until == null
+        ? null
+        : 'Rate limited until @time'.tlParams({
+            'time': until.toLocal().toString().split('.').first,
+          });
+    if (_state.failedRoots.isNotEmpty) {
+      final failures = 'Failed directories: @directories'.tlParams({
+        'directories': _state.failedRoots.keys.join(', '),
+      });
+      return cooldownMessage == null ? failures : '$failures\n$cooldownMessage';
+    }
+    if (cooldownMessage != null) return cooldownMessage;
+    if (status.isSyncing) {
+      return switch (status.phase) {
+        RemoteLibrarySyncPhase.listingRoots =>
+          'Checking library directories...'.tl,
+        RemoteLibrarySyncPhase.scanningPriority =>
+          'Scanning new and changed directories (@count new)...'.tlParams({
+            'count': status.discoveredNew,
+          }),
+        _ =>
+          'Syncing catalog (@processed processed, @reused directories reused)...'
+              .tlParams({
+                'processed': status.processed,
+                'reused': status.reused,
+              }),
+      };
+    }
+    if (status.pendingMetadata > 0) {
+      return 'Updating metadata (@count remaining)...'.tlParams({
+        'count': status.pendingMetadata,
+      });
+    }
+    return null;
+  }
+
   Map<String, _RemoteComicSnapshot> get _snapshotCache => _state.snapshotCache;
   Map<String, Future<_RemoteComicSnapshot>> get _snapshotInFlight =>
       _state.snapshotInFlight;
 
   ({RemoteReadScheduler scheduler, RemoteRangeCache cache}) _archiveAccount(
     RemoteLibraryConfig config,
-  ) => _archiveAccounts.putIfAbsent(
-    config.archiveAccountKey,
-    () => (
-      scheduler:
-          RemoteLibrarySource.archiveSchedulerFactory?.call() ??
-          (config.remoteStore == null
-              ? RemoteReadScheduler(minInterval: Duration.zero)
-              : RemoteStorageAccounts.instance.readSchedulerFor(
-                  config.remoteStore!.account,
-                )),
-      cache: RemoteRangeCache(),
-    ),
-  );
+  ) {
+    final account = _archiveAccounts.putIfAbsent(
+      config.archiveAccountKey,
+      () => (
+        scheduler:
+            RemoteLibrarySource.archiveSchedulerFactory?.call() ??
+            _storageScheduler(config) ??
+            RemoteReadScheduler(minInterval: Duration.zero),
+        cache: RemoteRangeCache(),
+      ),
+    );
+    _watchCooldown(account.scheduler);
+    return account;
+  }
+
+  RemoteReadScheduler? _storageScheduler(RemoteLibraryConfig config) {
+    final storageAccount = config.remoteStore?.account;
+    return storageAccount == null
+        ? null
+        : RemoteStorageAccounts.instance.readSchedulerFor(storageAccount);
+  }
+
+  void _watchCooldown(RemoteReadScheduler scheduler) {
+    if (_state.disposed || identical(_cooldownScheduler, scheduler)) return;
+    unawaited(_cooldownSubscription?.cancel());
+    _cooldownScheduler = scheduler;
+    _cooldownSubscription = scheduler.cooldownChanges.listen(
+      (_) => _updateSyncActivity(),
+    );
+  }
 
   RemoteLibraryConfig _configFor(String root) => _legacy
       ? _config
@@ -192,6 +269,7 @@ class RemoteLibraryEngine {
     bool useCache = false,
     bool useStaleCache = false,
     Map<String, List<RemoteLibraryEntry>>? previousRootEntries,
+    VoidCallback? onCacheHit,
   }) async {
     final cachePath = normalizeRemoteDirectory(path);
     final generation = _state.syncGeneration;
@@ -204,7 +282,10 @@ class RemoteLibraryEngine {
         cachePath,
       ], ignoreExpiry: useStaleCache);
       final entries = cached[cachePath];
-      if (entries != null) return entries;
+      if (entries != null) {
+        onCacheHit?.call();
+        return entries;
+      }
     }
     final entries = await _archiveAccount(config).scheduler.run(() {
       _ensureActive();
@@ -503,18 +584,53 @@ class RemoteLibraryEngine {
   Future<void> _readStatus() async {
     final config = _config;
     if (!config.isValid || _state.disposed) return;
+    final scheduler =
+        _archiveAccounts[config.archiveAccountKey]?.scheduler ??
+        (RemoteLibrarySource.archiveSchedulerFactory == null
+            ? _storageScheduler(config)
+            : null);
+    if (scheduler != null) _watchCooldown(scheduler);
+    final generation = _state.syncGeneration;
     final last = await _cache.lastSuccessfulSync(config.cacheKey);
-    if (_state.disposed) return;
+    if (_state.disposed || generation != _state.syncGeneration) return;
     final failures = await _cache.rootFailures(config.cacheKey);
-    if (_state.disposed) return;
+    if (_state.disposed ||
+        generation != _state.syncGeneration ||
+        _state.syncRun != null) {
+      return;
+    }
     _state.lastSuccessfulSync = last;
     _state.failedRoots = failures;
-    if (!syncStatus.value.isSyncing) {
-      syncStatus.value = RemoteLibrarySyncStatus(
-        isSyncing: false,
-        lastSuccessfulSync: last,
-      );
+    _updateSyncActivity(fromCache: true);
+  }
+
+  void _updateSyncActivity({bool fromCache = false}) {
+    if (_state.disposed) return;
+    final status = syncStatus.value;
+    final pending = _metadata.pendingCompletionCount;
+    final until = _cooldownScheduler?.cooldownUntil;
+    if (!fromCache &&
+        status.pendingMetadata == pending &&
+        status.cooldownUntil == until) {
+      return;
     }
+    syncStatus.value = RemoteLibrarySyncStatus(
+      isSyncing: status.isSyncing,
+      lastSuccessfulSync: _state.lastSuccessfulSync,
+      processed: status.processed,
+      total: status.total,
+      failed: status.failed,
+      errorMessage: status.errorMessage,
+      phase: status.isSyncing
+          ? status.phase
+          : pending == 0
+          ? RemoteLibrarySyncPhase.idle
+          : RemoteLibrarySyncPhase.completingMetadata,
+      reused: status.reused,
+      discoveredNew: status.discoveredNew,
+      pendingMetadata: pending,
+      cooldownUntil: until,
+    );
   }
 
   bool matches(RemoteLibrary other, StorageAccount account) =>
@@ -543,6 +659,7 @@ class RemoteLibraryEngine {
     _directoryCacheTimer = null;
     _state.autoSyncTimer?.cancel();
     _autoRefreshTimer?.cancel();
+    final closingCooldown = _cooldownSubscription?.cancel();
     final scanning = _state.syncRun?.complete;
     final snapshots = _snapshotInFlight.values.toList();
     final volumes = _state.workVolumeLoads.values
@@ -560,6 +677,7 @@ class RemoteLibraryEngine {
     }
     await closingMetadata;
     await Future.wait([
+      ?closingCooldown,
       if (scanning != null) scanning.then<void>((_) {}),
       ..._state.statusLoads,
       ..._state.snapshotQueries,
@@ -654,6 +772,7 @@ class RemoteLibraryEngine {
     Iterable<String> tags = const [],
     bool showAuthor = false,
     bool initializeIndex = true,
+    RemoteLibrarySort? sort,
   }) async {
     final config = _config;
     if (!config.isValid) {
@@ -673,6 +792,7 @@ class RemoteLibraryEngine {
         roots: config.remoteLibrary?.directories,
         keyword: keyword,
         tags: tags,
+        sort: sort ?? this.sort,
       );
       final maxPage = count == 0 ? 1 : (count + pageSize - 1) ~/ pageSize;
       return Res([
@@ -735,6 +855,7 @@ class RemoteLibraryEngine {
           null,
           null,
           changeListenable: contentVersion,
+          statusListenable: syncStatus,
           statusMessage: () => statusMessage,
           onRefresh: () async {
             await synchronize(force: true, deep: false);

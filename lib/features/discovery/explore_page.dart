@@ -4,13 +4,18 @@ import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/loading.dart';
+import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/navigation_bar.dart';
 import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/features/remote_library/remote_library.dart'
-    show RemoteLibraryEngines, RemoteLibrarySearchPage;
+    show
+        RemoteLibraryEngine,
+        RemoteLibraryEngines,
+        RemoteLibrarySearchPage,
+        RemoteLibrarySort;
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/context.dart';
@@ -770,11 +775,65 @@ class _ExplorePageState extends State<ExplorePage>
     );
   }
 
+  Future<void> _showRemoteLibrarySortDialog(
+    BuildContext context,
+    RemoteLibraryEngine engine,
+  ) async {
+    var selection = engine.sort;
+    final selected = await showDialog<RemoteLibrarySort>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => ContentDialog(
+          title: 'Sort'.tl,
+          content: RadioGroup<RemoteLibrarySort>(
+            groupValue: selection,
+            onChanged: (value) {
+              if (value != null) setState(() => selection = value);
+            },
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                RadioListTile<RemoteLibrarySort>(
+                  title: Text('Name'.tl),
+                  value: RemoteLibrarySort.name,
+                ),
+                RadioListTile<RemoteLibrarySort>(
+                  title: Text('Recently added'.tl),
+                  value: RemoteLibrarySort.recentlyAdded,
+                ),
+                RadioListTile<RemoteLibrarySort>(
+                  title: Text('Recently updated'.tl),
+                  value: RemoteLibrarySort.recentlyModified,
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(context, selection),
+              child: Text('Confirm'.tl),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (selected == null) return;
+    await engine.setSort(selected);
+    if (mounted &&
+        currentSourceKey == engine.library.sourceKey &&
+        currentSection == DiscoverySection.browse) {
+      toTop();
+    }
+  }
+
   Widget buildTopBar(BuildContext context) {
     final source = currentSource!;
     final hasBrowse = _sourceHasBrowse(source);
     final hasCategories = _sourceHasCategories(source);
     final canSearchLibrary = RemoteLibraryEngines.forSearch(source.key) != null;
+    final remoteEngine = currentSection == DiscoverySection.browse
+        ? RemoteLibraryEngines.find(source.key)
+        : null;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -923,6 +982,13 @@ class _ExplorePageState extends State<ExplorePage>
                         onPressed: () => context.to(
                           () => RemoteLibrarySearchPage(sourceKey: source.key),
                         ),
+                      ),
+                    if (remoteEngine != null)
+                      IconButton(
+                        tooltip: 'Sort'.tl,
+                        icon: const Icon(Icons.sort),
+                        onPressed: () =>
+                            _showRemoteLibrarySortDialog(context, remoteEngine),
                       ),
                     manageMenu,
                   ]
@@ -1498,7 +1564,23 @@ class _SingleExplorePageState extends AutomaticGlobalState<_SingleExplorePage>
         },
       );
     } else if (currentData.loadPage != null || currentData.loadNext != null) {
-      final statusMessage = currentData.statusMessage?.call();
+      Widget? buildStatus() {
+        final message = currentData.statusMessage?.call();
+        return message == null
+            ? null
+            : Padding(padding: const EdgeInsets.all(12), child: Text(message));
+      }
+
+      final statusListenable = currentData.statusListenable;
+      final status = statusListenable == null
+          ? buildStatus()
+          : ListenableBuilder(
+              listenable: Listenable.merge([
+                statusListenable,
+                currentData.changeListenable,
+              ]),
+              builder: (_, _) => buildStatus() ?? const SizedBox.shrink(),
+            );
       final hasCustomRefresh =
           currentData.onRefresh != null || currentData.onDeepRefresh != null;
       final list = ComicList(
@@ -1514,14 +1596,10 @@ class _SingleExplorePageState extends AutomaticGlobalState<_SingleExplorePage>
         reloadHandlerCallback: (c) {
           reloadHandler = c;
         },
-        leadingSliver: statusMessage == null
+        leadingSliver: status == null
             ? null
-            : SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Text(statusMessage),
-                ),
-              ),
+            : SliverToBoxAdapter(child: status),
+        errorLeading: statusListenable == null ? null : status,
       );
       if (!hasCustomRefresh) return list;
 

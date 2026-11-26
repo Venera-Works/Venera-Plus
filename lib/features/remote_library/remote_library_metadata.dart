@@ -29,6 +29,8 @@ class _RemoteLibraryMetadataPipeline {
   int? _snapshotGeneration;
   final _cancelled = Completer<void>();
 
+  int get pendingCompletionCount => _completions.length + _completionWorkers;
+
   void discardObsoleteTasks(int generation) {
     final prefix = '$generation:';
     _completions.removeWhere((key, _) => !key.startsWith(prefix));
@@ -79,6 +81,7 @@ class _RemoteLibraryMetadataPipeline {
       );
       enqueueScrape(config, directory.id, snapshot, run: run);
     };
+    _engine._updateSyncActivity();
     _pump();
   }
 
@@ -262,6 +265,7 @@ class _RemoteLibraryMetadataPipeline {
             _scrapeWorkers--;
           } else {
             _completionWorkers--;
+            _engine._updateSyncActivity();
           }
           _active.remove(task);
           _pump();

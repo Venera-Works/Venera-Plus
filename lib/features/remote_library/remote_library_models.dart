@@ -820,6 +820,14 @@ class RemoteLibraryMetadataWriteRejectedException implements Exception {
   String toString() => 'The Remote Library metadata write is no longer current';
 }
 
+enum RemoteLibrarySyncPhase {
+  idle,
+  listingRoots,
+  scanningPriority,
+  scanningCatalog,
+  completingMetadata,
+}
+
 class RemoteLibrarySyncStatus {
   const RemoteLibrarySyncStatus({
     required this.isSyncing,
@@ -828,6 +836,11 @@ class RemoteLibrarySyncStatus {
     this.total = 0,
     this.failed = 0,
     this.errorMessage,
+    this.phase = RemoteLibrarySyncPhase.idle,
+    this.reused = 0,
+    this.discoveredNew = 0,
+    this.pendingMetadata = 0,
+    this.cooldownUntil,
   });
 
   final bool isSyncing;
@@ -836,6 +849,11 @@ class RemoteLibrarySyncStatus {
   final int total;
   final int failed;
   final String? errorMessage;
+  final RemoteLibrarySyncPhase phase;
+  final int reused;
+  final int discoveredNew;
+  final int pendingMetadata;
+  final DateTime? cooldownUntil;
 
   String get formattedLastSuccessfulSync {
     if (lastSuccessfulSync <= 0) return '';

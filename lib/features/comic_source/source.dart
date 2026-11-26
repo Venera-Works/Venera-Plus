@@ -405,8 +405,10 @@ class ExplorePageData {
 
   final Listenable? changeListenable;
 
-  /// An optional message displayed above a paged comic list.  Sources that do
-  /// not provide one keep the existing list layout unchanged.
+  /// 只刷新状态消息，独立于漫画列表的数据变更通知。
+  final Listenable? statusListenable;
+
+  /// 显示在分页漫画列表上方的可选状态消息。
   final String? Function()? statusMessage;
 
   final Future<void> Function()? onRefresh;
@@ -420,6 +422,7 @@ class ExplorePageData {
     this.loadMultiPart,
     this.loadMixed, {
     this.changeListenable,
+    this.statusListenable,
     this.statusMessage,
     this.onRefresh,
     this.onDeepRefresh,

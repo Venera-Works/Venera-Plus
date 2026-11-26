@@ -12,6 +12,21 @@ part 'remote_library_repository_worker.dart';
 
 const remoteLibrarySnapshotFormatVersion = 10;
 
+enum RemoteLibrarySort {
+  name('name'),
+  recentlyAdded('recently_added'),
+  recentlyModified('recently_modified');
+
+  const RemoteLibrarySort(this.value);
+
+  final String value;
+
+  static RemoteLibrarySort fromString(String? value) => values.firstWhere(
+    (sort) => sort.value == value,
+    orElse: () => RemoteLibrarySort.name,
+  );
+}
+
 class RemoteLibraryCachedComic {
   const RemoteLibraryCachedComic({
     required this.id,
@@ -23,6 +38,7 @@ class RemoteLibraryCachedComic {
     required this.snapshot,
     required this.remoteETag,
     required this.remoteModifiedAt,
+    this.sourceModifiedAt,
   });
 
   final String id;
@@ -34,6 +50,7 @@ class RemoteLibraryCachedComic {
   final Map<String, dynamic>? snapshot;
   final String? remoteETag;
   final int? remoteModifiedAt;
+  final int? sourceModifiedAt;
 
   bool get isReady =>
       snapshot?['formatVersion'] == remoteLibrarySnapshotFormatVersion;
@@ -64,12 +81,14 @@ class RemoteLibraryRemoteDirectory {
     required this.sortIndex,
     this.eTag,
     this.modifiedAt,
+    this.sourceModifiedAt,
   });
 
   final String id;
   final int sortIndex;
   final String? eTag;
   final int? modifiedAt;
+  final int? sourceModifiedAt;
 }
 
 /// 单个识别根的发现结果。完整远端路径作为漫画 ID，重叠根共享同一缓存。
@@ -122,11 +141,13 @@ class RemoteLibraryRepository {
     required int page,
     required int pageSize,
     Iterable<String>? roots,
+    RemoteLibrarySort sort = RemoteLibrarySort.name,
   }) => _request(_RemoteLibraryOperation.page, [
     configKey,
     page,
     pageSize,
     roots?.toList(growable: false),
+    sort,
   ]);
 
   Future<({int count, List<RemoteLibraryCachedComic> rows})> pageWithCount(
@@ -136,6 +157,7 @@ class RemoteLibraryRepository {
     Iterable<String>? roots,
     String keyword = '',
     Iterable<String> tags = const [],
+    RemoteLibrarySort sort = RemoteLibrarySort.name,
   }) => _request(_RemoteLibraryOperation.pageWithCount, [
     configKey,
     page,
@@ -143,6 +165,7 @@ class RemoteLibraryRepository {
     roots?.toList(growable: false),
     keyword,
     tags.toList(growable: false),
+    sort,
   ]);
 
   Future<List<String>> availableTags(

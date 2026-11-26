@@ -214,6 +214,8 @@ class _RemoteLibraryDatabase {
         remote_etag TEXT,
         remote_modified_at INTEGER,
         updated_at INTEGER NOT NULL,
+        discovered_at INTEGER NOT NULL DEFAULT 0,
+        source_modified_at INTEGER,
         PRIMARY KEY (config_key, id)
       );
       CREATE TABLE IF NOT EXISTS remote_library_root_membership (
@@ -249,14 +251,29 @@ class _RemoteLibraryDatabase {
         PRIMARY KEY (config_key, path)
       );
     ''');
-    if (!_columns(
-      'main',
-      'remote_library_comics',
-    ).contains('snapshot_state_json')) {
+    final comicColumns = _columns('main', 'remote_library_comics');
+    if (!comicColumns.contains('snapshot_state_json')) {
       db.execute(
         'ALTER TABLE remote_library_comics ADD COLUMN snapshot_state_json TEXT;',
       );
     }
+    if (!comicColumns.contains('discovered_at')) {
+      db.execute('''
+        ALTER TABLE remote_library_comics
+          ADD COLUMN discovered_at INTEGER NOT NULL DEFAULT 0;
+        UPDATE remote_library_comics SET discovered_at = updated_at
+          WHERE discovered_at = 0;
+      ''');
+    }
+    if (!comicColumns.contains('source_modified_at')) {
+      db.execute(
+        'ALTER TABLE remote_library_comics ADD COLUMN source_modified_at INTEGER;',
+      );
+    }
+    db.execute('''
+      CREATE INDEX IF NOT EXISTS remote_library_comics_discovered
+        ON remote_library_comics(config_key, discovered_at DESC, sort_index, id);
+    ''');
     if (!_columns(
       'main',
       'remote_library_state',
@@ -303,10 +320,10 @@ class _RemoteLibraryDatabase {
         db.execute('''
           INSERT INTO remote_library_comics (
             config_key, id, sort_index, title, author, tags, cover,
-            snapshot_json, remote_etag, remote_modified_at, updated_at
+            snapshot_json, remote_etag, remote_modified_at, updated_at, discovered_at
           )
           SELECT config_key, id, sort_index, title, author, tags, cover,
-            snapshot_json, remote_etag, remote_modified_at, updated_at
+            snapshot_json, remote_etag, remote_modified_at, updated_at, updated_at
           FROM $schema.${prefix}_comics WHERE true
           ON CONFLICT(config_key, id) DO UPDATE SET
             sort_index = excluded.sort_index,
@@ -318,7 +335,8 @@ class _RemoteLibraryDatabase {
             snapshot_state_json = NULL,
             remote_etag = excluded.remote_etag,
             remote_modified_at = excluded.remote_modified_at,
-            updated_at = excluded.updated_at
+            updated_at = excluded.updated_at,
+            $_discoveryUpdates
           WHERE (excluded.snapshot_json IS NOT NULL
                  AND remote_library_comics.snapshot_json IS NULL)
              OR ((excluded.snapshot_json IS NULL) =
@@ -432,6 +450,7 @@ class _RemoteLibraryDatabase {
           _catalogFilter(configKey, arguments[3] as List<String>?),
           page: arguments[1] as int,
           pageSize: arguments[2] as int,
+          sort: arguments[4] as RemoteLibrarySort,
         );
       case _RemoteLibraryOperation.pageWithCount:
         final filter = _catalogFilter(
@@ -446,6 +465,7 @@ class _RemoteLibraryDatabase {
             filter,
             page: arguments[1] as int,
             pageSize: arguments[2] as int,
+            sort: arguments[6] as RemoteLibrarySort,
           ),
         );
       case _RemoteLibraryOperation.availableTags:
@@ -748,15 +768,23 @@ class _RemoteLibraryDatabase {
     ({String sql, List<Object?> parameters}) filter, {
     required int page,
     required int pageSize,
+    required RemoteLibrarySort sort,
   }) {
+    final order = switch (sort) {
+      RemoteLibrarySort.name => 'c.sort_index, c.id',
+      RemoteLibrarySort.recentlyAdded =>
+        'c.discovered_at DESC, c.sort_index ASC, c.id ASC',
+      RemoteLibrarySort.recentlyModified =>
+        'COALESCE(c.source_modified_at, c.discovered_at) DESC, c.sort_index ASC, c.id ASC',
+    };
     return db
         .select(
           '''
       SELECT c.id, c.sort_index, c.title, c.author, c.tags, c.cover,
-        c.remote_etag, c.remote_modified_at, c.snapshot_state_json
+        c.remote_etag, c.remote_modified_at, c.snapshot_state_json, c.source_modified_at
       FROM remote_library_comics c
       ${filter.sql}
-      ORDER BY c.sort_index, c.id LIMIT ? OFFSET ?;
+      ORDER BY $order LIMIT ? OFFSET ?;
     ''',
           [...filter.parameters, pageSize, (page - 1) * pageSize],
         )
@@ -784,7 +812,7 @@ class _RemoteLibraryDatabase {
   Map<String, RemoteLibraryCachedComic> versions(String configKey) => {
     for (final row in db.select(
       '''
-      SELECT id, sort_index, remote_etag, remote_modified_at, snapshot_state_json
+      SELECT id, sort_index, remote_etag, remote_modified_at, snapshot_state_json, source_modified_at
       FROM remote_library_comics WHERE config_key = ?;
     ''',
       [configKey],
@@ -812,16 +840,29 @@ class _RemoteLibraryDatabase {
           : Map<String, dynamic>.from(jsonDecode(snapshotText) as Map),
       remoteETag: row['remote_etag'] as String?,
       remoteModifiedAt: row['remote_modified_at'] as int?,
+      sourceModifiedAt: row['source_modified_at'] as int?,
     );
   }
 
-  static const _directoryUpsert = '''
+  static const _discoveryUpdates = '''
+    discovered_at = CASE WHEN remote_library_comics.discovered_at > 0
+      THEN remote_library_comics.discovered_at ELSE excluded.discovered_at END,
+    source_modified_at = COALESCE(excluded.source_modified_at, remote_library_comics.source_modified_at)
+  ''';
+
+  static const _discoveryChanged = '''
+    remote_library_comics.discovered_at <= 0 OR (excluded.source_modified_at IS NOT NULL
+      AND remote_library_comics.source_modified_at IS NOT excluded.source_modified_at)
+  ''';
+
+  static const _directoryUpsert =
+      '''
     INSERT INTO remote_library_comics (
       config_key, id, sort_index, title, author, tags, cover,
-      remote_etag, remote_modified_at, updated_at
-    ) VALUES (?, ?, ?, ?, '', '[]', '', ?, ?, ?)
-    ON CONFLICT(config_key, id) DO UPDATE SET sort_index = excluded.sort_index
-    WHERE remote_library_comics.sort_index != excluded.sort_index;
+      remote_etag, remote_modified_at, updated_at, discovered_at, source_modified_at
+    ) VALUES (?, ?, ?, ?, '', '[]', '', ?, ?, ?, ?, ?)
+    ON CONFLICT(config_key, id) DO UPDATE SET $_discoveryUpdates, sort_index = excluded.sort_index
+    WHERE remote_library_comics.sort_index != excluded.sort_index OR $_discoveryChanged;
   ''';
 
   void replaceDirectoryIndex(
@@ -872,6 +913,8 @@ class _RemoteLibraryDatabase {
           directory.eTag,
           directory.modifiedAt,
           now,
+          now,
+          directory.sourceModifiedAt,
         ]);
       }
     } finally {
@@ -955,6 +998,7 @@ class _RemoteLibraryDatabase {
           updated_at = CASE WHEN remote_library_comics.snapshot_json IS NULL
             THEN excluded.updated_at ELSE remote_library_comics.updated_at END
           WHERE remote_library_comics.sort_index IS NOT excluded.sort_index
+            OR $_discoveryChanged
             OR (remote_library_comics.snapshot_json IS NULL AND (
               remote_library_comics.title IS NOT excluded.title
               OR remote_library_comics.author IS NOT excluded.author
@@ -980,9 +1024,9 @@ class _RemoteLibraryDatabase {
         INSERT INTO remote_library_comics (
           config_key, id, sort_index, title, author, tags, cover,
           snapshot_json, snapshot_state_json, remote_etag, remote_modified_at,
-          updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(config_key, id) DO UPDATE SET $updates;
+          updated_at, discovered_at, source_modified_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(config_key, id) DO UPDATE SET $_discoveryUpdates, $updates;
       ''');
       PreparedStatement? membership;
       try {
@@ -1008,6 +1052,8 @@ class _RemoteLibraryDatabase {
             comic.remoteETag,
             comic.remoteModifiedAt,
             now,
+            now,
+            comic.sourceModifiedAt,
           ]);
           membership?.execute([configKey, rootPath, comic.id]);
         }
