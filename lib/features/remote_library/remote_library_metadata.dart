@@ -315,7 +315,13 @@ class _RemoteLibraryMetadataPipeline {
     final write = _snapshotWriteTail.then((_) async {
       if (rows.isEmpty || _engine._state.disposed) return;
       final current = rows
-          .where((row) => _engine._isSynchronizationCurrent(row.run))
+          .where(
+            (row) =>
+                _engine._isSynchronizationCurrent(row.run) &&
+                !_engine._state.coversRefreshedDuringScan.contains(
+                  row.comic.id,
+                ),
+          )
           .toList();
       if (current.isEmpty) return;
       final ids = current.map((row) => row.comic.id).toList()..sort();
@@ -915,7 +921,7 @@ class _RemoteLibraryMetadataPipeline {
     }
     return _imageEntries(
       entries,
-    ).where((entry) => !isNamedComicCover(entry.name)).length;
+    ).where((entry) => !isComicCoverFileName(entry.name)).length;
   }
 
   List<String> _metadataAuthors(Iterable<String?> rawAuthors) {

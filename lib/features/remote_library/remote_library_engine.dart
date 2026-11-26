@@ -65,6 +65,9 @@ class _RemoteLibraryEngineState {
   final statusLoads = <Future<void>>{};
   final snapshotQueries = <Future<void>>{};
   final snapshotWriteTails = <String, Future<void>>{};
+  final coverUpdates = <String, Future<Res<RemoteLibraryCoverUpdateResult>>>{};
+  final coversRefreshedDuringScan = <String>{};
+  final directoryWriteVersions = <String, int>{};
   CancelToken scanToken = CancelToken();
   final lifetimeToken = CancelToken();
   bool disposed = false;
@@ -274,6 +277,7 @@ class RemoteLibraryEngine {
   }) async {
     final cachePath = normalizeRemoteDirectory(path);
     final generation = _state.syncGeneration;
+    final writeVersion = _state.directoryWriteVersions[cachePath];
     final cancelToken =
         RemoteReadContext.current.priority == RemoteReadPriority.background
         ? _state.scanToken
@@ -283,7 +287,8 @@ class RemoteLibraryEngine {
         cachePath,
       ], ignoreExpiry: useStaleCache);
       final entries = cached[cachePath];
-      if (entries != null) {
+      if (entries != null &&
+          writeVersion == _state.directoryWriteVersions[cachePath]) {
         onCacheHit?.call();
         return entries;
       }
@@ -323,7 +328,9 @@ class RemoteLibraryEngine {
         }
       }
     }
-    if (!_state.disposed && generation == _state.syncGeneration) {
+    if (!_state.disposed &&
+        generation == _state.syncGeneration &&
+        writeVersion == _state.directoryWriteVersions[cachePath]) {
       _bufferDirectoryEntries(config.cacheKey, cachePath, entries);
     }
     return entries;
@@ -497,15 +504,61 @@ class RemoteLibraryEngine {
           ? _state.scanToken
           : _state.lifetimeToken,
     );
+    await _invalidateDirectoryForFile(config, path);
+    return result;
+  }
+
+  Future<void> _uploadFile(
+    RemoteLibraryConfig config,
+    String localPath,
+    String remotePath,
+  ) => _transferFile(
+    config,
+    remotePath,
+    (ops) => ops.uploadFile(config, localPath, remotePath),
+  );
+
+  Future<void> _deleteFile(RemoteLibraryConfig config, String remotePath) =>
+      _transferFile(
+        config,
+        remotePath,
+        (ops) => ops.deleteFile(config, remotePath),
+      );
+
+  Future<void> _transferFile(
+    RemoteLibraryConfig config,
+    String remotePath,
+    Future<void> Function(RemoteLibraryFileTransferOps ops) transfer,
+  ) async {
+    final ops = _activeOps;
+    if (ops is! RemoteLibraryFileTransferOps) {
+      throw StateError('当前漫画库不支持文件上传和删除');
+    }
+    await _archiveAccount(config).scheduler.run(() {
+      _ensureActive();
+      return transfer(ops as RemoteLibraryFileTransferOps);
+    }, cancelToken: _state.lifetimeToken);
+    await _invalidateDirectoryForFile(config, remotePath);
+  }
+
+  Future<void> _invalidateDirectoryForFile(
+    RemoteLibraryConfig config,
+    String path,
+  ) async {
     final parent = normalizeRemoteDirectory(
       path.substring(0, path.lastIndexOf('/') + 1),
+    );
+    // 写入前发出的目录读取可能稍后才返回，不再用它回填缓存。
+    _state.directoryWriteVersions.update(
+      parent,
+      (version) => version + 1,
+      ifAbsent: () => 1,
     );
     await _flushDirectoryCache();
     final pending = _directoryCacheWrites[config.cacheKey];
     pending?.remove(parent);
     if (pending?.isEmpty == true) _directoryCacheWrites.remove(config.cacheKey);
     await _cache.invalidateDirectoryEntries(config.cacheKey, parent);
-    return result;
   }
 
   String _configurationIdentity(RemoteLibraryConfig config) =>
@@ -516,8 +569,12 @@ class RemoteLibraryEngine {
       run.generation == _state.syncGeneration &&
       run.configurationIdentity == _configurationIdentity(_config);
 
-  void _throwIfSynchronizationObsolete(_RemoteLibrarySyncRun run) {
-    if (!_isSynchronizationCurrent(run)) {
+  void _throwIfSynchronizationObsolete(
+    _RemoteLibrarySyncRun run, {
+    String? comicId,
+  }) {
+    if (!_isSynchronizationCurrent(run) ||
+        _state.coversRefreshedDuringScan.contains(comicId)) {
       throw const _RemoteSynchronizationObsoleteException();
     }
   }
@@ -683,6 +740,8 @@ class RemoteLibraryEngine {
       if (scanning != null) scanning.then<void>((_) {}),
       ..._state.statusLoads,
       ..._state.snapshotQueries,
+      for (final update in _state.coverUpdates.values)
+        update.then<void>((_) {}),
       for (final snapshot in snapshots)
         snapshot.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
       for (final volume in volumes)
@@ -929,6 +988,265 @@ class RemoteLibraryEngine {
 
   bool _isArchiveId(String id) => !id.endsWith('/') && isRemoteComicArchive(id);
 
+  ({String directory, String? prefix}) _coverTarget(
+    RemoteLibraryConfig config,
+    String id,
+  ) {
+    if (id.startsWith(remoteComicWorkPrefix)) {
+      final location = RemoteComicWork.location(id);
+      return (
+        directory: config.childDirectoryPath(location.directory),
+        prefix: location.family,
+      );
+    }
+    if (_isArchiveId(id)) {
+      final path = _archivePath(config, id);
+      return (
+        directory: config.childDirectoryPath(
+          path.substring(0, path.lastIndexOf('/') + 1),
+        ),
+        prefix: _directoryName(path),
+      );
+    }
+    return (directory: config.childDirectoryPath(id), prefix: null);
+  }
+
+  bool hasCustomCover(String id, String currentCover) {
+    if (currentCover.isEmpty ||
+        currentCover.startsWith(remoteArchiveImagePrefix) ||
+        currentCover.startsWith(remoteComicWorkImagePrefix) ||
+        currentCover.contains(r'\')) {
+      return false;
+    }
+    try {
+      final target = _coverTarget(_config, id);
+      final slash = currentCover.lastIndexOf('/');
+      return currentCover.substring(0, slash + 1) == target.directory &&
+          matchesComicCoverFileName(
+            currentCover.substring(slash + 1),
+            prefix: target.prefix,
+          );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<Res<RemoteLibraryCoverUpdateResult>> replaceCover(
+    String id, {
+    required String localPath,
+    required String extension,
+  }) async {
+    final normalized = extension.trim().toLowerCase().replaceFirst(
+      RegExp(r'^\.'),
+      '',
+    );
+    if (!comicImageExtensions.contains(normalized)) {
+      return const Res.error('不支持的封面图片格式');
+    }
+    return _updateCover(
+      id,
+      replacement: (localPath: localPath, extension: normalized),
+    );
+  }
+
+  Future<Res<RemoteLibraryCoverUpdateResult>> restoreDefaultCover(String id) =>
+      _updateCover(id);
+
+  Future<Res<RemoteLibraryCoverUpdateResult>> _updateCover(
+    String id, {
+    ({String localPath, String extension})? replacement,
+  }) {
+    final previous = _state.coverUpdates[id];
+    late final Future<Res<RemoteLibraryCoverUpdateResult>> update;
+    update = RemoteReadContext(priority: RemoteReadPriority.foreground)
+        .run(() async {
+          if (previous != null) await previous;
+          return _editCover(id, replacement: replacement);
+        })
+        .whenComplete(() {
+          if (identical(_state.coverUpdates[id], update)) {
+            _state.coverUpdates.remove(id);
+          }
+        });
+    _state.coverUpdates[id] = update;
+    return update;
+  }
+
+  Future<Res<RemoteLibraryCoverUpdateResult>> _editCover(
+    String id, {
+    ({String localPath, String extension})? replacement,
+  }) async {
+    var changed = false;
+    final failedRemovals = <String>[];
+    Object? firstRestoreError;
+
+    String restoreErrorMessage(Object error) =>
+        '未能删除封面文件 ${failedRemovals.join('、')}。\n首个失败原因是 $error';
+
+    try {
+      _ensureActive();
+      final config = _config;
+      if (!config.isValid) {
+        return const Res.error('Invalid remote comic library configuration');
+      }
+      final target = _coverTarget(config, id);
+      final entries = await _readDirectory(
+        config,
+        target.directory,
+        refresh: true,
+      );
+      _ensureActive();
+      final oldCovers = _matchingCoverEntries(entries, target.prefix);
+      final oldPaths = [
+        for (final entry in oldCovers)
+          config.childFilePath(target.directory, entry.name),
+      ];
+      final memoryKey = jsonEncode([config.cacheKey, id]);
+      final cachedCover =
+          _snapshotCache[memoryKey]?.cover ??
+          (await _cache.find(config.cacheKey, id))?.cover;
+      final previousCover = cachedCover == null || cachedCover.isEmpty
+          ? oldPaths.firstOrNull
+          : cachedCover;
+      String? uploadedName;
+      String? uploadedPath;
+      if (replacement != null) {
+        final prefix = target.prefix;
+        final stem = prefix == null || prefix.isEmpty
+            ? 'cover'
+            : '$prefix.cover';
+        uploadedName = '$stem.${replacement.extension}';
+        uploadedPath = config.childFilePath(target.directory, uploadedName);
+        await _uploadFile(config, replacement.localPath, uploadedPath);
+        changed = true;
+      }
+
+      for (final entry in oldCovers) {
+        if (entry.name.toLowerCase() == uploadedName?.toLowerCase()) continue;
+        final path = config.childFilePath(target.directory, entry.name);
+        try {
+          await _deleteFile(config, path);
+          changed = true;
+        } catch (error) {
+          failedRemovals.add(entry.name);
+          if (replacement == null) firstRestoreError ??= error;
+          _ensureActive();
+          Log.warning('Remote Library', '删除旧封面失败 $path\n$error');
+        }
+      }
+
+      // 扫描可能已读取旧目录，前台刷新接管该作品的本轮快照。
+      if (_state.syncRun != null) {
+        _state.coversRefreshedDuringScan.add(id);
+      }
+      _snapshotCache.remove(memoryKey);
+      final latest = uploadedPath != null || oldCovers.isNotEmpty
+          ? await _readDirectory(config, target.directory, refresh: true)
+          : entries;
+      final snapshot = await _refreshCoverSnapshot(
+        config,
+        id,
+        target,
+        latest,
+        preferredCover: uploadedPath,
+      );
+      final invalidatedCoverPaths = {
+        ?previousCover,
+        ...oldPaths,
+        ?uploadedPath,
+        if (uploadedPath != null && snapshot.cover.isNotEmpty) snapshot.cover,
+      }.toList();
+      for (final path in invalidatedCoverPaths) {
+        _state.missingCovers.remove(path);
+      }
+      _state.missingCovers.remove(snapshot.cover);
+      if (changed || previousCover != snapshot.cover) {
+        _notifyContent(immediate: true);
+      }
+      if (firstRestoreError != null) {
+        return Res.error(restoreErrorMessage(firstRestoreError));
+      }
+      return Res(
+        RemoteLibraryCoverUpdateResult(
+          previousCover: previousCover,
+          cover: snapshot.cover,
+          changed: changed,
+          failedOldCoverRemovals: List.unmodifiable(failedRemovals),
+          invalidatedCoverPaths: invalidatedCoverPaths,
+        ),
+      );
+    } catch (error) {
+      if (firstRestoreError != null) {
+        if (changed) _notifyContent(immediate: true);
+        return Res.error(
+          '${restoreErrorMessage(firstRestoreError)}\n刷新漫画索引失败。$error',
+        );
+      }
+      return Res.error(changed ? '远端封面已变更，但刷新漫画索引失败。$error' : error.toString());
+    }
+  }
+
+  Future<_RemoteComicSnapshot> _refreshCoverSnapshot(
+    RemoteLibraryConfig config,
+    String id,
+    ({String directory, String? prefix}) target,
+    List<RemoteLibraryEntry> entries, {
+    String? preferredCover,
+  }) async {
+    final ({String? eTag, int? modifiedAt}) version;
+    RemoteComicWork? work;
+    if (id.startsWith(remoteComicWorkPrefix)) {
+      final restored = await _restoreWork(
+        config,
+        id,
+        rootEntries: entries,
+        refresh: true,
+      );
+      work = restored.work;
+      version = _scanner._workContentVersion(work, entries);
+    } else if (_isArchiveId(id)) {
+      final file = entries.firstWhere(
+        (entry) => !entry.isDirectory && entry.name == target.prefix,
+      );
+      version = _scanner._archiveContentVersion(file, entries);
+    } else {
+      final directory = target.directory;
+      RemoteLibraryEntry? directoryEntry;
+      if (directory != '/') {
+        final parent = directory.substring(
+          0,
+          directory.lastIndexOf('/', directory.length - 2) + 1,
+        );
+        if (config.directories.any(parent.startsWith)) {
+          final siblings = await _readDirectory(config, parent, refresh: true);
+          directoryEntry = siblings
+              .where(
+                (entry) =>
+                    entry.isDirectory &&
+                    entry.name == _directoryName(directory),
+              )
+              .firstOrNull;
+        }
+      }
+      version = _scanner._directoryContentVersion(directoryEntry, entries);
+    }
+    return _loadSnapshot(
+      config,
+      id,
+      forceRefresh: true,
+      summaryOnly: false,
+      rootEntries: entries,
+      work: work,
+      preferredCover: preferredCover,
+      remoteDirectory: RemoteLibraryRemoteDirectory(
+        id: id,
+        sortIndex: _state.sortIndexes[id] ?? 0,
+        eTag: version.eTag,
+        modifiedAt: version.modifiedAt,
+      ),
+    );
+  }
+
   ({String directory, String fileName, String title}) _metadataTarget(
     RemoteLibraryConfig config,
     String id,
@@ -1120,7 +1438,7 @@ class RemoteLibraryEngine {
           }
         }
         final cachedImages = snapshot?.chapterImages[ep];
-        if (cachedImages != null) {
+        if (cachedImages != null && !cachedImages.any(isSidecarComicCover)) {
           return Res([
             for (final name in cachedImages) config.childFilePath(path, name),
           ]);
@@ -1129,7 +1447,7 @@ class RemoteLibraryEngine {
           await _readDirectory(config, path),
         );
         final files = _imageEntries(entries)
-            .where((entry) => !isNamedComicCover(entry.name))
+            .where((entry) => !isComicCoverFileName(entry.name))
             .map((entry) => config.childFilePath(path, entry.name))
             .toList();
         if (files.isEmpty) {
@@ -1175,6 +1493,7 @@ class RemoteLibraryEngine {
     RemoteLibraryRemoteDirectory? remoteDirectory,
     RemoteLibraryEntry? archiveFile,
     RemoteComicWork? work,
+    String? preferredCover,
     CancelToken? cancelToken,
     List<RemoteLibraryEntry>? rootEntries,
     Map<String, List<RemoteLibraryEntry>>? childEntries,
@@ -1191,6 +1510,7 @@ class RemoteLibraryEngine {
       remoteDirectory: remoteDirectory,
       archiveFile: archiveFile,
       work: work,
+      preferredCover: preferredCover,
       cancelToken: cancelToken,
       rootEntries: rootEntries,
       childEntries: childEntries,
@@ -1214,11 +1534,15 @@ class RemoteLibraryEngine {
     RemoteLibraryRemoteDirectory? remoteDirectory,
     RemoteLibraryEntry? archiveFile,
     RemoteComicWork? work,
+    String? preferredCover,
     CancelToken? cancelToken,
     List<RemoteLibraryEntry>? rootEntries,
     Map<String, List<RemoteLibraryEntry>>? childEntries,
     _RemoteLibrarySyncRun? syncRun,
   }) async {
+    if (syncRun != null) {
+      _throwIfSynchronizationObsolete(syncRun, comicId: id);
+    }
     final memoryKey = jsonEncode([config.cacheKey, id]);
     if (!forceRefresh) {
       final memoryCached = _snapshotCache[memoryKey];
@@ -1280,6 +1604,7 @@ class RemoteLibraryEngine {
         forceMetadataScrape: forceMetadataScrape,
         archiveFile: archiveFile,
         work: work,
+        preferredCover: preferredCover,
         cancelToken: cancelToken,
         syncRun: syncRun,
       );
@@ -1307,6 +1632,7 @@ class RemoteLibraryEngine {
               previousSnapshot: previousSnapshot,
               forceMetadataScrape: forceMetadataScrape,
               rootEntries: workEntries,
+              preferredCover: preferredCover,
               syncRun: syncRun,
             )
           : _isArchiveId(id)
@@ -1318,6 +1644,7 @@ class RemoteLibraryEngine {
               previousSnapshot: previousSnapshot,
               file: archiveFile,
               rootEntries: rootEntries,
+              preferredCover: preferredCover,
               cancelToken: cancelToken,
               syncRun: syncRun,
             )
@@ -1329,13 +1656,18 @@ class RemoteLibraryEngine {
               previousSnapshot: previousSnapshot,
               summaryOnly: summaryOnly,
               forceMetadataScrape: forceMetadataScrape,
+              preferredCover: preferredCover,
               syncRun: syncRun,
             );
-      if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
+      if (syncRun != null) {
+        _throwIfSynchronizationObsolete(syncRun, comicId: id);
+      }
       if (!background) await _metadata.flushSnapshots();
       return _withSnapshotLock(id, () async {
         _ensureActive();
-        if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
+        if (syncRun != null) {
+          _throwIfSynchronizationObsolete(syncRun, comicId: id);
+        }
         var published = snapshot;
         final current = _snapshotCache[memoryKey];
         final currentWork = current?.work;
@@ -1382,9 +1714,12 @@ class RemoteLibraryEngine {
           tags: published.tags,
           cover: published.cover,
           snapshot: published.toJson(),
-          remoteETag: remoteDirectory?.eTag ?? existing?.remoteETag,
-          remoteModifiedAt:
-              remoteDirectory?.modifiedAt ?? existing?.remoteModifiedAt,
+          remoteETag: remoteDirectory == null
+              ? existing?.remoteETag
+              : remoteDirectory.eTag,
+          remoteModifiedAt: remoteDirectory == null
+              ? existing?.remoteModifiedAt
+              : remoteDirectory.modifiedAt,
         );
         _snapshotCache[memoryKey] = published;
         if (background && syncRun != null) {
@@ -1472,10 +1807,17 @@ class RemoteLibraryEngine {
   }
 
   Future<({RemoteComicWork work, List<RemoteLibraryEntry> entries})>
-  _restoreWork(RemoteLibraryConfig config, String id) async {
+  _restoreWork(
+    RemoteLibraryConfig config,
+    String id, {
+    List<RemoteLibraryEntry>? rootEntries,
+    bool refresh = false,
+  }) async {
     final location = RemoteComicWork.location(id);
     final directory = config.childDirectoryPath(location.directory);
-    final entries = await _readDirectory(config, directory);
+    final entries =
+        rootEntries ??
+        await _readDirectory(config, directory, refresh: refresh);
     final family = location.family;
     final familyKey = family == null ? null : remoteComicSeriesKey(family);
     final children = family == null
@@ -1511,7 +1853,11 @@ class RemoteLibraryEngine {
         directory,
         child.name,
       );
-      final childEntries = await _readDirectory(config, childDirectory);
+      final childEntries = await _readDirectory(
+        config,
+        childDirectory,
+        refresh: refresh,
+      );
       for (final file in _archiveFiles(childEntries)) {
         volumes.add(
           _archiveVolume(config, file, childDirectory, edition: child.name),
@@ -1538,6 +1884,7 @@ class RemoteLibraryEngine {
     _RemoteComicSnapshot? previousSnapshot,
     bool forceMetadataScrape = false,
     List<RemoteLibraryEntry>? rootEntries,
+    String? preferredCover,
     _RemoteLibrarySyncRun? syncRun,
   }) async {
     work.retainIndexes(previousSnapshot?.work);
@@ -1624,16 +1971,19 @@ class RemoteLibraryEngine {
       retryAt = scraped.retryAt;
       error = scraped.error;
     }
-    final namedCover = _findNamedCover(entries);
+    final cover = _findCoverPath(
+      config,
+      (directory: work.directory, prefix: work.family),
+      entries,
+      preferredCover: preferredCover ?? previousSnapshot?.cover,
+    );
     return _RemoteComicSnapshot(
       work: work,
       title: metadata?.title ?? work.title,
       author: metadata?.author ?? inherited?.author ?? '',
       description: metadata?.description ?? inherited?.description ?? '',
       tags: metadata?.tags ?? inherited?.tags ?? const [],
-      cover: namedCover == null
-          ? work.imageKey(work.volumes.first)
-          : config.childFilePath(work.directory, namedCover.name),
+      cover: cover ?? work.imageKey(work.volumes.first),
       chapters: {for (final volume in work.volumes) volume.id: volume.title},
       chapterImages: const {},
       metadataChapters: const {},
@@ -1754,6 +2104,7 @@ class RemoteLibraryEngine {
     RemoteLibraryEntry? file,
     RemoteArchiveComic? previousArchive,
     List<RemoteLibraryEntry>? rootEntries,
+    String? preferredCover,
     CancelToken? cancelToken,
     _RemoteLibrarySyncRun? syncRun,
   }) async {
@@ -1922,13 +2273,19 @@ class RemoteLibraryEngine {
     if (cancelToken?.isCancelled == true) throw cancelToken!.cancelError!;
     _metadata._ensureMetadataContextActive();
     final meta = archive.metadata;
+    final cover = _findCoverPath(
+      config,
+      (directory: target.directory, prefix: _directoryName(path)),
+      siblings,
+      preferredCover: preferredCover ?? previousSnapshot?.cover,
+    );
     return _RemoteComicSnapshot(
       archive: archive,
       title: archive.title,
       author: meta?.author ?? '',
       description: meta?.description ?? '',
       tags: meta?.tags ?? const [],
-      cover: archive.imageKey(),
+      cover: cover ?? archive.imageKey(),
       chapters: archive.chapters,
       chaptersInspected: archive.isInspected,
       chapterImages: archive.chapterImages,
@@ -2047,6 +2404,7 @@ class RemoteLibraryEngine {
     _RemoteComicSnapshot? previousSnapshot,
     bool summaryOnly = false,
     bool forceMetadataScrape = false,
+    String? preferredCover,
     _RemoteLibrarySyncRun? syncRun,
   }) async {
     final comicPath = config.childDirectoryPath(id);
@@ -2056,7 +2414,7 @@ class RemoteLibraryEngine {
     if (syncRun != null) _throwIfSynchronizationObsolete(syncRun);
     final rootImages = _imageEntries(
       entries,
-    ).where((entry) => !isNamedComicCover(entry.name)).toList();
+    ).where((entry) => !isComicCoverFileName(entry.name)).toList();
     final directories =
         entries
             .where((entry) => entry.isDirectory)
@@ -2089,10 +2447,12 @@ class RemoteLibraryEngine {
     final metadataChapters = <String, ComicChapter>{};
     final chapterMap = <String, String>{};
     var chaptersInspected = true;
-    final namedCover = _findNamedCover(entries);
-    String? coverPath = namedCover == null
-        ? null
-        : config.childFilePath(comicPath, namedCover.name);
+    var coverPath = _findCoverPath(
+      config,
+      (directory: comicPath, prefix: null),
+      entries,
+      preferredCover: preferredCover ?? previousSnapshot?.cover,
+    );
     if (rootImages.isNotEmpty) {
       coverPath ??= config.childFilePath(comicPath, rootImages.first.name);
     }
@@ -2128,7 +2488,7 @@ class RemoteLibraryEngine {
             chapterEntries != null &&
             _imageEntries(
               chapterEntries,
-            ).any((entry) => !isNamedComicCover(entry.name));
+            ).any((entry) => !isComicCoverFileName(entry.name));
         if (hasReadablePages) {
           chapterMap[directory.name] = directory.name;
           if (coverPath == null) {
@@ -2136,7 +2496,7 @@ class RemoteLibraryEngine {
                 _findNamedCover(chapterEntries) ??
                 _imageEntries(
                   chapterEntries,
-                ).firstWhere((entry) => !isNamedComicCover(entry.name));
+                ).firstWhere((entry) => !isComicCoverFileName(entry.name));
             coverPath = config.childFilePath(
               config.childDirectoryPathFrom(comicPath, directory.name),
               coverEntry.name,
@@ -2228,7 +2588,7 @@ class RemoteLibraryEngine {
         for (final entry in inspectedChapterEntries.entries)
           if (chapterMap.containsKey(entry.key))
             entry.key: _imageEntries(entry.value)
-                .where((image) => !isNamedComicCover(image.name))
+                .where((image) => !isComicCoverFileName(image.name))
                 .map((image) => image.name)
                 .toList(),
       },
@@ -2516,10 +2876,45 @@ List<RemoteLibraryEntry> _imageEntries(List<RemoteLibraryEntry> entries) {
 }
 
 RemoteLibraryEntry? _findNamedCover(List<RemoteLibraryEntry> entries) {
-  return findNamedComicCover(
+  return findMatchingComicCover(
     _imageEntries(entries),
     nameOf: (entry) => entry.name,
   );
+}
+
+List<RemoteLibraryEntry> _matchingCoverEntries(
+  List<RemoteLibraryEntry> entries,
+  String? prefix,
+) => findMatchingComicCovers(
+  entries.where(
+    (entry) =>
+        !entry.isDirectory &&
+        !entry.name.contains('/') &&
+        !entry.name.contains(r'\'),
+  ),
+  nameOf: (entry) => entry.name,
+  prefix: prefix,
+)..sort((a, b) => compareComicFileNames(a.name, b.name));
+
+String? _findCoverPath(
+  RemoteLibraryConfig config,
+  ({String directory, String? prefix}) target,
+  List<RemoteLibraryEntry> entries, {
+  String? preferredCover,
+}) {
+  final covers = _matchingCoverEntries(entries, target.prefix);
+  if (covers.isEmpty) return null;
+  var cover = covers.first;
+  if (preferredCover != null && preferredCover.startsWith(target.directory)) {
+    final name = preferredCover.substring(target.directory.length);
+    cover =
+        covers.where((entry) => entry.name == name).firstOrNull ??
+        covers
+            .where((entry) => entry.name.toLowerCase() == name.toLowerCase())
+            .firstOrNull ??
+        cover;
+  }
+  return config.childFilePath(target.directory, cover.name);
 }
 
 bool _isIgnoredEntry(String name) {

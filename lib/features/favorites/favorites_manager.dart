@@ -1614,6 +1614,25 @@ class LocalFavoritesManager with ChangeNotifier {
     }
   }
 
+  void updateCover(String id, ComicType type, String cover) {
+    final folders = find(id, type);
+    if (folders.isEmpty) return;
+    _db.execute('BEGIN TRANSACTION');
+    try {
+      for (final folder in folders) {
+        _db.execute(
+          'UPDATE ${quoteSqlIdentifier(folder)} SET cover_path = ? WHERE id = ? AND type = ?;',
+          [cover, id, type.value],
+        );
+      }
+      _db.execute('COMMIT');
+    } catch (_) {
+      _db.execute('ROLLBACK');
+      rethrow;
+    }
+    notifyListeners();
+  }
+
   /// Replace only this source identity, preserving each folder's position.
   void replaceComic(
     String id,

@@ -37,6 +37,7 @@ class _RemoteLibraryScanner {
     if (force) state.missingCovers.clear();
     state.syncGeneration++;
     _engine._metadata.discardObsoleteTasks(state.syncGeneration);
+    state.coversRefreshedDuringScan.clear();
     state.scanToken.cancel('Remote Library scan superseded');
     state.scanToken = CancelToken();
     final ready = Completer<Res<bool>>();
@@ -458,23 +459,7 @@ class _RemoteLibraryScanner {
         sourceModifiedAt: _latestModifiedAt(
           work.volumes.map((volume) => volume.archive.modifiedAt),
         ),
-        eTag: _contentVersion([
-          for (final volume in work.volumes)
-            RemoteLibraryEntry(
-              name: volume.id,
-              isDirectory: false,
-              size: volume.archive.size,
-              eTag: volume.archive.eTag,
-              modifiedAt: volume.archive.modifiedAt,
-            ),
-          ...entries.where(
-            (entry) =>
-                !entry.isDirectory &&
-                (entry.name.toLowerCase() ==
-                        work.metadataFileName.toLowerCase() ||
-                    isNamedComicCover(entry.name)),
-          ),
-        ]).eTag,
+        eTag: _workContentVersion(work, entries).eTag,
       );
       await onDiscovered(comic);
       publishedWorks[work.id] = comic;
@@ -502,7 +487,7 @@ class _RemoteLibraryScanner {
     ) async {
       if (_imageEntries(
         entries,
-      ).any((entry) => !isNamedComicCover(entry.name))) {
+      ).any((entry) => !isComicCoverFileName(entry.name))) {
         return null;
       }
       final marked = _hasMetadataFile(entries);
@@ -538,7 +523,7 @@ class _RemoteLibraryScanner {
         if (_sortedDirectories(childEntries).isNotEmpty ||
             _imageEntries(
               childEntries,
-            ).any((entry) => !isNamedComicCover(entry.name)) ||
+            ).any((entry) => !isComicCoverFileName(entry.name)) ||
             !marked && files.isNotEmpty && !homogeneous(files)) {
           return false;
         }
@@ -597,7 +582,7 @@ class _RemoteLibraryScanner {
           _sortedDirectories(entries).isEmpty &&
           !_imageEntries(
             entries,
-          ).any((entry) => !isNamedComicCover(entry.name))) {
+          ).any((entry) => !isComicCoverFileName(entry.name))) {
         final work = RemoteComicWork(
           directory: path,
           title: _directoryName(path),
@@ -627,7 +612,7 @@ class _RemoteLibraryScanner {
             _sortedDirectories(entries).isEmpty &&
             !_imageEntries(
               entries,
-            ).any((entry) => !isNamedComicCover(entry.name));
+            ).any((entry) => !isComicCoverFileName(entry.name));
         final title = ownDirectory || titles[family.key]!.isEmpty
             ? _directoryName(path)
             : titles[family.key]!;
@@ -653,15 +638,7 @@ class _RemoteLibraryScanner {
         final comic = _RemoteDiscoveredDirectory(
           id: archiveId,
           entries: entries,
-          eTag: _contentVersion([
-            file,
-            ...entries.where(
-              (entry) =>
-                  !entry.isDirectory &&
-                  entry.name.toLowerCase() ==
-                      '${file.name}.metadata.json'.toLowerCase(),
-            ),
-          ]).eTag,
+          eTag: _archiveContentVersion(file, entries).eTag,
           archiveFile: file,
           sourceModifiedAt: file.modifiedAt,
         );
@@ -727,7 +704,7 @@ class _RemoteLibraryScanner {
       if (_hasMetadataFile(entries) ||
           _imageEntries(
             entries,
-          ).any((entry) => !isNamedComicCover(entry.name))) {
+          ).any((entry) => !isComicCoverFileName(entry.name))) {
         return current();
       }
       final childDirectories = _sortedDirectories(entries);
@@ -781,7 +758,7 @@ class _RemoteLibraryScanner {
           _engine._throwIfSynchronizationObsolete(syncRun);
           final pages = _imageEntries(
             childEntries,
-          ).where((entry) => !isNamedComicCover(entry.name));
+          ).where((entry) => !isComicCoverFileName(entry.name));
           isCategory =
               isCategory ||
               _hasMetadataFile(childEntries) ||
@@ -835,7 +812,7 @@ class _RemoteLibraryScanner {
         final childrenWithImages = children.where(
           (child) => _imageEntries(
             child.entries,
-          ).any((entry) => !isNamedComicCover(entry.name)),
+          ).any((entry) => !isComicCoverFileName(entry.name)),
         );
 
         if (childrenWithImages.isNotEmpty) {
@@ -922,12 +899,50 @@ class _RemoteLibraryScanner {
     return latest;
   }
 
+  ({String? eTag, int? modifiedAt}) _workContentVersion(
+    RemoteComicWork work,
+    List<RemoteLibraryEntry> entries,
+  ) => _contentVersion([
+    for (final volume in work.volumes)
+      RemoteLibraryEntry(
+        name: volume.id,
+        isDirectory: false,
+        size: volume.archive.size,
+        eTag: volume.archive.eTag,
+        modifiedAt: volume.archive.modifiedAt,
+      ),
+    ...entries.where(
+      (entry) =>
+          !entry.isDirectory &&
+          (entry.name.toLowerCase() == work.metadataFileName.toLowerCase() ||
+              matchesComicCoverFileName(entry.name, prefix: work.family)),
+    ),
+  ]);
+
+  ({String? eTag, int? modifiedAt}) _archiveContentVersion(
+    RemoteLibraryEntry file,
+    List<RemoteLibraryEntry> entries,
+  ) => _contentVersion([
+    file,
+    ...entries.where(
+      (entry) =>
+          !entry.isDirectory &&
+          (entry.name.toLowerCase() ==
+                  '${file.name.toLowerCase()}.metadata.json' ||
+              matchesComicCoverFileName(entry.name, prefix: file.name)),
+    ),
+  ]);
+
   ({String? eTag, int? modifiedAt}) _directoryContentVersion(
-    RemoteLibraryEntry directory,
+    RemoteLibraryEntry? directory,
     List<RemoteLibraryEntry> entries,
   ) {
     final trackedEntries = entries
-        .where((entry) => !_isIgnoredEntry(entry.name))
+        .where(
+          (entry) =>
+              !_isIgnoredEntry(entry.name) &&
+              (entry.isDirectory || !isSidecarComicCover(entry.name)),
+        )
         .toList();
     return _contentVersion(trackedEntries, parent: directory);
   }
@@ -1092,35 +1107,23 @@ class _RemoteLibrarySummaryBatch {
   }
 
   String _previewCover(_RemoteDiscoveredDirectory comic, String id) {
-    final named = _findNamedCover(comic.entries);
-    if (named != null) {
-      final directory =
-          comic.work?.directory ??
-          (comic.archiveFile != null
-              ? _engine._metadataTarget(_config, id).directory
-              : _config.childDirectoryPath(id));
-      return _config.childFilePath(directory, named.name);
-    }
+    final target = _engine._coverTarget(_config, id);
+    final cover = _findCoverPath(_config, target, comic.entries);
+    if (cover != null) return cover;
     if (comic.archiveFile != null || comic.work != null) return '';
     final images = _imageEntries(
       comic.entries,
-    ).where((entry) => !isNamedComicCover(entry.name));
+    ).where((entry) => !isComicCoverFileName(entry.name));
     if (images.isNotEmpty) {
-      return _config.childFilePath(
-        _config.childDirectoryPath(id),
-        images.first.name,
-      );
+      return _config.childFilePath(target.directory, images.first.name);
     }
     for (final child in comic.childEntries.entries) {
       final pages = _imageEntries(
         child.value,
-      ).where((entry) => !isNamedComicCover(entry.name));
+      ).where((entry) => !isComicCoverFileName(entry.name));
       if (pages.isNotEmpty) {
         return _config.childFilePath(
-          _config.childDirectoryPathFrom(
-            _config.childDirectoryPath(id),
-            child.key,
-          ),
+          _config.childDirectoryPathFrom(target.directory, child.key),
           pages.first.name,
         );
       }

@@ -329,6 +329,22 @@ class RemoteLibraryWriteResult {
   final int? modifiedAt;
 }
 
+class RemoteLibraryCoverUpdateResult {
+  const RemoteLibraryCoverUpdateResult({
+    required this.previousCover,
+    required this.cover,
+    required this.changed,
+    required this.failedOldCoverRemovals,
+    required this.invalidatedCoverPaths,
+  });
+
+  final String? previousCover;
+  final String cover;
+  final bool changed;
+  final List<String> failedOldCoverRemovals;
+  final List<String> invalidatedCoverPaths;
+}
+
 class RemoteLibraryConfig {
   RemoteLibraryConfig({
     required String url,
@@ -521,7 +537,21 @@ abstract class RemoteLibraryOps {
   });
 }
 
-class _RemoteLibraryOps implements RemoteLibraryOps {
+abstract interface class RemoteLibraryFileTransferOps {
+  Future<void> uploadFile(
+    RemoteLibraryConfig config,
+    String localPath,
+    String remotePath,
+  );
+
+  Future<void> deleteFile(RemoteLibraryConfig config, String remotePath);
+}
+
+class _RemoteLibraryOps
+    implements RemoteLibraryOps, RemoteLibraryFileTransferOps {
+  _RemoteLibraryOps(this._transferCancelToken);
+
+  final CancelToken Function() _transferCancelToken;
   final _clients = <String, Client>{};
 
   Client _client(RemoteLibraryConfig config) {
@@ -629,6 +659,32 @@ class _RemoteLibraryOps implements RemoteLibraryOps {
     }
   }
 
+  @override
+  Future<void> uploadFile(
+    RemoteLibraryConfig config,
+    String localPath,
+    String remotePath,
+  ) async {
+    try {
+      await _client(config).writeFromFile(
+        localPath,
+        remotePath,
+        cancelToken: _transferCancelToken(),
+      );
+    } on DioException catch (error) {
+      throw _classifyDioError(error, remotePath);
+    }
+  }
+
+  @override
+  Future<void> deleteFile(RemoteLibraryConfig config, String remotePath) async {
+    try {
+      await _client(config).remove(remotePath, _transferCancelToken());
+    } on DioException catch (error) {
+      throw _classifyDioError(error, remotePath);
+    }
+  }
+
   static String? _header(Map<String, List<String>> headers, String name) {
     final values = headers[name];
     if (values == null || values.isEmpty || values.first.trim().isEmpty) {
@@ -712,7 +768,8 @@ class _RemoteLibraryOps implements RemoteLibraryOps {
   }
 }
 
-class _RemoteFileStoreLibraryOps implements RemoteLibraryOps {
+class _RemoteFileStoreLibraryOps
+    implements RemoteLibraryOps, RemoteLibraryFileTransferOps {
   const _RemoteFileStoreLibraryOps();
 
   RemoteFileStore _store(RemoteLibraryConfig config) {
@@ -776,6 +833,17 @@ class _RemoteFileStoreLibraryOps implements RemoteLibraryOps {
       modifiedAt: result.modifiedAt,
     );
   }
+
+  @override
+  Future<void> uploadFile(
+    RemoteLibraryConfig config,
+    String localPath,
+    String remotePath,
+  ) => _store(config).upload(localPath, remotePath);
+
+  @override
+  Future<void> deleteFile(RemoteLibraryConfig config, String remotePath) =>
+      _store(config).delete(remotePath);
 }
 
 enum RemoteLibraryMetadataScrapeResult { matched, noMatch, notNeeded }
@@ -1055,37 +1123,61 @@ class _RemoteComicSnapshot {
     RemoteComicWork? retainedWork,
     RemoteArchiveComic? retainedArchive,
   }) {
+    final work =
+        retainedWork ??
+        (json['work'] is Map
+            ? RemoteComicWork.fromJson(
+                Map<String, dynamic>.from(json['work'] as Map),
+              )
+            : null);
+    final archive =
+        retainedArchive ??
+        (json['archive'] is Map
+            ? RemoteArchiveComic.fromJson(
+                Map<String, dynamic>.from(json['archive'] as Map),
+              )
+            : null);
     final chapters = json['chapters'];
-    final chapterImages = json['chapterImages'] as Map?;
+    final rawChapterImages = json['chapterImages'] as Map?;
+    final chapterImages = {
+      if (rawChapterImages != null)
+        for (final entry in rawChapterImages.entries)
+          entry.key as String: List<String>.from(entry.value),
+    };
     final metadataChapters = json['metadataChapters'];
-    final rootImages = json['rootImages'];
+    final rawRootImages = json['rootImages'];
+    final rootImages = rawRootImages is List
+        ? rawRootImages
+              .whereType<Map>()
+              .map(
+                (entry) => RemoteLibraryEntry(
+                  name: entry['name'] as String,
+                  isDirectory: false,
+                  eTag: entry['eTag'] as String?,
+                  modifiedAt: entry['modifiedAt'] as int?,
+                ),
+              )
+              .toList()
+        : const <RemoteLibraryEntry>[];
+    // 旧快照可能把旁车封面计为正文，重读目录后重新校验章节范围。
+    final hasSidecarPages =
+        work == null &&
+        archive == null &&
+        (rootImages.any((entry) => isSidecarComicCover(entry.name)) ||
+            chapterImages.values.any(
+              (images) => images.any(isSidecarComicCover),
+            ));
     final metadataFilePresent = json['metadataFilePresent'] == true;
     return _RemoteComicSnapshot(
       title: json['title'] as String,
-      work:
-          retainedWork ??
-          (json['work'] is Map
-              ? RemoteComicWork.fromJson(
-                  Map<String, dynamic>.from(json['work'] as Map),
-                )
-              : null),
-      archive:
-          retainedArchive ??
-          (json['archive'] is Map
-              ? RemoteArchiveComic.fromJson(
-                  Map<String, dynamic>.from(json['archive'] as Map),
-                )
-              : null),
+      work: work,
+      archive: archive,
       author: json['author'] as String? ?? '',
       description: json['description'] as String? ?? '',
       tags: (json['tags'] as List?)?.whereType<String>().toList() ?? const [],
       cover: json['cover'] as String? ?? '',
-      chaptersInspected: json['chaptersInspected'] != false,
-      chapterImages: {
-        if (chapterImages != null)
-          for (final entry in chapterImages.entries)
-            entry.key as String: List<String>.from(entry.value),
-      },
+      chaptersInspected: json['chaptersInspected'] != false && !hasSidecarPages,
+      chapterImages: chapterImages,
       chapters: chapters is Map
           ? chapters.map(
               (key, value) => MapEntry(key.toString(), value.toString()),
@@ -1099,19 +1191,7 @@ class _RemoteComicSnapshot {
               ),
             )
           : const {},
-      rootImages: rootImages is List
-          ? rootImages
-                .whereType<Map>()
-                .map(
-                  (entry) => RemoteLibraryEntry(
-                    name: entry['name'] as String,
-                    isDirectory: false,
-                    eTag: entry['eTag'] as String?,
-                    modifiedAt: entry['modifiedAt'] as int?,
-                  ),
-                )
-                .toList()
-          : const [],
+      rootImages: rootImages,
       bangumiSubjectId: json['bangumiSubjectId'] as int?,
       metadataFilePresent: metadataFilePresent,
       metadataScrapeStatus:

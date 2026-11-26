@@ -1,3 +1,4 @@
+import 'dart:ffi' show Finalizable;
 import 'dart:isolate';
 
 import 'package:file_selector/file_selector.dart' as file_selector;
@@ -7,6 +8,7 @@ import 'package:flutter_saf/flutter_saf.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/file_system.dart';
+import 'package:venera_plus/foundation/translations.dart';
 import 'package:share_plus/share_plus.dart' as s;
 import 'package:venera_plus/foundation/file_type.dart';
 
@@ -111,7 +113,12 @@ class IOSDirectoryPicker {
   }
 }
 
-Future<FileSelectResult?> selectFile({required List<String> ext}) async {
+/// 由调用方校验文件内容时，可允许选择扩展名无法识别的文件。
+Future<FileSelectResult?> selectFile({
+  required List<String> ext,
+  String? mimeType,
+  bool allowUnknownExtension = false,
+}) async {
   IO._isSelectingFiles = true;
   try {
     var extensions = App.isMacOS || App.isIOS ? null : ext;
@@ -122,30 +129,42 @@ Future<FileSelectResult?> selectFile({required List<String> ext}) async {
     FileSelectResult? file;
     if (App.isAndroid) {
       const selectFileChannel = MethodChannel("venera/select_file");
-      String mimeType = "*/*";
-      if (ext.length == 1) {
-        mimeType = FileType.fromExtension(ext[0]).mime;
-        if (mimeType == "application/octet-stream") {
-          mimeType = "*/*";
+      var pickerMimeType = mimeType;
+      if (pickerMimeType == null || pickerMimeType.isEmpty) {
+        pickerMimeType = ext.length == 1
+            ? FileType.fromExtension(ext.single).mime
+            : '*/*';
+        if (pickerMimeType == 'application/octet-stream') {
+          pickerMimeType = '*/*';
         }
       }
       var filePath = await selectFileChannel.invokeMethod(
         "selectFile",
-        mimeType,
+        pickerMimeType,
       );
       if (filePath == null) return null;
       file = FileSelectResult(filePath);
     } else {
       var xFile = await file_selector.openFile(
-        acceptedTypeGroups: <file_selector.XTypeGroup>[typeGroup],
+        acceptedTypeGroups: [
+          typeGroup,
+          if (allowUnknownExtension && extensions != null)
+            file_selector.XTypeGroup(label: 'All files'.tl),
+        ],
       );
       if (xFile == null) return null;
       file = FileSelectResult(xFile.path);
     }
-    if (!ext.contains(file.path.split(".").last)) {
+    final name = file.name;
+    final dot = name.lastIndexOf('.');
+    final extension = dot < 0 ? '' : name.substring(dot + 1).toLowerCase();
+    if (!allowUnknownExtension &&
+        !ext.any((allowed) => allowed.toLowerCase() == extension)) {
       if (!App.rootContext.mounted) return null;
       App.rootContext.showMessage(
-        message: "Invalid file type: ${file.path.split(".").last}",
+        message: 'Invalid file type (@extension)'.tlParams({
+          'extension': extension,
+        }),
       );
       return null;
     }
@@ -410,7 +429,8 @@ class Share {
   }
 }
 
-class FileSelectResult {
+/// 调用方持有结果并等待文件操作时，临时文件保持可用。
+class FileSelectResult implements Finalizable {
   final String path;
 
   static final _finalizer = Finalizer<String>((path) {
