@@ -62,46 +62,57 @@ class CachedImageProvider
   @override
   Future<Uint8List> load(chunkEvents, checkStop) async {
     return _runWithThumbnailSlot(
-      () => _loadImage(chunkEvents, checkStop),
+      () => _loadImage(
+        chunkEvents: chunkEvents,
+        checkStop: checkStop,
+        allowEmpty: true, // BaseImageProvider retries empty data.
+      ),
       checkStop: checkStop,
     );
   }
 
-  Future<Uint8List> _loadImage(
-    StreamController<ImageChunkEvent> chunkEvents,
-    void Function() checkStop,
-  ) async {
+  /// Reads the encoded image bytes without decoding or resizing the image.
+  Future<Uint8List> loadOriginalBytes() => _runWithThumbnailSlot(_loadImage);
+
+  Future<Uint8List> _loadImage({
+    StreamController<ImageChunkEvent>? chunkEvents,
+    void Function()? checkStop,
+    bool allowEmpty = false,
+  }) async {
     try {
+      Uint8List? data;
       if (url.startsWith("file://")) {
-        var file = File(url.substring(7));
-        return await file.readAsBytes();
-      }
-      await for (var progress in ImageDownloader.loadThumbnail(
-        url,
-        sourceKey,
-        cid,
-        BaseImageProvider.cancelSignalOf(checkStop),
-      )) {
-        checkStop();
-        chunkEvents.add(
-          ImageChunkEvent(
-            cumulativeBytesLoaded: progress.currentBytes,
-            expectedTotalBytes: progress.totalBytes,
-          ),
-        );
-        if (progress.imageBytes != null) {
-          return progress.imageBytes!;
+        data = await File(url.substring(7)).readAsBytes();
+      } else {
+        await for (final progress in ImageDownloader.loadThumbnail(
+          url,
+          sourceKey,
+          cid,
+          checkStop == null
+              ? null
+              : BaseImageProvider.cancelSignalOf(checkStop),
+        )) {
+          checkStop?.call();
+          chunkEvents?.add(
+            ImageChunkEvent(
+              cumulativeBytesLoaded: progress.currentBytes,
+              expectedTotalBytes: progress.totalBytes,
+            ),
+          );
+          data = progress.imageBytes;
+          if (data != null) break;
         }
       }
-      checkStop();
+      if (data != null && (allowEmpty || data.isNotEmpty)) {
+        return data;
+      }
+      checkStop?.call();
       throw "Error: Empty response body.";
-    } catch (e) {
-      checkStop();
+    } catch (_) {
+      checkStop?.call();
       final fallbackImage = await fallback?.call();
-      if (fallbackImage != null) {
-        if (fallbackImage.isNotEmpty) {
-          return fallbackImage;
-        }
+      if (fallbackImage != null && fallbackImage.isNotEmpty) {
+        return fallbackImage;
       }
       rethrow;
     }
