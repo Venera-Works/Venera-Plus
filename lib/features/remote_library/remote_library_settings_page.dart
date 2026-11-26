@@ -196,6 +196,14 @@ class RemoteLibrariesSliver extends StatefulWidget {
 }
 
 class _RemoteLibrariesSliverState extends State<RemoteLibrariesSliver> {
+  Future<void> _refresh(
+    RemoteLibraryEngine engine, {
+    required bool deep,
+  }) async {
+    await engine.synchronize(force: true, deep: deep);
+    if (mounted) setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -236,10 +244,14 @@ class _RemoteLibrariesSliverState extends State<RemoteLibrariesSliver> {
                     icon: const Icon(Icons.refresh),
                     onPressed: engine == null
                         ? null
-                        : () async {
-                            await engine.synchronize(force: true);
-                            if (mounted) setState(() {});
-                          },
+                        : () => _refresh(engine, deep: false),
+                  ),
+                  IconButton(
+                    tooltip: 'Full refresh'.tl,
+                    icon: const Icon(Icons.sync),
+                    onPressed: engine == null
+                        ? null
+                        : () => _refresh(engine, deep: true),
                   ),
                   IconButton(
                     tooltip: 'Delete'.tl,

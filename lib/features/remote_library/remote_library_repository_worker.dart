@@ -20,8 +20,11 @@ enum _RemoteLibraryOperation {
   setLastSuccessfulSync,
   clear,
   directoryEntries,
+  directoryEntriesBatch,
   cacheDirectoryEntries,
+  cacheDirectoryEntriesBatch,
   invalidateDirectoryEntries,
+  invalidateDirectorySubtrees,
   close,
 }
 
@@ -159,6 +162,12 @@ class _RemoteLibraryDatabase {
   _RemoteLibraryDatabase(this.db);
 
   final Database db;
+
+  static const _upsertDirectoryCacheSql = '''
+    INSERT INTO remote_library_directory_cache VALUES (?, ?, ?, ?)
+    ON CONFLICT(config_key, path) DO UPDATE SET
+      entries_json = excluded.entries_json, fetched_at = excluded.fetched_at;
+  ''';
 
   static _RemoteLibraryDatabase open(String dataPath) {
     final db = openSqliteDatabase('$dataPath/remote_library.db');
@@ -571,20 +580,49 @@ class _RemoteLibraryDatabase {
         if (rows.isEmpty) return null;
         return (jsonDecode(rows.single['entries_json'] as String) as List)
             .cast<Map<String, dynamic>>();
-      case _RemoteLibraryOperation.cacheDirectoryEntries:
-        db.execute(
-          '''
-          INSERT INTO remote_library_directory_cache VALUES (?, ?, ?, ?)
-          ON CONFLICT(config_key, path) DO UPDATE SET
-            entries_json = excluded.entries_json, fetched_at = excluded.fetched_at;
-        ''',
-          [
-            configKey,
-            arguments[1] as String,
-            jsonEncode(arguments[2]),
-            arguments[3] as int,
-          ],
+      case _RemoteLibraryOperation.directoryEntriesBatch:
+        final paths = arguments[1] as List<String>;
+        final now = arguments[2] as int?;
+        final maxAge = arguments[3] as int?;
+        return directoryEntriesBatch(
+          configKey,
+          paths,
+          now: now,
+          maxAge: maxAge,
         );
+      case _RemoteLibraryOperation.cacheDirectoryEntries:
+        db.execute(_upsertDirectoryCacheSql, [
+          configKey,
+          arguments[1] as String,
+          jsonEncode(arguments[2]),
+          arguments[3] as int,
+        ]);
+        return null;
+      case _RemoteLibraryOperation.cacheDirectoryEntriesBatch:
+        final items =
+            arguments[1]
+                as List<
+                  ({
+                    String path,
+                    List<Map<String, dynamic>> entries,
+                    int fetchedAt,
+                  })
+                >;
+        _transaction(() {
+          final upsert = db.prepare(_upsertDirectoryCacheSql);
+          try {
+            for (final item in items) {
+              upsert.execute([
+                configKey,
+                item.path,
+                jsonEncode(item.entries),
+                item.fetchedAt,
+              ]);
+            }
+          } finally {
+            upsert.close();
+          }
+        });
         return null;
       case _RemoteLibraryOperation.invalidateDirectoryEntries:
         db.execute(
@@ -592,9 +630,66 @@ class _RemoteLibraryDatabase {
           [configKey, arguments[1] as String],
         );
         return null;
+      case _RemoteLibraryOperation.invalidateDirectorySubtrees:
+        final paths = arguments[1] as List<String>;
+        _transaction(() {
+          final remove = db.prepare('''
+            DELETE FROM remote_library_directory_cache
+            WHERE config_key = ? AND path >= ? AND path < ?;
+          ''');
+          try {
+            for (final path in paths) {
+              // 末尾的斜杠与 ASCII 的 0 相邻，这个范围精确匹配目录及其子树。
+              remove.execute([
+                configKey,
+                path,
+                '${path.substring(0, path.length - 1)}0',
+              ]);
+            }
+          } finally {
+            remove.close();
+          }
+        });
+        return null;
       case _RemoteLibraryOperation.close:
         throw StateError('关闭请求应由 worker 处理');
     }
+  }
+
+  Map<String, List<Map<String, dynamic>>> directoryEntriesBatch(
+    String configKey,
+    List<String> paths, {
+    required int? now,
+    required int? maxAge,
+  }) {
+    final result = <String, List<Map<String, dynamic>>>{};
+    final filterByAge = now != null && maxAge != null;
+    const pageSize = 200;
+    for (var start = 0; start < paths.length; start += pageSize) {
+      final end = start + pageSize;
+      final batch = paths.sublist(
+        start,
+        end < paths.length ? end : paths.length,
+      );
+      final rows = db.select(
+        '''
+        SELECT path, entries_json FROM remote_library_directory_cache
+        WHERE config_key = ? AND path IN (${List.filled(batch.length, '?').join(', ')})
+        ${filterByAge ? 'AND fetched_at <= ? AND fetched_at > ?' : ''};
+      ''',
+        [
+          configKey,
+          ...batch,
+          if (filterByAge) ...[now, now - maxAge],
+        ],
+      );
+      for (final row in rows) {
+        result[row['path']
+            as String] = (jsonDecode(row['entries_json'] as String) as List)
+            .cast<Map<String, dynamic>>();
+      }
+    }
+    return result;
   }
 
   // EXISTS 避免重叠根产生重复行，也避免 DISTINCT 将大快照带入临时排序。

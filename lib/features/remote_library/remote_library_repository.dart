@@ -255,6 +255,18 @@ class RemoteLibraryRepository {
     maxAge.inMilliseconds,
   ]);
 
+  Future<Map<String, List<Map<String, dynamic>>>> directoryEntriesBatch(
+    String configKey,
+    Iterable<String> paths, {
+    int? now,
+    Duration? maxAge,
+  }) => _request(_RemoteLibraryOperation.directoryEntriesBatch, [
+    configKey,
+    paths.toSet().toList(growable: false),
+    now,
+    maxAge?.inMilliseconds,
+  ]);
+
   Future<void> cacheDirectoryEntries(
     String configKey,
     String path,
@@ -267,11 +279,28 @@ class RemoteLibraryRepository {
     fetchedAt,
   ]);
 
+  Future<void> cacheDirectoryEntriesBatch(
+    String configKey,
+    List<({String path, List<Map<String, dynamic>> entries, int fetchedAt})>
+    items,
+  ) => _request(_RemoteLibraryOperation.cacheDirectoryEntriesBatch, [
+    configKey,
+    items,
+  ]);
+
   Future<void> invalidateDirectoryEntries(String configKey, String path) =>
       _request(_RemoteLibraryOperation.invalidateDirectoryEntries, [
         configKey,
         path,
       ]);
+
+  Future<void> invalidateDirectorySubtrees(
+    String configKey,
+    List<String> paths,
+  ) => _request(_RemoteLibraryOperation.invalidateDirectorySubtrees, [
+    configKey,
+    paths,
+  ]);
 
   Future<void> close() {
     final next = _operations.then((_) async {

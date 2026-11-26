@@ -470,6 +470,9 @@ class RemoteLibraryConfig {
     return joinWebDavDirectoryPath(parent, name);
   }
 
+  String _discoveryDirectoryPath(String id) =>
+      id.isEmpty ? remotePath : childDirectoryPathFrom(remotePath, id);
+
   String fileUrl(String remoteFilePath) => endpoint.fileUrl(remoteFilePath);
 }
 
@@ -487,6 +490,11 @@ class RemoteLibraryEntry {
   final String? eTag;
   final int? modifiedAt;
   final int? size;
+
+  bool get _hasVersion => eTag?.isNotEmpty == true || modifiedAt != null;
+
+  bool _hasSameVersion(RemoteLibraryEntry other) =>
+      eTag == other.eTag && modifiedAt == other.modifiedAt;
 }
 
 abstract class RemoteLibraryOps {
@@ -845,6 +853,7 @@ class _RemoteLibrarySyncRun {
     required this.indexReady,
     required this.complete,
     this.refresh = false,
+    this.deep = true,
   });
 
   final String configurationIdentity;
@@ -852,7 +861,20 @@ class _RemoteLibrarySyncRun {
   final Future<Res<bool>> indexReady;
   final Future<Res<bool>> complete;
   final bool refresh;
+  final bool deep;
+  final reusableRootChildren = <String, Set<String>>{};
   bool hasPublished = false;
+
+  bool canReuseDirectory(RemoteLibraryConfig config, String path) {
+    final children = reusableRootChildren[config.remotePath];
+    if (children == null || children.isEmpty) return false;
+    final root = normalizeRemoteDirectory(config.remotePath);
+    final directory = normalizeRemoteDirectory(path);
+    if (!directory.startsWith(root)) return false;
+    final end = directory.indexOf('/', root.length);
+    return end != -1 &&
+        children.contains(directory.substring(root.length, end));
+  }
 }
 
 class _RemoteSynchronizationObsoleteException implements Exception {

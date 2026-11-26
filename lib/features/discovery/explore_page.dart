@@ -563,13 +563,22 @@ class _ExplorePageState extends State<ExplorePage>
     if (source == null) return;
 
     if (currentSection == DiscoverySection.browse) {
-      GlobalState.findOrNull<_SourceBrowseViewState>(
-        'browse:${source.key}',
-      )?.refresh();
+      _activeBrowseView?.refresh();
     } else {
       GlobalState.findOrNull<SourceCategoryViewState>(
         'category:${source.key}',
       )?.refresh();
+    }
+  }
+
+  _SourceBrowseViewState? get _activeBrowseView =>
+      GlobalState.findOrNull<_SourceBrowseViewState>(
+        'browse:$currentSourceKey',
+      );
+
+  void deepRefresh() {
+    if (currentSection == DiscoverySection.browse) {
+      _activeBrowseView?.deepRefresh();
     }
   }
 
@@ -838,9 +847,23 @@ class _ExplorePageState extends State<ExplorePage>
               showPopUpWidget(App.rootContext, setCategoryPagesWidget());
             } else if (action == 'sources') {
               context.to(() => const ContentSourcesPage());
+            } else if (action == 'deepRefresh') {
+              deepRefresh();
             }
           },
           itemBuilder: (context) => [
+            if (currentSection == DiscoverySection.browse &&
+                _activeBrowseView?.canDeepRefresh == true)
+              PopupMenuItem(
+                value: 'deepRefresh',
+                child: Row(
+                  children: [
+                    const Icon(Icons.sync, size: 20),
+                    const SizedBox(width: 12),
+                    Text('Full refresh'.tl),
+                  ],
+                ),
+              ),
             PopupMenuItem(
               value: 'explore',
               child: Row(
@@ -1245,28 +1268,27 @@ class _SourceBrowseViewState extends AutomaticGlobalState<_SourceBrowseView>
     _tabController = null;
   }
 
-  void toTop() {
-    if (_pages.isEmpty) return;
-    final int pageIdx = _tabController?.index ?? 0;
-    if (pageIdx >= 0 && pageIdx < _pages.length) {
-      final pageTitle = _pages[pageIdx].title;
-      GlobalState.findOrNull<_SingleExplorePageState>(
-        '${widget.source.key}:$pageTitle',
-      )?.toTop();
-    }
+  ExplorePageData? get _activePage {
+    final index = _tabController?.index ?? 0;
+    return index >= 0 && index < _pages.length ? _pages[index] : null;
   }
 
-  @override
-  void refresh() {
-    if (_pages.isEmpty) return;
-    final int pageIdx = _tabController?.index ?? 0;
-    if (pageIdx >= 0 && pageIdx < _pages.length) {
-      final pageTitle = _pages[pageIdx].title;
-      GlobalState.findOrNull<_SingleExplorePageState>(
-        '${widget.source.key}:$pageTitle',
-      )?.refresh();
-    }
+  _SingleExplorePageState? get _activePageState {
+    final page = _activePage;
+    if (page == null) return null;
+    return GlobalState.findOrNull<_SingleExplorePageState>(
+      '${widget.source.key}:${page.title}',
+    );
   }
+
+  bool get canDeepRefresh => _activePage?.onDeepRefresh != null;
+
+  void toTop() => _activePageState?.toTop();
+
+  @override
+  void refresh() => _activePageState?.refresh();
+
+  void deepRefresh() => _activePageState?.deepRefresh();
 
   @override
   void initState() {
@@ -1477,9 +1499,11 @@ class _SingleExplorePageState extends AutomaticGlobalState<_SingleExplorePage>
       );
     } else if (currentData.loadPage != null || currentData.loadNext != null) {
       final statusMessage = currentData.statusMessage?.call();
+      final hasCustomRefresh =
+          currentData.onRefresh != null || currentData.onDeepRefresh != null;
       final list = ComicList(
         enablePageStorage: true,
-        preserveScrollPosition: currentData.onRefresh != null,
+        preserveScrollPosition: hasCustomRefresh,
         loadPage: currentData.loadPage,
         loadNext: currentData.loadNext,
         key: childStorageKey,
@@ -1499,7 +1523,7 @@ class _SingleExplorePageState extends AutomaticGlobalState<_SingleExplorePage>
                 ),
               ),
       );
-      if (currentData.onRefresh == null) return list;
+      if (!hasCustomRefresh) return list;
 
       return Stack(
         fit: StackFit.expand,
@@ -1530,12 +1554,16 @@ class _SingleExplorePageState extends AutomaticGlobalState<_SingleExplorePage>
   }
 
   @override
-  void refresh() {
+  void refresh() => _refresh();
+
+  void deepRefresh() => _refresh(deep: true);
+
+  void _refresh({bool deep = false}) {
     final currentData = data;
     if (currentData == null) return;
-    final onRefresh = currentData.onRefresh;
+    final onRefresh = deep ? currentData.onDeepRefresh : currentData.onRefresh;
     if (onRefresh == null) {
-      refreshHandler?.call();
+      if (!deep) refreshHandler?.call();
       return;
     }
     if (_isRefreshing) return;

@@ -410,6 +410,7 @@ class ExplorePageData {
   final String? Function()? statusMessage;
 
   final Future<void> Function()? onRefresh;
+  final Future<void> Function()? onDeepRefresh;
 
   ExplorePageData(
     this.title,
@@ -421,6 +422,7 @@ class ExplorePageData {
     this.changeListenable,
     this.statusMessage,
     this.onRefresh,
+    this.onDeepRefresh,
   });
 }
 
