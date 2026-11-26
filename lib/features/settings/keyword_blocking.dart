@@ -103,8 +103,11 @@ class _KeywordBlockingSettingsState extends State<KeywordBlockingSettings> {
   Widget build(BuildContext context) {
     final rules = store.rules(target);
     return PopUpWidgetScaffold(
-      title: (widget.comments ? 'Comment keyword blocking' : 'Keyword blocking')
-          .tl,
+      title:
+          (widget.comments
+                  ? 'Comment keyword blocking'
+                  : 'Comic keyword blocking')
+              .tl,
       tailing: [
         TextButton.icon(
           style: actionButtonStyle,

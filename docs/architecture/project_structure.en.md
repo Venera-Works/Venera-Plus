@@ -33,7 +33,7 @@ This document is the English companion for the repository structure rules. The C
 - `local_comics/`: local library, downloads, and import/export tools under `import_export/` (browsing and management entry points live in Library).
 - `reader/`: reader page, gestures, chapters, image loading, waterfall flow, clipboard image handling, and reader-only platform interactions.
 - `search/`: search page, result page, aggregate search, and search query filters.
-- `settings/`: settings pages, reader settings, reusable setting controls, and structured setting destinations (grouped by Reading & Browsing, Sources & Data, and System; personal content moved to Library, obsolete standalone setting classes cleaned up).
+- `settings/`: settings navigation, reusable setting controls, and 11 destinations grouped under Preferences, Content, Data, and System.
 - `storage/`: shared cloud and WebDAV account management, credential import, web authorization, and remote directory-selection UI.
 - `sync/`: app data synchronization through a shared cloud or WebDAV account, top-bar `SyncActionButton`, app data import/export, and local comic backup/restore. All synchronized data travels in complete snapshots. Cloud restores merge snapshot comic update state with local state without separate per-device files.
 - `remote_library/` provides online comic libraries for cloud accounts and WebDAV, including directory discovery, work aggregation, metadata, on-demand reading, and local indexes.
@@ -61,7 +61,7 @@ External modules should prefer stable feature entry files instead of importing i
 - `features/local_comics/local_comics.dart` for local library, downloads, and import/export tools.
 - `features/reader/reader.dart` for reader capabilities, loading entry, chapter comments, and chapter-completion events.
 - `features/search/search.dart` for search page, result page, aggregate search, and query filters.
-- `features/settings/settings.dart` for `SettingsPage` and structured setting section widgets (including `ReadingSettings`, `AppearanceSettings`, `BrowsingAndFavoritesSettings`, `SourcesAndServicesSettings`, `StorageAndSyncSettings`, `PrivacyAndSecuritySettings`, etc.).
+- `features/settings/settings.dart` for `SettingsPage` and its destinations. Preferences contains `GeneralSettings`, `AppearanceSettings`, and `ReaderSettings`. Content contains `LibrarySettings`, `ExploreSettings`, and `ContentSourcesPage`. Data contains `StorageSettings` and `SyncSettings`. System contains `NetworkSettings`, `AdvancedSettings`, and `AboutSettings`.
 - `features/sync/sync.dart` for `SyncActionButton` and data synchronization.
 - `features/storage/storage.dart` for account management, token import, directory selection, and remote location fields.
 - `features/comic_storage/comic_storage.dart` for archive metadata and file rules.

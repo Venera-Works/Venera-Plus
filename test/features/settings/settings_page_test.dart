@@ -152,16 +152,16 @@ void main() {
 
       await tester.pumpWidget(
         const MaterialApp(
-          home: SettingsPage(initialDestination: SettingsDestination.sources),
+          home: SettingsPage(initialDestination: SettingsDestination.sync),
         ),
       );
       await tester.pumpAndSettle();
 
-      expect(find.byType(SourcesAndServicesSettings), findsOneWidget);
+      expect(find.byType(SyncSettings), findsOneWidget);
 
       final bangumiEntry = find.byKey(const Key('bangumi-settings-entry'));
       expect(bangumiEntry, findsOneWidget);
-      expect(find.byKey(const Key('data-sync-entry')), findsNothing);
+      expect(find.byKey(const Key('data-sync-entry')), findsOneWidget);
       await tester.ensureVisible(bangumiEntry);
       await tester.tap(
         find.descendant(of: bangumiEntry, matching: find.text('Set')),
@@ -174,8 +174,8 @@ void main() {
       await tester.tap(find.byTooltip('Back'));
       await tester.pumpAndSettle();
 
-      expect(find.byType(SourcesAndServicesSettings), findsNothing);
-      expect(find.text('Sources and Services'), findsOneWidget);
+      expect(find.byType(SyncSettings), findsNothing);
+      expect(find.text('Sync'), findsOneWidget);
       expect(find.byType(SettingsPage), findsOneWidget);
     },
   );
@@ -215,9 +215,9 @@ void main() {
       );
       await tester.tap(find.text('Open Settings'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Sources and Services'));
+      await tester.tap(find.text('Sources'));
       await tester.pumpAndSettle();
-      expect(find.byType(SourcesAndServicesSettings), findsOneWidget);
+      expect(find.byType(ContentSourcesPage), findsOneWidget);
 
       updateSettings!(() {
         settingsActive = false;
@@ -241,42 +241,35 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      // Initially no content selected on wide layout
-      expect(find.byType(SourcesAndServicesSettings), findsNothing);
+      expect(find.byType(AdvancedSettings), findsNothing);
 
-      // Select Sources and Services
-      await tester.tap(find.text('Sources and Services'));
+      await tester.tap(find.text('Advanced'));
       await tester.pumpAndSettle();
-      expect(find.byType(SourcesAndServicesSettings), findsOneWidget);
+      expect(find.byType(AdvancedSettings), findsOneWidget);
 
-      // Push nested ContentSourcesPage within the right pane
-      await tester.tap(find.text('Content Sources'));
+      await tester.tap(find.text('Logs'));
       await tester.pumpAndSettle();
-      expect(find.byType(ContentSourcesPage), findsOneWidget);
+      expect(find.byType(LogsPage), findsOneWidget);
 
-      // Tap left settings Back button explicitly: pops ContentSourcesPage, leaving Sources and Services visible
       final settingsBackFinder = find.byKey(const Key('settings-back-button'));
       await tester.tap(settingsBackFinder);
       await tester.pumpAndSettle();
-      expect(find.byType(ContentSourcesPage), findsNothing);
-      expect(find.byType(SourcesAndServicesSettings), findsOneWidget);
+      expect(find.byType(LogsPage), findsNothing);
+      expect(find.byType(AdvancedSettings), findsOneWidget);
 
-      // Push nested ContentSourcesPage again to test system back / hardware maybePop
-      await tester.tap(find.text('Content Sources'));
+      await tester.tap(find.text('Logs'));
       await tester.pumpAndSettle();
-      expect(find.byType(ContentSourcesPage), findsOneWidget);
+      expect(find.byType(LogsPage), findsOneWidget);
 
-      // Trigger system pop route
       final didPop = await tester.binding.handlePopRoute();
       expect(didPop, isTrue);
       await tester.pumpAndSettle();
-      expect(find.byType(ContentSourcesPage), findsNothing);
-      expect(find.byType(SourcesAndServicesSettings), findsOneWidget);
+      expect(find.byType(LogsPage), findsNothing);
+      expect(find.byType(AdvancedSettings), findsOneWidget);
 
-      // Destination switch in wide layout changes content cleanly
       await tester.tap(find.text('Network'));
       await tester.pumpAndSettle();
-      expect(find.byType(SourcesAndServicesSettings), findsNothing);
+      expect(find.byType(AdvancedSettings), findsNothing);
       expect(find.byType(NetworkSettings), findsOneWidget);
 
       // Tap left Back button: deselects active section
@@ -286,7 +279,7 @@ void main() {
     },
   );
   testWidgets(
-    'purpose overview shows destinations and opens account-based sync settings on narrow screens',
+    'narrow layout opens cloud libraries in Sources and app data settings in Sync',
     (tester) async {
       _setupTestView(tester, const Size(390, 1000));
       appdata.implicitData['webdavSyncMode'] = 'manual';
@@ -308,17 +301,26 @@ void main() {
         directory: '/Backups/',
       ).toJson();
       await tester.pumpWidget(
-        const MaterialApp(home: Scaffold(body: StorageAndSyncSettings())),
+        const MaterialApp(
+          home: SettingsPage(initialDestination: SettingsDestination.sync),
+        ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('Cloud Storage Uses'), findsOneWidget);
-      expect(find.byKey(const Key('bangumi-settings-entry')), findsNothing);
-      expect(find.text('Cloud Comic Libraries'), findsOneWidget);
+      expect(find.text('Cloud Services'), findsOneWidget);
+      expect(find.byKey(const Key('bangumi-settings-entry')), findsOneWidget);
+      expect(find.textContaining('Cloud Comic Libraries'), findsNothing);
       expect(find.textContaining('Personal Drive · /Sync/'), findsOneWidget);
       expect(find.textContaining('Personal Drive · /Backups/'), findsOneWidget);
-      await tester.tap(find.byKey(const Key('comic-libraries-entry')));
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Sources'));
       await tester.pumpAndSettle();
       expect(find.byType(ContentSourcesPage), findsOneWidget);
+      final cloudLibrariesTab = find.textContaining('Cloud Comic Libraries');
+      await tester.ensureVisible(cloudLibrariesTab);
+      await tester.pumpAndSettle();
+      await tester.tap(cloudLibrariesTab);
+      await tester.pumpAndSettle();
       expect(
         tester.widget<TabBarView>(find.byType(TabBarView)).controller!.index,
         1,
@@ -327,6 +329,8 @@ void main() {
       await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
       expect(find.byType(ContentSourcesPage), findsNothing);
+      await tester.tap(find.text('Sync'));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('data-sync-entry')));
       await tester.pumpAndSettle();
       expect(find.byType(RemoteLocationFields), findsOneWidget);
@@ -350,7 +354,7 @@ void main() {
   );
 
   testWidgets(
-    'overview opens shared backup settings and the two local settings pages',
+    'Sync opens shared backup settings and local settings are available directly',
     (tester) async {
       _setupTestView(tester, const Size(390, 1200));
       CacheManager.debugDisableInitialScan = true;
@@ -374,7 +378,9 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           navigatorKey: App.rootNavigatorKey,
-          home: const Scaffold(body: StorageAndSyncSettings()),
+          home: const SettingsPage(
+            initialDestination: SettingsDestination.sync,
+          ),
         ),
       );
       await tester.pumpAndSettle();
@@ -387,17 +393,13 @@ void main() {
       App.rootPop();
       await tester.pumpAndSettle();
 
-      await tester.ensureVisible(find.text('Local Storage and Downloads'));
-      await tester.tap(find.text('Local Storage and Downloads'));
-      await tester.pumpAndSettle();
-      expect(find.text('Storage Path for local comics'), findsOneWidget);
-      App.rootPop();
-      await tester.pumpAndSettle();
-      await tester.ensureVisible(find.text('App Data Import and Export'));
-      await tester.tap(find.text('App Data Import and Export'));
-      await tester.pumpAndSettle();
       expect(find.text('Export App Data'), findsOneWidget);
       expect(find.text('Import App Data'), findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Storage'));
+      await tester.pumpAndSettle();
+      expect(find.text('Storage Path'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
@@ -726,10 +728,12 @@ void main() {
       );
 
       await tester.pumpWidget(
-        const MaterialApp(home: Scaffold(body: StorageAndSyncSettings())),
+        const MaterialApp(
+          home: ContentSourcesPage(
+            initialSection: ContentSourceSection.cloudLibraries,
+          ),
+        ),
       );
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Cloud Comic Libraries'));
       await tester.pumpAndSettle();
 
       Future<void> selectDirectories() async {

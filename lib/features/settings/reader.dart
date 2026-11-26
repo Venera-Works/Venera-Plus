@@ -64,14 +64,11 @@ class _ReaderSettingsState extends State<ReaderSettings> {
 
     return SmoothCustomScrollView(
       slivers: [
-        SliverAppbar(title: Text("Reading".tl)),
+        SliverAppbar(title: Text('Reader'.tl)),
         if (comicId != null && sourceKey != null)
           SliverMainAxisGroup(
             slivers: [
-              SettingPartTitle(
-                title: 'Settings Scope'.tl,
-                icon: Icons.devices_outlined,
-              ),
+              SettingPartTitle(title: 'Scope'.tl, icon: Icons.devices_outlined),
               SwitchListTile(
                 title: Text("Enable comic specific settings".tl),
                 value: isEnabledSpecificSettings,
@@ -104,10 +101,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
         if (comicId == null)
           SliverMainAxisGroup(
             slivers: [
-              SettingPartTitle(
-                title: 'Settings Scope'.tl,
-                icon: Icons.devices_outlined,
-              ),
+              SettingPartTitle(title: 'Scope'.tl, icon: Icons.devices_outlined),
               SwitchListTile(
                 title: Text("Enable device specific settings".tl),
                 value: useDeviceSpecificSettings,
@@ -135,10 +129,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
                 ).toSliver(),
             ],
           ),
-        SettingPartTitle(
-          title: 'Reading Mode and Layout'.tl,
-          icon: Icons.menu_book_outlined,
-        ),
+        SettingPartTitle(title: 'Layout'.tl, icon: Icons.menu_book_outlined),
         SelectSetting(
           title: "Reading mode".tl,
           settingKey: "readerMode",
@@ -178,9 +169,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
         SliverAnimatedVisibility(
           visible: isGalleryMode,
           child: SliderSetting(
-            title:
-                "The number of pic in screen for landscape (Only Gallery Mode)"
-                    .tl,
+            title: 'Landscape images per screen'.tl,
             settingsIndex: "readerScreenPicNumberForLandscape",
             interval: 1,
             min: 1,
@@ -197,9 +186,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
         SliverAnimatedVisibility(
           visible: isGalleryMode,
           child: SliderSetting(
-            title:
-                "The number of pic in screen for portrait (Only Gallery Mode)"
-                    .tl,
+            title: 'Portrait images per screen'.tl,
             settingsIndex: "readerScreenPicNumberForPortrait",
             interval: 1,
             min: 1,
@@ -218,7 +205,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
               (settingValue('readerScreenPicNumberForLandscape') > 1 ||
                   settingValue('readerScreenPicNumberForPortrait') > 1),
           child: SwitchSetting(
-            title: "Show single image on first page".tl,
+            title: 'Single image on first page'.tl,
             settingKey: "showSingleImageOnFirstPage",
             onChanged: () {
               widget.onChanged?.call("showSingleImageOnFirstPage");
@@ -260,7 +247,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
         ),
         SwitchSetting(
           title: 'Limit image width'.tl,
-          subtitle: 'When using Continuous(Top to Bottom) mode'.tl,
+          subtitle: 'Only applies to Continuous (Top to Bottom) mode'.tl,
           settingKey: 'limitImageWidth',
           onChanged: () {
             widget.onChanged?.call('limitImageWidth');
@@ -284,10 +271,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
             useDeviceSettings: useDeviceSpecificSettings,
           ),
         ),
-        SettingPartTitle(
-          title: 'Page Turning and Controls'.tl,
-          icon: Icons.touch_app_outlined,
-        ),
+        SettingPartTitle(title: 'Controls'.tl, icon: Icons.touch_app_outlined),
         SwitchSetting(
           title: "Tap to turn Pages".tl,
           settingKey: "enableTapToTurnPages",
@@ -368,7 +352,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
           ),
         ),
         SettingPartTitle(
-          title: 'Automatic Reading'.tl,
+          title: 'Auto Reading'.tl,
           icon: Icons.play_circle_outline,
         ),
         SliderSetting(
@@ -377,6 +361,8 @@ class _ReaderSettingsState extends State<ReaderSettings> {
           interval: 1,
           min: 1,
           max: 20,
+          valueFormatter: (value) =>
+              '@seconds s'.tlParams({'seconds': value.toInt()}),
           onChanged: () {
             setState(() {});
             widget.onChanged?.call("autoPageTurningInterval");
@@ -398,11 +384,13 @@ class _ReaderSettingsState extends State<ReaderSettings> {
         ).toSliver(),
         if (settingValue('autoReadingSkipUnavailableImages') == true)
           SliderSetting(
-            title: 'Automatic reading image wait time'.tl,
+            title: 'Unavailable image wait time'.tl,
             settingsIndex: 'autoReadingImageWaitSeconds',
             interval: 1,
             min: 1,
             max: 60,
+            valueFormatter: (value) =>
+                '@seconds s'.tlParams({'seconds': value.toInt()}),
             onChanged: () =>
                 widget.onChanged?.call('autoReadingImageWaitSeconds'),
             comicId: isEnabledSpecificSettings ? widget.comicId : null,
@@ -418,10 +406,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
             comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
             useDeviceSettings: useDeviceSpecificSettings,
           ).toSliver(),
-        SettingPartTitle(
-          title: 'Display and Reading Information'.tl,
-          icon: Icons.monitor_outlined,
-        ),
+        SettingPartTitle(title: 'Display'.tl, icon: Icons.monitor_outlined),
         SwitchSetting(
           title: "Show Page Number".tl,
           settingKey: "showPageNumberInReader",
@@ -558,10 +543,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
             ],
           ),
         ),
-        SettingPartTitle(
-          title: 'Chapters and Comments'.tl,
-          icon: Icons.comment_outlined,
-        ),
+        SettingPartTitle(title: 'Chapters'.tl, icon: Icons.comment_outlined),
         if (comicId == null)
           SwitchSetting(
             title: "Reverse default chapter order".tl,
@@ -605,10 +587,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
             useDeviceSettings: useDeviceSpecificSettings,
           ),
         ),
-        SettingPartTitle(
-          title: 'Image Loading and Processing'.tl,
-          icon: Icons.image_outlined,
-        ),
+        SettingPartTitle(title: 'Image'.tl, icon: Icons.image_outlined),
         SliderSetting(
           title: "Number of images preloaded".tl,
           settingsIndex: "preloadImageCount",
