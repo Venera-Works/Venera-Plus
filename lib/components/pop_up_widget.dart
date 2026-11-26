@@ -50,7 +50,6 @@ class PopUpWidget<T> extends PopupRoute<T> {
                   color: colors.shadow.withValues(alpha: 0.2),
                   blurRadius: 18,
                   offset: const Offset(0, 4),
-                  blurStyle: BlurStyle.outer,
                 ),
               ],
             )

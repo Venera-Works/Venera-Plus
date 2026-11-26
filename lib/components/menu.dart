@@ -129,7 +129,6 @@ class _MenuRoute<T> extends PopupRoute<T> {
                     color: colors.shadow.withValues(alpha: 0.18),
                     blurRadius: 14,
                     offset: const Offset(0, 4),
-                    blurStyle: BlurStyle.outer,
                   ),
                 ],
               ),

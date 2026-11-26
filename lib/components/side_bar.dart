@@ -122,7 +122,6 @@ class SideBarRoute<T> extends PopupRoute<T> {
                   color: colors.shadow.withValues(alpha: 0.18),
                   blurRadius: 16,
                   offset: const Offset(-4, 0),
-                  blurStyle: BlurStyle.outer,
                 ),
               ]
             : null,
