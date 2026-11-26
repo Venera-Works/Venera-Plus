@@ -96,6 +96,14 @@ class RemoteStorageException implements Exception {
   final Object? cause;
   final String? retryAfter;
   final DateTime? retryAt;
+  bool get isNotFound =>
+      code == 'not_found' ||
+      code == '404' ||
+      RegExp(
+        r'\b(?:object|file|path)\s+(?:not found|does not exist)\b|'
+        r'\b(?:HTTP(?:/\d+(?:\.\d+)?)?(?: status(?: code)?)?|status(?: code)?|code)"?[:=\s]+404\b',
+        caseSensitive: false,
+      ).hasMatch(message);
   bool get isRateLimited =>
       code == 'rate_limited' ||
       code == '429' ||

@@ -45,6 +45,7 @@ class _RemoteLibraryEngineState {
   final snapshotContexts = <String, RemoteReadContext>{};
   final archiveReaders = <String, RemoteRangeReader>{};
   final archiveTokens = <CancelToken>{};
+  final missingCovers = <String, DateTime>{};
   final workVolumeLoads =
       <
         String,
@@ -541,6 +542,7 @@ class RemoteLibraryEngine {
     }
     _state.archiveTokens.clear();
     _state.archiveReaders.clear();
+    _state.missingCovers.clear();
     _snapshotCache.clear();
     _snapshotInFlight.clear();
     _state.snapshotContexts.clear();
@@ -1942,7 +1944,17 @@ class RemoteLibraryEngine {
     );
   }
 
-  Future<Uint8List> _loadArchiveImage(
+  Future<Uint8List> _loadArchiveImage(String imageKey, CancelToken token) {
+    if (RemoteReadContext.current.priority == RemoteReadPriority.cover) {
+      return _withMissingCoverCache(
+        imageKey,
+        () => _readArchiveImage(imageKey, token),
+      );
+    }
+    return _readArchiveImage(imageKey, token);
+  }
+
+  Future<Uint8List> _readArchiveImage(
     String imageKey,
     CancelToken token,
   ) async {
@@ -2232,6 +2244,66 @@ class RemoteLibraryEngine {
     );
   }
 
+  Future<T> _withMissingCoverCache<T>(
+    String imageKey,
+    Future<T> Function() load,
+  ) async {
+    final state = _state;
+    final missingCovers = state.missingCovers;
+    final expiresAt = missingCovers[imageKey];
+    if (expiresAt != null) {
+      if (expiresAt.isAfter(DateTime.now())) {
+        throw const RemoteStorageException(
+          'Remote cover not found',
+          code: 'not_found',
+        );
+      }
+      missingCovers.remove(imageKey);
+    }
+
+    final generation = state.syncGeneration;
+    try {
+      return await load();
+    } on RemoteStorageException catch (error) {
+      if (error.isNotFound &&
+          !state.disposed &&
+          generation == state.syncGeneration) {
+        final now = DateTime.now();
+        missingCovers.removeWhere((_, expiresAt) => !expiresAt.isAfter(now));
+        missingCovers[imageKey] = now.add(const Duration(seconds: 60));
+      }
+      rethrow;
+    }
+  }
+
+  Future<RemoteLink> _resolveImageLink(
+    RemoteLibraryConfig config,
+    String imageKey,
+  ) async {
+    final scheduler = _archiveAccount(config).scheduler;
+    Future<RemoteLink> link() => config.remoteStore!.link(imageKey);
+
+    final lifetimeToken = _state.lifetimeToken;
+    final downloadToken = RemoteReadContext.current.cancelToken;
+    if (downloadToken == null || lifetimeToken.isCancelled) {
+      return scheduler.run(link, cancelToken: lifetimeToken);
+    }
+    if (downloadToken.isCancelled) throw downloadToken.cancelError!;
+
+    final token = CancelToken();
+    final subscription = downloadToken.whenCancel.asStream().listen((error) {
+      if (!token.isCancelled) token.cancel(error.error);
+    });
+    // 复用库关闭时的令牌清理，避免在库的生命周期令牌上逐次注册监听。
+    _state.archiveTokens.add(token);
+    try {
+      return await scheduler.run(link, cancelToken: token);
+    } finally {
+      _state.archiveTokens.remove(token);
+      await subscription.cancel();
+    }
+  }
+
   Future<Uint8List> _loadRemoteImage(
     RemoteLibraryConfig config,
     String path,
@@ -2299,10 +2371,7 @@ class RemoteLibraryEngine {
       return {'loadBytes': loadBytes};
     }
     if (config.remoteStore != null) {
-      final link = await _archiveAccount(config).scheduler.run(
-        () => config.remoteStore!.link(imageKey),
-        cancelToken: _state.lifetimeToken,
-      );
+      final link = await _resolveImageLink(config, imageKey);
       return {
         'url': link.url,
         'headers': link.headers,
@@ -2313,36 +2382,34 @@ class RemoteLibraryEngine {
     return {'url': config.fileUrl(imageKey), 'headers': config.authHeaders};
   }
 
-  Future<Map<String, dynamic>> getThumbnailLoadingConfig(
-    String imageKey,
-  ) async {
-    final config = _config;
-    if (imageKey.startsWith(remoteArchiveImagePrefix) ||
-        imageKey.startsWith(remoteComicWorkImagePrefix)) {
-      Future<Uint8List> loadBytes(CancelToken token) {
-        final priority = RemoteReadContext.current;
-        return priority.run(() => _loadArchiveImage(imageKey, token));
-      }
+  Future<Map<String, dynamic>> getThumbnailLoadingConfig(String imageKey) =>
+      _withMissingCoverCache(imageKey, () async {
+        final config = _config;
+        if (imageKey.startsWith(remoteArchiveImagePrefix) ||
+            imageKey.startsWith(remoteComicWorkImagePrefix)) {
+          Future<Uint8List> loadBytes(CancelToken token) {
+            final priority = RemoteReadContext.current;
+            return priority.run(() => _loadArchiveImage(imageKey, token));
+          }
 
-      return {'loadBytes': loadBytes};
-    }
-    if (imageKey.startsWith('cover.')) {
-      return {'headers': config.authHeaders};
-    }
-    if (config.remoteStore != null) {
-      final link = await _archiveAccount(config).scheduler.run(
-        () => config.remoteStore!.link(imageKey),
-        cancelToken: _state.lifetimeToken,
-      );
-      return {
-        'url': link.url,
-        'headers': link.headers,
-        'loadBytes': (CancelToken token) =>
-            _loadRemoteImage(config, imageKey, link, token),
-      };
-    }
-    return {'url': config.fileUrl(imageKey), 'headers': config.authHeaders};
-  }
+          return {'loadBytes': loadBytes};
+        }
+        if (imageKey.startsWith('cover.')) {
+          return {'headers': config.authHeaders};
+        }
+        if (config.remoteStore != null) {
+          final link = await _resolveImageLink(config, imageKey);
+          return {
+            'url': link.url,
+            'headers': link.headers,
+            'loadBytes': (CancelToken token) => _withMissingCoverCache(
+              imageKey,
+              () => _loadRemoteImage(config, imageKey, link, token),
+            ),
+          };
+        }
+        return {'url': config.fileUrl(imageKey), 'headers': config.authHeaders};
+      });
 }
 
 class RemoteLibraryEngines {

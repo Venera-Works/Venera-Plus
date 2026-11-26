@@ -398,6 +398,7 @@ Future<void> init({bool deferBackgroundTasks = false}) async {
   await _checkOldConfigs();
   CacheManager().setLimitSize(appdata.settings['cacheSize']);
   FlutterError.onError = (details) {
+    if (details.silent && details.library == 'image resource service') return;
     Log.error("Unhandled Exception", "${details.exception}\n${details.stack}");
   };
   StartupTiming.mark('Local initialization complete');

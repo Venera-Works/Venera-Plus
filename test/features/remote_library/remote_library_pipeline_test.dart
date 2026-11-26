@@ -95,6 +95,77 @@ void main() {
     expect(adapter.requests, 1);
   });
 
+  test('取消排队中的封面直链请求后不调用远端', () async {
+    final scheduler = RemoteReadScheduler(
+      maxConcurrent: 1,
+      minInterval: Duration.zero,
+    );
+    RemoteLibrarySource.archiveSchedulerFactory = () => scheduler;
+    final store = _PipelineStore();
+    final engine = open(store, ['/books/']);
+    final started = Completer<void>();
+    final release = Completer<void>();
+    final occupying = scheduler.run(() {
+      started.complete();
+      return release.future;
+    });
+
+    try {
+      await started.future.timeout(const Duration(seconds: 5));
+      final token = CancelToken();
+      final request = RemoteReadContext(
+        priority: RemoteReadPriority.cover,
+        cancelToken: token,
+      ).run(() => engine.getThumbnailLoadingConfig('/books/cover.jpg'));
+      final cancelled = expectLater(
+        request.timeout(const Duration(seconds: 5)),
+        throwsA(
+          isA<DioException>().having(CancelToken.isCancel, '已取消', isTrue),
+        ),
+      );
+      await pumpEventQueue();
+      expect(store.linkRefreshes, isEmpty);
+      token.cancel('封面已离屏');
+      await cancelled;
+    } finally {
+      release.complete();
+      await occupying;
+    }
+    await pumpEventQueue();
+    expect(store.linkRefreshes, isEmpty);
+  });
+
+  test('缺失封面命中负缓存，强制同步后重新请求直链', () async {
+    const path = '/books/missing.jpg';
+    const missing = RemoteStorageException(
+      'failed to get file: failed get dir: object not found',
+    );
+    final store = _PipelineStore()..linkFailures[path] = missing;
+    final engine = open(store, ['/books/']);
+
+    await expectLater(
+      engine.getThumbnailLoadingConfig(path),
+      throwsA(same(missing)),
+    );
+    expect(store.linkRefreshes, hasLength(1));
+    await expectLater(
+      engine.getThumbnailLoadingConfig(path),
+      throwsA(
+        isA<RemoteStorageException>().having(
+          (error) => error.isNotFound,
+          '对象不存在',
+          isTrue,
+        ),
+      ),
+    );
+    expect(store.linkRefreshes, hasLength(1));
+
+    expect((await engine.synchronize(force: true)).success, isTrue);
+    final config = await engine.getThumbnailLoadingConfig(path);
+    expect(config['url'], 'https://files.example$path');
+    expect(store.linkRefreshes, hasLength(2));
+  });
+
   test('重启后自动扫描复用目录，手动强刷读取外部新增作品', () async {
     final store = _PipelineStore();
     store.directories['/books/'] = [store.directory('/books/A/')];
@@ -372,6 +443,7 @@ class _PipelineStore extends Fake implements RemoteFileStore {
   final texts = <String, String>{};
   final writes = <String>[];
   final linkRefreshes = <bool>[];
+  final linkFailures = <String, RemoteStorageException>{};
   final lists = <({String path, bool refresh})>[];
   final textStarted = Completer<void>();
   Completer<void>? textGate;
@@ -433,6 +505,7 @@ class _PipelineStore extends Fake implements RemoteFileStore {
   @override
   Future<RemoteLink> link(String path, {bool refresh = false}) async {
     linkRefreshes.add(refresh);
+    if (linkFailures.remove(path) case final failure?) throw failure;
     return RemoteLink(url: 'https://files.example$path');
   }
 

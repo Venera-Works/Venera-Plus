@@ -2,6 +2,7 @@ import 'dart:async' show Completer, Future, FutureOr, StreamController;
 import 'dart:collection';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/file_system.dart';
 import 'package:venera_plus/network/images.dart';
 import 'base_image_provider.dart';
@@ -35,6 +36,7 @@ class CachedImageProvider
   static const _kMaxLoadingCount = 8;
 
   static final _thumbnailLoadSlots = _AsyncSemaphore(_kMaxLoadingCount + 1);
+  static final _remoteThumbnailLoadSlots = <String, _AsyncSemaphore>{};
 
   @visibleForTesting
   static Future<T> debugRunWithThumbnailSlot<T>(
@@ -46,56 +48,76 @@ class CachedImageProvider
 
   static Future<T> _runWithThumbnailSlot<T>(
     Future<T> Function() task, {
+    Future<void>? cancelSignal,
     void Function()? checkStop,
   }) {
-    return _thumbnailLoadSlots.run(() async {
-      checkStop?.call();
-      loadingCount++;
-      try {
-        return await task();
-      } finally {
-        loadingCount--;
-      }
-    });
-  }
-
-  @override
-  Future<Uint8List> load(chunkEvents, checkStop) async {
-    return _runWithThumbnailSlot(
-      () => _loadImage(chunkEvents, checkStop),
+    return _thumbnailLoadSlots.run(
+      () async {
+        loadingCount++;
+        try {
+          return await task();
+        } finally {
+          loadingCount--;
+        }
+      },
+      cancelSignal: cancelSignal,
       checkStop: checkStop,
     );
   }
 
-  Future<Uint8List> _loadImage(
-    StreamController<ImageChunkEvent> chunkEvents,
+  @override
+  Future<Uint8List> load(chunkEvents, checkStop) {
+    if (url.startsWith('file://')) {
+      return _loadWithFallback(
+        () => File(url.substring(7)).readAsBytes(),
+        checkStop,
+      );
+    }
+
+    final cancelSignal = BaseImageProvider.cancelSignalOf(checkStop);
+    Future<Uint8List> loadImage() =>
+        _loadImage(chunkEvents, checkStop, cancelSignal);
+
+    final source = sourceKey;
+    if (source == null ||
+        (source != 'webdav_library' && !source.startsWith('remote_library_'))) {
+      return _runWithThumbnailSlot(
+        () => _loadWithFallback(loadImage, checkStop),
+        cancelSignal: cancelSignal,
+        checkStop: checkStop,
+      );
+    }
+
+    return _loadWithFallback(() async {
+      final cache = await CacheManager().findCache(diskCacheKey);
+      checkStop();
+      if (cache != null) return cache.readAsBytes();
+
+      // 同一云端库先排自己的队，避免批量慢封面占满全局槽位。
+      final slots = _remoteThumbnailLoadSlots.putIfAbsent(
+        source,
+        () => _AsyncSemaphore(3),
+      );
+      return slots.run(
+        () => _runWithThumbnailSlot(
+          loadImage,
+          cancelSignal: cancelSignal,
+          checkStop: checkStop,
+        ),
+        cancelSignal: cancelSignal,
+        checkStop: checkStop,
+      );
+    }, checkStop);
+  }
+
+  Future<Uint8List> _loadWithFallback(
+    Future<Uint8List> Function() load,
     void Function() checkStop,
   ) async {
+    checkStop();
     try {
-      if (url.startsWith("file://")) {
-        var file = File(url.substring(7));
-        return await file.readAsBytes();
-      }
-      await for (var progress in ImageDownloader.loadThumbnail(
-        url,
-        sourceKey,
-        cid,
-        BaseImageProvider.cancelSignalOf(checkStop),
-      )) {
-        checkStop();
-        chunkEvents.add(
-          ImageChunkEvent(
-            cumulativeBytesLoaded: progress.currentBytes,
-            expectedTotalBytes: progress.totalBytes,
-          ),
-        );
-        if (progress.imageBytes != null) {
-          return progress.imageBytes!;
-        }
-      }
-      checkStop();
-      throw "Error: Empty response body.";
-    } catch (e) {
+      return await load();
+    } catch (_) {
       checkStop();
       final fallbackImage = await fallback?.call();
       if (fallbackImage != null) {
@@ -107,6 +129,30 @@ class CachedImageProvider
     }
   }
 
+  Future<Uint8List> _loadImage(
+    StreamController<ImageChunkEvent> chunkEvents,
+    void Function() checkStop,
+    Future<void> cancelSignal,
+  ) async {
+    await for (final progress in ImageDownloader.loadThumbnail(
+      url,
+      sourceKey,
+      cid,
+      cancelSignal,
+    )) {
+      checkStop();
+      chunkEvents.add(
+        ImageChunkEvent(
+          cumulativeBytesLoaded: progress.currentBytes,
+          expectedTotalBytes: progress.totalBytes,
+        ),
+      );
+      if (progress.imageBytes != null) return progress.imageBytes!;
+    }
+    checkStop();
+    throw 'Error: Empty response body.';
+  }
+
   @override
   Future<CachedImageProvider> obtainKey(ImageConfiguration configuration) {
     return SynchronousFuture(this);
@@ -114,6 +160,11 @@ class CachedImageProvider
 
   @override
   String get key => url + (sourceKey ?? "") + (cid ?? "");
+
+  @override
+  String get diskCacheKey => url.startsWith('file://')
+      ? key
+      : "$url@$sourceKey${cid != null ? '@$cid' : ''}";
 }
 
 class _AsyncSemaphore {
@@ -121,32 +172,43 @@ class _AsyncSemaphore {
 
   int _active = 0;
 
-  final _waiters = Queue<Completer<void>>();
+  final _waiters = Queue<Completer<bool>>();
 
   _AsyncSemaphore(this.maxConcurrent);
 
-  Future<T> run<T>(Future<T> Function() task) async {
-    await _acquire();
+  Future<T> run<T>(
+    Future<T> Function() task, {
+    Future<void>? cancelSignal,
+    void Function()? checkStop,
+  }) async {
+    if (!await _acquire(cancelSignal)) {
+      checkStop?.call();
+      throw StateError('Thumbnail load was cancelled');
+    }
     try {
+      checkStop?.call();
       return await task();
     } finally {
       _release();
     }
   }
 
-  Future<void> _acquire() {
+  Future<bool> _acquire(Future<void>? cancelSignal) {
     if (_active < maxConcurrent) {
       _active++;
-      return Future.value();
+      return Future.value(true);
     }
-    final completer = Completer<void>();
-    _waiters.add(completer);
-    return completer.future;
+    final waiter = Completer<bool>();
+    _waiters.add(waiter);
+    cancelSignal?.then((_) {
+      if (_waiters.remove(waiter)) waiter.complete(false);
+    });
+    return waiter.future;
   }
 
   void _release() {
     if (_waiters.isNotEmpty) {
-      _waiters.removeFirst().complete();
+      _waiters.removeFirst().complete(true);
       return;
     }
     _active--;

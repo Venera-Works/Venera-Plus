@@ -20,7 +20,9 @@ class HistoryImageProvider
   @override
   Future<Uint8List> load(chunkEvents, checkStop) async {
     var url = history.cover;
-    if (!url.contains('/')) {
+    if (!url.contains('/') &&
+        !url.startsWith('remote-zip:') &&
+        !url.startsWith('remote-work-image:')) {
       var localComic = LocalManager().find(history.id, history.type);
       if (localComic != null) {
         return localComic.coverFile.readAsBytes();
