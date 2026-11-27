@@ -30,7 +30,7 @@ English: [dependency_audit.en.md](dependency_audit.en.md) · [治理规则](depe
 
 源码与补丁迁至 [Venera-Works/Venera-flutter_qjs](https://github.com/Venera-Works/Venera-flutter_qjs)，本地工作副本为 `cache/Venera-flutter_qjs`，原 `packages/flutter_qjs` 已移除。该仓库由本项目所属组织维护，是其他保留第三方来源依赖之外的明确例外。
 
-保留此前回移的 TypedData 引用扫描优化、QuickJS-NG 核心补丁和 Apple 版本文件路径修正，来源及完整提交见独立仓库的 [UPSTREAM.md](https://github.com/Venera-Works/Venera-flutter_qjs/blob/8e7db82c57f2c780eebd4c7c6903d3aa41a65e2e/UPSTREAM.md)。应用通过 Git 依赖固定 `8e7db82c57f2c780eebd4c7c6903d3aa41a65e2e`，声明、锁文件和来源清单同步。
+保留此前回移的 TypedData 引用扫描优化、QuickJS-NG 核心补丁和 Apple 版本文件路径修正，来源及完整提交见独立仓库的 [UPSTREAM.md](https://github.com/Venera-Works/Venera-flutter_qjs/blob/6db68c29e7c26c81502c4b4c95275a2644770c2a/UPSTREAM.md)。应用通过 Git 依赖固定 `6db68c29e7c26c81502c4b4c95275a2644770c2a`，声明、锁文件和来源清单同步。
 
 ## SAF 来源更新（2026-11-12）
 

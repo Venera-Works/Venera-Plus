@@ -18,7 +18,7 @@ dependencies:
   flutter_qjs:
     git:
       url: https://github.com/Venera-Works/Venera-flutter_qjs
-      ref: 8e7db82c57f2c780eebd4c7c6903d3aa41a65e2e
+      ref: 6db68c29e7c26c81502c4b4c95275a2644770c2a
   crypto: ^3.0.8
   dio: ^5.11.1
   html: ^0.15.7

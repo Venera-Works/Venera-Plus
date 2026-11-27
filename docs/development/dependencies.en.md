@@ -29,7 +29,7 @@ This document records governance rules for VeneraPlus's direct dependencies, esp
 
 | Dependency | Commit | Upstream / license | Immediate reason for retaining the customized repository |
 |---|---|---|---|
-| `flutter_qjs` | `Venera-Works/Venera-flutter_qjs@8e7db82c57f2c780eebd4c7c6903d3aa41a65e2e` | `venera-app/flutter_qjs` / MIT | Venera-Works separately maintains the TypedData optimization and QuickJS-NG core patches, preserving the API, FFI ABI, and platform build entry points |
+| `flutter_qjs` | `Venera-Works/Venera-flutter_qjs@6db68c29e7c26c81502c4b4c95275a2644770c2a` | `venera-app/flutter_qjs` / MIT | Venera-Works separately maintains the TypedData optimization and QuickJS-NG core patches, preserving the API, FFI ABI, and platform build entry points |
 | `photo_view` | `a1255d1b5945aad4b7323303ec2ecdf0c90ffc4c` | Fork upstream not recorded / MIT | The pinned revision changes position adjustment in `PhotoViewCoreState`; reader zoom and gestures rely on that behavior |
 | `scrollable_positioned_list` | `09e756b1f1b04e6298318d99ec20a787fb360f59` | `google/flutter.widgets` / BSD-3-Clause | The pinned revision adds `scrollControllerCallback` and `scrollBehavior`, used by continuous-reader positioning |
 | `desktop_webview_window` | `7801fc582ecf5a7351632887891ecf309a7b2583` | `wgh136/flutter_desktop_webview` / not declared | The pinned revision fixes Windows ARM64 builds; replacement requires verification on every desktop platform |
@@ -42,7 +42,7 @@ This document records governance rules for VeneraPlus's direct dependencies, esp
 The table records the reasons for retaining customized dependencies based on pinned source and commit messages. The full machine-readable inventory is in [git_dependencies.json](git_dependencies.json), and detailed replacement audits and responsibility boundaries are documented in [Git Dependency Audit](dependency_audit.en.md). Every Git dependency update must document the upstream repository, comparison range, all custom changes, upstream PR if any, security impact, and rollback path.
 `desktop_webview_window` does not declare a license, while `lodepng_flutter`, `flutter_saf`, and `flutter_7zip` still contain placeholder license files. These are known supply-chain debts. Confirm licensing with the maintainers before upgrading; if it cannot be confirmed, migrate to an upstream revision or replacement with clear licensing.
 
-Source and patches for `flutter_qjs` are maintained in [Venera-flutter_qjs](https://github.com/Venera-Works/Venera-flutter_qjs); its pinned [UPSTREAM.md](https://github.com/Venera-Works/Venera-flutter_qjs/blob/8e7db82c57f2c780eebd4c7c6903d3aa41a65e2e/UPSTREAM.md) records the baseline and backports. The application declaration, lockfile, and inventory pin the same full Git commit. Publish a verified commit in that repository before updating those three application records together.
+Source and patches for `flutter_qjs` are maintained in [Venera-flutter_qjs](https://github.com/Venera-Works/Venera-flutter_qjs); its pinned [UPSTREAM.md](https://github.com/Venera-Works/Venera-flutter_qjs/blob/6db68c29e7c26c81502c4b4c95275a2644770c2a/UPSTREAM.md) records the baseline and backports. The application declaration, lockfile, and inventory pin the same full Git commit. Publish a verified commit in that repository before updating those three application records together.
 
 ## Upstreaming Process
 

@@ -30,7 +30,7 @@ The baseline audit date is 2026-09-30; later dependency updates have their own s
 
 Source and patches have moved to [Venera-Works/Venera-flutter_qjs](https://github.com/Venera-Works/Venera-flutter_qjs), with the local checkout at `cache/Venera-flutter_qjs`; `packages/flutter_qjs` has been removed. This organization-maintained repository is an explicit exception to retaining other third-party forks.
 
-The TypedData optimization, QuickJS-NG core backports, and Apple version-file path fix remain; that repository's pinned [UPSTREAM.md](https://github.com/Venera-Works/Venera-flutter_qjs/blob/8e7db82c57f2c780eebd4c7c6903d3aa41a65e2e/UPSTREAM.md) records complete provenance. The application's Git dependency pins `8e7db82c57f2c780eebd4c7c6903d3aa41a65e2e`, matching the lockfile and inventory. 
+The TypedData optimization, QuickJS-NG core backports, and Apple version-file path fix remain; that repository's pinned [UPSTREAM.md](https://github.com/Venera-Works/Venera-flutter_qjs/blob/6db68c29e7c26c81502c4b4c95275a2644770c2a/UPSTREAM.md) records complete provenance. The application's Git dependency pins `6db68c29e7c26c81502c4b4c95275a2644770c2a`, matching the lockfile and inventory.
 
 ## SAF Source Update (2026-11-12)
 

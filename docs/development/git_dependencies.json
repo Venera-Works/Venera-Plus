@@ -4,7 +4,7 @@
     {
       "dependency": "flutter_qjs",
       "url": "https://github.com/Venera-Works/Venera-flutter_qjs",
-      "commit": "8e7db82c57f2c780eebd4c7c6903d3aa41a65e2e",
+      "commit": "6db68c29e7c26c81502c4b4c95275a2644770c2a",
       "status": "maintained-fork",
       "reason": "由 Venera-Works 独立维护 QuickJS-NG 平台适配、TypedData 引用处理及核心补丁；应用固定经过验证的完整提交。",
       "packages": {
