@@ -16,10 +16,15 @@ void main() {
   test('presets keep independent API, image and Token addresses', () {
     final lat = bangumiPresetServers[1];
     final anibt = bangumiPresetServers[2];
+    final bgmLat = bangumiPresetServers[3];
     expect(lat.tokenUrl, 'https://next.bangumi.lat/demo/access-token');
     expect(anibt.apiUrl, 'https://bgmapi.anibt.net');
     expect(anibt.imageUrl, 'https://bgmimg.anibt.net');
     expect(anibt.tokenUrl, bangumiOfficialServer.tokenUrl);
+    expect(bgmLat.name, 'bgm.lat');
+    expect(bgmLat.apiUrl, 'https://api.bgm.lat');
+    expect(bgmLat.imageUrl, 'https://lain.bgm.lat');
+    expect(bgmLat.tokenUrl, 'https://next.bgm.lat/demo/access-token');
   });
 
   test('custom addresses preserve proxy paths and default optional fields', () {
@@ -58,6 +63,7 @@ void main() {
         'bgm.tv',
         'bangumi.lat',
         'anibt.net',
+        'bgm.lat',
         'First',
         'Second',
       ]);

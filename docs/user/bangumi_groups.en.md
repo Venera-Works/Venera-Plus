@@ -25,7 +25,7 @@ Previously grouped favorites and histories appear as separate source entries wit
 
 ## Bangumi synchronization
 
-Choose a server from **Settings → Sources and Services → Online Services → Bangumi → Website list**. The default is the official `bgm.tv` service; `bangumi.lat` and `anibt.net` mirrors are also included. The list shows a name or domain, with separate stored API, image proxy, and Access Token page addresses rather than inferred subdomains.
+Choose a server from **Settings → Sources and Services → Online Services → Bangumi → Website list**. The default is the official `bgm.tv` service. The `bangumi.lat`, `anibt.net`, and `bgm.lat` mirrors are also included. The list shows a name or domain, with separate stored API, image proxy, and Access Token page addresses rather than inferred subdomains.
 
 Custom entries require the actual API address; `https://` may be omitted. The name, image proxy, and Access Token page are optional. Empty image proxy settings preserve image URLs returned by the API, and an empty Token page uses the official application page. New entries append to the list; select an entry to switch servers. Custom entries can be edited or deleted, and deleting the active entry restores the official server. The selected API server receives your Access Token, so choose a service you trust.
 

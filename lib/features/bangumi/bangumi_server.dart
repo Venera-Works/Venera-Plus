@@ -23,6 +23,12 @@ const bangumiPresetServers = [
     apiUrl: 'https://bgmapi.anibt.net',
     imageUrl: 'https://bgmimg.anibt.net',
   ),
+  BangumiServer(
+    name: 'bgm.lat',
+    apiUrl: 'https://api.bgm.lat',
+    imageUrl: 'https://lain.bgm.lat',
+    tokenUrl: 'https://next.bgm.lat/demo/access-token',
+  ),
 ];
 
 String? normalizeBangumiUrl(String input) {
