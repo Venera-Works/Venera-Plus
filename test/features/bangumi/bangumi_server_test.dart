@@ -14,14 +14,12 @@ void main() {
   });
 
   test('presets keep independent API, image and Token addresses', () {
-    final lat = bangumiPresetServers[1];
-    final anibt = bangumiPresetServers[2];
-    final bgmLat = bangumiPresetServers[3];
-    expect(lat.tokenUrl, 'https://next.bangumi.lat/demo/access-token');
-    expect(anibt.apiUrl, 'https://bgmapi.anibt.net');
-    expect(anibt.imageUrl, 'https://bgmimg.anibt.net');
-    expect(anibt.tokenUrl, bangumiOfficialServer.tokenUrl);
-    expect(bgmLat.name, 'bgm.lat');
+    expect(bangumiPresetServers.map((server) => server.name), [
+      'bgm.tv',
+      'bgm.lat',
+    ]);
+    expect(bangumiPresetServers.first, same(bangumiOfficialServer));
+    final bgmLat = bangumiPresetServers[1];
     expect(bgmLat.apiUrl, 'https://api.bgm.lat');
     expect(bgmLat.imageUrl, 'https://lain.bgm.lat');
     expect(bgmLat.tokenUrl, 'https://next.bgm.lat/demo/access-token');
@@ -61,8 +59,6 @@ void main() {
       ];
       expect(bangumiServers.map((server) => server.name), [
         'bgm.tv',
-        'bangumi.lat',
-        'anibt.net',
         'bgm.lat',
         'First',
         'Second',
@@ -73,6 +69,34 @@ void main() {
       expect(currentBangumiServer, same(bangumiOfficialServer));
     },
   );
+
+  test('legacy bangumi.lat selections resolve without rewriting settings', () {
+    for (final selected in [
+      'https://api.bangumi.lat',
+      'https://API.BANGUMI.LAT/',
+    ]) {
+      appdata.settings['bangumiServer'] = selected;
+      expect(currentBangumiServer, same(bangumiPresetServers[1]));
+      expect(appdata.settings['bangumiServer'], selected);
+    }
+  });
+
+  test('a removed anibt.net selection falls back to the official server', () {
+    appdata.settings['bangumiServer'] = 'https://bgmapi.anibt.net';
+    expect(currentBangumiServer, same(bangumiOfficialServer));
+  });
+
+  test('a custom bangumi.lat server takes priority over migration', () {
+    const custom = {
+      'name': 'Custom Bangumi mirror',
+      'apiUrl': 'https://api.bangumi.lat',
+      'imageUrl': 'https://images.example.com',
+      'tokenUrl': 'https://accounts.example.com/token',
+    };
+    appdata.settings['bangumiCustomServers'] = [custom];
+    appdata.settings['bangumiServer'] = custom['apiUrl'];
+    expect(currentBangumiServer.toJson(), custom);
+  });
 
   test(
     'image override preserves path and query and does not apply its prefix twice',

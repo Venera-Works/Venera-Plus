@@ -13,23 +13,16 @@ const bangumiOfficialServer = BangumiServer(
 const bangumiPresetServers = [
   bangumiOfficialServer,
   BangumiServer(
-    name: 'bangumi.lat',
-    apiUrl: 'https://api.bangumi.lat',
-    imageUrl: 'https://lain.bangumi.lat',
-    tokenUrl: 'https://next.bangumi.lat/demo/access-token',
-  ),
-  BangumiServer(
-    name: 'anibt.net',
-    apiUrl: 'https://bgmapi.anibt.net',
-    imageUrl: 'https://bgmimg.anibt.net',
-  ),
-  BangumiServer(
     name: 'bgm.lat',
     apiUrl: 'https://api.bgm.lat',
     imageUrl: 'https://lain.bgm.lat',
     tokenUrl: 'https://next.bgm.lat/demo/access-token',
   ),
 ];
+
+const _legacyBangumiServerApiMigrations = {
+  'https://api.bangumi.lat': 'https://api.bgm.lat',
+};
 
 String? normalizeBangumiUrl(String input) {
   final value = input.trim();
@@ -133,9 +126,17 @@ List<BangumiServer> get bangumiServers {
 }
 
 BangumiServer get currentBangumiServer {
-  final selected = appdata.settings['bangumiServer'];
-  return bangumiServers.firstWhere(
-    (server) => server.apiUrl == selected,
+  final raw = appdata.settings['bangumiServer'];
+  if (raw is! String) return bangumiOfficialServer;
+  final selected = normalizeBangumiUrl(raw) ?? raw;
+  final servers = bangumiServers;
+  for (final server in servers) {
+    if (server.apiUrl == selected) return server;
+  }
+  final migrated = _legacyBangumiServerApiMigrations[selected];
+  if (migrated == null) return bangumiOfficialServer;
+  return servers.firstWhere(
+    (server) => server.apiUrl == migrated,
     orElse: () => bangumiOfficialServer,
   );
 }

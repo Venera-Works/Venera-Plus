@@ -433,7 +433,7 @@ class _BangumiServerEditorState extends State<_BangumiServerEditor> {
                 autocorrect: false,
                 decoration: decoration.copyWith(
                   labelText: 'API address'.tl,
-                  hintText: 'bgmapi.anibt.net',
+                  hintText: 'api.example.com',
                 ),
               ),
               const SizedBox(height: 12),

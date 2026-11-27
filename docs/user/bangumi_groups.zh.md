@@ -25,7 +25,7 @@ English version: [bangumi_groups.en.md](bangumi_groups.en.md)
 
 ## Bangumi 同步
 
-在“设置 → 来源与服务 → 在线服务 → Bangumi”的“网址列表”中选择服务地址，默认使用官方 `bgm.tv`，并预置 `bangumi.lat`、`anibt.net` 与 `bgm.lat` 镜像。列表显示名称或主域名，各站点分别保存实际 API、图片反代和 Token 页面地址，不按子域名规则猜测。
+在“设置 → 来源与服务 → 在线服务 → Bangumi”的“网址列表”中选择服务地址，默认使用官方 `bgm.tv`，仅预置 `bgm.lat` 镜像。旧配置中已选中的 `bangumi.lat` 会自动迁移至 `bgm.lat`。列表显示名称或主域名，各站点分别保存实际 API、图片反代和 Token 页面地址，不按子域名规则猜测。
 
 添加自定义地址时填写实际 API 地址，可省略 `https://`；名称、图片反代和 Token 申请页面可选。图片反代留空时沿用 API 返回的图片地址，Token 页面留空时打开官方申请页面。保存后追加到列表末尾，点击该项即可切换；自定义项支持编辑和删除，删除当前使用项会恢复官方地址。所选 API 服务器会接收账号的 Access Token，请选择自己信任的服务。
 
