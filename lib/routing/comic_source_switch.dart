@@ -17,7 +17,11 @@ Future<ComicDetails?> switchComicSource(
   required String title,
 }) async {
   final selected = await context.to<ComicDetails>(
-    () => _SourceSearchPage(title: title),
+    () => _SourceSearchPage(
+      title: title,
+      currentId: id,
+      currentSourceKey: sourceKey,
+    ),
   );
   if (selected == null ||
       (selected.id == id && selected.sourceKey == sourceKey) ||
@@ -66,9 +70,15 @@ Future<ComicDetails?> switchComicSource(
 }
 
 class _SourceSearchPage extends StatefulWidget {
-  const _SourceSearchPage({required this.title});
+  const _SourceSearchPage({
+    required this.title,
+    required this.currentId,
+    required this.currentSourceKey,
+  });
 
   final String title;
+  final String currentId;
+  final String currentSourceKey;
 
   @override
   State<_SourceSearchPage> createState() => _SourceSearchPageState();
@@ -83,6 +93,9 @@ class _SourceSearchPageState extends State<_SourceSearchPage> {
         title: comic.title,
         cover: comic.cover,
         selectSource: true,
+        isCurrentSource:
+            comic.id == widget.currentId &&
+            comic.sourceKey == widget.currentSourceKey,
       ),
     );
     if (selected != null && mounted) {

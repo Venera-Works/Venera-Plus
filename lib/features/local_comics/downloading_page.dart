@@ -82,6 +82,7 @@ class _DownloadingPageState extends State<DownloadingPage> {
     int speed = 0;
     var first = LocalManager().currentDownloadTask;
     speed = first?.speed ?? 0;
+    final isError = first?.isError == true;
     return Container(
       height: 48,
       decoration: BoxDecoration(
@@ -94,24 +95,24 @@ class _DownloadingPageState extends State<DownloadingPage> {
       ),
       child: Row(
         children: [
-          if (first?.isPaused == true)
-            Text("Paused".tl, style: ts.s18.bold)
-          else if (first?.isError == true)
+          if (isError)
             Text("Error".tl, style: ts.s18.bold)
+          else if (first?.isPaused == true)
+            Text("Paused".tl, style: ts.s18.bold)
           else
             Text("${bytesToReadableString(speed)}/s", style: ts.s18.bold),
           const Spacer(),
-          if (first?.isPaused == true || first?.isError == true)
+          if (first != null && (isError || first.isPaused))
             OutlinedButton(
               child: Row(
                 children: [
-                  const Icon(Icons.play_arrow, size: 18),
+                  Icon(isError ? Icons.refresh : Icons.play_arrow, size: 18),
                   const SizedBox(width: 4),
-                  Text("Start".tl),
+                  Text(isError ? "Retry".tl : "Start".tl),
                 ],
               ),
               onPressed: () {
-                LocalManager().resumeTask(first!);
+                LocalManager().resumeTask(first);
               },
             )
           else if (first != null)

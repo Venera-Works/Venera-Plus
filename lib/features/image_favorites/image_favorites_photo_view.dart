@@ -15,6 +15,9 @@ import 'package:venera_plus/foundation/file_type.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 
+Object imageFavoriteHeroTag(ImageFavorite image) =>
+    (image.sourceKey, image.id, image.eid, image.ep, image.page);
+
 Future<void> confirmImageFavoriteDeletion(
   BuildContext context,
   int count,
@@ -111,81 +114,79 @@ class _ImageFavoritesPhotoViewState extends State<ImageFavoritesPhotoView> {
           isAppBarShow = !isAppBarShow;
         });
       },
-      heroAttributes: PhotoViewHeroAttributes(tag: image),
+      heroAttributes: PhotoViewHeroAttributes(tag: imageFavoriteHeroTag(image)),
     );
+  }
+
+  void _onPointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent ||
+        !controller.hasClients ||
+        HardwareKeyboard.instance.isControlPressed) {
+      return;
+    }
+    GestureBinding.instance.pointerSignalResolver.register(event, (_) {
+      final delta = event.scrollDelta;
+      if (delta.dy == 0 || delta.dy.abs() < delta.dx.abs()) return;
+
+      final page = controller.page;
+      if (page == null) return;
+      const duration = Duration(milliseconds: 180);
+      if (delta.dy > 0 && page < images.length - 1) {
+        controller.nextPage(duration: duration, curve: Curves.ease);
+      } else if (delta.dy < 0 && page > 0) {
+        controller.previousPage(duration: duration, curve: Curves.ease);
+      }
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    return Listener(
-      onPointerSignal: (event) {
-        if (!controller.hasClients ||
-            HardwareKeyboard.instance.isControlPressed) {
-          return;
-        }
-        if (event is PointerScrollEvent) {
-          final page = controller.page;
-          if (page == null) return;
-          if (event.scrollDelta.dy > 0) {
-            if (page >= images.length - 1) {
-              return;
-            }
-            controller.nextPage(
-              duration: Duration(milliseconds: 180),
-              curve: Curves.ease,
-            );
-          } else {
-            if (page <= 0) {
-              return;
-            }
-            controller.previousPage(
-              duration: Duration(milliseconds: 180),
-              curve: Curves.ease,
-            );
-          }
-        }
-      },
-      child: Stack(
-        children: [
-          Positioned.fill(
-            child: PhotoViewGallery.builder(
-              backgroundDecoration: BoxDecoration(
-                color: context.colorScheme.surface,
-              ),
-              builder: _buildItem,
-              itemCount: images.length,
-              loadingBuilder: (context, event) => Center(
-                child: SizedBox(
-                  width: 20.0,
-                  height: 20.0,
-                  child: CircularProgressIndicator(
-                    backgroundColor: context.colorScheme.surfaceContainerHigh,
-                    value: event == null || event.expectedTotalBytes == null
-                        ? null
-                        : event.cumulativeBytesLoaded /
-                              event.expectedTotalBytes!,
-                  ),
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: PhotoViewGallery.builder(
+            backgroundDecoration: BoxDecoration(
+              color: context.colorScheme.surface,
+            ),
+            builder: _buildItem,
+            itemCount: images.length,
+            loadingBuilder: (context, event) => Center(
+              child: SizedBox(
+                width: 20.0,
+                height: 20.0,
+                child: CircularProgressIndicator(
+                  backgroundColor: context.colorScheme.surfaceContainerHigh,
+                  value: event == null || event.expectedTotalBytes == null
+                      ? null
+                      : event.cumulativeBytesLoaded / event.expectedTotalBytes!,
                 ),
               ),
-              pageController: controller,
-              onPageChanged: (index) {
-                if (index >= images.length) return;
-                setState(() {
-                  currentPage = index;
-                });
-              },
             ),
+            pageController: controller,
+            onPageChanged: (index) {
+              if (index >= images.length) return;
+              setState(() {
+                currentPage = index;
+              });
+            },
           ),
-          buildPageInfo(),
-          AnimatedPositioned(
-            top: isAppBarShow ? 0 : -(context.padding.top + 52),
-            left: 0,
-            right: 0,
-            duration: Duration(milliseconds: 180),
-            child: buildAppBar(),
+        ),
+        buildPageInfo(),
+        AnimatedPositioned(
+          top: isAppBarShow ? 0 : -(context.padding.top + 52),
+          left: 0,
+          right: 0,
+          duration: Duration(milliseconds: 180),
+          child: buildAppBar(),
+        ),
+        // 先于内部 PageView 接收滚轮信号，同时保留下层手势。
+        Positioned.fill(
+          child: Listener(
+            behavior: HitTestBehavior.translucent,
+            onPointerSignal: _onPointerSignal,
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 

@@ -1,12 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:shimmer_animation/shimmer_animation.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/gesture.dart';
 import 'package:venera_plus/components/image.dart';
 import 'package:venera_plus/components/layout.dart';
 import 'package:venera_plus/components/loading.dart';
-import 'package:venera_plus/components/menu.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/features/comic_details/action_button.dart';
@@ -67,6 +65,7 @@ class ComicPage extends StatefulWidget {
     this.title,
     this.heroID,
     this.selectSource = false,
+    this.isCurrentSource = false,
     this.continueReading = false,
     this.initialReaderPage,
   });
@@ -81,6 +80,7 @@ class ComicPage extends StatefulWidget {
 
   final int? heroID;
   final bool selectSource;
+  final bool isCurrentSource;
   final bool continueReading;
 
   /// 外部图库链接指定的阅读页码，从 1 开始。
@@ -255,8 +255,14 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
               child: FilledButton.icon(
                 key: const Key('use-comic-source'),
                 icon: const Icon(Icons.swap_horiz),
-                label: Text('Use this source'.tl),
-                onPressed: () => context.pop(data),
+                label: Text(
+                  widget.isCurrentSource
+                      ? 'Current source'.tl
+                      : 'Use this source'.tl,
+                ),
+                onPressed: widget.isCurrentSource
+                    ? null
+                    : () => context.pop(data),
               ),
             )
           : null,
@@ -708,11 +714,12 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
     }
 
     int i = 0;
+    final enableTranslation =
+        App.locale.languageCode == 'zh' && comicSource.enableTagsTranslate;
 
     Widget buildTag({
       required String text,
-      VoidCallback? onTap,
-      void Function(BuildContext context)? onLongPress,
+      String? namespace,
       bool isTitle = false,
     }) {
       Color color;
@@ -737,8 +744,14 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
       final borderRadius = BorderRadius.circular(12);
 
       const padding = EdgeInsets.symmetric(horizontal: 16, vertical: 6);
+      final label = namespace != null && enableTranslation
+          ? TagsTranslation.translationTagWithNamespace(
+              text,
+              namespace.toLowerCase(),
+            )
+          : text;
 
-      if (onTap != null) {
+      if (namespace != null && !_isReadOnlyComicInfoNamespace(namespace)) {
         return Builder(
           builder: (tagContext) {
             return Material(
@@ -746,33 +759,15 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
               borderRadius: borderRadius,
               child: ClickInkWell(
                 borderRadius: borderRadius,
-                onTap: onTap,
-                onLongPress: () {
-                  if (onLongPress != null) {
-                    onLongPress(tagContext);
-                  } else {
-                    Clipboard.setData(ClipboardData(text: text));
-                    context.showMessage(message: "Copied".tl);
-                  }
-                },
-                onSecondaryTapDown: (details) {
-                  showMenuX(context, details.globalPosition, [
-                    MenuEntry(
-                      icon: Icons.remove_red_eye,
-                      text: "View".tl,
-                      onClick: onTap,
-                    ),
-                    MenuEntry(
-                      icon: Icons.copy,
-                      text: "Copy".tl,
-                      onClick: () {
-                        Clipboard.setData(ClipboardData(text: text));
-                        context.showMessage(message: "Copied".tl);
-                      },
-                    ),
-                  ]);
-                },
-                child: Text(text).padding(padding),
+                onTap: () => onTapTag(text, namespace),
+                onLongPress: () => showTagMenu(text, namespace, tagContext),
+                onSecondaryTapDown: (details) => showTagMenu(
+                  text,
+                  namespace,
+                  tagContext,
+                  location: details.globalPosition,
+                ),
+                child: Text(label).padding(padding),
               ),
             );
           },
@@ -780,7 +775,7 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
       } else {
         return Container(
           decoration: BoxDecoration(color: color, borderRadius: borderRadius),
-          child: Text(text).padding(padding),
+          child: Text(label).padding(padding),
         );
       }
     }
@@ -834,9 +829,6 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
       ).paddingHorizontal(16).paddingBottom(8);
     }
 
-    bool enableTranslation =
-        App.locale.languageCode == 'zh' && comicSource.enableTagsTranslate;
-
     return SliverLazyToBoxAdapter(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -859,22 +851,7 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
               children: [
                 if (e.value.isNotEmpty)
                   buildTag(text: e.key.ts(comicSource.key), isTitle: true),
-                for (var tag in e.value)
-                  buildTag(
-                    text: enableTranslation
-                        ? TagsTranslation.translationTagWithNamespace(
-                            tag,
-                            e.key.toLowerCase(),
-                          )
-                        : tag,
-                    onTap: _isReadOnlyComicInfoNamespace(e.key)
-                        ? null
-                        : () => onTapTag(tag, e.key),
-                    onLongPress: _isReadOnlyComicInfoNamespace(e.key)
-                        ? null
-                        : (tagContext) =>
-                              onLongPressTag(tag, e.key, tagContext),
-                  ),
+                for (var tag in e.value) buildTag(text: tag, namespace: e.key),
               ],
             ),
           if (comic.uploader != null)

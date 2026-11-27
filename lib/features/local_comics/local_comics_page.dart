@@ -214,8 +214,9 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
     super.dispose();
   }
 
-  void sort() {
-    showDialog(
+  Future<void> sort() async {
+    var selectedSortType = sortType;
+    final confirmedSortType = await showDialog<LocalSortType>(
       context: context,
       builder: (context) {
         return StatefulBuilder(
@@ -223,10 +224,10 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
             return ContentDialog(
               title: "Sort".tl,
               content: RadioGroup<LocalSortType>(
-                groupValue: sortType,
+                groupValue: selectedSortType,
                 onChanged: (v) {
                   setState(() {
-                    sortType = v ?? sortType;
+                    selectedSortType = v ?? selectedSortType;
                   });
                 },
                 child: Column(
@@ -248,12 +249,7 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
               ),
               actions: [
                 FilledButton(
-                  onPressed: () {
-                    appdata.implicitData["local_sort"] = sortType.value;
-                    appdata.writeImplicitData();
-                    Navigator.pop(context);
-                    update();
-                  },
+                  onPressed: () => Navigator.pop(context, selectedSortType),
                   child: Text("Confirm".tl),
                 ),
               ],
@@ -262,6 +258,11 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
         );
       },
     );
+    if (!mounted || confirmedSortType == null) return;
+    sortType = confirmedSortType;
+    appdata.implicitData["local_sort"] = sortType.value;
+    appdata.writeImplicitData();
+    update();
   }
 
   Widget buildMultiSelectMenu() {

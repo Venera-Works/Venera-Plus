@@ -85,6 +85,9 @@ class _SelectDownloadChapterState extends State<_SelectDownloadChapter> {
 
   @override
   Widget build(BuildContext context) {
+    final hasDownloadableChapters = widget.chapters.any(
+      (chapter) => !widget.downloaded.contains(chapter.id),
+    );
     return Scaffold(
       appBar: Appbar(
         title: Text("Download".tl),
@@ -119,6 +122,11 @@ class _SelectDownloadChapterState extends State<_SelectDownloadChapter> {
               },
             ),
           ),
+          if (!hasDownloadableChapters)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Text("All chapters downloaded".tl),
+            ),
           Container(
             height: 50,
             decoration: BoxDecoration(
@@ -131,16 +139,18 @@ class _SelectDownloadChapterState extends State<_SelectDownloadChapter> {
                 const SizedBox(width: 16),
                 Expanded(
                   child: TextButton(
-                    onPressed: () {
-                      widget.finishSelect(
-                        {
-                          for (final chapter in widget.chapters)
-                            if (!widget.downloaded.contains(chapter.id))
-                              chapter.id,
-                        }.toList(),
-                      );
-                      context.pop();
-                    },
+                    onPressed: hasDownloadableChapters
+                        ? () {
+                            widget.finishSelect(
+                              {
+                                for (final chapter in widget.chapters)
+                                  if (!widget.downloaded.contains(chapter.id))
+                                    chapter.id,
+                              }.toList(),
+                            );
+                            context.pop();
+                          }
+                        : null,
                     child: Text("Download All".tl),
                   ),
                 ),

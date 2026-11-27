@@ -213,6 +213,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
             min: 1,
             max: 5,
             onChanged: () {
+              setState(() {});
               widget.onChanged?.call("readerScreenPicNumberForPortrait");
             },
             comicId: isEnabledSpecificSettings ? widget.comicId : null,
@@ -293,37 +294,48 @@ class _ReaderSettingsState extends State<ReaderSettings> {
           ),
         ),
         SettingPartTitle(title: 'Controls'.tl, icon: Icons.touch_app_outlined),
-        SwitchSetting(
-          title: "Tap to turn Pages".tl,
-          settingKey: "enableTapToTurnPages",
-          onChanged: () {
-            widget.onChanged?.call("enableTapToTurnPages");
+        ListenableBuilder(
+          listenable: appdata.settings,
+          builder: (context, _) {
+            final tapToTurnPages = settingValue('enableTapToTurnPages') == true;
+            final oneHandedMode = settingValue('oneHandedMode') == true;
+            return SliverMainAxisGroup(
+              slivers: [
+                SwitchSetting(
+                  title: "Tap to turn Pages".tl,
+                  settingKey: "enableTapToTurnPages",
+                  onChanged: () =>
+                      widget.onChanged?.call('enableTapToTurnPages'),
+                  comicId: isEnabledSpecificSettings ? comicId : null,
+                  comicSource: isEnabledSpecificSettings ? sourceKey : null,
+                  useDeviceSettings: useDeviceSpecificSettings,
+                ).toSliver(),
+                SwitchSetting(
+                  title: "Reverse tap to turn Pages".tl,
+                  settingKey: "reverseTapToTurnPages",
+                  enabled: tapToTurnPages && !oneHandedMode,
+                  onChanged: () =>
+                      widget.onChanged?.call('reverseTapToTurnPages'),
+                  comicId: isEnabledSpecificSettings ? comicId : null,
+                  comicSource: isEnabledSpecificSettings ? sourceKey : null,
+                  useDeviceSettings: useDeviceSpecificSettings,
+                ).toSliver(),
+                SwitchSetting(
+                  title: "One-handed mode".tl,
+                  subtitle:
+                      'Tap the edges to go to the next page. Tap the center to toggle the toolbar.'
+                          .tl,
+                  settingKey: "oneHandedMode",
+                  enabled: tapToTurnPages,
+                  onChanged: () => widget.onChanged?.call('oneHandedMode'),
+                  comicId: isEnabledSpecificSettings ? comicId : null,
+                  comicSource: isEnabledSpecificSettings ? sourceKey : null,
+                  useDeviceSettings: useDeviceSpecificSettings,
+                ).toSliver(),
+              ],
+            );
           },
-          comicId: isEnabledSpecificSettings ? widget.comicId : null,
-          comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
-          useDeviceSettings: useDeviceSpecificSettings,
-        ).toSliver(),
-        SwitchSetting(
-          title: "Reverse tap to turn Pages".tl,
-          settingKey: "reverseTapToTurnPages",
-          onChanged: () {
-            widget.onChanged?.call("reverseTapToTurnPages");
-          },
-          comicId: isEnabledSpecificSettings ? widget.comicId : null,
-          comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
-          useDeviceSettings: useDeviceSpecificSettings,
-        ).toSliver(),
-        SwitchSetting(
-          title: "One-handed mode".tl,
-          subtitle: "Tap anywhere for next page".tl,
-          settingKey: "oneHandedMode",
-          onChanged: () {
-            widget.onChanged?.call("oneHandedMode");
-          },
-          comicId: isEnabledSpecificSettings ? widget.comicId : null,
-          comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
-          useDeviceSettings: useDeviceSpecificSettings,
-        ).toSliver(),
+        ),
         SwitchSetting(
           title: "Page animation".tl,
           settingKey: "enablePageAnimation",

@@ -209,11 +209,12 @@ class ImportComic {
 
   Future<bool> ehViewer() =>
       LocalComicStorageGuard.instance.runImport(() async {
-        var dbFile = await selectFile(ext: ['db']);
+        final dbFile = await selectFile(ext: ['db']);
+        if (dbFile == null) return false;
         final picker = DirectoryPicker();
         final comicSrc = await picker.pickDirectory();
         Map<String?, List<LocalComic>> imported = {};
-        if (dbFile == null || comicSrc == null) {
+        if (comicSrc == null) {
           return false;
         }
 

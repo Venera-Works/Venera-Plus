@@ -4,12 +4,10 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/button.dart';
-import 'package:venera_plus/components/layout.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/app_update/app_update.dart';
 import 'package:venera_plus/features/settings/setting_components.dart';
 import 'package:venera_plus/foundation/app.dart';
-import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
@@ -86,18 +84,12 @@ class _AboutSettingsState extends State<AboutSettings> {
         SwitchSetting(
           title: "Check for updates on startup".tl,
           settingKey: "checkUpdateOnStart",
-          onChanged: () {
-            if (mounted) setState(() {});
-          },
         ).toSliver(),
-        SliverAnimatedVisibility(
-          visible: appdata.settings['checkUpdateOnStart'],
-          child: SelectSetting(
-            title: 'Update channel'.tl,
-            settingKey: 'appUpdateChannel',
-            optionTranslation: {'stable': 'Stable'.tl, 'beta': 'Beta'.tl},
-          ),
-        ),
+        SelectSetting(
+          title: 'Update channel'.tl,
+          settingKey: 'appUpdateChannel',
+          optionTranslation: {'stable': 'Stable'.tl, 'beta': 'Beta'.tl},
+        ).toSliver(),
         SettingPartTitle(title: 'Information'.tl, icon: Icons.info_outline),
         ListTile(
           title: Text('Changelog'.tl),

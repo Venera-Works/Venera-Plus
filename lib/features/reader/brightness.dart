@@ -125,6 +125,11 @@ class ReaderBrightnessBar extends StatelessWidget {
     required this.onBrightnessChangeEnd,
   });
 
+  static const _bottomPadding = 4.0;
+
+  // 为滑轨保留 96 个逻辑像素，并留出开关的触控高度。
+  static const minHeight = 96.0 + kMinInteractiveDimension + _bottomPadding;
+
   final bool enabled;
   final Object? brightness;
   final ValueChanged<bool> onEnabledChanged;
@@ -210,7 +215,7 @@ class ReaderBrightnessBar extends StatelessWidget {
                   selectedIcon: const Icon(Icons.brightness_4),
                   onPressed: () => onEnabledChanged(!enabled),
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: _bottomPadding),
               ],
             ),
           ],

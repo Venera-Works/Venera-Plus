@@ -17,6 +17,7 @@ import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/file_interaction.dart';
 import 'package:venera_plus/foundation/file_type.dart';
 import 'package:venera_plus/foundation/global_state.dart';
+import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/translations.dart';
 
 class ReaderGestureDetector extends StatefulWidget {
@@ -666,9 +667,17 @@ class ReaderGestureDetectorState
 
   Future<void> _copyImage(ReaderImageReference ref) async {
     final image = await _loadImageBytesFromReference(ref);
-    if (image != null) {
+    if (image == null) return;
+    try {
       await writeImageToClipboard(image);
+    } catch (e, stack) {
+      Log.error("Reader", e, stack);
+      if (mounted) {
+        context.showMessage(message: "Failed to copy image".tl);
+      }
+      return;
     }
+    if (mounted) context.showMessage(message: "Copied".tl);
   }
 
   Future<void> _saveImage(ReaderImageReference ref, {Uint8List? bytes}) async {
@@ -685,7 +694,8 @@ class ReaderGestureDetectorState
       filetype.ext,
     );
     try {
-      await saveFile(filename: filename, data: image);
+      final saved = await saveFile(filename: filename, data: image);
+      if (saved && mounted) context.showMessage(message: "Saved".tl);
     } catch (e) {
       if (mounted) context.showMessage(message: e.toString());
     }

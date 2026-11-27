@@ -610,7 +610,7 @@ class _WebdavSettingState extends State<_WebdavSetting> {
     if (result.error) {
       context.showMessage(message: result.errorMessage!.tl);
     } else {
-      context.showMessage(message: "Connection successful".tl);
+      context.showMessage(message: 'Directory listing succeeded'.tl);
     }
   }
 }
@@ -755,7 +755,7 @@ class _BackupWebdavSettingState extends State<_BackupWebdavSetting> {
     if (result.error) {
       context.showMessage(message: result.errorMessage!.tl);
     } else {
-      context.showMessage(message: "Connection successful".tl);
+      context.showMessage(message: 'Directory listing succeeded'.tl);
     }
   }
 

@@ -91,9 +91,13 @@ class _ReadingStatsPageState extends State<ReadingStatsPage> {
                 return LayoutBuilder(
                   builder: (context, constraints) {
                     final compact = constraints.maxWidth < 520;
-                    final compactSubtitle = history.subtitle.isEmpty
-                        ? duration
-                        : '${history.subtitle} - $duration';
+                    final subtitle = history.subtitle.isEmpty
+                        ? null
+                        : Text(
+                            history.subtitle,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          );
                     return ListTile(
                       leading: SizedBox(
                         width: 32,
@@ -108,22 +112,16 @@ class _ReadingStatsPageState extends State<ReadingStatsPage> {
                       ),
                       title: Text(
                         history.title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
+                        maxLines: compact ? null : 2,
+                        overflow: compact ? null : TextOverflow.ellipsis,
                       ),
                       subtitle: compact
-                          ? Text(
-                              compactSubtitle,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
+                          ? Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [?subtitle, Text(duration)],
                             )
-                          : history.subtitle.isEmpty
-                          ? null
-                          : Text(
-                              history.subtitle,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
+                          : subtitle,
                       trailing: compact
                           ? null
                           : Text(

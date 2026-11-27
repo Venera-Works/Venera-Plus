@@ -152,11 +152,14 @@ class SourceCategoryViewState extends AutomaticGlobalState<SourceCategoryView>
       padding: const EdgeInsets.fromLTRB(16, 10, 5, 10),
       child: Row(
         children: [
-          Text(
-            title.tl,
-            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w500),
+          Expanded(
+            child: Text(
+              title.tl,
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w500),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
-          const Spacer(),
           IconButton(onPressed: onRefresh, icon: const Icon(Icons.refresh)),
         ],
       ),

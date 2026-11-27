@@ -680,28 +680,71 @@ abstract mixin class ComicPageActions {
     return comicSource.handleClickTagEvent?.call(namespace, tag);
   }
 
-  void onLongPressTag(String tag, String namespace, BuildContext tagContext) {
-    final renderBox = tagContext.findRenderObject() as RenderBox;
-    final offset = renderBox.localToGlobal(Offset.zero);
-    final shortcut = searchTargetForTag(tag, namespace) == null
-        ? null
-        : SearchShortcut(
-            kind: isAuthorNamespace(namespace)
-                ? SearchShortcutKind.author
-                : SearchShortcutKind.tag,
-            sourceKey: comic.sourceKey,
-            namespace: namespace,
-            value: tag,
-          );
-    showSearchShortcutMenu(
-      context: tagContext,
-      location: Offset(
+  void showTagMenu(
+    String tag,
+    String namespace,
+    BuildContext tagContext, {
+    Offset? location,
+  }) {
+    if (location == null) {
+      final renderBox = tagContext.findRenderObject() as RenderBox;
+      final offset = renderBox.localToGlobal(Offset.zero);
+      location = Offset(
         offset.dx + renderBox.size.width / 2 - 121,
         offset.dy + renderBox.size.height - 8,
+      );
+    }
+
+    final target = searchTargetForTag(tag, namespace);
+    final entries = [
+      if (target != null)
+        MenuEntry(
+          icon: Icons.remove_red_eye,
+          text: 'View'.tl,
+          onClick: () => target.jump(context),
+        ),
+      MenuEntry(
+        icon: Icons.copy,
+        text: 'Copy'.tl,
+        onClick: () {
+          Clipboard.setData(ClipboardData(text: tag));
+          tagContext.showMessage(message: 'Copied'.tl);
+        },
       ),
-      copyText: tag,
-      shortcut: shortcut,
-    );
+    ];
+    if (target != null) {
+      final shortcut = SearchShortcut(
+        kind: isAuthorNamespace(namespace)
+            ? SearchShortcutKind.author
+            : SearchShortcutKind.tag,
+        sourceKey: comic.sourceKey,
+        namespace: namespace,
+        value: tag,
+      );
+      final manager = SearchShortcutManager.instance;
+      final saved = manager.contains(shortcut);
+      entries.add(
+        MenuEntry(
+          icon: saved ? Icons.bookmark_remove : Icons.bookmark_add,
+          text: saved
+              ? (shortcut.isAuthor
+                    ? 'Unfavorite author'.tl
+                    : 'Remove tag shortcut'.tl)
+              : (shortcut.isAuthor
+                    ? 'Favorite author'.tl
+                    : 'Save tag shortcut'.tl),
+          onClick: () {
+            manager.toggle(shortcut);
+            tagContext.showMessage(
+              message: saved
+                  ? 'Search shortcut removed'.tl
+                  : 'Search shortcut saved'.tl,
+            );
+          },
+        ),
+      );
+    }
+    showMenuX(tagContext, location, entries);
   }
 
   void showMoreActions() {

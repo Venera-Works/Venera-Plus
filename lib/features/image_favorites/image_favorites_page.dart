@@ -60,10 +60,7 @@ class _ImageFavoritesPageState extends State<ImageFavoritesPage> {
     }
   }
 
-  void updateImageFavorites() async {
-    comics = searchMode
-        ? ImageFavoriteManager().search(keyword)
-        : ImageFavoriteManager().getAll();
+  void updateImageFavorites() {
     sortImageFavorites();
     update();
   }
@@ -306,19 +303,31 @@ class _ImageFavoritesPageState extends State<ImageFavoritesPage> {
                 ),
             ],
           ),
-        SliverList(
-          delegate: SliverChildBuilderDelegate((context, index) {
-            final comic = comics[index];
-            return ImageFavoritesItem(
-              key: ValueKey((comic.sourceKey, comic.id)),
-              imageFavoritesComic: comic,
-              selectedImageFavorites: selectedImageFavorites,
-              addSelected: addSelected,
-              selectImages: selectImages,
-              multiSelectMode: multiSelectMode,
-            );
-          }, childCount: comics.length),
-        ),
+        if (comics.isEmpty)
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: Center(
+              child: Text(
+                ImageFavoriteManager().length == 0
+                    ? 'No image favorites'.tl
+                    : 'No matching image favorites'.tl,
+              ),
+            ),
+          )
+        else
+          SliverList(
+            delegate: SliverChildBuilderDelegate((context, index) {
+              final comic = comics[index];
+              return ImageFavoritesItem(
+                key: ValueKey((comic.sourceKey, comic.id)),
+                imageFavoritesComic: comic,
+                selectedImageFavorites: selectedImageFavorites,
+                addSelected: addSelected,
+                selectImages: selectImages,
+                multiSelectMode: multiSelectMode,
+              );
+            }, childCount: comics.length),
+          ),
         SliverPadding(padding: EdgeInsets.only(top: context.padding.bottom)),
       ],
     );

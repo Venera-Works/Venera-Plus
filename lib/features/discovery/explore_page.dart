@@ -1755,14 +1755,17 @@ Iterable<Widget> _buildExplorePagePart(
           padding: const EdgeInsets.fromLTRB(16, 10, 5, 10),
           child: Row(
             children: [
-              Text(
-                part.title,
-                style: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w500,
+              Expanded(
+                child: Text(
+                  part.title,
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w500,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
-              const Spacer(),
               if (part.viewMore != null)
                 TextButton(
                   onPressed: () {

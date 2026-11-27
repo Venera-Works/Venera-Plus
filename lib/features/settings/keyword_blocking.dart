@@ -85,17 +85,76 @@ class _KeywordBlockingSettingsState extends State<KeywordBlockingSettings> {
   }
 
   Future<void> _delete(KeywordRule rule) async {
+    final ruleStore = store;
+    final ruleTarget = target;
     try {
-      final removed = await store.removeRule(target, rule);
-      if (mounted) {
-        setState(() {
-          _error = removed
-              ? null
-              : 'The rule changed. Close and reopen the editor.'.tl;
-        });
-      }
+      final removed = await ruleStore.removeRule(ruleTarget, rule);
+      if (!mounted) return;
+      setState(() {
+        _error = removed
+            ? null
+            : 'The rule changed. Close and reopen the editor.'.tl;
+      });
+      if (!removed) return;
+
+      final keyword = rule.keyword.isEmpty ? 'Empty keyword'.tl : rule.keyword;
+      var canUndo = true;
+      showToast(
+        context: context,
+        message: '${'Deleted'.tl} · $keyword',
+        seconds: 5,
+        trailing: StatefulBuilder(
+          builder: (context, setUndoState) => TextButton(
+            style: actionButtonStyle.copyWith(
+              foregroundColor: WidgetStatePropertyAll(
+                Theme.of(context).colorScheme.inversePrimary,
+              ),
+            ),
+            onPressed: canUndo
+                ? () {
+                    if (!canUndo) return;
+                    setUndoState(() => canUndo = false);
+                    _undoDelete(ruleStore, ruleTarget, rule);
+                  }
+                : null,
+            child: Text('Undo'.tl),
+          ),
+        ),
+      );
     } catch (_) {
       if (mounted) setState(() {});
+    }
+  }
+
+  Future<void> _undoDelete(
+    KeywordSettingsStore ruleStore,
+    BlockedKeywordList ruleTarget,
+    KeywordRule rule,
+  ) async {
+    try {
+      if (rule.keyword.trim().isEmpty) {
+        // 旧设置可能含空关键词，撤销时按原值恢复。
+        if (ruleStore.pending > 0) await ruleStore.retry();
+        final rules = ruleStore.rules(ruleTarget);
+        if (!rules.any((item) => item.keyword == rule.keyword)) {
+          rules.add(rule);
+          ruleStore.writeSettings(
+            ruleTarget,
+            [for (final item in rules) item.keyword],
+            {for (final item in rules) item.keyword: ?item.storageOptions},
+          );
+          await ruleStore.retry();
+        }
+        return;
+      }
+      final result = await ruleStore.saveRule(ruleTarget, rule);
+      if (mounted &&
+          result == KeywordRuleSaveResult.duplicate &&
+          ruleStore.ruleFor(ruleTarget, rule.keyword) != rule) {
+        setState(() => _error = 'Keyword already exists'.tl);
+      }
+    } catch (_) {
+      // 保存失败由规则存储显示，可通过重试再次持久化。
     }
   }
 
@@ -182,7 +241,7 @@ class _KeywordBlockingSettingsState extends State<KeywordBlockingSettings> {
                         ),
                         trailing: IconButton(
                           tooltip: 'Delete'.tl,
-                          icon: const Icon(Icons.close),
+                          icon: const Icon(Icons.delete_outline),
                           onPressed: () => _delete(rule),
                         ),
                       );

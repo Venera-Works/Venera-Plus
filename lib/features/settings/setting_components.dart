@@ -23,6 +23,7 @@ class SwitchSetting extends StatefulWidget {
     this.comicId,
     this.comicSource,
     this.useDeviceSettings = false,
+    this.enabled = true,
   });
 
   final String title;
@@ -38,6 +39,8 @@ class SwitchSetting extends StatefulWidget {
   final String? comicSource;
 
   final bool useDeviceSettings;
+
+  final bool enabled;
 
   @override
   State<SwitchSetting> createState() => _SwitchSettingState();
@@ -59,31 +62,34 @@ class _SwitchSettingState extends State<SwitchSetting> {
     assert(value is bool);
 
     return ListTile(
+      enabled: widget.enabled,
       title: Text(widget.title),
       subtitle: widget.subtitle == null ? null : Text(widget.subtitle!),
       trailing: Switch(
         value: value,
-        onChanged: (value) {
-          setState(() {
-            if (widget.comicId != null) {
-              appdata.settings.setReaderSetting(
-                widget.comicId!,
-                widget.comicSource!,
-                widget.settingKey,
-                value,
-              );
-            } else if (widget.useDeviceSettings) {
-              appdata.settings.setDeviceReaderSetting(widget.settingKey, value);
-            } else {
-              appdata.settings[widget.settingKey] = value;
-            }
-          });
-          appdata.saveData().then((_) {
-            widget.onChanged?.call();
-          });
-        },
+        onChanged: widget.enabled ? _changeValue : null,
       ),
     );
+  }
+
+  void _changeValue(bool value) {
+    setState(() {
+      if (widget.comicId != null) {
+        appdata.settings.setReaderSetting(
+          widget.comicId!,
+          widget.comicSource!,
+          widget.settingKey,
+          value,
+        );
+      } else if (widget.useDeviceSettings) {
+        appdata.settings.setDeviceReaderSetting(widget.settingKey, value);
+      } else {
+        appdata.settings[widget.settingKey] = value;
+      }
+    });
+    appdata.saveData().then((_) {
+      widget.onChanged?.call();
+    });
   }
 }
 
@@ -244,7 +250,7 @@ class _DoubleLineSelectSettingsState extends State<_DoubleLineSelectSettings> {
             ),
         ],
       ),
-      subtitle: Text(widget.optionTranslation[value] ?? "None"),
+      subtitle: Text(widget.optionTranslation[value] ?? 'None'.tl),
       trailing: const Icon(Icons.arrow_drop_down),
       onTap: widget.optionTranslation.isEmpty
           ? null
@@ -698,7 +704,9 @@ class _MultiPagesFilterState extends State<MultiPagesFilter> {
     );
 
     return ListTile(
-      title: Text(widget.pages[key] ?? "(Invalid) $key"),
+      title: Text(
+        widget.pages[key] ?? '(Invalid) @page'.tlParams({'page': key}),
+      ),
       key: Key(key),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
@@ -799,6 +807,7 @@ class CallbackSetting extends StatelessWidget {
     required this.callback,
     required this.actionTitle,
     this.subtitle,
+    this.isLoading = false,
   });
 
   final String title;
@@ -809,6 +818,8 @@ class CallbackSetting extends StatelessWidget {
 
   final String actionTitle;
 
+  final bool isLoading;
+
   @override
   Widget build(BuildContext context) {
     return ListTile(
@@ -816,10 +827,13 @@ class CallbackSetting extends StatelessWidget {
       subtitle: subtitle == null ? null : Text(subtitle!),
       trailing: FilledButton.tonal(
         style: actionButtonStyle,
-        onPressed: callback,
-        child: Text(actionTitle),
+        onPressed: isLoading ? null : callback,
+        child: ButtonLoadingContent(
+          isLoading: isLoading,
+          child: Text(actionTitle),
+        ),
       ),
-      onTap: callback,
+      onTap: isLoading ? null : callback,
     );
   }
 }

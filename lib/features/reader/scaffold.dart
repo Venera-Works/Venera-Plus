@@ -255,7 +255,13 @@ class ReaderScaffoldState extends State<ReaderScaffold>
                     child: AnimatedOpacity(
                       duration: const Duration(milliseconds: 180),
                       opacity: brightnessBarVisible ? 1 : 0,
-                      child: buildBrightnessBar(),
+                      child: LayoutBuilder(
+                        builder: (context, constraints) =>
+                            constraints.maxHeight >=
+                                ReaderBrightnessBar.minHeight
+                            ? buildBrightnessBar()
+                            : const SizedBox.shrink(),
+                      ),
                     ),
                   ),
                 ),

@@ -19,8 +19,15 @@ class LogsPage extends StatefulWidget {
 class _LogsPageState extends State<LogsPage> {
   String logLevelToShow = "all";
 
+  String _levelLabel(LogLevel level) => switch (level) {
+    LogLevel.info => 'Information'.tl,
+    LogLevel.warning => 'Warning'.tl,
+    LogLevel.error => 'Error'.tl,
+  };
+
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     var logToShow = logLevelToShow == "all"
         ? Log.logs
         : Log.logs.where((log) => log.level.name == logLevelToShow).toList();
@@ -35,9 +42,11 @@ class _LogsPageState extends State<LogsPage> {
             onSelected: (level) => setState(() => logLevelToShow = level),
             itemBuilder: (context) => [
               PopupMenuItem(value: 'all', child: Text('All'.tl)),
-              PopupMenuItem(value: 'info', child: Text('Information'.tl)),
-              PopupMenuItem(value: 'warning', child: Text('Warning'.tl)),
-              PopupMenuItem(value: 'error', child: Text('Error'.tl)),
+              for (final level in LogLevel.values.reversed)
+                PopupMenuItem(
+                  value: level.name,
+                  child: Text(_levelLabel(level)),
+                ),
             ],
           ),
           PopupMenuButton<VoidCallback>(
@@ -70,7 +79,18 @@ class _LogsPageState extends State<LogsPage> {
         controller: ScrollController(),
         itemCount: logToShow.length,
         itemBuilder: (context, index) {
-          index = logToShow.length - index - 1;
+          final log = logToShow[logToShow.length - index - 1];
+          final (background, foreground) = switch (log.level) {
+            LogLevel.info => (
+              colors.primaryContainer,
+              colors.onPrimaryContainer,
+            ),
+            LogLevel.warning => (
+              colors.tertiaryContainer,
+              colors.onTertiaryContainer,
+            ),
+            LogLevel.error => (colors.errorContainer, colors.onErrorContainer),
+          };
           return Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: SelectionArea(
@@ -79,59 +99,43 @@ class _LogsPageState extends State<LogsPage> {
                 children: [
                   Row(
                     children: [
-                      Container(
-                        decoration: BoxDecoration(
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.surfaceContainerHighest,
-                          borderRadius: const BorderRadius.all(
-                            Radius.circular(16),
+                      Expanded(
+                        child: Align(
+                          alignment: AlignmentDirectional.centerStart,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: colors.surfaceContainerHighest,
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            padding: const EdgeInsets.fromLTRB(5, 0, 5, 1),
+                            child: Text(
+                              log.title,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
-                        ),
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(5, 0, 5, 1),
-                          child: Text(logToShow[index].title),
                         ),
                       ),
                       const SizedBox(width: 3),
                       Container(
                         decoration: BoxDecoration(
-                          color: [
-                            Theme.of(context).colorScheme.error,
-                            Theme.of(context).colorScheme.errorContainer,
-                            Theme.of(context).colorScheme.primaryContainer,
-                          ][logToShow[index].level.index],
-                          borderRadius: const BorderRadius.all(
-                            Radius.circular(16),
-                          ),
+                          color: background,
+                          borderRadius: BorderRadius.circular(16),
                         ),
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(5, 0, 5, 1),
-                          child: Text(
-                            logToShow[index].level.name,
-                            style: TextStyle(
-                              color: logToShow[index].level.index == 0
-                                  ? Colors.white
-                                  : Colors.black,
-                            ),
-                          ),
+                        padding: const EdgeInsets.fromLTRB(5, 0, 5, 1),
+                        child: Text(
+                          _levelLabel(log.level),
+                          style: TextStyle(color: foreground),
                         ),
                       ),
                     ],
                   ),
-                  Text(logToShow[index].content),
-                  Text(
-                    logToShow[index].time.toString().replaceAll(
-                      RegExp(r"\.\w+"),
-                      "",
-                    ),
-                  ),
+                  Text(log.content),
+                  Text(log.time.toString().replaceAll(RegExp(r"\.\w+"), "")),
                   TextButton(
                     style: actionButtonStyle,
                     onPressed: () {
-                      Clipboard.setData(
-                        ClipboardData(text: logToShow[index].content),
-                      );
+                      Clipboard.setData(ClipboardData(text: log.content));
                     },
                     child: Text("Copy".tl),
                   ),

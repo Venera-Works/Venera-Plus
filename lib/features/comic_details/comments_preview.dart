@@ -152,7 +152,14 @@ class _CommentWidget extends StatelessWidget {
                     fit: BoxFit.cover,
                   ),
                 ).paddingRight(8),
-              Text(comment.userName, style: ts.bold),
+              Expanded(
+                child: Text(
+                  comment.userName,
+                  style: ts.bold,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 4),

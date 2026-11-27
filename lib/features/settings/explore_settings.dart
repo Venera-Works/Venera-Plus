@@ -55,9 +55,9 @@ class ExploreSettings extends StatelessWidget {
           settingKey: "autoAddLanguageFilter",
           optionTranslation: {
             'none': "None".tl,
-            'chinese': "Chinese",
-            'english': "English",
-            'japanese': "Japanese",
+            'chinese': 'Chinese'.tl,
+            'english': 'English'.tl,
+            'japanese': 'Japanese'.tl,
           },
         ).toSliver(),
         SettingPartTitle(title: "Blocking".tl, icon: Icons.block),

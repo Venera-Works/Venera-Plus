@@ -388,7 +388,7 @@ class _SideNaviWidget extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final icon = Icon(enabled ? entry.activeIcon : entry.icon);
-    return ClickInkWell(
+    final item = ClickInkWell(
       borderRadius: BorderRadius.circular(12),
       onTap: onTap,
       child: AnimatedContainer(
@@ -405,7 +405,21 @@ class _SideNaviWidget extends StatelessWidget {
               )
             : Align(alignment: Alignment.centerLeft, child: icon),
       ),
-    ).paddingVertical(4);
+    );
+    return (showTitle
+            ? item
+            : Semantics(
+                container: true,
+                label: entry.label,
+                selected: enabled,
+                button: true,
+                child: Tooltip(
+                  message: entry.label,
+                  excludeFromSemantics: true,
+                  child: item,
+                ),
+              ))
+        .paddingVertical(4);
   }
 }
 
@@ -464,20 +478,26 @@ class _SingleBottomNaviWidgetState extends State<_SingleBottomNaviWidget>
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: CurvedAnimation(parent: controller, curve: Curves.ease),
-      builder: (context, child) {
-        return MouseRegion(
-          cursor: SystemMouseCursors.click,
-          onEnter: (details) => setState(() => isHovering = true),
-          onExit: (details) => setState(() => isHovering = false),
-          child: GestureDetector(
-            behavior: HitTestBehavior.translucent,
-            onTap: widget.onTap,
-            child: buildContent(),
-          ),
-        );
-      },
+    return Semantics(
+      container: true,
+      label: widget.entry.label,
+      selected: widget.enabled,
+      button: true,
+      child: AnimatedBuilder(
+        animation: CurvedAnimation(parent: controller, curve: Curves.ease),
+        builder: (context, child) {
+          return MouseRegion(
+            cursor: SystemMouseCursors.click,
+            onEnter: (details) => setState(() => isHovering = true),
+            onExit: (details) => setState(() => isHovering = false),
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onTap: widget.onTap,
+              child: buildContent(),
+            ),
+          );
+        },
+      ),
     );
   }
 

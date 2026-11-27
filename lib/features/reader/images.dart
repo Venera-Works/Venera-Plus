@@ -2681,6 +2681,15 @@ class ContinuousModeState extends State<_ContinuousMode>
       final current = _waterfallIndexOfChapterPage(reader.chapter, reader.page);
       if (current != null) cacheImages(current);
     });
+    final scrollAxis = reader.mode.isTopToBottom
+        ? Axis.vertical
+        : Axis.horizontal;
+    final reverse = reader.mode == ReaderMode.continuousRightToLeft;
+    final scrollDirection = getAxisDirectionFromAxisReverseAndDirectionality(
+      context,
+      scrollAxis,
+      reverse,
+    );
     Widget widget = ScrollablePositionedList.builder(
       initialScrollIndex: _initiallyAtChapterEnd
           ? _flowImageCount + 1
@@ -2698,10 +2707,8 @@ class ContinuousModeState extends State<_ContinuousMode>
       },
       itemCount: _flowItemCount,
       addSemanticIndexes: false,
-      scrollDirection: reader.mode.isTopToBottom
-          ? Axis.vertical
-          : Axis.horizontal,
-      reverse: reader.mode == ReaderMode.continuousRightToLeft,
+      scrollDirection: scrollAxis,
+      reverse: reverse,
       physics: isCTRLPressed || _isMouseScrolling || disableScroll
           ? const NeverScrollableScrollPhysics()
           : isZoomedIn
@@ -2767,7 +2774,7 @@ class ContinuousModeState extends State<_ContinuousMode>
 
     widget = Stack(
       children: [
-        Positioned.fill(child: buildBackground(context)),
+        Positioned.fill(child: buildBackground(context, scrollDirection)),
         Positioned.fill(child: widget),
       ],
     );
@@ -2947,7 +2954,7 @@ class ContinuousModeState extends State<_ContinuousMode>
     );
   }
 
-  Widget buildBackground(BuildContext context) {
+  Widget buildBackground(BuildContext context, AxisDirection scrollDirection) {
     return Column(
       children: [
         SizedBox(height: context.padding.top + 16),
@@ -2955,12 +2962,14 @@ class ContinuousModeState extends State<_ContinuousMode>
           _SwipeChangeChapterProgress(
             controller: scrollController,
             isPrev: true,
+            swipeDirection: scrollDirection,
           ),
         const Spacer(),
         if (prepareToNextChapter)
           _SwipeChangeChapterProgress(
             controller: scrollController,
             isPrev: false,
+            swipeDirection: flipAxisDirection(scrollDirection),
           ),
         SizedBox(height: 36),
       ],
@@ -3816,11 +3825,17 @@ void _promoteReaderImage(ImageProvider image) {
 }
 
 class _SwipeChangeChapterProgress extends StatefulWidget {
-  const _SwipeChangeChapterProgress({this.controller, required this.isPrev});
+  const _SwipeChangeChapterProgress({
+    this.controller,
+    required this.isPrev,
+    required this.swipeDirection,
+  });
 
   final ScrollController? controller;
 
   final bool isPrev;
+
+  final AxisDirection swipeDirection;
 
   @override
   State<_SwipeChangeChapterProgress> createState() =>
@@ -3881,9 +3896,25 @@ class _SwipeChangeChapterProgressState
 
   @override
   Widget build(BuildContext context) {
-    final msg = widget.isPrev
-        ? "Swipe down for previous chapter".tl
-        : "Swipe up for next chapter".tl;
+    final (message, icon) = switch (widget.swipeDirection) {
+      AxisDirection.down => (
+        "Swipe down for previous chapter".tl,
+        Icons.arrow_downward,
+      ),
+      AxisDirection.up => ("Swipe up for next chapter".tl, Icons.arrow_upward),
+      AxisDirection.left => (
+        widget.isPrev
+            ? "Swipe left for previous chapter".tl
+            : "Swipe left for next chapter".tl,
+        Icons.west,
+      ),
+      AxisDirection.right => (
+        widget.isPrev
+            ? "Swipe right for previous chapter".tl
+            : "Swipe right for next chapter".tl,
+        Icons.east,
+      ),
+    };
 
     return CustomPaint(
       painter: _ProgressPainter(
@@ -3894,13 +3925,9 @@ class _SwipeChangeChapterProgressState
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            widget.isPrev ? Icons.arrow_downward : Icons.arrow_upward,
-            color: context.colorScheme.onSurface,
-            size: 16,
-          ),
+          Icon(icon, color: context.colorScheme.onSurface, size: 16),
           const SizedBox(width: 4),
-          Text(msg),
+          Text(message),
         ],
       ).paddingVertical(6).paddingHorizontal(16),
     );

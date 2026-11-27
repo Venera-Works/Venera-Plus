@@ -223,7 +223,7 @@ class _ImageFavoritesGalleryPageState extends State<ImageFavoritesGalleryPage> {
                 ),
                 clipBehavior: Clip.antiAlias,
                 child: Hero(
-                  tag: image,
+                  tag: imageFavoriteHeroTag(image),
                   child: AnimatedImage(
                     image: ImageFavoritesProvider(image),
                     width: double.infinity,

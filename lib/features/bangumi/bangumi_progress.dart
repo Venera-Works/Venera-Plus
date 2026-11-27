@@ -199,7 +199,10 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
         const SizedBox(height: 4),
         if (binding.subjectOriginalTitle.isNotEmpty)
           Text(binding.subjectOriginalTitle, style: detailsStyle),
-        Text('Subject ID: ${binding.subjectId}', style: detailsStyle),
+        Text(
+          'Subject ID: @id'.tlParams({'id': binding.subjectId}),
+          style: detailsStyle,
+        ),
         Text(
           '${'Episodes'.tl}: ${binding.totalEpisodes}    ${'Volumes'.tl}: ${binding.totalVolumes}',
           style: detailsStyle,

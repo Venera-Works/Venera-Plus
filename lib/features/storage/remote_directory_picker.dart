@@ -34,7 +34,35 @@ class _RemoteDirectoryPickerState extends State<RemoteDirectoryPicker> {
   @override
   void initState() {
     super.initState();
+    final saved = widget.multiSelect ? null : _selected.firstOrNull;
+    if (saved != null && saved != '/') {
+      _directory = _parentDirectory(saved);
+      if (_directory != '/') {
+        _entries = _listSavedDirectoryParent(saved);
+        return;
+      }
+    }
     _entries = widget.store.list(_directory);
+  }
+
+  String _parentDirectory(String path) =>
+      path.substring(0, path.lastIndexOf('/', path.length - 2) + 1);
+
+  Future<List<RemoteEntry>> _listSavedDirectoryParent(String saved) async {
+    try {
+      final entries = await widget.store.list(_directory);
+      if (entries.any(
+        (entry) =>
+            entry.isDirectory && normalizeRemoteDirectory(entry.path) == saved,
+      )) {
+        return entries;
+      }
+    } on RemoteStorageException catch (error) {
+      if (!error.isNotFound) rethrow;
+    }
+    if (!mounted) return const [];
+    setState(() => _directory = '/');
+    return widget.store.list(_directory);
   }
 
   @override
@@ -58,6 +86,54 @@ class _RemoteDirectoryPickerState extends State<RemoteDirectoryPicker> {
       _selected.add(path);
     }
   });
+
+  void _showSelectedDirectories() {
+    showModalBottomSheet<void>(
+      context: context,
+      useSafeArea: true,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        top: false,
+        child: StatefulBuilder(
+          builder: (context, setSheetState) => ListView.builder(
+            shrinkWrap: true,
+            itemCount: _selected.length,
+            itemBuilder: (context, index) {
+              final path = _selected[index];
+              return ListTile(
+                title: Text(path),
+                trailing: IconButton(
+                  tooltip: 'Remove'.tl,
+                  icon: const Icon(Icons.remove_circle_outline),
+                  onPressed: () {
+                    setState(() => _selected.remove(path));
+                    setSheetState(() {});
+                    if (_selected.isEmpty) Navigator.pop(context);
+                  },
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _selectionSummary() {
+    final count = Text(
+      '@count folders selected'.tlParams({'count': _selected.length}),
+    );
+    if (!widget.multiSelect || _selected.isEmpty) return count;
+    return TextButton.icon(
+      style: actionButtonStyle.copyWith(
+        alignment: AlignmentDirectional.centerStart,
+      ),
+      onPressed: _showSelectedDirectories,
+      label: count,
+      icon: const Icon(Icons.expand_less),
+      iconAlignment: IconAlignment.end,
+    );
+  }
 
   Widget _folderTile(String path, String name, {bool current = false}) {
     final normalizedPath = normalizeRemoteDirectory(path);
@@ -159,12 +235,7 @@ class _RemoteDirectoryPickerState extends State<RemoteDirectoryPicker> {
                         child: ListTile(
                           leading: const Icon(Icons.arrow_upward),
                           title: Text('Parent directory'.tl),
-                          onTap: () {
-                            final parts = _directory.split('/')
-                              ..removeWhere((item) => item.isEmpty);
-                            parts.removeLast();
-                            _open(parts.isEmpty ? '/' : '/${parts.join('/')}/');
-                          },
+                          onTap: () => _open(_parentDirectory(_directory)),
                         ),
                       ),
                     if (snapshot.hasError)
@@ -198,13 +269,7 @@ class _RemoteDirectoryPickerState extends State<RemoteDirectoryPicker> {
             padding: const EdgeInsets.all(16),
             child: Row(
               children: [
-                Expanded(
-                  child: Text(
-                    '@count folders selected'.tlParams({
-                      'count': _selected.length,
-                    }),
-                  ),
-                ),
+                Expanded(child: _selectionSummary()),
                 const SizedBox(width: 16),
                 FilledButton(
                   style: actionButtonStyle,

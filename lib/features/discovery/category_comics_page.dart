@@ -186,13 +186,17 @@ class _CategoryComicsPageState extends State<CategoryComicsPage> {
           ),
         );
       } else {
-        var g = group;
+        final g = group;
+        final keys = optionList.options.keys.toList(growable: false);
         children.add(
           Select(
-            current: optionList.options[optionsValue[g]],
-            values: optionList.options.values.toList(),
+            current: optionList.options[optionsValue[g]]?.ts(sourceKey),
+            values: optionList.options.values
+                .map((label) => label.ts(sourceKey))
+                .toList(growable: false),
+            selectedIndex: keys.indexOf(optionsValue[g]),
             onTap: (i) {
-              var key = optionList.options.keys.elementAt(i);
+              final key = keys[i];
               if (key == optionsValue[g]) return;
               setState(() {
                 optionsValue[g] = key;

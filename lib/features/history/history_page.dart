@@ -370,54 +370,60 @@ class _HistoryPageState extends State<HistoryPage> {
                   comics: () => comics,
                 ),
               ),
-            SliverGridComics(
-              comics: visibleComics,
-              selections: selectedComics,
-              onLongPressed: null,
-              onTap: (c, heroID) {
-                final group = c as History;
-                if (!multiSelectMode) {
-                  openComic(context, group, read: false, heroID: heroID);
-                  return;
-                }
-                setState(() {
-                  if (selectedComics.containsKey(group)) {
-                    selectedComics.remove(group);
-                  } else {
-                    selectedComics[group] = true;
+            if (comics.isEmpty)
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: Center(child: Text('No reading records'.tl)),
+              )
+            else
+              SliverGridComics(
+                comics: visibleComics,
+                selections: selectedComics,
+                onLongPressed: null,
+                onTap: (c, heroID) {
+                  final group = c as History;
+                  if (!multiSelectMode) {
+                    openComic(context, group, read: false, heroID: heroID);
+                    return;
                   }
-                  if (selectedComics.isEmpty) {
-                    multiSelectMode = false;
-                  }
-                });
-              },
-              badgeBuilder: (c) {
-                return c.sourceKey == 'local'
-                    ? 'Local'.tl
-                    : ComicSource.find(c.sourceKey)?.name ?? c.sourceKey;
-              },
-              menuBuilder: (c) {
-                final group = c as History;
-                return [
-                  MenuEntry(
-                    icon: Icons.play_arrow,
-                    text: 'Continue'.tl,
-                    onClick: () => openComic(context, group, read: true),
-                  ),
-                  MenuEntry(
-                    icon: Icons.refresh,
-                    text: 'Refresh Info'.tl,
-                    onClick: () => _refreshHistory(group),
-                  ),
-                  MenuEntry(
-                    icon: Icons.remove,
-                    text: 'Remove'.tl,
-                    color: context.colorScheme.error,
-                    onClick: () => _confirmRemoveHistories([group]),
-                  ),
-                ];
-              },
-            ),
+                  setState(() {
+                    if (selectedComics.containsKey(group)) {
+                      selectedComics.remove(group);
+                    } else {
+                      selectedComics[group] = true;
+                    }
+                    if (selectedComics.isEmpty) {
+                      multiSelectMode = false;
+                    }
+                  });
+                },
+                badgeBuilder: (c) {
+                  return c.sourceKey == 'local'
+                      ? 'Local'.tl
+                      : ComicSource.find(c.sourceKey)?.name ?? c.sourceKey;
+                },
+                menuBuilder: (c) {
+                  final group = c as History;
+                  return [
+                    MenuEntry(
+                      icon: Icons.play_arrow,
+                      text: 'Continue'.tl,
+                      onClick: () => openComic(context, group, read: true),
+                    ),
+                    MenuEntry(
+                      icon: Icons.refresh,
+                      text: 'Refresh Info'.tl,
+                      onClick: () => _refreshHistory(group),
+                    ),
+                    MenuEntry(
+                      icon: Icons.remove,
+                      text: 'Remove'.tl,
+                      color: context.colorScheme.error,
+                      onClick: () => _confirmRemoveHistories([group]),
+                    ),
+                  ];
+                },
+              ),
           ],
         ),
       ),

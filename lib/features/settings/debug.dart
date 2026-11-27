@@ -10,8 +10,30 @@ import 'package:venera_plus/foundation/js_engine.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 
-class AdvancedSettings extends StatelessWidget {
+class AdvancedSettings extends StatefulWidget {
   const AdvancedSettings({super.key});
+
+  @override
+  State<AdvancedSettings> createState() => _AdvancedSettingsState();
+}
+
+class _AdvancedSettingsState extends State<AdvancedSettings> {
+  bool _isReloading = false;
+
+  Future<void> _reloadSources() async {
+    if (_isReloading) return;
+    setState(() => _isReloading = true);
+    String message;
+    try {
+      await ComicSourceManager().reload();
+      message = 'Source reloaded'.tl;
+    } catch (error) {
+      message = '${'Error'.tl}: ${error.toString().tl}';
+    }
+    if (!mounted) return;
+    setState(() => _isReloading = false);
+    context.showMessage(message: message);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -30,9 +52,8 @@ class AdvancedSettings extends StatelessWidget {
         CallbackSetting(
           title: 'Reload Comic Sources'.tl,
           actionTitle: 'Reload'.tl,
-          callback: () {
-            ComicSourceManager().reload();
-          },
+          isLoading: _isReloading,
+          callback: _reloadSources,
         ).toSliver(),
         SettingPartTitle(title: 'Developer'.tl, icon: Icons.code),
         ListTile(

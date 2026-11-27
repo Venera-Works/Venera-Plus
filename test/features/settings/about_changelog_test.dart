@@ -64,7 +64,7 @@ void main() {
         const MaterialApp(home: Scaffold(body: AboutSettings())),
       );
       await tester.pumpAndSettle();
-      expect(channelSetting, findsNothing);
+      expect(channelSetting, findsOneWidget);
 
       await tester.tap(find.byType(Switch));
       await flushWrites();
@@ -90,7 +90,7 @@ void main() {
       await tester.tap(find.byType(Switch));
       await flushWrites();
       await tester.pumpAndSettle();
-      expect(channelSetting, findsNothing);
+      expect(channelSetting, findsOneWidget);
       expect(appdata.settings['appUpdateChannel'], 'beta');
       await tester.tap(find.byType(Switch));
       await flushWrites();
