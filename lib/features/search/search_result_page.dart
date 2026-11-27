@@ -49,7 +49,10 @@ class _SearchResultPageState extends State<SearchResultPage> {
   late String sourceKey;
   late List<String> options;
   late String text;
+  late String _query;
   late _SuggestionsController suggestionsController;
+  late final FocusNode _searchFocusNode;
+  bool _keyboardVisible = false;
   int _initialPage = 1;
   int _revision = 0;
   Timer? _historyTimer;
@@ -123,7 +126,8 @@ class _SearchResultPageState extends State<SearchResultPage> {
     _listKey = GlobalKey<ComicListState>();
     suggestionsController.remove();
     setState(() {
-      text = _applyConfiguredLanguageFilter(value);
+      text = value;
+      _query = _applyConfiguredLanguageFilter(text);
       _initialPage = 1;
       _revision++;
       controller.currentText = text;
@@ -146,14 +150,29 @@ class _SearchResultPageState extends State<SearchResultPage> {
           top: context.padding.top + SliverSearchBar.toolbarHeight,
           left: 0,
           right: 0,
-          bottom: 0,
-          child: Material(
-            child: _Suggestions(controller: suggestionsController),
+          bottom: MediaQuery.viewInsetsOf(context).bottom,
+          child: TextFieldTapRegion(
+            child: Material(
+              child: _Suggestions(controller: suggestionsController),
+            ),
           ),
         ),
       );
       Overlay.of(context).insert(suggestionOverlay!);
     }
+  }
+
+  void _onSearchFocusChanged() {
+    if (!_searchFocusNode.hasFocus) suggestionsController.remove();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    // 系统收起软键盘时，搜索框可能仍保有焦点。
+    if (_keyboardVisible && !keyboardVisible) suggestionsController.remove();
+    _keyboardVisible = keyboardVisible;
   }
 
   @override
@@ -162,6 +181,7 @@ class _SearchResultPageState extends State<SearchResultPage> {
     _flushHistory();
     ComicSourceManager().removeListener(_sourcesChanged);
     _contentChanges?.removeListener(_reloadContent);
+    _searchFocusNode.dispose();
     Future.microtask(suggestionsController.remove);
     super.dispose();
   }
@@ -202,9 +222,8 @@ class _SearchResultPageState extends State<SearchResultPage> {
   void initState() {
     super.initState();
     sourceKey = widget.sourceKey;
-    text = widget.historyEntry == null
-        ? _applyConfiguredLanguageFilter(widget.text)
-        : widget.historyEntry!.keyword;
+    text = widget.historyEntry?.keyword ?? widget.text;
+    _query = _applyConfiguredLanguageFilter(text);
     controller = SearchBarController(currentText: text, onSearch: search);
     options = List.of(
       widget.historyEntry?.options ?? widget.options ?? const [],
@@ -224,6 +243,7 @@ class _SearchResultPageState extends State<SearchResultPage> {
       });
     }
     suggestionsController = _SuggestionsController(controller, sourceKey);
+    _searchFocusNode = FocusNode()..addListener(_onSearchFocusChanged);
     _listenForContentChanges(_target?.searchPageData);
     ComicSourceManager().addListener(_sourcesChanged);
     _remember();
@@ -262,7 +282,7 @@ class _SearchResultPageState extends State<SearchResultPage> {
         ),
       );
     }
-    final keyword = text;
+    final keyword = _query;
     final selectedOptions = List<String>.unmodifiable(options);
     final entry = _entry();
     final revision = _revision;
@@ -289,6 +309,11 @@ class _SearchResultPageState extends State<SearchResultPage> {
           controller: controller,
           onChanged: onChanged,
           action: buildAction(),
+          focusNode: _searchFocusNode,
+        ),
+        emptySliver: SliverFillRemaining(
+          hasScrollBody: false,
+          child: Center(child: Text('No search results found'.tl)),
         ),
         loadPage: data.loadPage == null
             ? null
@@ -324,9 +349,8 @@ class _SearchResultPageState extends State<SearchResultPage> {
         _listKey = GlobalKey<ComicListState>();
         sourceKey = nextSourceKey;
         options = nextOptions;
-        text = _applyConfiguredLanguageFilter(
-          hadSource ? controller.text : text,
-        );
+        if (hadSource) text = controller.text;
+        _query = _applyConfiguredLanguageFilter(text);
         controller.currentText = text;
         suggestionsController = _SuggestionsController(controller, sourceKey);
         validateOptions();
@@ -353,8 +377,11 @@ class _SuggestionsController {
   }
 
   void remove() {
-    entry?.remove();
+    final overlay = entry;
     entry = null;
+    _state = null;
+    overlay?.remove();
+    overlay?.dispose();
   }
 
   var suggestions = <Pair<String, TranslationType>>[];
@@ -591,6 +618,7 @@ class _SearchSettingsDialogState extends State<_SearchSettingsDialog> {
                 text: e.name.tl,
                 isSelected: searchTarget == e.key,
                 onTap: () {
+                  if (searchTarget == e.key) return;
                   setState(() {
                     searchTarget = e.key;
                     options = defaultSearchOptions(

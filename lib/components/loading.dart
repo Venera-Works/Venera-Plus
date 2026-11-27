@@ -36,7 +36,7 @@ class NetworkError extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    var cfe = CloudflareException.fromString(message);
+    final cfe = CloudflareException.fromString(message);
     Widget body = Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -75,25 +75,21 @@ class NetworkError extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           if (retry != null)
-            if (cfe != null)
-              FilledButton(
-                onPressed: () => passCloudflare(
-                  CloudflareException.fromString(message)!,
-                  retry!,
-                ),
-                child: Text('Verify'.tl),
-              )
-            else
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  if (action != null) action!.paddingRight(8),
-                  FilledButton(
-                    onPressed: retry,
-                    child: Text(buttonText ?? 'Retry'.tl),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              spacing: 8,
+              children: [
+                ?action,
+                FilledButton(
+                  onPressed: cfe == null
+                      ? retry
+                      : () => passCloudflare(cfe, retry!),
+                  child: Text(
+                    cfe == null ? buttonText ?? 'Retry'.tl : 'Verify'.tl,
                   ),
-                ],
-              ),
+                ),
+              ],
+            ),
         ],
       ),
     );

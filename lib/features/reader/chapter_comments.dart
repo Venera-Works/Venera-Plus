@@ -14,6 +14,7 @@ import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/image_provider/cached_image.dart';
+import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 import 'package:venera_plus/foundation/keyword_filter.dart';
@@ -24,6 +25,150 @@ KeywordFilter _commentFilter() => KeywordFilter.fromSettings({
   'blockedCommentWords': appdata.settings['blockedCommentWords'],
   'blockedCommentWordRules': appdata.settings['blockedCommentWordRules'],
 }, comments: true);
+
+mixin _ChapterCommentsPagination<T extends StatefulWidget> on State<T> {
+  bool _loading = true;
+  String? _firstPageError;
+  String? _nextPageError;
+  final _allComments = <Comment>[];
+  List<Comment> _comments = [];
+  Object? _pageRequest;
+  int _page = 0;
+  int? _maxPage;
+
+  bool get _hasMore => _maxPage == null || _page < _maxPage!;
+
+  Future<Res<List<Comment>>> _fetchComments(int page);
+
+  @override
+  void initState() {
+    super.initState();
+    appdata.settings.addListener(_onKeywordSettingsChanged);
+    unawaited(_loadPage(1));
+  }
+
+  @override
+  void dispose() {
+    appdata.settings.removeListener(_onKeywordSettingsChanged);
+    super.dispose();
+  }
+
+  void _onKeywordSettingsChanged() {
+    if (!_loading) setState(_filterComments);
+  }
+
+  void _filterComments() {
+    final filter = _commentFilter();
+    _comments = _allComments
+        .where((comment) => !filter.blocksComment(comment.content))
+        .toList();
+  }
+
+  void _reloadComments() {
+    setState(() {
+      _loading = true;
+      _firstPageError = null;
+      _nextPageError = null;
+    });
+    unawaited(_loadPage(1));
+  }
+
+  void _loadMoreComments() {
+    if (_loading ||
+        _firstPageError != null ||
+        !_hasMore ||
+        _pageRequest != null) {
+      return;
+    }
+    setState(() => _nextPageError = null);
+    unawaited(_loadPage(_page + 1));
+  }
+
+  Future<void> _loadPage(int page) async {
+    final request = Object();
+    _pageRequest = request;
+    Res<List<Comment>> result;
+    try {
+      result = await _fetchComments(page);
+    } catch (error) {
+      result = Res.error(error.toString());
+    }
+    // Posting a comment can start a fresh first page during an earlier request.
+    if (!mounted || !identical(request, _pageRequest)) return;
+    setState(() {
+      _pageRequest = null;
+      _loading = false;
+      if (result.error) {
+        if (page == 1) {
+          _firstPageError = result.errorMessage;
+        } else {
+          _nextPageError = result.errorMessage;
+        }
+        return;
+      }
+      if (page == 1) {
+        _allComments.clear();
+        _maxPage = null;
+      }
+      _allComments.addAll(result.data);
+      _filterComments();
+      _page = page;
+      if (result.subData case final int maxPage) {
+        _maxPage = maxPage;
+      } else if (_maxPage == null && result.data.isEmpty) {
+        _maxPage = page;
+      }
+    });
+  }
+
+  Widget? _buildInitialCommentStatus() {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_firstPageError case final error?) {
+      return NetworkError(
+        message: error,
+        retry: _reloadComments,
+        withAppbar: false,
+      );
+    }
+    return null;
+  }
+
+  Widget _buildCommentsFooter({bool autoLoad = true}) {
+    if (_nextPageError case final error?) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              error,
+              textAlign: TextAlign.center,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+            ),
+            TextButton(onPressed: _loadMoreComments, child: Text('Retry'.tl)),
+          ],
+        ),
+      );
+    }
+    if (_pageRequest != null) return const ListLoadingIndicator();
+    if (!autoLoad) {
+      return Center(
+        child: TextButton(
+          onPressed: _loadMoreComments,
+          child: Text('Load more comments'.tl),
+        ),
+      );
+    }
+    final page = _page;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _page == page && _nextPageError == null) {
+        _loadMoreComments();
+      }
+    });
+    return const ListLoadingIndicator();
+  }
+}
 
 class ChapterCommentsPage extends StatefulWidget {
   const ChapterCommentsPage({
@@ -47,85 +192,25 @@ class ChapterCommentsPage extends StatefulWidget {
   State<ChapterCommentsPage> createState() => _ChapterCommentsPageState();
 }
 
-class _ChapterCommentsPageState extends State<ChapterCommentsPage> {
-  bool _loading = true;
-  bool _firstLoadInProgress = false;
-  List<Comment>? _comments;
-  final List<Comment> _allComments = [];
-  String? _error;
-  int _page = 1;
-  int? maxPage;
+class _ChapterCommentsPageState extends State<ChapterCommentsPage>
+    with _ChapterCommentsPagination<ChapterCommentsPage> {
   var controller = TextEditingController();
   bool sending = false;
 
   @override
-  void initState() {
-    super.initState();
-    appdata.settings.addListener(_onKeywordSettingsChanged);
-  }
-
-  @override
   void dispose() {
-    appdata.settings.removeListener(_onKeywordSettingsChanged);
     controller.dispose();
     super.dispose();
   }
 
-  void _onKeywordSettingsChanged() {
-    if (mounted && _comments != null) setState(_filterComments);
-  }
-
-  void _filterComments() {
-    final filter = _commentFilter();
-    _comments = _allComments
-        .where((comment) => !filter.blocksComment(comment.content))
-        .toList();
-  }
-
-  Future<void> firstLoad() async {
-    if (_firstLoadInProgress) return;
-    _firstLoadInProgress = true;
-    final res = await widget.source.chapterCommentsLoader!(
-      widget.comicId,
-      widget.epId,
-      1,
-      widget.replyComment?.id,
-    );
-    if (!mounted) return;
-    setState(() {
-      _firstLoadInProgress = false;
-      _loading = false;
-      _error = res.error ? res.errorMessage ?? 'Error'.tl : null;
-      if (res.success) {
-        _allComments
-          ..clear()
-          ..addAll(res.data);
-        _filterComments();
-        maxPage = res.subData;
-      }
-    });
-  }
-
-  void loadMore() async {
-    var res = await widget.source.chapterCommentsLoader!(
-      widget.comicId,
-      widget.epId,
-      _page + 1,
-      widget.replyComment?.id,
-    );
-    if (res.error) {
-      context.showMessage(message: res.errorMessage ?? 'Error'.tl);
-    } else {
-      setState(() {
-        _allComments.addAll(res.data);
-        _filterComments();
-        _page++;
-        if (maxPage == null && res.data.isEmpty) {
-          maxPage = _page;
-        }
-      });
-    }
-  }
+  @override
+  Future<Res<List<Comment>>> _fetchComments(int page) =>
+      widget.source.chapterCommentsLoader!(
+        widget.comicId,
+        widget.epId,
+        page,
+        widget.replyComment?.id,
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -147,23 +232,11 @@ class _ChapterCommentsPageState extends State<ChapterCommentsPage> {
   }
 
   Widget buildBody(BuildContext context) {
-    if (_loading) {
-      firstLoad();
-      return const Center(child: CircularProgressIndicator());
-    } else if (_error != null) {
-      return NetworkError(
-        message: _error!,
-        retry: () {
-          setState(() {
-            _loading = true;
-            _error = null;
-          });
-        },
-        withAppbar: false,
-      );
+    if (_buildInitialCommentStatus() case final status?) {
+      return status;
     } else {
       var showAvatar =
-          _comments!.any((e) {
+          _comments.any((e) {
             return e.avatar != null;
           }) ||
           (widget.replyComment?.avatar != null);
@@ -177,7 +250,7 @@ class _ChapterCommentsPageState extends State<ChapterCommentsPage> {
                   physics: physics,
                   primary: false,
                   padding: EdgeInsets.zero,
-                  itemCount: _comments!.length + 2,
+                  itemCount: _comments.length + (_hasMore ? 2 : 1),
                   itemBuilder: (context, index) {
                     if (index == 0) {
                       if (widget.replyComment != null) {
@@ -213,17 +286,12 @@ class _ChapterCommentsPageState extends State<ChapterCommentsPage> {
                     }
                     index--;
 
-                    if (index == _comments!.length) {
-                      if (_page < (maxPage ?? _page + 1)) {
-                        loadMore();
-                        return const ListLoadingIndicator();
-                      } else {
-                        return const SizedBox();
-                      }
+                    if (index == _comments.length) {
+                      return _buildCommentsFooter();
                     }
 
                     return _ChapterCommentTile(
-                      comment: _comments![index],
+                      comment: _comments[index],
                       source: widget.source,
                       comicId: widget.comicId,
                       epId: widget.epId,
@@ -297,15 +365,11 @@ class _ChapterCommentsPageState extends State<ChapterCommentsPage> {
                     controller.text,
                     widget.replyComment?.id,
                   );
+                  if (!mounted) return;
                   if (!b.error) {
-                    controller.text = "";
-                    setState(() {
-                      sending = false;
-                      _loading = true;
-                      _comments?.clear();
-                      _page = 1;
-                      maxPage = null;
-                    });
+                    controller.clear();
+                    sending = false;
+                    _reloadComments();
                   } else {
                     context.showMessage(message: b.errorMessage ?? "Error");
                     setState(() {
@@ -652,15 +716,11 @@ class EmbeddedChapterCommentsPage extends StatefulWidget {
 }
 
 class _EmbeddedChapterCommentsPageState
-    extends State<EmbeddedChapterCommentsPage> {
-  bool _loading = true;
-  List<Comment>? _comments;
-  final List<Comment> _allComments = [];
-  String? _error;
-  int _page = 1;
-  int? maxPage;
+    extends State<EmbeddedChapterCommentsPage>
+    with _ChapterCommentsPagination<EmbeddedChapterCommentsPage> {
   var textController = TextEditingController();
   bool sending = false;
+  final _scrollController = ScrollController();
   final _inputFocusNode = FocusNode();
   late final _inputPauseReason = ('chapter_comment_input', _inputFocusNode);
   late final ReaderState? _reader;
@@ -671,7 +731,6 @@ class _EmbeddedChapterCommentsPageState
     super.initState();
     _reader = context.findAncestorStateOfType<ReaderState>();
     _inputFocusNode.addListener(_updateAutoReadingPause);
-    appdata.settings.addListener(_onKeywordSettingsChanged);
   }
 
   void _updateAutoReadingPause() {
@@ -683,21 +742,10 @@ class _EmbeddedChapterCommentsPageState
     reader.autoReading.pause(_inputPauseReason, shouldPause);
   }
 
-  void _onKeywordSettingsChanged() {
-    if (mounted && _comments != null) setState(_filterComments);
-  }
-
-  void _filterComments() {
-    final filter = _commentFilter();
-    _comments = _allComments
-        .where((comment) => !filter.blocksComment(comment.content))
-        .toList();
-  }
-
   @override
   void dispose() {
-    appdata.settings.removeListener(_onKeywordSettingsChanged);
     _inputFocusNode.dispose();
+    _scrollController.dispose();
     final reader = _reader;
     if (_pausedForInput && reader != null) {
       final pauseReason = _inputPauseReason;
@@ -712,54 +760,14 @@ class _EmbeddedChapterCommentsPageState
     super.dispose();
   }
 
-  void firstLoad() async {
-    var res = await widget.source.chapterCommentsLoader!(
-      widget.comicId,
-      widget.epId,
-      1,
-      null,
-    );
-    if (res.error) {
-      if (mounted) {
-        setState(() {
-          _error = res.errorMessage ?? 'Error'.tl;
-          _loading = false;
-        });
-      }
-    } else if (mounted) {
-      setState(() {
-        _allComments
-          ..clear()
-          ..addAll(res.data);
-        _filterComments();
-        _loading = false;
-        maxPage = res.subData;
-      });
-    }
-  }
-
-  void loadMore() async {
-    var res = await widget.source.chapterCommentsLoader!(
-      widget.comicId,
-      widget.epId,
-      _page + 1,
-      null,
-    );
-    if (res.error) {
-      if (mounted) {
-        context.showMessage(message: res.errorMessage ?? 'Error'.tl);
-      }
-    } else if (mounted) {
-      setState(() {
-        _allComments.addAll(res.data);
-        _filterComments();
-        _page++;
-        if (maxPage == null && res.data.isEmpty) {
-          maxPage = _page;
-        }
-      });
-    }
-  }
+  @override
+  Future<Res<List<Comment>>> _fetchComments(int page) =>
+      widget.source.chapterCommentsLoader!(
+        widget.comicId,
+        widget.epId,
+        page,
+        null,
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -818,56 +826,37 @@ class _EmbeddedChapterCommentsPageState
   }
 
   Widget _buildBody() {
-    if (_loading) {
-      firstLoad();
-      return const Center(child: CircularProgressIndicator());
-    } else if (_error != null) {
-      return NetworkError(
-        message: _error!,
-        retry: () {
-          setState(() {
-            _loading = true;
-            _error = null;
-          });
-        },
-        withAppbar: false,
-      );
-    } else if (_comments == null || _comments!.isEmpty) {
-      return Center(child: Text("No comments yet".tl, style: ts.s14));
-    } else {
-      var showAvatar = _comments!.any((e) => e.avatar != null);
-      return _buildCommentsList(showAvatar);
+    if (_buildInitialCommentStatus() case final status?) return status;
+    if (_comments.isEmpty) {
+      return _hasMore
+          ? _buildCommentsFooter(autoLoad: false)
+          : Center(child: Text('No comments yet'.tl, style: ts.s14));
     }
+    return _buildCommentsList(_comments.any((e) => e.avatar != null));
   }
 
   Widget _buildCommentsList(bool showAvatar) {
     final isLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
     final crossAxisCount = isLandscape ? 2 : 1;
-    final scrollController = ScrollController();
 
     return Scrollbar(
-      controller: scrollController,
+      controller: _scrollController,
       thumbVisibility: true,
       thickness: 8,
       child: MasonryGridView.count(
-        controller: scrollController,
+        controller: _scrollController,
         crossAxisCount: crossAxisCount,
         mainAxisSpacing: 0,
         crossAxisSpacing: 0,
         padding: const EdgeInsets.symmetric(horizontal: 8),
-        itemCount: _comments!.length + 1,
+        itemCount: _comments.length + (_hasMore ? 1 : 0),
         itemBuilder: (context, index) {
-          if (index == _comments!.length) {
-            if (_page < (maxPage ?? _page + 1)) {
-              loadMore();
-              return const ListLoadingIndicator();
-            } else {
-              return const SizedBox();
-            }
+          if (index == _comments.length) {
+            return _buildCommentsFooter();
           }
           return _ChapterCommentTile(
-            comment: _comments![index],
+            comment: _comments[index],
             source: widget.source,
             comicId: widget.comicId,
             epId: widget.epId,
@@ -895,12 +884,7 @@ class _EmbeddedChapterCommentsPageState
         return;
       }
       textController.clear();
-      setState(() {
-        _loading = true;
-        _comments?.clear();
-        _page = 1;
-        maxPage = null;
-      });
+      _reloadComments();
     } finally {
       if (mounted) {
         setState(() => sending = false);

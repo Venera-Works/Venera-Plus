@@ -10,6 +10,7 @@ import 'package:venera_plus/features/favorites/favorites_manager.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
+import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/translations.dart';
 
 class ReorderComicsPage extends StatefulWidget {
@@ -25,12 +26,16 @@ class _ReorderComicsPageState extends State<ReorderComicsPage> {
   final _key = GlobalKey();
   var reorderWidgetKey = UniqueKey();
   final _scrollController = ScrollController();
-  late var comics = LocalFavoritesManager().getFolderComics(widget.name);
+  late List<FavoriteItem> comics;
+  late final String? _folderId;
   bool changed = false;
 
   @override
   void initState() {
     super.initState();
+    final manager = LocalFavoritesManager();
+    _folderId = manager.getFolderId(widget.name);
+    comics = manager.getFolderComics(widget.name);
     appdata.settings.addListener(_onDisplaySettingsChanged);
   }
 
@@ -57,13 +62,16 @@ class _ReorderComicsPageState extends State<ReorderComicsPage> {
   void dispose() {
     appdata.settings.removeListener(_onDisplaySettingsChanged);
     _scrollController.dispose();
-    if (changed) {
-      // Delay to ensure navigation is completed
-      Future.delayed(const Duration(milliseconds: 200), () {
-        LocalFavoritesManager().reorder(comics, widget.name);
-      });
-    }
     super.dispose();
+  }
+
+  void _saveOrder() {
+    if (!changed) return;
+    changed = false;
+    final manager = LocalFavoritesManager();
+    final folderId = _folderId;
+    final name = folderId == null ? null : manager.getFolderNameById(folderId);
+    if (name != null) manager.reorder(comics, name);
   }
 
   @override
@@ -95,7 +103,7 @@ class _ReorderComicsPageState extends State<ReorderComicsPage> {
         ),
       );
     }).toList();
-    return Scaffold(
+    final page = Scaffold(
       appBar: Appbar(
         title: Text("Reorder".tl),
         actions: [
@@ -123,6 +131,14 @@ class _ReorderComicsPageState extends State<ReorderComicsPage> {
                 });
               },
             ),
+          ),
+          IconButton(
+            tooltip: 'Done'.tl,
+            icon: const Icon(Icons.done),
+            onPressed: () {
+              _saveOrder();
+              context.pop();
+            },
           ),
         ],
       ),
@@ -158,6 +174,15 @@ class _ReorderComicsPageState extends State<ReorderComicsPage> {
         },
         children: tiles,
       ),
+    );
+    return PopScope(
+      canPop: !changed,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!changed) return;
+        _saveOrder();
+        if (!didPop) context.pop();
+      },
+      child: page,
     );
   }
 }

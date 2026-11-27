@@ -673,9 +673,7 @@ abstract mixin class ComicPageActions {
   }
 
   void onTapTag(String tag, String namespace) {
-    var target = searchTargetForTag(tag, namespace);
-    var context = App.mainNavigatorKey!.currentContext!;
-    target?.jump(context);
+    searchTargetForTag(tag, namespace)?.jump(context);
   }
 
   PageJumpTarget? searchTargetForTag(String tag, String namespace) {
@@ -781,7 +779,7 @@ abstract mixin class ComicPageActions {
     if (!comicSource.isLogged) {
       return;
     }
-    var rating = 0.0;
+    var rating = 1.0;
     var isLoading = false;
     showDialog(
       context: App.rootContext,
@@ -801,7 +799,7 @@ abstract mixin class ComicPageActions {
                       RatingWidget(
                         padding: 2,
                         onRatingUpdate: (value) => rating = value,
-                        value: 1,
+                        value: rating,
                         selectable: true,
                         size: 40,
                       ),

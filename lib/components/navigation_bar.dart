@@ -223,10 +223,9 @@ class NaviPaneState extends State<NaviPane>
       child: PopScope(
         canPop: _canPop,
         onPopInvokedWithResult: (didPop, result) {
-          if (didPop) {
-            return;
+          if (!didPop && !_canPop) {
+            widget.navigatorKey.currentState?.maybePop(result);
           }
-          widget.navigatorKey.currentState?.maybePop(result);
         },
         child: NotificationListener<NavigationNotification>(
           onNotification: (NavigationNotification notification) {

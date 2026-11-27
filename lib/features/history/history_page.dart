@@ -127,10 +127,33 @@ class _HistoryPageState extends State<HistoryPage> {
     });
   }
 
-  void _removeHistories(Iterable<History> histories) {
-    HistoryManager().batchDeleteHistories([
+  void _confirmRemoveHistories(
+    Iterable<History> histories, {
+    bool exitMultiSelect = false,
+  }) {
+    final ids = [
       for (final history in histories) ComicID(history.type, history.id),
-    ]);
+    ];
+    if (ids.isEmpty) return;
+    showConfirmDialog(
+      context: context,
+      title: 'Remove'.tl,
+      content: 'Remove reading records (@count)?'.tlParams({
+        'count': ids.length,
+      }),
+      confirmText: 'Remove',
+      btnColor: context.colorScheme.error,
+      onConfirm: () {
+        if (!mounted) return;
+        HistoryManager().batchDeleteHistories(ids);
+        if (exitMultiSelect) {
+          setState(() {
+            multiSelectMode = false;
+            selectedComics.clear();
+          });
+        }
+      },
+    );
   }
 
   void _refreshHistory(History source) async {
@@ -214,15 +237,10 @@ class _HistoryPageState extends State<HistoryPage> {
         tooltip: "Delete".tl,
         onPressed: selectedComics.isEmpty
             ? null
-            : () {
-                final comicsToDelete = selectedComics.keys.toList();
-                setState(() {
-                  multiSelectMode = false;
-                  selectedComics.clear();
-                });
-
-                _removeHistories(comicsToDelete);
-              },
+            : () => _confirmRemoveHistories(
+                selectedComics.keys,
+                exitMultiSelect: true,
+              ),
       ),
     ];
 
@@ -251,10 +269,22 @@ class _HistoryPageState extends State<HistoryPage> {
         child: Flyout(
           controller: controller,
           flyoutBuilder: (context) {
+            final keepLocalFavorites = 'Clear Except Local Favorites'.tl;
             return FlyoutContent(
               title: 'Clear History'.tl,
-              content: Text(
-                'Clear reading history? Reading statistics will be kept.'.tl,
+              content: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Clear reading history? Reading statistics will be kept.'
+                        .tl,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '@action keeps reading progress only for works in local favorite folders and clears progress for works saved only in network favorites.'
+                        .tlParams({'action': keepLocalFavorites}),
+                  ),
+                ],
               ),
               actions: [
                 Button.outlined(
@@ -262,7 +292,7 @@ class _HistoryPageState extends State<HistoryPage> {
                     HistoryManager().clearUnfavoritedHistory();
                     context.pop();
                   },
-                  child: Text('Clear Unfavorited'.tl),
+                  child: Text(keepLocalFavorites),
                 ),
                 const SizedBox(width: 4),
                 Button.filled(
@@ -383,7 +413,7 @@ class _HistoryPageState extends State<HistoryPage> {
                     icon: Icons.remove,
                     text: 'Remove'.tl,
                     color: context.colorScheme.error,
-                    onClick: () => _removeHistories([group]),
+                    onClick: () => _confirmRemoveHistories([group]),
                   ),
                 ];
               },

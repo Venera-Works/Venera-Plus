@@ -7,6 +7,7 @@ import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/reader/reader_page.dart';
 import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/res.dart';
+import 'package:venera_plus/foundation/translations.dart';
 
 class ReaderWithLoading extends StatefulWidget {
   const ReaderWithLoading({
@@ -35,6 +36,14 @@ class ReaderWithLoading extends StatefulWidget {
 class _ReaderWithLoadingState
     extends LoadingState<ReaderWithLoading, ReaderProps> {
   @override
+  Widget buildLoading() => ReaderStatusFrame(child: super.buildLoading());
+
+  @override
+  Widget buildError() => ReaderStatusFrame(
+    child: NetworkError(message: error!, retry: retry, withAppbar: false),
+  );
+
+  @override
   Widget buildContent(BuildContext context, ReaderProps data) {
     final hasExplicitTarget =
         widget.initialEp != null || widget.initialPage != null;
@@ -55,87 +64,57 @@ class _ReaderWithLoadingState
 
   @override
   Future<Res<ReaderProps>> loadData() async {
-    final manager = HistoryManager();
-    final hasExplicitTarget =
-        widget.initialEp != null || widget.initialPage != null;
-    // ReaderState resolves progress in the background for explicit targets.
-    var history = manager.find(widget.id, ComicType.fromKey(widget.sourceKey));
+    final type = ComicType.fromKey(widget.sourceKey);
     final comicSource = ComicSource.find(widget.sourceKey);
-    if (comicSource == null) {
-      final localComic = LocalManager().find(
-        widget.id,
-        ComicType.fromKey(widget.sourceKey),
-      );
-      if (localComic == null) {
-        return Res.error("comic not found");
+    Res<ComicDetails>? result;
+    if (comicSource != null) {
+      try {
+        result = await comicSource.loadComicInfoForReading(widget.id);
+      } catch (error) {
+        result = Res.error(error.toString());
       }
-      history ??= History.fromModel(model: localComic, ep: 0, page: 0);
-      if (!hasExplicitTarget) {
-        final catalog = readingCatalogFromComicChapters(localComic.chapters);
-        if (catalog != null) {
-          try {
-            history = await manager.resolveReadingProgressCatalog(
-              history,
-              catalog,
-            );
-          } catch (error) {
-            return Res.error(error.toString());
-          }
-        }
-      }
-      final updateSnapshot = ComicUpdateSnapshot.fromChapters(
-        localComic.chapters?.toJson(),
-        maxPage: localComic.maxPage,
-      );
+    }
+
+    final history = HistoryManager().find(widget.id, type);
+    if (result != null && result.success) {
+      final comic = result.data;
       return Res(
         ReaderProps(
-          type: ComicType.fromKey(widget.sourceKey),
+          type: type,
           cid: widget.id,
-          name: localComic.title,
-          chapters: localComic.chapters,
-          history: history,
-          author: localComic.subtitle,
-          tags: localComic.tags,
-          updateSnapshot: updateSnapshot,
+          name: comic.title,
+          chapters: comic.chapters,
+          history: history ?? History.fromModel(model: comic, ep: 0, page: 0),
+          author: comic.findAuthor() ?? '',
+          tags: comic.plainTags,
+          updateSnapshot: ComicUpdateSnapshot.fromChapters(
+            comic.chapters?.toJson(),
+            updateTime: comic.findUpdateTime(),
+            maxPage: comic.maxPage,
+            chapterPageCounts: comic.chapterPageCounts,
+          ),
         ),
       );
     }
-    final comic = await comicSource.loadComicInfoForReading(widget.id);
-    if (comic.error) {
-      return Res.fromErrorRes(comic);
+
+    final localComic = LocalManager().find(widget.id, type);
+    if (localComic == null) {
+      return Res.error(result?.errorMessage ?? 'Comic not found'.tl);
     }
-    history =
-        manager.find(widget.id, ComicType.fromKey(widget.sourceKey)) ??
-        History.fromModel(model: comic.data, ep: 0, page: 0);
-    if (!hasExplicitTarget) {
-      final catalog = readingCatalogFromComicChapters(comic.data.chapters);
-      if (catalog != null) {
-        try {
-          history = await manager.resolveReadingProgressCatalog(
-            history,
-            catalog,
-          );
-        } catch (error) {
-          return Res.error(error.toString());
-        }
-      }
-    }
-    final updateSnapshot = ComicUpdateSnapshot.fromChapters(
-      comic.data.chapters?.toJson(),
-      updateTime: comic.data.findUpdateTime(),
-      maxPage: comic.data.maxPage,
-      chapterPageCounts: comic.data.chapterPageCounts,
-    );
     return Res(
       ReaderProps(
-        type: ComicType.fromKey(widget.sourceKey),
+        type: type,
         cid: widget.id,
-        name: comic.data.title,
-        chapters: comic.data.chapters,
-        history: history,
-        author: comic.data.findAuthor() ?? "",
-        tags: comic.data.plainTags,
-        updateSnapshot: updateSnapshot,
+        name: localComic.title,
+        chapters: localComic.chapters,
+        history:
+            history ?? History.fromModel(model: localComic, ep: 0, page: 0),
+        author: localComic.subtitle,
+        tags: localComic.tags,
+        updateSnapshot: ComicUpdateSnapshot.fromChapters(
+          localComic.chapters?.toJson(),
+          maxPage: localComic.maxPage,
+        ),
       ),
     );
   }

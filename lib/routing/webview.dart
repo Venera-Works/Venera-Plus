@@ -9,6 +9,7 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/menu.dart';
+import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/context.dart';
@@ -158,6 +159,38 @@ class _AppWebviewState extends State<AppWebview> {
     super.dispose();
   }
 
+  Future<void> _shareUrl({required bool openInBrowser}) async {
+    final current = controller;
+    var failure = 'Link is not available yet.'.tl;
+    try {
+      final url = await current?.getUrl();
+      if (!mounted || !identical(current, controller)) return;
+      if (url != null &&
+          url.isValidUri &&
+          url.hasScheme &&
+          url.toString() != 'about:blank' &&
+          ((url.scheme != 'http' && url.scheme != 'https') ||
+              url.host.isNotEmpty)) {
+        if (openInBrowser) {
+          failure = 'Unable to open the browser.'.tl;
+          if (await launchUrlString(
+            url.toString(),
+            mode: LaunchMode.externalApplication,
+          )) {
+            return;
+          }
+        } else {
+          failure = 'Failed to copy link'.tl;
+          await Clipboard.setData(ClipboardData(text: url.toString()));
+          return;
+        }
+      }
+    } catch (_) {
+      // 使用当前操作对应的提示处理平台调用失败。
+    }
+    if (mounted) showToast(context: context, message: failure);
+  }
+
   @override
   Widget build(BuildContext context) {
     final actions = [
@@ -172,17 +205,12 @@ class _AppWebviewState extends State<AppWebview> {
                 MenuEntry(
                   icon: Icons.open_in_browser,
                   text: "Open in Browser".tl,
-                  onClick: () async =>
-                      launchUrlString((await controller?.getUrl())!.toString()),
+                  onClick: () => _shareUrl(openInBrowser: true),
                 ),
                 MenuEntry(
                   icon: Icons.copy,
                   text: "Copy link".tl,
-                  onClick: () async => Clipboard.setData(
-                    ClipboardData(
-                      text: (await controller?.getUrl())!.toString(),
-                    ),
-                  ),
+                  onClick: () => _shareUrl(openInBrowser: false),
                 ),
               ],
               MenuEntry(

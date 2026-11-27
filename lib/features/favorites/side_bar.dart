@@ -57,17 +57,11 @@ class _FavoritesFolderSidebarState extends State<FavoritesFolderSidebar>
   var networkFolders = <String>[];
 
   void findNetworkFolders() {
-    networkFolders.clear();
-    var all = ComicSource.all()
-        .where((e) => e.favoriteData != null)
-        .map((e) => e.favoriteData!.key)
+    networkFolders = (appdata.settings['favorites'] as List)
+        .whereType<String>()
+        .toSet()
+        .where((key) => getFavoriteDataOrNull(key) != null)
         .toList();
-    var settings = appdata.settings['favorites'] as List;
-    for (var p in settings) {
-      if (all.contains(p) && !networkFolders.contains(p)) {
-        networkFolders.add(p);
-      }
-    }
   }
 
   @override
@@ -263,8 +257,10 @@ class _FavoritesFolderSidebarState extends State<FavoritesFolderSidebar>
     bool isChild = false,
     String? expandableId,
   }) {
-    bool isSelected =
-        name == widget.selectedFolder && !widget.isNetworkSelected;
+    final isSelected = widget.isNetworkSelected
+        ? name == localAllFolderLabel &&
+              !networkFolders.contains(widget.selectedFolder)
+        : name == widget.selectedFolder;
     int count = 0;
     if (name == localAllFolderLabel) {
       count = LocalFavoritesManager().totalComics;
@@ -348,7 +344,7 @@ class _FavoritesFolderSidebarState extends State<FavoritesFolderSidebar>
   }
 
   Widget buildNetworkFolder(String key) {
-    var data = getFavoriteDataOrNull(key);
+    final data = getEnabledNetworkFavoriteData(key);
     if (data == null) {
       return const SizedBox();
     }

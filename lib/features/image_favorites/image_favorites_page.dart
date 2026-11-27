@@ -1,13 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:venera_plus/components/appbar.dart';
-import 'package:venera_plus/components/button.dart';
-import 'package:venera_plus/components/menu.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/components/select.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/image_favorites/image_favorites_item.dart';
+import 'package:venera_plus/features/image_favorites/image_favorites_photo_view.dart';
 import 'package:venera_plus/features/image_favorites/type.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
@@ -128,35 +127,30 @@ class _ImageFavoritesPageState extends State<ImageFavoritesPage> {
     super.dispose();
   }
 
-  Widget buildMultiSelectMenu() {
-    return MenuButton(
-      entries: [
-        MenuEntry(
-          icon: Icons.delete_outline,
-          text: "Delete".tl,
-          onClick: () {
-            ImageFavoriteManager().deleteImageFavorite(
-              selectedImageFavorites.keys,
-            );
-            setState(() {
-              multiSelectMode = false;
-              selectedImageFavorites.clear();
-            });
-          },
-        ),
-      ],
-    );
+  void deleteSelected() {
+    final selected = selectedImageFavorites.keys.toList();
+    if (selected.isEmpty) return;
+    confirmImageFavoriteDeletion(context, selected.length, () {
+      if (!mounted) return;
+      ImageFavoriteManager().deleteImageFavorite(selected);
+      setState(() {
+        multiSelectMode = false;
+        selectedImageFavorites.clear();
+      });
+    });
   }
 
   var scrollController = ScrollController();
 
-  void selectAll() {
-    for (var c in comics) {
-      for (var i in c.images) {
-        selectedImageFavorites[i] = true;
+  void selectAll() => selectImages(comics.expand((comic) => comic.images));
+
+  void selectImages(Iterable<ImageFavorite> images) {
+    setState(() {
+      for (final image in images) {
+        selectedImageFavorites[image] = true;
       }
-    }
-    update();
+      if (selectedImageFavorites.isNotEmpty) multiSelectMode = true;
+    });
   }
 
   void deSelect() {
@@ -192,7 +186,11 @@ class _ImageFavoritesPageState extends State<ImageFavoritesPage> {
         tooltip: "Deselect".tl,
         onPressed: deSelect,
       ),
-      buildMultiSelectMenu(),
+      IconButton(
+        icon: const Icon(Icons.delete_outline),
+        tooltip: 'Delete'.tl,
+        onPressed: selectedImageFavorites.isEmpty ? null : deleteSelected,
+      ),
     ];
 
     var scrollWidget = SmoothCustomScrollView(
@@ -316,6 +314,7 @@ class _ImageFavoritesPageState extends State<ImageFavoritesPage> {
               imageFavoritesComic: comic,
               selectedImageFavorites: selectedImageFavorites,
               addSelected: addSelected,
+              selectImages: selectImages,
               multiSelectMode: multiSelectMode,
             );
           }, childCount: comics.length),

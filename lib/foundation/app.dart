@@ -76,12 +76,9 @@ class _App {
     rootNavigatorKey.currentState?.maybePop();
   }
 
-  void pop() {
-    if (rootNavigatorKey.currentState?.canPop() ?? false) {
-      rootNavigatorKey.currentState?.pop();
-    } else if (mainNavigatorKey?.currentState?.canPop() ?? false) {
-      mainNavigatorKey?.currentState?.pop();
-    }
+  Future<void> maybePop() async {
+    if (await rootNavigatorKey.currentState?.maybePop() ?? false) return;
+    await mainNavigatorKey?.currentState?.maybePop();
   }
 
   Future<void> init() async {

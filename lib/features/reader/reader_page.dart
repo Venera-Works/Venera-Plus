@@ -3,6 +3,7 @@ import 'diagnostics_dialog.dart';
 import 'package:venera_plus/foundation/reader_diagnostics.dart';
 import 'dart:async';
 import 'package:uuid/uuid.dart';
+import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/loading.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/foundation/translations.dart';
@@ -22,6 +23,7 @@ import 'package:venera_plus/features/reader/comic_image.dart';
 import 'package:venera_plus/features/reader/gallery_page_plan.dart';
 import 'package:venera_plus/features/reader/gesture.dart';
 import 'package:venera_plus/features/reader/images.dart';
+import 'package:venera_plus/features/reader/orientation.dart';
 import 'package:venera_plus/features/reader/reading_session.dart';
 import 'package:venera_plus/features/reader/remote_progress.dart';
 import 'package:venera_plus/features/reader/scaffold.dart';
@@ -37,6 +39,26 @@ extension ReaderContext on BuildContext {
 
   ReaderScaffoldState get readerScaffold =>
       findAncestorStateOfType<ReaderScaffoldState>()!;
+}
+
+class ReaderStatusFrame extends StatelessWidget {
+  const ReaderStatusFrame({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      child: SafeArea(
+        child: Column(
+          children: [
+            const Appbar(title: Text('')),
+            Expanded(child: child),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class Reader extends StatefulWidget {
@@ -159,6 +181,7 @@ class ReaderState extends State<Reader>
   bool _foreground = true;
   final diagnostics = ReaderDiagnostics();
   int _diagnosticGeneration = 0;
+  int _systemUiRequest = 0;
 
   void stopDiagnostics(ReaderDiagnosticStop reason) {
     _diagnosticGeneration++;
@@ -204,6 +227,24 @@ class ReaderState extends State<Reader>
 
   dynamic readerSetting(String key) =>
       appdata.settings.getReaderSetting(cid, type.sourceKey, key);
+
+  Future<void> applyReaderSystemUiMode({
+    bool toolbarOpen = false,
+    bool entering = false,
+  }) async {
+    final request = ++_systemUiRequest;
+    final restricted =
+        App.isAndroid && readerRequiresEdgeToEdge(await readerAndroidSdkInt);
+    if (!mounted || request != _systemUiRequest) return;
+    final showStatusBar = readerSetting('showSystemStatusBar') == true;
+    if (entering && !restricted && showStatusBar) return;
+    await SystemChrome.setEnabledSystemUIMode(
+      restricted || toolbarOpen || showStatusBar
+          ? SystemUiMode.edgeToEdge
+          : SystemUiMode.immersive,
+    );
+  }
+
   @override
   void update() {
     _syncScreenAwake();
@@ -419,13 +460,7 @@ class ReaderState extends State<Reader>
       unawaited(_resolveInitialReadingProgress(catalog));
     }
     _readingSession = createReadingSessionTracker();
-    if (!appdata.settings.getReaderSetting(
-      cid,
-      type.sourceKey,
-      'showSystemStatusBar',
-    )) {
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersive);
-    }
+    unawaited(applyReaderSystemUiMode(entering: true));
     if (appdata.settings.getReaderSetting(
       cid,
       type.sourceKey,
@@ -756,56 +791,58 @@ class ReaderState extends State<Reader>
   @override
   Widget build(BuildContext context) {
     if (_readingProgressResolutionError case final error?) {
-      return NetworkError(
-        message: 'Unable to resolve saved reading progress: @error'.tlParams({
-          'error': error,
-        }),
-        withAppbar: false,
-        retry: _retryInitialReadingProgressResolution,
+      return ReaderStatusFrame(
+        child: NetworkError(
+          message: 'Unable to resolve saved reading progress: @error'.tlParams({
+            'error': error,
+          }),
+          withAppbar: false,
+          retry: _retryInitialReadingProgressResolution,
+        ),
       );
     }
     if (!_readingProgressResolutionComplete) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return const ReaderStatusFrame(
+        child: Center(child: CircularProgressIndicator()),
+      );
     }
     if (_showProgressConflict) {
-      return Scaffold(
-        body: SafeArea(
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(20),
-                child: Text(
-                  'Saved reading position is ambiguous. Select a chapter to continue.'
-                      .tl,
-                  textAlign: TextAlign.center,
-                ),
+      return ReaderStatusFrame(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(20),
+              child: Text(
+                'Saved reading position is ambiguous. Select a chapter to continue.'
+                    .tl,
+                textAlign: TextAlign.center,
               ),
-              Expanded(
-                child: ListView.builder(
-                  itemCount: _readingCatalog == null
-                      ? 1
-                      : _readingChapters.length,
-                  itemBuilder: (context, index) {
-                    final chapterEntry = _readingCatalog == null
-                        ? null
-                        : _readingChapters[index];
-                    final title = chapterEntry == null
-                        ? widget.name
-                        : widget.chapters?.allChapters[chapterEntry.id] ??
-                              chapterEntry.id;
-                    return ListTile(
-                      title: Text(
-                        chapterEntry?.groupId == null
-                            ? title
-                            : '${chapterEntry?.groupId} · $title',
-                      ),
-                      onTap: () => _selectProgressConflictChapter(index + 1),
-                    );
-                  },
-                ),
+            ),
+            Expanded(
+              child: ListView.builder(
+                itemCount: _readingCatalog == null
+                    ? 1
+                    : _readingChapters.length,
+                itemBuilder: (context, index) {
+                  final chapterEntry = _readingCatalog == null
+                      ? null
+                      : _readingChapters[index];
+                  final title = chapterEntry == null
+                      ? widget.name
+                      : widget.chapters?.allChapters[chapterEntry.id] ??
+                            chapterEntry.id;
+                  return ListTile(
+                    title: Text(
+                      chapterEntry?.groupId == null
+                          ? title
+                          : '${chapterEntry?.groupId} · $title',
+                    ),
+                    onTap: () => _selectProgressConflictChapter(index + 1),
+                  );
+                },
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       );
     }

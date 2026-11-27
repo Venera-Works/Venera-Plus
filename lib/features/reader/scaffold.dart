@@ -45,6 +45,8 @@ class ReaderScaffold extends StatefulWidget {
 class ReaderScaffoldState extends State<ReaderScaffold>
     with ReaderOrientationState {
   bool _isOpen = false;
+  final _imageSelectionPause = Object();
+  ReaderState? _selectionReader;
 
   bool _isOnChapterCommentsPage = false;
   final _pageChanges = ValueNotifier(0);
@@ -97,6 +99,13 @@ class ReaderScaffoldState extends State<ReaderScaffold>
 
   @override
   void dispose() {
+    if (_selectionReader case final reader?) {
+      scheduleMicrotask(() {
+        if (reader.mounted) {
+          reader.autoReading.pause(_imageSelectionPause, false);
+        }
+      });
+    }
     ImageFavoriteManager().removeListener(_reloadImageFavorites);
     _pageChanges.dispose();
     _eInkRefreshController.dispose();
@@ -113,11 +122,7 @@ class ReaderScaffoldState extends State<ReaderScaffold>
   }
 
   void _applySystemUiMode() {
-    if (_isOpen || _readerSetting('showSystemStatusBar') == true) {
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    } else {
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersive);
-    }
+    unawaited(context.reader.applyReaderSystemUiMode(toolbarOpen: _isOpen));
   }
 
   void openOrClose() {
@@ -483,14 +488,22 @@ class ReaderScaffoldState extends State<ReaderScaffold>
         ),
       if (App.isAndroid)
         Tooltip(
-          message: "Screen Rotation".tl,
+          message: readerOrientationRestricted
+              ? 'On large displays, Android 16 and later control screen rotation.'
+                    .tl
+              : 'Screen Rotation'.tl,
+          triggerMode: readerOrientationRestricted
+              ? TooltipTriggerMode.tap
+              : null,
           child: IconButton(
             icon: Icon(switch (readerOrientation) {
               ReaderOrientation.system => Icons.screen_rotation,
               ReaderOrientation.portrait => Icons.screen_lock_portrait,
               ReaderOrientation.landscape => Icons.screen_lock_landscape,
             }),
-            onPressed: cycleReaderOrientation,
+            onPressed: readerOrientationLockEnabled
+                ? cycleReaderOrientation
+                : null,
           ),
         ),
       Tooltip(
@@ -824,8 +837,9 @@ class ReaderScaffoldState extends State<ReaderScaffold>
       }
     } finally {
       _switchingSource = false;
-      if (mounted && !switched)
+      if (mounted && !switched) {
         reader.autoReading.pause('source-switch', false);
+      }
     }
   }
 
@@ -1024,20 +1038,15 @@ class ReaderScaffoldState extends State<ReaderScaffold>
         : Icons.arrow_back_ios_new_rounded;
   }
 
-  /// If there is only one image on screen, return it.
-  ///
-  /// If there are multiple images on screen,
-  /// show an overlay to let the user select an image.
-  ///
-  /// The return value is the index of the selected image.
   Future<Uint8List?> _loadBytesFromReference(ReaderImageReference ref) async {
     try {
-      return await loadReaderOriginalImageBytes(
+      final bytes = await loadReaderOriginalImageBytes(
         ref,
         fallbackSourceKey: context.reader.type.sourceKey,
       );
+      return mounted ? bytes : null;
     } catch (e) {
-      context.showMessage(message: e.toString());
+      if (mounted) context.showMessage(message: e.toString());
       return null;
     }
   }
@@ -1095,8 +1104,10 @@ class ReaderScaffoldState extends State<ReaderScaffold>
         file: file,
       );
     } else {
-      var location = await _showSelectImageOverlay();
-      if (location == null) {
+      final location = await _showImageSelection();
+      if (!mounted ||
+          location == null ||
+          !identical(imageViewController, reader.imageViewController)) {
         return null;
       }
       final ref = imageViewController.getImageReferenceByOffset(location);
@@ -1152,35 +1163,31 @@ class ReaderScaffoldState extends State<ReaderScaffold>
     return (i, data);
   }
 
-  Future<Offset?> _showSelectImageOverlay() {
-    if (_isOpen) {
-      openOrClose();
+  Future<Offset?> _showImageSelection() async {
+    if (_selectionReader != null) return null;
+    final reader = context.reader;
+    _selectionReader = reader;
+    reader.autoReading.pause(_imageSelectionPause, true);
+    try {
+      if (_isOpen) openOrClose();
+      return await showGeneralDialog<Offset>(
+        context: context,
+        useRootNavigator: false,
+        barrierDismissible: true,
+        barrierLabel: 'Cancel'.tl,
+        barrierColor: Colors.transparent,
+        transitionDuration: Duration.zero,
+        pageBuilder: (context, _, _) => _SelectImageOverlayContent(
+          onTap: (offset) => Navigator.of(context).pop(offset),
+          onCancel: () => Navigator.of(context).pop(),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        _selectionReader = null;
+        reader.autoReading.pause(_imageSelectionPause, false);
+      }
     }
-
-    var completer = Completer<Offset?>();
-
-    var overlay = Overlay.of(context);
-    OverlayEntry? entry;
-    entry = OverlayEntry(
-      builder: (context) {
-        return Positioned.fill(
-          child: _SelectImageOverlayContent(
-            onTap: (offset) {
-              completer.complete(offset);
-              entry!.remove();
-            },
-            onDispose: () {
-              if (!completer.isCompleted) {
-                completer.complete(null);
-              }
-            },
-          ),
-        );
-      },
-    );
-    overlay.insert(entry);
-
-    return completer.future;
   }
 }
 
@@ -1316,38 +1323,22 @@ class _ClockWidgetState extends State<_ClockWidget> {
   Widget build(BuildContext context) => Text(_currentTime);
 }
 
-class _SelectImageOverlayContent extends StatefulWidget {
+class _SelectImageOverlayContent extends StatelessWidget {
   const _SelectImageOverlayContent({
     required this.onTap,
-    required this.onDispose,
+    required this.onCancel,
   });
 
-  final void Function(Offset) onTap;
-
-  final void Function() onDispose;
-
-  @override
-  State<_SelectImageOverlayContent> createState() =>
-      _SelectImageOverlayContentState();
-}
-
-class _SelectImageOverlayContentState
-    extends State<_SelectImageOverlayContent> {
-  @override
-  void dispose() {
-    widget.onDispose();
-    super.dispose();
-  }
+  final ValueChanged<Offset> onTap;
+  final VoidCallback onCancel;
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colorScheme;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onTapUp: (details) {
-        widget.onTap(details.globalPosition);
-      },
-      child: ColoredBox(
+      onTapUp: (details) => onTap(details.globalPosition),
+      child: Material(
         color: Colors.black.withAlpha(50),
         child: SafeArea(
           minimum: const EdgeInsets.symmetric(horizontal: 16),
@@ -1382,6 +1373,8 @@ class _SelectImageOverlayContentState
                         style: TextStyle(fontSize: 16, color: colors.onSurface),
                       ),
                     ),
+                    const SizedBox(width: 8),
+                    TextButton(onPressed: onCancel, child: Text('Cancel'.tl)),
                   ],
                 ),
               ),

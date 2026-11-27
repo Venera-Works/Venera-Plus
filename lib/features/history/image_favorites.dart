@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:isolate';
 
@@ -157,36 +158,40 @@ class ImageFavoriteManager with ChangeNotifier {
   }
 
   void deleteImageFavorite(Iterable<ImageFavorite> imageFavoriteList) {
-    if (imageFavoriteList.isEmpty) {
-      return;
+    final selections = <(String, String), Set<ImageFavorite>>{};
+    for (final image in imageFavoriteList) {
+      (selections[(image.id, image.sourceKey)] ??= {}).add(image);
     }
-    for (var i in imageFavoriteList) {
-      ImageFavoritesProvider.deleteFromCache(i);
-    }
-    var comics = <ImageFavoritesComic>{};
-    for (var i in imageFavoriteList) {
-      var comic =
-          comics
-              .where((c) => c.id == i.id && c.sourceKey == i.sourceKey)
-              .firstOrNull ??
-          find(i.id, i.sourceKey);
-      if (comic == null) {
-        continue;
+    var changed = false;
+    for (final MapEntry(key: (id, sourceKey), value: selected)
+        in selections.entries) {
+      final comic = find(id, sourceKey);
+      if (comic == null) continue;
+      final removed = <ImageFavorite>[];
+      comic.imageFavoritesEp.removeWhere((chapter) {
+        final previousCount = chapter.imageFavorites.length;
+        chapter.imageFavorites.removeWhere((image) {
+          if (!selected.contains(image)) return false;
+          removed.add(image);
+          return true;
+        });
+        if (chapter.imageFavorites.length == previousCount ||
+            chapter.imageFavorites.any(
+              (image) => image.isAutoFavorite != true,
+            )) {
+          return false;
+        }
+        removed.addAll(chapter.imageFavorites);
+        return true;
+      });
+      if (removed.isEmpty) continue;
+      addOrUpdateOrDelete(comic, false);
+      for (final image in removed) {
+        unawaited(ImageFavoritesProvider.deleteFromCache(image));
       }
-      var ep = comic.imageFavoritesEp.firstWhereOrNull((e) => e.ep == i.ep);
-      if (ep == null) {
-        continue;
-      }
-      ep.imageFavorites.remove(i);
-      if (ep.imageFavorites.isEmpty) {
-        comic.imageFavoritesEp.remove(ep);
-      }
-      comics.add(comic);
+      changed = true;
     }
-    for (var i in comics) {
-      addOrUpdateOrDelete(i, false);
-    }
-    notifyListeners();
+    if (changed) notifyListeners();
   }
 
   int get length {

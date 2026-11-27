@@ -50,30 +50,42 @@ class _ToastStack extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    var bottom = App.isMobile
-        ? MediaQuery.of(context).size.height * 0.25 +
-              MediaQuery.of(context).viewPadding.bottom
-        : 24 + MediaQuery.of(context).viewInsets.bottom;
+    final mediaQuery = MediaQuery.of(context);
+    final keyboardBottom = mediaQuery.viewInsets.bottom;
+    final top = App.isMobile ? mediaQuery.viewPadding.top : null;
+    var bottom = 24 + keyboardBottom;
+    Widget stack = Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (var i = 0; i < toasts.length; i++)
+          Padding(
+            key: toasts[i].key,
+            padding: EdgeInsets.only(bottom: i == toasts.length - 1 ? 0 : 8),
+            child: _ToastOverlay(toast: toasts[i]),
+          ),
+      ],
+    );
+    if (top != null) {
+      final restingBottom =
+          mediaQuery.size.height * 0.25 + mediaQuery.viewPadding.bottom;
+      bottom = math.min(
+        keyboardBottom > 0
+            ? math.max(restingBottom, keyboardBottom + 8)
+            : restingBottom,
+        math.max(0.0, mediaQuery.size.height - top),
+      );
+      stack = SingleChildScrollView(
+        reverse: true,
+        primary: false,
+        child: stack,
+      );
+    }
     return Positioned(
+      top: top,
       bottom: bottom,
       left: 0,
       right: 0,
-      child: Align(
-        alignment: Alignment.bottomCenter,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (var i = 0; i < toasts.length; i++)
-              Padding(
-                key: toasts[i].key,
-                padding: EdgeInsets.only(
-                  bottom: i == toasts.length - 1 ? 0 : 8,
-                ),
-                child: _ToastOverlay(toast: toasts[i]),
-              ),
-          ],
-        ),
-      ),
+      child: Align(alignment: Alignment.bottomCenter, child: stack),
     );
   }
 }
@@ -654,10 +666,10 @@ Future<int?> showSelectDialog({
   required String title,
   required List<String> options,
   int? initialIndex,
-}) async {
+}) {
   int? current = initialIndex;
 
-  await showDialog(
+  return showDialog<int>(
     context: App.rootContext,
     builder: (context) {
       return StatefulBuilder(
@@ -686,15 +698,9 @@ Future<int?> showSelectDialog({
               ),
             ),
             actions: [
-              TextButton(
-                onPressed: () {
-                  current = null;
-                  context.pop();
-                },
-                child: Text('Cancel'.tl),
-              ),
+              TextButton(onPressed: context.pop, child: Text('Cancel'.tl)),
               FilledButton(
-                onPressed: current == null ? null : context.pop,
+                onPressed: current == null ? null : () => context.pop(current),
                 child: Text('Confirm'.tl),
               ),
             ],
@@ -703,6 +709,4 @@ Future<int?> showSelectDialog({
       );
     },
   );
-
-  return current;
 }

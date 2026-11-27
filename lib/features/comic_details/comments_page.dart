@@ -44,9 +44,12 @@ class CommentsPage extends StatefulWidget {
 
 class _CommentsPageState extends State<CommentsPage> {
   bool _loading = false;
+  bool _loadingMore = false;
   List<Comment>? _comments;
   final List<Comment> _allComments = [];
   String? _error;
+  String? _loadMoreError;
+  int _generation = 0;
   int _page = 1;
   int? maxPage;
   var controller = TextEditingController();
@@ -81,18 +84,33 @@ class _CommentsPageState extends State<CommentsPage> {
         .toList();
   }
 
+  bool get _hasMore => maxPage == null || _page < maxPage!;
+
+  Future<Res<List<Comment>>> _loadComments(int page) async {
+    try {
+      return await widget.source.commentsLoader!(
+        widget.data.comicId,
+        widget.data.subId,
+        page,
+        widget.replyComment?.id,
+      );
+    } catch (error) {
+      return Res.error(error.toString());
+    }
+  }
+
   void firstLoad() async {
     if (!mounted || _loading) return;
+    _generation++;
     setState(() {
       _loading = true;
+      _loadingMore = false;
       _error = null;
+      _loadMoreError = null;
+      _page = 1;
+      maxPage = null;
     });
-    final res = await widget.source.commentsLoader!(
-      widget.data.comicId,
-      widget.data.subId,
-      1,
-      widget.replyComment?.id,
-    );
+    final res = await _loadComments(1);
     if (!mounted) return;
     setState(() {
       _loading = false;
@@ -109,26 +127,26 @@ class _CommentsPageState extends State<CommentsPage> {
   }
 
   void loadMore() async {
-    if (!mounted) return;
-    var res = await widget.source.commentsLoader!(
-      widget.data.comicId,
-      widget.data.subId,
-      _page + 1,
-      widget.replyComment?.id,
-    );
-    if (!mounted) return;
-    if (res.error) {
-      context.showMessage(message: res.errorMessage ?? 'Error'.tl);
-    } else {
-      setState(() {
+    if (!mounted || _loading || _loadingMore || !_hasMore) return;
+    final generation = _generation;
+    final page = _page + 1;
+    _loadingMore = true;
+    if (_loadMoreError != null) setState(() => _loadMoreError = null);
+    final res = await _loadComments(page);
+    if (!mounted || generation != _generation) return;
+    setState(() {
+      _loadingMore = false;
+      if (res.error) {
+        _loadMoreError = res.errorMessage ?? 'Error'.tl;
+      } else {
         _allComments.addAll(res.data);
         _filterComments();
-        _page++;
+        _page = page;
         if (maxPage == null && res.data.isEmpty) {
           maxPage = _page;
         }
-      });
-    }
+      }
+    });
   }
 
   @override
@@ -201,12 +219,35 @@ class _CommentsPageState extends State<CommentsPage> {
                     index--;
 
                     if (index == _comments!.length) {
-                      if (_page < (maxPage ?? _page + 1)) {
-                        loadMore();
-                        return const ListLoadingIndicator();
-                      } else {
-                        return const SizedBox();
+                      if (!_hasMore) return const SizedBox.shrink();
+                      final error = _loadMoreError;
+                      if (error != null) {
+                        return Column(
+                          children: [
+                            Text(
+                              error,
+                              textAlign: TextAlign.center,
+                              maxLines: 3,
+                            ),
+                            OutlinedButton(
+                              onPressed: loadMore,
+                              child: Text('Retry'.tl),
+                            ),
+                          ],
+                        ).paddingHorizontal(16).paddingVertical(8);
                       }
+                      if (!_loadingMore) {
+                        final generation = _generation;
+                        final page = _page;
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (generation == _generation &&
+                              page == _page &&
+                              _loadMoreError == null) {
+                            loadMore();
+                          }
+                        });
+                      }
+                      return const ListLoadingIndicator();
                     }
 
                     return _CommentTile(
@@ -370,9 +411,6 @@ class _CommentsPageState extends State<CommentsPage> {
                         setState(() {
                           sending = false;
                           _replyTarget = null;
-                          _comments?.clear();
-                          _page = 1;
-                          maxPage = null;
                         });
                         firstLoad();
                       } else {

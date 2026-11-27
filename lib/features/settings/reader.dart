@@ -5,6 +5,7 @@ import 'package:venera_plus/components/code.dart';
 import 'package:venera_plus/components/layout.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/reader/brightness.dart';
+import 'package:venera_plus/features/reader/orientation.dart';
 import 'package:venera_plus/features/settings/setting_components.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
@@ -29,6 +30,23 @@ class ReaderSettings extends StatefulWidget {
 }
 
 class _ReaderSettingsState extends State<ReaderSettings> {
+  Widget _buildSystemStatusBarSetting(SwitchSetting setting) {
+    if (!App.isAndroid) return setting;
+    return FutureBuilder<int?>(
+      future: readerAndroidSdkInt,
+      builder: (context, snapshot) {
+        if (!readerRequiresEdgeToEdge(snapshot.data)) return setting;
+        return ListTile(
+          title: Text(setting.title),
+          subtitle: Text(
+            'Android 16 and later keep the system status bar visible.'.tl,
+          ),
+          trailing: const Switch(value: true, onChanged: null),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final comicId = widget.comicId;
@@ -440,15 +458,17 @@ class _ReaderSettingsState extends State<ReaderSettings> {
           comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
           useDeviceSettings: useDeviceSpecificSettings,
         ).toSliver(),
-        SwitchSetting(
-          title: "Show system status bar".tl,
-          settingKey: "showSystemStatusBar",
-          onChanged: () {
-            widget.onChanged?.call("showSystemStatusBar");
-          },
-          comicId: isEnabledSpecificSettings ? widget.comicId : null,
-          comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
-          useDeviceSettings: useDeviceSpecificSettings,
+        _buildSystemStatusBarSetting(
+          SwitchSetting(
+            title: "Show system status bar".tl,
+            settingKey: "showSystemStatusBar",
+            onChanged: () {
+              widget.onChanged?.call("showSystemStatusBar");
+            },
+            comicId: isEnabledSpecificSettings ? widget.comicId : null,
+            comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
+            useDeviceSettings: useDeviceSpecificSettings,
+          ),
         ).toSliver(),
         SwitchSetting(
           title: 'Show image pixel dimensions'.tl,

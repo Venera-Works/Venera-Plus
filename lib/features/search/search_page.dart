@@ -335,7 +335,7 @@ class _SearchPageState extends State<SearchPage> {
                   text: e.name,
                   isSelected: searchTarget == e.key || aggregatedSearch,
                   onTap: () {
-                    if (aggregatedSearch) return;
+                    if (aggregatedSearch || searchTarget == e.key) return;
                     setState(() {
                       searchTarget = e.key;
                       useDefaultOptions();

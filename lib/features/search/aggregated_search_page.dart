@@ -14,6 +14,8 @@ import "package:venera_plus/foundation/translations.dart";
 import "package:venera_plus/foundation/widget_utils.dart";
 import 'package:venera_plus/foundation/search_history.dart';
 
+import 'search_filter.dart';
+import 'search_options.dart';
 import "search_result_page.dart";
 import "search_targets.dart";
 
@@ -137,7 +139,7 @@ class _SliverSearchResultState extends State<_SliverSearchResult>
 
   static const _kComicHeight = 162.0;
 
-  get _comicWidth => _kComicHeight * 0.7;
+  double get _comicWidth => _kComicHeight * 0.7;
 
   static const _kLeftPadding = 16.0;
 
@@ -157,12 +159,15 @@ class _SliverSearchResultState extends State<_SliverSearchResult>
     _activeRequest = request;
     try {
       final data = widget.source.searchPageData;
-      final options = (data.searchOptions ?? [])
-          .map((option) => option.defaultValue)
-          .toList();
+      final options = defaultSearchOptions(data.searchOptions ?? []);
+      final keyword = applySearchLanguageFilter(
+        widget.keyword,
+        sourceKey: widget.source.key,
+        setting: appdata.settings['autoAddLanguageFilter'] ?? 'none',
+      );
       final result = data.loadPage != null
-          ? await data.loadPage!(widget.keyword, 1, options)
-          : await data.loadNext!(widget.keyword, null, options);
+          ? await data.loadPage!(keyword, 1, options)
+          : await data.loadNext!(keyword, null, options);
       if (!mounted || !identical(_activeRequest, request)) return;
       setState(() {
         isLoading = false;
@@ -253,12 +258,13 @@ class _SliverSearchResultState extends State<_SliverSearchResult>
     }
     super.build(context);
     var visibleComics = comics;
-    if (visibleComics != null &&
-        widget.source.searchPageData.loadTags != null) {
+    if (visibleComics != null && visibleComics.isNotEmpty) {
       final filter = comicKeywordFilter();
-      visibleComics = visibleComics
-          .where((comic) => matchComicKeyword(comic, filter: filter) == null)
-          .toList();
+      if (filter.rules.isNotEmpty) {
+        visibleComics = visibleComics
+            .where((comic) => matchComicKeyword(comic, filter: filter) == null)
+            .toList();
+      }
     }
     return ClickInkWell(
       onTap: () {

@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/context.dart';
-import 'package:venera_plus/features/comic_source/comic_source.dart';
+import 'package:venera_plus/features/favorites/favorite_actions.dart';
 import 'package:venera_plus/features/favorites/favorites_manager.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 import 'package:venera_plus/features/favorites/favorites_constants.dart';
@@ -50,7 +50,8 @@ class _FavoritesPageState extends State<FavoritesPage> {
     var selectedFolder = folder == null || folder.isEmpty
         ? localAllFolderLabel
         : folder;
-    if (selectedNetwork && getFavoriteDataOrNull(selectedFolder) == null) {
+    if (selectedNetwork &&
+        getEnabledNetworkFavoriteData(selectedFolder) == null) {
       selectedNetwork = false;
       selectedFolder = localAllFolderLabel;
     } else if (!selectedNetwork &&
@@ -90,7 +91,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
           return;
         }
         if (storedIsNetwork) {
-          if (getFavoriteDataOrNull(storedFolder) != null) {
+          if (getEnabledNetworkFavoriteData(storedFolder) != null) {
             folder = storedFolder;
             isNetwork = true;
             return;
@@ -117,6 +118,16 @@ class _FavoritesPageState extends State<FavoritesPage> {
     if (currentName != folder) setFolder(false, currentName);
   }
 
+  void _onSettingsChanged() {
+    final selectedFolder = folder;
+    if (mounted &&
+        isNetwork &&
+        selectedFolder != null &&
+        getEnabledNetworkFavoriteData(selectedFolder) == null) {
+      setFolder(false, localAllFolderLabel);
+    }
+  }
+
   void _fallbackToAllAfterBuild() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -124,7 +135,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
       final isInvalid =
           currentFolder == null ||
           (isNetwork
-              ? getFavoriteDataOrNull(currentFolder) == null
+              ? getEnabledNetworkFavoriteData(currentFolder) == null
               : currentFolder != localAllFolderLabel &&
                     !LocalFavoritesManager().existsFolder(currentFolder));
       if (isInvalid) {
@@ -150,11 +161,13 @@ class _FavoritesPageState extends State<FavoritesPage> {
   void initState() {
     super.initState();
     _restoreFolderSelection();
+    appdata.settings.addListener(_onSettingsChanged);
     LocalFavoritesManager().addListener(_refreshSelectedFolder);
   }
 
   @override
   void dispose() {
+    appdata.settings.removeListener(_onSettingsChanged);
     LocalFavoritesManager().removeListener(_refreshSelectedFolder);
     super.dispose();
   }
@@ -248,7 +261,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
       }
       return _buildLocalPage(selectedFolder);
     }
-    final favoriteData = getFavoriteDataOrNull(selectedFolder);
+    final favoriteData = getEnabledNetworkFavoriteData(selectedFolder);
     if (favoriteData == null) {
       _fallbackToAllAfterBuild();
       return _buildLocalPage(localAllFolderLabel);

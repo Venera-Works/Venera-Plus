@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
@@ -14,8 +15,15 @@ import 'package:venera_plus/foundation/comic_type.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/file_interaction.dart';
 import 'package:venera_plus/foundation/log.dart';
+import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
+
+FavoriteData? getEnabledNetworkFavoriteData(String key) {
+  return (appdata.settings['favorites'] as List).contains(key)
+      ? getFavoriteDataOrNull(key)
+      : null;
+}
 
 /// Open a dialog to create a new favorite folder.
 Future<String?> newFolder({String? parentFolderId}) {
@@ -52,17 +60,26 @@ Future<String?> newFolder({String? parentFolderId}) {
                 TextButton(
                   child: Text("Import from file".tl),
                   onPressed: () async {
-                    var file = await selectFile(ext: ['json']);
-                    if (file == null) return;
-                    var data = await file.readAsBytes();
-                    if (!context.mounted) return;
                     try {
+                      final file = await selectFile(ext: ['json']);
+                      if (file == null) return;
+                      final data = await file.readAsBytes();
+                      if (!context.mounted ||
+                          ModalRoute.of(context)?.isCurrent != true) {
+                        return;
+                      }
+                      final previousFolders = manager.folderNames.toSet();
                       manager.fromJson(utf8.decode(data));
+                      final importedFolder = manager.folderNames.firstWhere(
+                        (folder) => !previousFolders.contains(folder),
+                      );
+                      context.pop(importedFolder);
                     } catch (e) {
-                      context.showMessage(message: "Failed to import".tl);
-                      return;
+                      if (context.mounted &&
+                          ModalRoute.of(context)?.isCurrent == true) {
+                        context.showMessage(message: "Failed to import".tl);
+                      }
                     }
-                    context.pop();
                   },
                 ).paddingRight(4),
               FilledButton(
@@ -123,6 +140,12 @@ Future<void> addFavorite(List<Comic> comics) async {
       return StatefulBuilder(
         builder: (context, setState) {
           final folders = manager.folders;
+          final selectedFolder = folders
+              .where((f) => f.id == selectedId)
+              .firstOrNull;
+          final visibleFolders = folders.where(
+            (folder) => folder.matchesPath(query),
+          );
           return ContentDialog(
             title: "Select a folder".tl,
             content: Column(
@@ -130,23 +153,28 @@ Future<void> addFavorite(List<Comic> comics) async {
                 FavoriteFolderSearchField(
                   onChanged: (value) => setState(() => query = value),
                 ),
-                for (final folder in folders)
-                  if (folder.matchesPath(query))
-                    ListTile(
-                      leading: Icon(
-                        selectedId == folder.id
-                            ? Icons.check_circle_outline
-                            : Icons.folder_outlined,
-                      ),
-                      selected: selectedId == folder.id,
-                      title: Text(folder.path),
-                      onTap: () => setState(() => selectedId = folder.id),
+                for (final folder in visibleFolders)
+                  ListTile(
+                    leading: Icon(
+                      selectedId == folder.id
+                          ? Icons.check_circle_outline
+                          : Icons.folder_outlined,
                     ),
+                    selected: selectedId == folder.id,
+                    title: Text(folder.path),
+                    onTap: () => setState(() => selectedId = folder.id),
+                  ),
               ],
             ),
             actions: [
+              if (selectedFolder != null)
+                Text(
+                  'Selected folder: @path'.tlParams({
+                    'path': selectedFolder.path,
+                  }),
+                ),
               FilledButton(
-                onPressed: folders.any((folder) => folder.id == selectedId)
+                onPressed: selectedFolder?.matchesPath(query) == true
                     ? () => Navigator.of(context).pop(selectedId)
                     : null,
                 child: Text("Confirm".tl),
@@ -432,232 +460,229 @@ Future<void> moveFavoriteFolder(FavoriteFolder folder) async {
   manager.moveFolder(folder.id, destination.isEmpty ? null : destination);
 }
 
+class NetworkFavoriteDialogRoute<T> extends DialogRoute<T> {
+  NetworkFavoriteDialogRoute({required super.context, required super.builder});
+
+  bool blockPop = false;
+
+  @override
+  RoutePopDisposition get popDisposition =>
+      blockPop ? RoutePopDisposition.doNotPop : super.popDisposition;
+
+  // 桌面快捷键直接调用 Navigator.pop，会绕过 popDisposition。
+  @override
+  bool didPop(T? result) => !blockPop && super.didPop(result);
+}
+
 Future<void> importNetworkFolder(
   String source,
   int updatePageNum,
   String? folder,
   String? folderID,
 ) async {
-  var comicSource = ComicSource.find(source);
-  if (comicSource == null) {
+  final comicSource = ComicSource.find(source);
+  if (comicSource == null) return;
+  final manager = LocalFavoritesManager();
+  final resultName = folder == null || folder.isEmpty
+      ? comicSource.name
+      : folder;
+  final networkFolder = folderID ?? '';
+  final existingId = manager.getFolderId(resultName);
+  final existingName = existingId == null
+      ? null
+      : manager.getFolderNameById(existingId);
+  final rootContext = App.rootContext;
+  if (existingName != null &&
+      !manager.isLinkedToNetworkFolder(existingName, source, networkFolder)) {
+    rootContext.showMessage(message: 'Folder already exists'.tl);
     return;
-  }
-  if (folder != null && folder.isEmpty) {
-    folder = null;
-  }
-  var resultName = folder ?? comicSource.name;
-  var exists = LocalFavoritesManager().existsFolder(resultName);
-  if (exists) {
-    resultName = LocalFavoritesManager().folderNames.firstWhere(
-      (name) =>
-          favoriteFolderNameKey(name) == favoriteFolderNameKey(resultName),
-    );
-  }
-  if (exists) {
-    if (!LocalFavoritesManager().isLinkedToNetworkFolder(
-      resultName,
-      source,
-      folderID ?? "",
-    )) {
-      App.rootContext.showMessage(message: "Folder already exists".tl);
-      return;
-    }
-  }
-  if (!exists) {
-    resultName = LocalFavoritesManager().createFolder(resultName, true);
-    LocalFavoritesManager().linkFolderToNetwork(
-      resultName,
-      source,
-      folderID ?? "",
-    );
   }
   final favoriteData = comicSource.favoriteData;
   final isOldToNewSort = favoriteData?.isOldToNewSort ?? false;
   final loadComic = favoriteData?.loadComic;
   final loadNext = favoriteData?.loadNext;
-  var current = 0;
-  int receivedComics = 0;
-  int requestCount = 0;
-  var isFinished = false;
-  var pagesToLoad = updatePageNum;
-  List<FavoriteItem> comics = [];
-  String? next;
-  Future<void> fetchNext() async {
-    var retry = 3;
-    while (requestCount < pagesToLoad && !isFinished) {
+  var importedCount = 0;
+  var receivedComics = 0;
+  var requestCount = 0;
+  var completed = false;
+  String? errorMessage;
+  VoidCallback? updateDialog;
+  final comics = <Comic>[];
+  final navigator = Navigator.of(rootContext, rootNavigator: true);
+  late final NetworkFavoriteDialogRoute<void> route;
+
+  void closeDialog() {
+    if (!navigator.mounted || !route.isCurrent) return;
+    route.blockPop = false;
+    navigator.pop();
+  }
+
+  route = NetworkFavoriteDialogRoute<void>(
+    context: rootContext,
+    builder: (context) => StatefulBuilder(
+      builder: (context, setState) {
+        updateDialog = () {
+          if (context.mounted && route.isActive) setState(() {});
+        };
+        final failed = errorMessage != null;
+        return ContentDialog(
+          title: failed
+              ? 'Failed to import'.tl
+              : (completed ? 'Finished' : 'Importing').tl,
+          onClose: closeDialog,
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (!failed) LinearProgressIndicator(value: completed ? 1 : null),
+              const SizedBox(height: 4),
+              Text(
+                'Imported @a comics, loaded @b pages, received @c comics'
+                    .tlParams({
+                      'a': importedCount,
+                      'b': requestCount,
+                      'c': receivedComics,
+                    }),
+              ),
+              if (errorMessage case final error?) Text(error),
+            ],
+          ).paddingHorizontal(16),
+          actions: [
+            Button.filled(
+              color: completed || failed ? null : context.colorScheme.error,
+              onPressed: closeDialog,
+              child: Text((completed || failed ? 'OK' : 'Cancel').tl),
+            ),
+          ],
+        );
+      },
+    ),
+  );
+  unawaited(
+    navigator.push(route).then((_) {
+      comics.clear();
+      updateDialog = null;
+    }),
+  );
+
+  Future<Res<List<Comic>>?> fetchPage(
+    Future<Res<List<Comic>>> Function() load,
+  ) async {
+    for (var attempt = 1; route.isActive; attempt++) {
       try {
-        if (loadComic != null) {
-          if (isOldToNewSort && next == null) {
-            final probe = await loadComic(1, folderID);
-            final maxPage = probe.subData;
-            if (probe.error || maxPage is! int || maxPage <= 0) {
-              throw probe.errorMessage ?? "Failed to load comics".tl;
-            }
-            pagesToLoad = min(updatePageNum, maxPage);
-            // 正序同步取末尾几页，例如共十页、同步三页时从第八页开始。
-            next = (maxPage - pagesToLoad + 1).toString();
-          }
-          final page = int.parse(next ?? '1');
-          final res = await loadComic(page, folderID);
-          var count = 0;
-          receivedComics += res.data.length;
-          for (var c in res.data) {
-            if (!LocalFavoritesManager().comicExists(
-              resultName,
-              c.id,
-              ComicType(source.hashCode),
-            )) {
-              count++;
-              comics.add(
-                FavoriteItem(
-                  id: c.id,
-                  name: c.title,
-                  coverPath: c.cover,
-                  type: ComicType(source.hashCode),
-                  author: c.subtitle ?? '',
-                  tags: c.tags ?? [],
-                ),
-              );
-            }
-          }
-          requestCount++;
-          current += count;
-          if (res.data.isEmpty || res.subData == page) {
-            isFinished = true;
-            next = null;
-          } else {
-            next = (page + 1).toString();
-          }
-        } else if (loadNext != null) {
-          var res = await loadNext(next, folderID);
-          var count = 0;
-          receivedComics += res.data.length;
-          for (var c in res.data) {
-            if (!LocalFavoritesManager().comicExists(
-              resultName,
-              c.id,
-              ComicType(source.hashCode),
-            )) {
-              count++;
-              comics.add(
-                FavoriteItem(
-                  id: c.id,
-                  name: c.title,
-                  coverPath: c.cover,
-                  type: ComicType(source.hashCode),
-                  author: c.subtitle ?? '',
-                  tags: c.tags ?? [],
-                ),
-              );
-            }
-          }
-          requestCount++;
-          current += count;
-          if (res.data.isEmpty || res.subData == null) {
-            isFinished = true;
-            next = null;
-          } else {
-            next = res.subData;
-          }
-        } else {
-          throw "Unsupported source";
-        }
-        return;
-      } catch (e) {
-        retry--;
-        if (retry == 0) {
-          rethrow;
-        }
-        continue;
+        final response = await load();
+        if (!route.isActive) return null;
+        if (response.error) throw StateError(response.errorMessage!);
+        return response;
+      } catch (_) {
+        if (attempt == 3) rethrow;
       }
     }
-    // 跳出循环, 表示已经完成, 强制为 true, 避免死循环
-    isFinished = true;
+    return null;
   }
 
-  bool isCanceled = false;
-  String? errorMsg;
-  bool isErrored() => errorMsg != null;
-
-  void Function()? updateDialog;
-  void Function()? closeDialog;
-
-  showDialog(
-    context: App.rootContext,
-    builder: (context) {
-      return StatefulBuilder(
-        builder: (context, setState) {
-          updateDialog = () => setState(() {});
-          closeDialog = () => Navigator.pop(context);
-          return ContentDialog(
-            title: isFinished
-                ? "Finished".tl
-                : isErrored()
-                ? "Error".tl
-                : "Importing".tl,
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const SizedBox(height: 4),
-                LinearProgressIndicator(value: isFinished ? 1 : null),
-                const SizedBox(height: 4),
-                Text(
-                  "Imported @a comics, loaded @b pages, received @c comics"
-                      .tlParams({
-                        "a": current,
-                        "b": requestCount,
-                        "c": receivedComics,
-                      }),
-                ),
-                const SizedBox(height: 4),
-                if (isErrored()) Text('${"Error".tl}: $errorMsg'),
-              ],
-            ).paddingHorizontal(16),
-            actions: [
-              Button.filled(
-                color: (isFinished || isErrored())
-                    ? null
-                    : context.colorScheme.error,
-                onPressed: () {
-                  isCanceled = true;
-                  context.pop();
-                },
-                child: (isFinished || isErrored())
-                    ? Text("OK".tl)
-                    : Text("Cancel".tl),
-              ),
-            ],
-          );
-        },
-      );
-    },
-  ).then((_) {
-    isCanceled = true;
-  });
-
-  while (!isFinished && !isCanceled) {
-    try {
-      await fetchNext();
-      updateDialog?.call();
-    } catch (e) {
-      errorMsg = e.toString();
-      updateDialog?.call();
-      break;
-    }
-  }
+  var page = 1;
+  String? next;
+  var pagesToLoad = updatePageNum;
+  String? createdFolder;
   try {
-    if (appdata.settings['newFavoriteAddTo'] == "start" && !isOldToNewSort) {
-      // 如果是插到最前, 并且是从新到旧, 反转一下
-      comics = comics.reversed.toList();
+    if (loadComic == null && loadNext == null) {
+      throw StateError('Failed to load comics'.tl);
     }
-    for (var c in comics) {
-      LocalFavoritesManager().addComic(resultName, c);
+    if (loadComic != null && isOldToNewSort && pagesToLoad > 0) {
+      final probe = await fetchPage(() => loadComic(1, folderID));
+      if (probe == null || !route.isActive) return;
+      final lastPage = probe.subData;
+      if (lastPage is! int || lastPage <= 0) {
+        throw StateError('Failed to load comics'.tl);
+      }
+      // 正序同步取末尾几页，例如共十页、同步三页时从第八页开始。
+      pagesToLoad = min(updatePageNum, lastPage);
+      page = lastPage - pagesToLoad + 1;
     }
-    // 延迟一点, 让用户看清楚到底新增了多少
-    await Future.delayed(const Duration(milliseconds: 500));
-    closeDialog?.call();
-  } catch (e, stackTrace) {
-    Log.error("Unhandled Exception", e.toString(), stackTrace);
+    while (requestCount < pagesToLoad) {
+      final response = await fetchPage(
+        loadComic != null
+            ? () => loadComic(page, folderID)
+            : () => loadNext!(next, folderID),
+      );
+      if (response == null || !route.isActive) return;
+      final items = response.data;
+      comics.addAll(items);
+      requestCount++;
+      receivedComics += items.length;
+      updateDialog?.call();
+      if (items.isEmpty) break;
+      if (loadComic != null) {
+        if (response.subData == page) break;
+        page++;
+      } else {
+        next = response.subData as String?;
+        if (next == null) break;
+      }
+    }
+
+    // 所有页成功且弹窗仍有效时才提交，提交期间没有异步间隔。
+    if (!route.isActive) return;
+    if (comics.isNotEmpty) {
+      final String target;
+      if (existingId != null) {
+        final name = manager.getFolderNameById(existingId);
+        if (name == null ||
+            !manager.isLinkedToNetworkFolder(name, source, networkFolder)) {
+          throw StateError('Favorite folder no longer exists'.tl);
+        }
+        target = name;
+      } else {
+        if (manager.existsFolder(resultName)) {
+          throw StateError('Folder already exists'.tl);
+        }
+        target = createdFolder = manager.createFolder(resultName, true);
+      }
+
+      final type = ComicType(source.hashCode);
+      final insertAtStart = appdata.settings['newFavoriteAddTo'] == 'start';
+      final order = insertAtStart && !isOldToNewSort ? comics.reversed : comics;
+      for (final comic in order) {
+        final added = manager.addComic(
+          target,
+          FavoriteItem(
+            id: comic.id,
+            name: comic.title,
+            coverPath: comic.cover,
+            type: type,
+            author: comic.subtitle ?? '',
+            tags: comic.tags ?? [],
+          ),
+        );
+        if (added) importedCount++;
+      }
+      if (createdFolder != null) {
+        manager.linkFolderToNetwork(target, source, networkFolder);
+      }
+    }
+    completed = true;
+    updateDialog?.call();
+  } catch (error, stackTrace) {
+    if (!route.isActive) return;
+    if (createdFolder != null) {
+      try {
+        manager.deleteFolder(createdFolder);
+        importedCount = 0;
+      } catch (error, stackTrace) {
+        Log.error('Import network favorites', error, stackTrace);
+      }
+    }
+    Log.error('Import network favorites', error, stackTrace);
+    errorMessage = error is StateError ? error.message : error.toString();
+    route.blockPop = true;
+    updateDialog?.call();
+    return;
+  } finally {
+    comics.clear();
   }
+
+  // 成功时短暂展示实际写入数量。
+  await Future.delayed(const Duration(milliseconds: 500));
+  closeDialog();
 }

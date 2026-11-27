@@ -11,6 +11,8 @@ class PopUpWidget<T> extends PopupRoute<T> {
 
   final Widget widget;
 
+  final _navigatorKey = GlobalKey<NavigatorState>();
+
   @override
   Color? get barrierColor => Colors.black54;
 
@@ -64,15 +66,20 @@ class PopUpWidget<T> extends PopupRoute<T> {
       width: showPopUp ? 500 : double.infinity,
       height: double.infinity,
       child: ClipRect(
-        child: Navigator(
-          onGenerateRoute: (settings) =>
-              MaterialPageRoute(builder: (context) => widget),
+        child: NavigatorPopHandler<T>(
+          onPopWithResult: (result) =>
+              _navigatorKey.currentState?.maybePop(result),
+          child: Navigator(
+            key: _navigatorKey,
+            onGenerateRoute: (settings) =>
+                MaterialPageRoute(builder: (context) => widget),
+          ),
         ),
       ),
     );
     if (App.isIOS) {
       body = IOSBackGestureDetector(
-        enabledCallback: () => true,
+        enabledCallback: () => popGestureEnabled,
         gestureWidth: 20.0,
         onStartPopGesture: () =>
             IOSBackGestureController(controller!, navigator!),
@@ -182,8 +189,11 @@ class _PopUpWidgetScaffoldState extends State<PopUpWidgetScaffold> {
                   message: "Back".tl,
                   child: IconButton(
                     icon: const Icon(Icons.arrow_back),
-                    onPressed: () =>
-                        context.canPop() ? context.pop() : App.pop(),
+                    onPressed: () => Navigator.of(
+                      context,
+                      rootNavigator:
+                          PopupIndicatorWidget.maybeOf(context) != null,
+                    ).maybePop(),
                   ),
                 ),
                 const SizedBox(width: 16),

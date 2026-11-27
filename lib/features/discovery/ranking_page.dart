@@ -41,16 +41,15 @@ class _RankingPageState extends State<RankingPage> {
 
   @override
   Widget build(BuildContext context) {
-    var topPadding = context.padding.top + 56;
+    final topPadding = context.padding.top + 56;
+    final header = buildOptions().paddingTop(topPadding);
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: Appbar(title: Text("Ranking".tl)),
       body: ComicList(
         key: Key(optionValue),
-        errorLeading: SizedBox(height: topPadding),
-        leadingSliver: buildOptions().sliverPadding(
-          EdgeInsets.only(top: topPadding),
-        ),
+        errorLeading: header,
+        leadingSliver: header.toSliver(),
         loadPage: data.rankingData!.load == null
             ? null
             : (i) => data.rankingData!.load!(optionValue, i),
@@ -61,7 +60,7 @@ class _RankingPageState extends State<RankingPage> {
     );
   }
 
-  Widget buildOptionItem(String text, String value, BuildContext context) {
+  Widget buildOptionItem(String text, String value) {
     return OptionChip(
       text: text,
       isSelected: value == optionValue,
@@ -75,23 +74,20 @@ class _RankingPageState extends State<RankingPage> {
   }
 
   Widget buildOptions() {
-    List<Widget> children = [];
-    children.add(
-      Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        children: [
-          for (var option in options.entries)
-            buildOptionItem(option.value.tl, option.key, context),
-        ],
-      ),
-    );
-    return SliverToBoxAdapter(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [...children, const Divider()],
-      ).paddingLeft(8).paddingRight(8),
-    );
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final option in options.entries)
+              buildOptionItem(option.value.tl, option.key),
+          ],
+        ),
+        const Divider(),
+      ],
+    ).paddingHorizontal(8);
   }
 }

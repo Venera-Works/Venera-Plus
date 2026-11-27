@@ -85,8 +85,11 @@ class _ImageFavoritesGalleryPageState extends State<ImageFavoritesGalleryPage> {
   }
 
   void deleteSelected() {
-    if (selectedImages.isEmpty) return;
-    ImageFavoriteManager().deleteImageFavorite(selectedImages.keys);
+    final selected = selectedImages.keys.toList();
+    if (selected.isEmpty) return;
+    confirmImageFavoriteDeletion(context, selected.length, () {
+      if (mounted) ImageFavoriteManager().deleteImageFavorite(selected);
+    });
   }
 
   void goPhotoView(ImageFavorite image) {
@@ -148,7 +151,7 @@ class _ImageFavoritesGalleryPageState extends State<ImageFavoritesGalleryPage> {
             IconButton(
               icon: const Icon(Icons.delete_outline),
               tooltip: "Delete".tl,
-              onPressed: deleteSelected,
+              onPressed: selectedImages.isEmpty ? null : deleteSelected,
             ),
           ],
         );
@@ -220,7 +223,7 @@ class _ImageFavoritesGalleryPageState extends State<ImageFavoritesGalleryPage> {
                 ),
                 clipBehavior: Clip.antiAlias,
                 child: Hero(
-                  tag: "${image.id}_${image.ep}_${image.page}",
+                  tag: image,
                   child: AnimatedImage(
                     image: ImageFavoritesProvider(image),
                     width: double.infinity,

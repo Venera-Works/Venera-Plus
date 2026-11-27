@@ -22,11 +22,13 @@ class ImageFavoritesItem extends StatefulWidget {
     required this.imageFavoritesComic,
     required this.selectedImageFavorites,
     required this.addSelected,
+    required this.selectImages,
     required this.multiSelectMode,
   });
 
   final ImageFavoritesComic imageFavoritesComic;
   final Function(ImageFavorite) addSelected;
+  final ValueChanged<Iterable<ImageFavorite>> selectImages;
   final Map<ImageFavorite, bool> selectedImageFavorites;
   final bool multiSelectMode;
 
@@ -109,28 +111,25 @@ class _ImageFavoritesItemState extends State<ImageFavoritesItem> {
       MenuEntry(
         icon: Icons.select_all,
         text: 'Select All'.tl,
-        onClick: () {
-          for (var ele in widget.imageFavoritesComic.images) {
-            widget.addSelected(ele);
-          }
-        },
+        onClick: () => widget.selectImages(widget.imageFavoritesComic.images),
       ),
-      MenuEntry(
-        icon: Icons.read_more,
-        text: 'Photo View'.tl,
-        onClick: () {
-          goPhotoView(widget.imageFavoritesComic.images.first);
-        },
-      ),
-      MenuEntry(
-        icon: Icons.grid_view,
-        text: 'Gallery View'.tl,
-        onClick: () {
-          App.mainNavigatorKey?.currentContext?.to(
-            () => ImageFavoritesGalleryPage(comic: widget.imageFavoritesComic),
-          );
-        },
-      ),
+      if (!widget.multiSelectMode) ...[
+        MenuEntry(
+          icon: Icons.read_more,
+          text: 'Photo View'.tl,
+          onClick: () => goPhotoView(widget.imageFavoritesComic.images.first),
+        ),
+        MenuEntry(
+          icon: Icons.grid_view,
+          text: 'Gallery View'.tl,
+          onClick: () {
+            App.mainNavigatorKey?.currentContext?.to(
+              () =>
+                  ImageFavoritesGalleryPage(comic: widget.imageFavoritesComic),
+            );
+          },
+        ),
+      ],
     ];
     showMenuX(
       App.rootContext,
@@ -203,7 +202,11 @@ class _ImageFavoritesItemState extends State<ImageFavoritesItem> {
         }
       },
       onLongPress: () {
-        goPhotoView(image);
+        if (widget.multiSelectMode) {
+          widget.addSelected(image);
+        } else {
+          goPhotoView(image);
+        }
       },
       borderRadius: BorderRadius.circular(8),
       child: Container(
@@ -226,7 +229,7 @@ class _ImageFavoritesItemState extends State<ImageFavoritesItem> {
               ),
               clipBehavior: Clip.antiAlias,
               child: Hero(
-                tag: "${image.sourceKey}${image.ep}${image.page}",
+                tag: image,
                 child: AnimatedImage(
                   image: ImageFavoritesProvider(image),
                   width: 96,
@@ -260,18 +263,20 @@ class _ImageFavoritesItemState extends State<ImageFavoritesItem> {
             softWrap: true,
           ),
         ),
-        IconButton(
-          icon: const Icon(Icons.grid_view, size: 18),
-          tooltip: 'Gallery View'.tl,
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-          onPressed: () {
-            App.mainNavigatorKey?.currentContext?.to(
-              () =>
-                  ImageFavoritesGalleryPage(comic: widget.imageFavoritesComic),
-            );
-          },
-        ),
+        if (!widget.multiSelectMode)
+          IconButton(
+            icon: const Icon(Icons.grid_view, size: 18),
+            tooltip: 'Gallery View'.tl,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            onPressed: () {
+              App.mainNavigatorKey?.currentContext?.to(
+                () => ImageFavoritesGalleryPage(
+                  comic: widget.imageFavoritesComic,
+                ),
+              );
+            },
+          ),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
           decoration: BoxDecoration(

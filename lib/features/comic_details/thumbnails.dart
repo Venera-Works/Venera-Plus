@@ -8,6 +8,7 @@ import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/foundation/consts.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/image_provider/cached_image.dart';
+import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/foundation/translations.dart';
 
 class ComicThumbnails extends StatefulWidget {
@@ -49,30 +50,31 @@ class _ComicThumbnailsState extends State<ComicThumbnails> {
   }
 
   void loadNext() async {
+    if (!mounted || isLoading) return;
     final loadComicThumbnail = widget.loadComicThumbnail;
-    if (loadComicThumbnail == null) return;
-    if (!isInitialLoading && next == null) {
+    if (loadComicThumbnail == null || (!isInitialLoading && next == null)) {
       return;
     }
-    if (isLoading) return;
-    Future.microtask(() {
-      setState(() {
-        isLoading = true;
-      });
+    setState(() {
+      isLoading = true;
+      error = null;
     });
-    var res = await loadComicThumbnail(widget.comicId, next);
-    if (res.success) {
-      thumbnails.addAll(res.data);
-      next = res.subData;
-      isInitialLoading = false;
-    } else {
+    Res<List<String>> res;
+    try {
+      res = await loadComicThumbnail(widget.comicId, next);
+    } catch (exception) {
+      res = Res.error(exception.toString());
+    }
+    if (!mounted) return;
+    setState(() {
+      isLoading = false;
       error = res.errorMessage;
-    }
-    if (mounted) {
-      setState(() {
-        isLoading = false;
-      });
-    }
+      if (res.success) {
+        thumbnails.addAll(res.data);
+        next = res.subData;
+        isInitialLoading = false;
+      }
+    });
   }
 
   @override
@@ -82,8 +84,14 @@ class _ComicThumbnailsState extends State<ComicThumbnails> {
         SliverToBoxAdapter(child: ListTile(title: Text("Preview".tl))),
         SliverGrid(
           delegate: SliverChildBuilderDelegate((context, index) {
-            if (index == thumbnails.length - 1 && error == null) {
-              loadNext();
+            if (index == thumbnails.length - 1 &&
+                error == null &&
+                !isLoading &&
+                next != null) {
+              final cursor = next;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (next == cursor && error == null) loadNext();
+              });
             }
             var url = thumbnails[index];
             ImagePart? part;

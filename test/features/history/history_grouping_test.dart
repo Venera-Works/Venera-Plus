@@ -94,7 +94,10 @@ void main() {
     (tester) async {
       await tester.pumpWidget(_host());
       _menu(tester, 'Remove');
-      await tester.pump();
+      await tester.pumpAndSettle();
+      expect(manager.deleted, isEmpty);
+      await tester.tap(find.text('Remove').last);
+      await tester.pumpAndSettle();
       expect(manager.deleted, [ComicID(latest.type, latest.id)]);
       expect(_grid(tester).comics, [single, older]);
     },
@@ -119,7 +122,10 @@ void main() {
     await tester.pump();
     expect(_grid(tester).selections!.keys, unorderedEquals([single, older]));
     await tester.tap(find.byTooltip('Delete'));
-    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(manager.records, [latest, single, older]);
+    await tester.tap(find.text('Remove').last);
+    await tester.pumpAndSettle();
     expect(manager.records, [latest]);
   });
   testWidgets('inactive progress updates refresh once when visible', (

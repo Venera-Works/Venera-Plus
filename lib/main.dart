@@ -123,6 +123,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       }
     });
     App.registerForceRebuild(forceRebuild);
+    isAuthPageActive = appdata.settings['authorizationRequired'] == true;
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -135,7 +136,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     super.initState();
   }
 
-  bool isAuthPageActive = false;
+  late bool isAuthPageActive;
 
   OverlayEntry? hideContentOverlay;
 
@@ -342,6 +343,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       home = AuthPage(
         onSuccessfulAuth: () {
           App.rootContext.toReplacement(() => const MainPage());
+          isAuthPageActive = false;
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) startAppLinkHandlers();
           });
@@ -424,10 +426,10 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                 widget = Shortcuts(
                   shortcuts: {
                     LogicalKeySet(LogicalKeyboardKey.escape):
-                        VoidCallbackIntent(App.pop),
+                        VoidCallbackIntent(App.maybePop),
                   },
                   child: MouseBackDetector(
-                    onTapDown: App.pop,
+                    onTapDown: App.maybePop,
                     child: WindowFrame(
                       widget,
                       debugAction: reloadComicSourcesForDebug,

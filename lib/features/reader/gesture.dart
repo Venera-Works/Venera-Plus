@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -51,6 +53,9 @@ class ReaderGestureDetectorState
   bool? _pullResult;
 
   int fingers = 0;
+  final _pointerPause = Object();
+  final _contextMenuPause = Object();
+  bool _contextMenuOpen = false;
 
   late ReaderState reader;
 
@@ -69,7 +74,7 @@ class ReaderGestureDetectorState
     _tapGestureRecognizer = TapGestureRecognizer()
       ..onTapUp = onTapUp
       ..onSecondaryTapUp = (details) {
-        _showContextMenu(details.globalPosition);
+        unawaited(_showContextMenu(details.globalPosition));
       };
     _longPressGestureRecognizer =
         LongPressGestureRecognizer(
@@ -78,7 +83,7 @@ class ReaderGestureDetectorState
           ..onLongPressStart = (details) {
             if (_primaryPointer == null) return;
             _returnPull();
-            _showContextMenu(details.globalPosition);
+            unawaited(_showContextMenu(details.globalPosition));
           };
     super.initState();
     _pullReturnController = AnimationController(vsync: this, value: 1);
@@ -100,6 +105,15 @@ class ReaderGestureDetectorState
 
   @override
   void dispose() {
+    final menuOpen = _contextMenuOpen;
+    final pointerDown = fingers > 0;
+    if (menuOpen || pointerDown) {
+      scheduleMicrotask(() {
+        if (!reader.mounted) return;
+        if (menuOpen) reader.autoReading.pause(_contextMenuPause, false);
+        if (pointerDown) reader.autoReading.pause(_pointerPause, false);
+      });
+    }
     _releasePullGesture();
     _pullReturnController.dispose();
     _tapGestureRecognizer.dispose();
@@ -113,7 +127,7 @@ class ReaderGestureDetectorState
       behavior: HitTestBehavior.translucent,
       onPointerDown: (event) {
         fingers++;
-        reader.autoReading.pause('pointer', true);
+        reader.autoReading.pause(_pointerPause, true);
         if (fingers > 1) {
           _primaryPointer = null;
           _returnPull();
@@ -152,7 +166,7 @@ class ReaderGestureDetectorState
       onPointerMove: _updatePull,
       onPointerUp: (event) {
         fingers--;
-        if (fingers <= 0) reader.autoReading.pause('pointer', false);
+        if (fingers <= 0) reader.autoReading.pause(_pointerPause, false);
         final pullImage = _pullImage;
         bool? result;
         if (pullImage != null &&
@@ -166,7 +180,7 @@ class ReaderGestureDetectorState
       },
       onPointerCancel: (event) {
         fingers--;
-        if (fingers <= 0) reader.autoReading.pause('pointer', false);
+        if (fingers <= 0) reader.autoReading.pause(_pointerPause, false);
         _returnPull();
         _primaryPointer = null;
       },
@@ -527,7 +541,8 @@ class ReaderGestureDetectorState
     );
   }
 
-  void _showContextMenu(Offset location) {
+  Future<void> _showContextMenu(Offset location) async {
+    if (_contextMenuOpen) return;
     final compact = App.isMobile && context.width < 600;
     final ref = reader.isLoading || reader.isOnChapterCommentsPage
         ? null
@@ -536,7 +551,7 @@ class ReaderGestureDetectorState
           );
     if (compact && ref == null) return;
     _previousEvent = null;
-    showMenuX(context, location, [
+    final entries = [
       if (!compact) ...[
         MenuEntry(
           icon: Icons.settings,
@@ -577,7 +592,46 @@ class ReaderGestureDetectorState
           onClick: () => _saveImage(ref),
         ),
       ],
-    ]);
+    ];
+    final navigator = Navigator.of(context, rootNavigator: true);
+    final overlay = navigator.overlay!.context.findRenderObject() as RenderBox;
+    final anchor = overlay.globalToLocal(location);
+    _contextMenuOpen = true;
+    reader.autoReading.pause(_contextMenuPause, true);
+    try {
+      final selected = await showMenu<MenuEntry>(
+        context: context,
+        useRootNavigator: true,
+        position: RelativeRect.fromSize(anchor & Size.zero, overlay.size),
+        items: [
+          for (final entry in entries)
+            PopupMenuItem(
+              value: entry,
+              height: App.isMobile ? 42 : 36,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(entry.icon, size: 18),
+                  const SizedBox(width: 10),
+                  Flexible(
+                    child: Text(
+                      entry.text,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      );
+      if (mounted) selected?.onClick();
+    } finally {
+      if (mounted) {
+        _contextMenuOpen = false;
+        reader.autoReading.pause(_contextMenuPause, false);
+      }
+    }
   }
 
   void _viewOriginalImage(ReaderImageReference ref) {

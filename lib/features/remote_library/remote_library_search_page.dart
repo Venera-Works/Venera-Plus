@@ -71,7 +71,6 @@ class _RemoteLibrarySearchPageState extends State<RemoteLibrarySearchPage> {
   }
 
   void _onContentChanged() {
-    setState(() {});
     unawaited(_listKey.currentState?.reload(queueIfLoading: true));
   }
 
@@ -123,7 +122,6 @@ class _RemoteLibrarySearchPageState extends State<RemoteLibrarySearchPage> {
     final engine = _engine;
     final keyword = _keyword;
     final tags = _tags;
-    final statusMessage = engine?.statusMessage;
     return Scaffold(
       body: Column(
         children: [
@@ -173,14 +171,19 @@ class _RemoteLibrarySearchPageState extends State<RemoteLibrarySearchPage> {
                       tags: tags,
                       showAuthor: true,
                     ),
-                    leadingSliver: statusMessage == null
-                        ? null
-                        : SliverToBoxAdapter(
-                            child: Padding(
-                              padding: const EdgeInsets.all(12),
-                              child: Text(statusMessage),
-                            ),
-                          ),
+                    leadingSliver: SliverToBoxAdapter(
+                      child: ValueListenableBuilder(
+                        valueListenable: engine.syncStatus,
+                        builder: (context, _, _) {
+                          final message = engine.statusMessage;
+                          if (message == null) return const SizedBox.shrink();
+                          return Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Text(message),
+                          );
+                        },
+                      ),
+                    ),
                     emptySliver: SliverFillRemaining(
                       hasScrollBody: false,
                       child: Center(child: Text('No search results found'.tl)),

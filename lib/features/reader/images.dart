@@ -214,7 +214,9 @@ class ReaderImagesState extends State<ReaderImages> {
   Widget build(BuildContext context) {
     if (reader.isLoading) {
       load();
-      return const Center(child: CircularProgressIndicator());
+      return const ReaderStatusFrame(
+        child: Center(child: CircularProgressIndicator()),
+      );
     } else if (error != null) {
       return GestureDetector(
         onTap: () {
@@ -1836,6 +1838,7 @@ class ContinuousModeState extends State<_ContinuousMode>
   Completer<void>? _waterfallScrollIdle;
 
   String? _nextSegmentError;
+  String? _prevSegmentError;
 
   int get preCacheCount => reader.readerSetting('preloadImageCount');
 
@@ -2079,10 +2082,14 @@ class ContinuousModeState extends State<_ContinuousMode>
     }
   }
 
-  Future<void> _ensureWaterfallImagesBefore(int current) async {
+  Future<void> _ensureWaterfallImagesBefore(
+    int current, {
+    bool retry = false,
+  }) async {
     if (!crossChapter ||
         _isNavigatingWaterfallLocation ||
-        _isLoadingPrevSegment) {
+        _isLoadingPrevSegment ||
+        (_prevSegmentError != null && !retry)) {
       return;
     }
     _initSegments();
@@ -2096,7 +2103,10 @@ class ContinuousModeState extends State<_ContinuousMode>
     }
     var prevChapter = _waterfallFlow.firstChapter! - 1;
     final generation = _waterfallRequestGeneration;
-    _isLoadingPrevSegment = true;
+    setState(() {
+      _isLoadingPrevSegment = true;
+      _prevSegmentError = null;
+    });
     try {
       var images = await _loadChapterImages(prevChapter);
       if (!await _waitForWaterfallScrollIdle(generation) ||
@@ -2143,10 +2153,11 @@ class ContinuousModeState extends State<_ContinuousMode>
     } catch (e) {
       if (!_isCurrentWaterfallRequest(generation)) return;
       _isRestoringPrependedSegmentPosition = false;
+      _prevSegmentError = e.toString();
       Log.error("Reader", "Failed to load previous chapter", e);
     } finally {
       if (_isCurrentWaterfallRequest(generation)) {
-        _isLoadingPrevSegment = false;
+        setState(() => _isLoadingPrevSegment = false);
       }
     }
   }
@@ -2198,6 +2209,7 @@ class ContinuousModeState extends State<_ContinuousMode>
           ),
         );
         _nextSegmentError = null;
+        _prevSegmentError = null;
       });
       return true;
     } catch (e) {
@@ -2502,26 +2514,62 @@ class ContinuousModeState extends State<_ContinuousMode>
     );
   }
 
+  Widget _buildFlowLoading(String message) {
+    return SizedBox(
+      height: 96,
+      child: Center(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            const SizedBox(width: 12),
+            Flexible(child: Text(message)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFlowStart() {
+    if (!crossChapter) return const SizedBox.shrink();
+    if (_isLoadingPrevSegment) {
+      return _buildFlowLoading('Loading previous chapter'.tl);
+    }
+    if (_prevSegmentError case final error?) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Failed to load previous chapter'.tl),
+            Tooltip(
+              message: error,
+              child: Text(
+                error,
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            TextButton(
+              onPressed: () => _ensureWaterfallImagesBefore(1, retry: true),
+              child: Text('Retry'.tl),
+            ),
+          ],
+        ),
+      );
+    }
+    return const SizedBox.shrink();
+  }
+
   Widget _buildFlowEnd(BuildContext context) {
     if (!crossChapter) return const SizedBox();
     if (_isLoadingNextSegment) {
-      return SizedBox(
-        height: 96,
-        child: Center(
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-              const SizedBox(width: 12),
-              Flexible(child: Text('Loading next chapter'.tl)),
-            ],
-          ),
-        ),
-      );
+      return _buildFlowLoading('Loading next chapter'.tl);
     }
     if (_nextSegmentError != null) {
       return ClickInkWell(
@@ -2661,7 +2709,7 @@ class ContinuousModeState extends State<_ContinuousMode>
           : const BouncingScrollPhysics(),
       itemBuilder: (context, index) {
         if (index == 0) {
-          return const SizedBox();
+          return _buildFlowStart();
         }
         if (index == _flowImageCount + 1) {
           return _buildFlowEnd(context);

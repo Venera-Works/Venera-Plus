@@ -4,6 +4,10 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+// screen_retriever 由 window_manager 引入并锁定在 pubspec.lock 中。
+// ignore: depend_on_referenced_packages
+import 'package:screen_retriever/screen_retriever.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/app_exit.dart';
 import 'package:venera_plus/foundation/log.dart';
@@ -511,13 +515,30 @@ class WindowPlacement {
 
   final bool isMaximized;
 
-  const WindowPlacement(this.rect, this.isMaximized);
+  final double? _devicePixelRatio;
+
+  const WindowPlacement(this.rect, this.isMaximized, [this._devicePixelRatio]);
 
   Future<void> applyToWindow() async {
-    await windowManager.setBounds(rect);
-
-    if (!validate(rect)) {
-      await windowManager.center();
+    final displays = await _getDisplays();
+    final currentRatio = _windowPixelRatio;
+    final savedRatio = _devicePixelRatio ?? currentRatio;
+    if (_isVisible(rect, _workAreas(displays, savedRatio))) {
+      final scale = savedRatio / currentRatio;
+      await windowManager.setBounds(
+        (rect.topLeft * scale) & (rect.size * scale),
+      );
+    } else {
+      final areas = _workAreas(displays, currentRatio);
+      final origin = areas.isEmpty
+          ? Offset.zero
+          : areas
+                .firstWhere(
+                  (area) => area.overlaps(defaultPlacement.rect),
+                  orElse: () => areas.first,
+                )
+                .topLeft;
+      await windowManager.setBounds(defaultPlacement.rect.shift(origin));
     }
 
     if (isMaximized) {
@@ -534,6 +555,7 @@ class WindowPlacement {
         'x': rect.topLeft.dx,
         'y': rect.topLeft.dy,
         'isMaximized': isMaximized,
+        if (_devicePixelRatio != null) 'devicePixelRatio': _devicePixelRatio,
       }),
     );
   }
@@ -544,30 +566,22 @@ class WindowPlacement {
       if (!file.existsSync()) {
         return defaultPlacement;
       }
-      var json = jsonDecode(await file.readAsString());
-      var rect = Rect.fromLTWH(
-        json['x'],
-        json['y'],
-        json['width'],
-        json['height'],
+      final json = jsonDecode(await file.readAsString());
+      final rect = Rect.fromLTWH(
+        (json['x'] as num).toDouble(),
+        (json['y'] as num).toDouble(),
+        (json['width'] as num).toDouble(),
+        (json['height'] as num).toDouble(),
       );
-      return WindowPlacement(rect, json['isMaximized']);
+      final ratio = (json['devicePixelRatio'] as num?)?.toDouble();
+      return WindowPlacement(
+        rect,
+        json['isMaximized'],
+        ratio != null && ratio.isFinite && ratio > 0 ? ratio : null,
+      );
     } catch (e) {
       return defaultPlacement;
     }
-  }
-
-  static Rect? lastValidRect;
-
-  static Future<WindowPlacement> get current async {
-    var rect = await windowManager.getBounds();
-    if (validate(rect)) {
-      lastValidRect = rect;
-    } else {
-      rect = lastValidRect ?? defaultPlacement.rect;
-    }
-    var isMaximized = await windowManager.isMaximized();
-    return WindowPlacement(rect, isMaximized);
   }
 
   static const defaultPlacement = WindowPlacement(
@@ -575,23 +589,82 @@ class WindowPlacement {
     false,
   );
 
-  static WindowPlacement cache = defaultPlacement;
+  static Timer? _timer;
 
-  static Timer? timer;
-
-  static void loop() async {
-    timer ??= Timer.periodic(const Duration(milliseconds: 100), (timer) async {
-      var placement = await WindowPlacement.current;
-      if (placement.rect != cache.rect ||
-          placement.isMaximized != cache.isMaximized) {
-        cache = placement;
-        await placement.writeToFile();
+  static void loop() {
+    if (_timer != null) return;
+    WindowPlacement? lastSample;
+    var saving = false;
+    _timer = Timer.periodic(const Duration(milliseconds: 100), (_) async {
+      if (saving) return;
+      saving = true;
+      try {
+        final ratio = _windowPixelRatio;
+        final rect = await windowManager.getBounds();
+        final maximized = await windowManager.isMaximized();
+        if (lastSample?.rect == rect &&
+            lastSample?.isMaximized == maximized &&
+            lastSample?._devicePixelRatio == ratio) {
+          return;
+        }
+        final sample = WindowPlacement(rect, maximized, ratio);
+        if (_isVisible(rect, _workAreas(await _getDisplays(), ratio))) {
+          await sample.writeToFile();
+        }
+        lastSample = sample;
+      } finally {
+        saving = false;
       }
     });
   }
 
-  static bool validate(Rect rect) {
-    return rect.topLeft.dx >= 0 && rect.topLeft.dy >= 0;
+  static double get _windowPixelRatio =>
+      App.isWindows ? windowManager.getDevicePixelRatio() : 1.0;
+
+  static Future<List<Display>> _getDisplays() async {
+    try {
+      return await screenRetriever.getAllDisplays();
+    } on PlatformException {
+      return const [];
+    } on MissingPluginException {
+      return const [];
+    }
+  }
+
+  static List<Rect> _workAreas(List<Display> displays, double windowRatio) {
+    final areas = <Rect>[];
+    for (final display in displays) {
+      final position =
+          display.visiblePosition ??
+          (displays.length == 1 ? Offset.zero : null);
+      if (position == null) continue;
+      // Windows 的窗口和显示器分别使用各自的缩放比例。
+      final scale = App.isWindows
+          ? (display.scaleFactor ?? windowRatio) / windowRatio
+          : 1.0;
+      final size = display.visibleSize ?? display.size;
+      final area = (position * scale) & (size * scale);
+      if (area.isFinite && !area.isEmpty) {
+        areas.add(area);
+      }
+    }
+    return areas;
+  }
+
+  static bool _isVisible(Rect rect, List<Rect> areas) {
+    if (!rect.isFinite || rect.isEmpty) return false;
+    final titleBar = Rect.fromLTWH(
+      rect.left,
+      rect.top,
+      rect.width,
+      _kTitleBarHeight,
+    );
+    return areas.any((area) {
+      final overlap = rect.intersect(area);
+      return overlap.width >= 120 &&
+          overlap.height >= 80 &&
+          titleBar.intersect(area).height >= _kTitleBarHeight / 2;
+    });
   }
 }
 
