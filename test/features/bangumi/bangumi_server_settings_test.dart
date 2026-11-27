@@ -20,7 +20,19 @@ void main() {
   testWidgets(
     'list probes on opening and updates each result without reordering',
     (tester) async {
+      final [official, bangumiLat, anibt, bgmLat] = bangumiPresetServers;
+      final initialApiUrls = [official.apiUrl, bangumiLat.apiUrl, anibt.apiUrl];
       final pending = <String, Completer<BangumiProbeResult>>{};
+      void expectPresetOrder() {
+        final positions = [
+          for (final server in bangumiPresetServers)
+            tester.getTopLeft(_entry(server)).dy,
+        ];
+        for (var index = 1; index < positions.length; index++) {
+          expect(positions[index - 1], lessThan(positions[index]));
+        }
+      }
+
       await _openList(
         tester,
         probe: (server, token) {
@@ -29,29 +41,46 @@ void main() {
           return completer.future;
         },
       );
-      expect(pending.keys, bangumiPresetServers.map((server) => server.apiUrl));
-      expect(find.text('Testing…'), findsNWidgets(3));
-      pending[bangumiPresetServers.last.apiUrl]!.complete(
+      expect(pending.keys, initialApiUrls);
+      expect(find.text('Testing…'), findsNWidgets(4));
+      expectPresetOrder();
+      pending[anibt.apiUrl]!.complete(
         const BangumiProbeResult(
           BangumiProbeStatus.available,
           elapsed: Duration(milliseconds: 286),
         ),
       );
       await tester.pumpAndSettle();
+      expect(pending.keys, [...initialApiUrls, bgmLat.apiUrl]);
       expect(find.text('Available · 286 ms'), findsOneWidget);
-      expect(
-        tester.getTopLeft(_entry(bangumiPresetServers.first)).dy,
-        lessThan(tester.getTopLeft(_entry(bangumiPresetServers.last)).dy),
-      );
-      pending[bangumiPresetServers.first.apiUrl]!.complete(
+      expect(find.text('Testing…'), findsNWidgets(3));
+      expectPresetOrder();
+      pending[official.apiUrl]!.complete(
         const BangumiProbeResult(BangumiProbeStatus.timeout),
       );
-      pending[bangumiPresetServers[1].apiUrl]!.complete(
+      pending[bangumiLat.apiUrl]!.complete(
         const BangumiProbeResult(BangumiProbeStatus.verificationRequired),
       );
+      pending[bgmLat.apiUrl]!.complete(
+        const BangumiProbeResult(
+          BangumiProbeStatus.available,
+          elapsed: Duration(milliseconds: 150),
+        ),
+      );
       await tester.pumpAndSettle();
-      expect(find.text('Timed out'), findsOneWidget);
-      expect(find.text('Verification required'), findsOneWidget);
+      for (final (server, label) in [
+        (official, 'Timed out'),
+        (bangumiLat, 'Verification required'),
+        (anibt, 'Available · 286 ms'),
+        (bgmLat, 'Available · 150 ms'),
+      ]) {
+        expect(
+          find.descendant(of: _entry(server), matching: find.text(label)),
+          findsOneWidget,
+        );
+      }
+      expect(find.text('Testing…'), findsNothing);
+      expectPresetOrder();
     },
   );
 
@@ -96,6 +125,7 @@ void main() {
       'bgm.tv',
       'bangumi.lat',
       'anibt.net',
+      'bgm.lat',
       'Custom',
     ]);
     expect(currentBangumiServer, same(bangumiOfficialServer));
@@ -120,14 +150,14 @@ void main() {
       await _openList(tester);
       await _add(tester, name: 'First', api: 'first.example.com');
       await _add(tester, name: 'Second', api: 'second.example.com');
-      final first = bangumiServers[3];
+      final first = bangumiServers[4];
       await tester.ensureVisible(_entry(first));
       await tester.tap(_entry(first));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('bangumi-server-list')));
       await tester.pumpAndSettle();
       final menu = find.descendant(
-        of: _entry(bangumiServers[3]),
+        of: _entry(bangumiServers[4]),
         matching: find.byType(PopupMenuButton<String>),
       );
       await tester.ensureVisible(menu);
@@ -145,11 +175,12 @@ void main() {
         'bgm.tv',
         'bangumi.lat',
         'anibt.net',
+        'bgm.lat',
         'First',
         'Second',
       ]);
       expect(currentBangumiServer.apiUrl, 'https://renamed.example.com');
-      final renamed = bangumiServers[3];
+      final renamed = bangumiServers[4];
       final deleteMenu = find.descendant(
         of: _entry(renamed),
         matching: find.byType(PopupMenuButton<String>),
@@ -161,7 +192,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(currentBangumiServer, same(bangumiOfficialServer));
       expect(bangumiServers.last.name, 'Second');
-      expect(bangumiServers, hasLength(4));
+      expect(bangumiServers, hasLength(5));
     },
   );
 
@@ -176,12 +207,17 @@ void main() {
         },
       );
       await _add(tester, api: 'first.example.com');
-      await _add(tester, api: 'https://FIRST.example.com/');
-      expect(bangumiServers, hasLength(4));
-      expect(
-        find.text('This API address is already in the list'),
-        findsOneWidget,
-      );
+      for (final duplicateApi in [
+        'https://FIRST.example.com/',
+        'https://API.BGM.LAT/',
+      ]) {
+        await _add(tester, api: duplicateApi);
+        expect(bangumiServers, hasLength(5));
+        expect(
+          find.text('This API address is already in the list'),
+          findsOneWidget,
+        );
+      }
       fail = true;
       await tester.tap(_entry(bangumiPresetServers[1]));
       await tester.pumpAndSettle();
@@ -191,7 +227,7 @@ void main() {
         findsOneWidget,
       );
       await _add(tester, api: 'second.example.com');
-      expect(bangumiServers, hasLength(4));
+      expect(bangumiServers, hasLength(5));
       expect(bangumiServers.last.apiUrl, 'https://first.example.com');
     },
   );
