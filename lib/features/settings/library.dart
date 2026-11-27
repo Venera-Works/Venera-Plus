@@ -3,7 +3,7 @@ import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/scroll.dart';
-import 'package:venera_plus/features/comic_source/comic_type_bridge.dart';
+import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/features/history/history.dart';
 import 'package:venera_plus/features/local_comics/local_comics.dart';
