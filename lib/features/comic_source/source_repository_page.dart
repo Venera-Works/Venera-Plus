@@ -153,6 +153,10 @@ class SourceRepositoriesPanel extends StatelessWidget {
             child: Text('Cancel'.tl),
           ),
           FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
             onPressed: () => Navigator.pop(context, true),
             child: Text('Remove repository'.tl),
           ),
@@ -683,10 +687,6 @@ Future<void> showSourceOriginPicker(
               ),
             ),
           ),
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: Text('Cancel'.tl),
-        ),
       ],
     ),
   );

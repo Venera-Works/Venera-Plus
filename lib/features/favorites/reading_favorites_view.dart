@@ -148,6 +148,7 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
   String? loadError;
   int _loadGeneration = 0;
   final ScrollController _scrollController = ScrollController();
+  final _historyFabController = ScrollAutoHideFabController();
 
   LocalFavoritesManager get manager => LocalFavoritesManager();
 
@@ -161,6 +162,7 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
     final managerGen = manager.generation;
     final folder = manager.readingFolder;
     if (folder == null || !manager.existsFolder(folder)) {
+      _historyFabController.reset();
       setState(() {
         comics = [];
         isLoading = false;
@@ -171,14 +173,17 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
 
     final folderCount = manager.folderComics(folder);
     if (folderCount < _asyncDataFetchLimit) {
+      final items = manager.getComicsWithUpdatesInfo(folder);
+      if (items.isEmpty) _historyFabController.reset();
       setState(() {
-        comics = manager.getComicsWithUpdatesInfo(folder);
+        comics = items;
         isLoading = false;
         loadError = null;
       });
       return;
     }
 
+    _historyFabController.reset();
     setState(() {
       isLoading = true;
       loadError = null;
@@ -224,6 +229,7 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
   void dispose() {
     manager.removeListener(updateComics);
     _scrollController.dispose();
+    _historyFabController.dispose();
     super.dispose();
   }
 
@@ -346,6 +352,11 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
   @override
   Widget build(BuildContext context) {
     final onOpenHistory = widget.onOpenHistory;
+    final canAutoHide =
+        onOpenHistory != null &&
+        !isLoading &&
+        loadError == null &&
+        comics.isNotEmpty;
     Widget sliverContent;
     if (isLoading) {
       sliverContent = const SliverToBoxAdapter(
@@ -425,35 +436,49 @@ class _ReadingFavoritesViewState extends State<ReadingFavoritesView> {
     return Scaffold(
       body: AppRefreshIndicator(
         onRefresh: _onRefresh,
-        child: AppScrollBar(
-          controller: _scrollController,
-          child: ScrollConfiguration(
-            behavior: ScrollConfiguration.of(
-              context,
-            ).copyWith(scrollbars: false),
-            child: SmoothCustomScrollView(
-              controller: _scrollController,
-              physics: const AlwaysScrollableScrollPhysics(),
-              slivers: [
-                sliverContent,
-                SliverPadding(
-                  padding: EdgeInsets.only(
-                    bottom:
-                        context.padding.bottom +
-                        (onOpenHistory == null ? 16 : 96),
+        child: NotificationListener<Notification>(
+          onNotification: (notification) =>
+              canAutoHide &&
+              _historyFabController.handleNotification(
+                notification,
+                _scrollController,
+              ),
+          child: AppScrollBar(
+            controller: _scrollController,
+            child: ScrollConfiguration(
+              behavior: ScrollConfiguration.of(
+                context,
+              ).copyWith(scrollbars: false),
+              child: SmoothCustomScrollView(
+                controller: _scrollController,
+                physics: const AlwaysScrollableScrollPhysics(),
+                slivers: [
+                  sliverContent,
+                  SliverPadding(
+                    padding: EdgeInsets.only(
+                      bottom:
+                          context.padding.bottom +
+                          (onOpenHistory == null ? 16 : 96),
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
       ),
       floatingActionButton: onOpenHistory == null
           ? null
-          : FloatingActionButton(
-              tooltip: "Reading Records".tl,
-              onPressed: onOpenHistory,
-              child: const Icon(Icons.history),
+          : ValueListenableBuilder<bool>(
+              valueListenable: _historyFabController,
+              builder: (_, visible, child) =>
+                  AnimatedScrollFab(visible: visible, child: child!),
+              child: FloatingActionButton(
+                tooltip: "Reading Records".tl,
+                heroTag: 'home_history_fab',
+                onPressed: onOpenHistory,
+                child: const Icon(Icons.history),
+              ),
             ),
     );
   }

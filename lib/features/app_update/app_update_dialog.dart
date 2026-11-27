@@ -353,6 +353,10 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
                     spacing: 8,
                     runSpacing: 8,
                     children: [
+                      TextButton(
+                        onPressed: () => _openUrl(widget.release.pageUrl),
+                        child: Text('View release'.tl),
+                      ),
                       if (isAndroid)
                         if (_stage == _UpdateStage.downloading)
                           OutlinedButton(
@@ -382,23 +386,19 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
                                   ),
                           ),
                       if (isWindows) ...[
-                        FilledButton(
-                          onPressed: installer == null
-                              ? null
-                              : () => _openUrl(installer.url),
-                          child: Text('Download installer'.tl),
-                        ),
                         OutlinedButton(
                           onPressed: portable == null
                               ? null
                               : () => _openUrl(portable.url),
                           child: Text('Download ZIP'.tl),
                         ),
+                        FilledButton(
+                          onPressed: installer == null
+                              ? null
+                              : () => _openUrl(installer.url),
+                          child: Text('Download installer'.tl),
+                        ),
                       ],
-                      TextButton(
-                        onPressed: () => _openUrl(widget.release.pageUrl),
-                        child: Text('View release'.tl),
-                      ),
                     ],
                   ),
                 ],

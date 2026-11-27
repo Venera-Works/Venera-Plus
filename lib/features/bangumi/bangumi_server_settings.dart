@@ -249,71 +249,75 @@ class _BangumiServerListState extends State<_BangumiServerList> {
   @override
   Widget build(BuildContext context) => ContentDialog(
     title: 'Bangumi website list'.tl,
-    content: Container(
-      width: 520,
-      height: math.min(400, MediaQuery.sizeOf(context).height * 0.55),
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Column(
-        children: [
-          Expanded(
-            child: ListView(
-              children: [
-                for (final server in _servers)
-                  ListTile(
-                    key: ValueKey('bangumi-server-${server.apiUrl}'),
-                    contentPadding: EdgeInsets.zero,
-                    leading: Icon(
-                      currentBangumiServer.apiUrl == server.apiUrl
-                          ? Icons.radio_button_checked
-                          : Icons.radio_button_off,
-                    ),
-                    title: Wrap(
-                      spacing: 8,
-                      children: [
-                        Text(server.name),
-                        Text(
-                          _resultLabel(_results[server.apiUrl]),
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      ],
-                    ),
-                    subtitle: Text(
-                      server.apiUrl == bangumiOfficialServer.apiUrl
-                          ? 'Official'.tl
-                          : server.isPreset
-                          ? 'Mirror'.tl
-                          : 'Custom'.tl,
-                    ),
-                    onTap: _saving ? null : () => _select(server),
-                    trailing: server.isPreset
-                        ? null
-                        : PopupMenuButton<String>(
-                            enabled: !_saving,
-                            onSelected: (action) => action == 'edit'
-                                ? _edit(server)
-                                : _delete(server),
-                            itemBuilder: (_) => [
-                              PopupMenuItem(
-                                value: 'edit',
-                                child: Text('Edit'.tl),
-                              ),
-                              PopupMenuItem(
-                                value: 'delete',
-                                child: Text('Delete'.tl),
-                              ),
-                            ],
+    content: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 500),
+      child: Container(
+        // The list viewport needs a finite width inside ContentDialog's intrinsic layout.
+        width: MediaQuery.sizeOf(context).width,
+        height: math.min(400, MediaQuery.sizeOf(context).height * 0.55),
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Column(
+          children: [
+            Expanded(
+              child: ListView(
+                children: [
+                  for (final server in _servers)
+                    ListTile(
+                      key: ValueKey('bangumi-server-${server.apiUrl}'),
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(
+                        currentBangumiServer.apiUrl == server.apiUrl
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_off,
+                      ),
+                      title: Wrap(
+                        spacing: 8,
+                        children: [
+                          Text(server.name),
+                          Text(
+                            _resultLabel(_results[server.apiUrl]),
+                            style: Theme.of(context).textTheme.bodySmall,
                           ),
-                  ),
-              ],
+                        ],
+                      ),
+                      subtitle: Text(
+                        server.apiUrl == bangumiOfficialServer.apiUrl
+                            ? 'Official'.tl
+                            : server.isPreset
+                            ? 'Mirror'.tl
+                            : 'Custom'.tl,
+                      ),
+                      onTap: _saving ? null : () => _select(server),
+                      trailing: server.isPreset
+                          ? null
+                          : PopupMenuButton<String>(
+                              enabled: !_saving,
+                              onSelected: (action) => action == 'edit'
+                                  ? _edit(server)
+                                  : _delete(server),
+                              itemBuilder: (_) => [
+                                PopupMenuItem(
+                                  value: 'edit',
+                                  child: Text('Edit'.tl),
+                                ),
+                                PopupMenuItem(
+                                  value: 'delete',
+                                  child: Text('Delete'.tl),
+                                ),
+                              ],
+                            ),
+                    ),
+                ],
+              ),
             ),
-          ),
-          if (_error != null)
-            Text(
-              _error!,
-              style: TextStyle(color: Theme.of(context).colorScheme.error),
-            ),
-          if (_saving) const LinearProgressIndicator(),
-        ],
+            if (_error != null)
+              Text(
+                _error!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            if (_saving) const LinearProgressIndicator(),
+          ],
+        ),
       ),
     ),
     actions: [
@@ -395,82 +399,96 @@ class _BangumiServerEditorState extends State<_BangumiServerEditor> {
   }
 
   @override
-  Widget build(BuildContext context) => ContentDialog(
-    title:
-        (widget.initial == null ? 'Add Bangumi server' : 'Edit Bangumi server')
-            .tl,
-    content: Container(
-      width: 460,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          TextField(
-            key: const Key('bangumi-server-name'),
-            controller: _name,
-            decoration: InputDecoration(
-              labelText: 'Name or domain (optional)'.tl,
-            ),
+  Widget build(BuildContext context) {
+    final decoration = InputDecoration(
+      isDense: true,
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+    );
+    return ContentDialog(
+      title:
+          (widget.initial == null
+                  ? 'Add Bangumi server'
+                  : 'Edit Bangumi server')
+              .tl,
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 440),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextField(
+                key: const Key('bangumi-server-name'),
+                controller: _name,
+                decoration: decoration.copyWith(
+                  labelText: 'Name or domain (optional)'.tl,
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                key: const Key('bangumi-server-api'),
+                controller: _api,
+                keyboardType: TextInputType.url,
+                autocorrect: false,
+                decoration: decoration.copyWith(
+                  labelText: 'API address'.tl,
+                  hintText: 'bgmapi.anibt.net',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                key: const Key('bangumi-server-images'),
+                controller: _images,
+                keyboardType: TextInputType.url,
+                autocorrect: false,
+                decoration: decoration.copyWith(
+                  labelText: 'Image proxy (optional)'.tl,
+                  helperText:
+                      'Leave empty to use image addresses returned by the API'
+                          .tl,
+                  helperMaxLines: 3,
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                key: const Key('bangumi-server-token-page'),
+                controller: _token,
+                keyboardType: TextInputType.url,
+                autocorrect: false,
+                decoration: decoration.copyWith(
+                  labelText: 'Access Token page (optional)'.tl,
+                  helperText:
+                      'Leave empty to use the official Access Token page'.tl,
+                  helperMaxLines: 3,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text('The selected API server receives your Access Token.'.tl),
+              if (_error != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  _error!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ],
+            ],
           ),
-          TextField(
-            key: const Key('bangumi-server-api'),
-            controller: _api,
-            keyboardType: TextInputType.url,
-            autocorrect: false,
-            decoration: InputDecoration(
-              labelText: 'API address'.tl,
-              hintText: 'bgmapi.anibt.net',
-            ),
-          ),
-          TextField(
-            key: const Key('bangumi-server-images'),
-            controller: _images,
-            keyboardType: TextInputType.url,
-            autocorrect: false,
-            decoration: InputDecoration(
-              labelText: 'Image proxy (optional)'.tl,
-              helperText:
-                  'Leave empty to use image addresses returned by the API'.tl,
-              helperMaxLines: 3,
-            ),
-          ),
-          TextField(
-            key: const Key('bangumi-server-token-page'),
-            controller: _token,
-            keyboardType: TextInputType.url,
-            autocorrect: false,
-            decoration: InputDecoration(
-              labelText: 'Access Token page (optional)'.tl,
-              helperText:
-                  'Leave empty to use the official Access Token page'.tl,
-              helperMaxLines: 3,
-            ),
-          ),
-          const SizedBox(height: 12),
-          Text('The selected API server receives your Access Token.'.tl),
-          if (_error != null) ...[
-            const SizedBox(height: 8),
-            Text(
-              _error!,
-              style: TextStyle(color: Theme.of(context).colorScheme.error),
-            ),
-          ],
-        ],
+        ),
       ),
-    ),
-    actions: [
-      TextButton(
-        style: actionButtonStyle,
-        onPressed: () => Navigator.of(context).pop(),
-        child: Text('Cancel'.tl),
-      ),
-      FilledButton(
-        style: actionButtonStyle,
-        key: const Key('bangumi-server-save'),
-        onPressed: _submit,
-        child: Text('Save'.tl),
-      ),
-    ],
-  );
+      actions: [
+        TextButton(
+          style: actionButtonStyle,
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text('Cancel'.tl),
+        ),
+        FilledButton(
+          style: actionButtonStyle,
+          key: const Key('bangumi-server-save'),
+          onPressed: _submit,
+          child: Text('Save'.tl),
+        ),
+      ],
+    );
+  }
 }

@@ -298,6 +298,18 @@ class _ImageFavoritesPageState extends State<ImageFavoritesPage> {
                 updateImageFavorites();
               },
             ),
+            actions: [
+              if (controller.text.isNotEmpty)
+                IconButton(
+                  tooltip: 'Clear'.tl,
+                  iconSize: 20,
+                  icon: const Icon(Icons.clear),
+                  onPressed: () {
+                    controller.clear();
+                    updateImageFavorites();
+                  },
+                ),
+            ],
           ),
         SliverList(
           delegate: SliverChildBuilderDelegate((context, index) {
@@ -420,7 +432,7 @@ class _ImageFavoritesDialogState extends State<_ImageFavoritesDialog> {
         key: PageStorageKey(optionTypes),
         tabs: optionTypes.map((e) => Tab(text: e.tl, key: Key(e))).toList(),
       ),
-    ).paddingTop(context.padding.top);
+    );
     return ContentDialog(
       content: DefaultTabController(
         length: 2,

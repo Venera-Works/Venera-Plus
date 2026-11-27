@@ -277,6 +277,7 @@ class _ChapterCommentsPageState extends State<ChapterCommentsPage> {
               )
             else
               IconButton(
+                tooltip: 'Submit'.tl,
                 onPressed: () async {
                   if (controller.text.isEmpty) {
                     return;
@@ -887,6 +888,7 @@ class _EmbeddedChapterCommentsPageState
               )
             else
               IconButton(
+                tooltip: 'Submit'.tl,
                 onPressed: () async {
                   if (textController.text.isEmpty) {
                     return;

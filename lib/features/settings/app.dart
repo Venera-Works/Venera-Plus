@@ -207,6 +207,33 @@ class _SyncSettingsState extends State<SyncSettings> {
   }
 }
 
+Widget _cloudSettingsNotice(BuildContext context, String message, {Key? key}) {
+  final theme = Theme.of(context);
+  final colors = theme.colorScheme;
+  return Container(
+    key: key,
+    padding: const EdgeInsets.all(12),
+    decoration: BoxDecoration(
+      color: colors.primaryContainer,
+      borderRadius: BorderRadius.circular(8),
+    ),
+    child: Row(
+      children: [
+        Icon(Icons.info_outline, size: 20, color: colors.onPrimaryContainer),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            message,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: colors.onPrimaryContainer,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
 class _WebdavSetting extends StatefulWidget {
   const _WebdavSetting({this.initialAccount});
   final StorageAccount? initialAccount;
@@ -277,9 +304,9 @@ class _WebdavSettingState extends State<_WebdavSetting> {
       body: AbsorbPointer(
         absorbing: isTesting,
         child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
           child: Column(
             children: [
-              const SizedBox(height: 12),
               RemoteLocationFields(
                 accountId: remoteAccount?.id,
                 directories: remoteAccount == null
@@ -324,9 +351,13 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                       labelText: "Skip Setting Fields (Optional)".tl,
                       hintText: "field0, field1, field2, ...",
                       hintStyle: TextStyle(color: Theme.of(context).hintColor),
-                      border: OutlineInputBorder(),
+                      isDense: true,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
                       suffixIcon: IconButton(
-                        icon: Icon(Icons.help_outline),
+                        tooltip: 'Help'.tl,
+                        icon: const Icon(Icons.help_outline),
                         onPressed: () {
                           showDialog(
                             context: context,
@@ -356,6 +387,7 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                                         Align(
                                           alignment: Alignment.centerRight,
                                           child: IconButton(
+                                            tooltip: 'Open in Browser'.tl,
                                             icon: const Icon(Icons.open_in_new),
                                             onPressed: () {
                                               launchUrlString(
@@ -380,24 +412,10 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                 ],
               ),
               if (syncMode == DataSyncMode.manual)
-                Container(
+                _cloudSettingsNotice(
+                  context,
+                  'Sync only when you choose upload or download.'.tl,
                   key: const Key('data-sync-mode-notice'),
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Theme.of(
-                      context,
-                    ).colorScheme.primaryContainer.withValues(alpha: 0.5),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: Theme.of(
-                        context,
-                      ).colorScheme.primary.withValues(alpha: 0.2),
-                    ),
-                  ),
-                  child: Text(
-                    'Sync only when you choose upload or download.'.tl,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
                 ),
               const SizedBox(height: 16),
               Row(
@@ -449,7 +467,6 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                                   testResult.errorMessage?.tl ??
                                   'Saved Failed'.tl,
                             );
-                            context.showMessage(message: "Saved Failed".tl);
                           } else {
                             context.showMessage(message: "Saved".tl);
                             App.rootPop();
@@ -462,7 +479,7 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                 ),
               ),
             ],
-          ).paddingHorizontal(16),
+          ),
         ),
       ),
     );
@@ -532,102 +549,83 @@ class _BackupWebdavSettingState extends State<_BackupWebdavSetting> {
 
   @override
   Widget build(BuildContext context) {
+    final canBrowseBackups = BackupConfig.fromSettings().isValid;
     return PopUpWidgetScaffold(
       title: "Comic Archive Backup".tl,
-      body: SingleChildScrollView(
-        child: Column(
-          children: [
-            const SizedBox(height: 12),
-            RemoteLocationFields(
-              accountId: remoteAccount?.id,
-              directories: remoteAccount == null ? const [] : [remoteDirectory],
-              allowNone: true,
-              onChanged: (account, directories) => setState(() {
-                remoteAccount = account;
-                remoteDirectory = directories.isEmpty
-                    ? '/venera_backup/'
-                    : directories.single;
-              }),
-            ),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.primaryContainer,
-                borderRadius: BorderRadius.circular(8),
+      body: AbsorbPointer(
+        absorbing: isTesting,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              RemoteLocationFields(
+                accountId: remoteAccount?.id,
+                directories: remoteAccount == null
+                    ? const []
+                    : [remoteDirectory],
+                allowNone: true,
+                onChanged: (account, directories) => setState(() {
+                  remoteAccount = account;
+                  remoteDirectory = directories.isEmpty
+                      ? '/venera_backup/'
+                      : directories.single;
+                }),
               ),
-              child: Row(
-                children: [
-                  const Icon(Icons.info_outline, size: 20),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      "This is only used for CBZ archive backup and restore."
-                          .tl,
-                    ),
-                  ),
-                ],
+              const SizedBox(height: 16),
+              _cloudSettingsNotice(
+                context,
+                'This is only used for CBZ archive backup and restore.'.tl,
               ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.archive_outlined),
-              title: Text('Browse Backed-up Comics'.tl),
-              subtitle: Text('Use the saved backup location.'.tl),
-              trailing: const Icon(Icons.arrow_right),
-              enabled: BackupConfig.fromSettings().isValid,
-              onTap: BackupConfig.fromSettings().isValid
-                  ? () => context.to(() => const ComicArchivePage())
-                  : null,
-            ),
-            const SizedBox(height: 12),
-            ListTile(
-              leading: Icon(Icons.sync),
-              title: Text("Sync archive config".tl),
-              subtitle: Text(
-                "Sync the archive account and directory with app data.".tl,
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.archive_outlined),
+                title: Text('Browse Backed-up Comics'.tl),
+                subtitle: Text('Use the saved backup location.'.tl),
+                trailing: const Icon(Icons.arrow_right),
+                enabled: canBrowseBackups,
+                onTap: canBrowseBackups
+                    ? () => context.to(() => const ComicArchivePage())
+                    : null,
               ),
-              trailing: Switch(
-                value: syncEnabled,
-                onChanged: (v) {
-                  setState(() {
-                    syncEnabled = v;
-                  });
-                },
-              ),
-              contentPadding: EdgeInsets.zero,
-            ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton(
-                    style: actionButtonStyle,
-                    onPressed: isTesting ? null : testConnection,
-                    child: ButtonLoadingContent(
-                      isLoading: isTesting,
-                      child: Text("Test Connection".tl),
-                    ),
-                  ),
+              const SizedBox(height: 12),
+              ListTile(
+                leading: Icon(Icons.sync),
+                title: Text("Sync archive config".tl),
+                subtitle: Text(
+                  "Sync the archive account and directory with app data.".tl,
                 ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton(
-                    style: actionButtonStyle,
-                    onPressed: isTesting ? null : save,
-                    child: ButtonLoadingContent(
-                      isLoading: isTesting,
-                      child: Text("Save".tl),
-                    ),
-                  ),
+                trailing: Switch(
+                  value: syncEnabled,
+                  onChanged: (v) {
+                    setState(() {
+                      syncEnabled = v;
+                    });
+                  },
                 ),
-              ],
-            ),
-          ],
-        ).paddingHorizontal(16),
+                contentPadding: EdgeInsets.zero,
+              ),
+              const SizedBox(height: 16),
+              OutlinedButton(
+                style: actionButtonStyle,
+                onPressed: isTesting ? null : testConnection,
+                child: ButtonLoadingContent(
+                  isLoading: isTesting,
+                  child: Text("Test Connection".tl),
+                ),
+              ),
+              const SizedBox(height: 8),
+              FilledButton(
+                style: actionButtonStyle,
+                onPressed: isTesting ? null : save,
+                child: ButtonLoadingContent(
+                  isLoading: isTesting,
+                  child: Text("Save".tl),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -664,41 +662,38 @@ class _BackupWebdavSettingState extends State<_BackupWebdavSetting> {
 
   Future<void> save() async {
     if (isTesting) return;
-    await ComicBackupManager.cancelActiveTasks();
+    setState(() => isTesting = true);
     final account = remoteAccount;
-    if (account != null) {
-      final location = RemoteLocation(
-        accountId: account.id,
-        directory: remoteDirectory,
-      );
-      setState(() => isTesting = true);
-      final accounts = RemoteStorageAccounts.instance;
-      final store = accounts.storeFor(location.accountId);
-      try {
-        await store.list(location.directory);
-      } catch (error) {
-        if (mounted) {
-          setState(() => isTesting = false);
-          context.showMessage(message: error.toString());
+    final location = account == null
+        ? null
+        : RemoteLocation(accountId: account.id, directory: remoteDirectory);
+    try {
+      await ComicBackupManager.cancelActiveTasks();
+      if (!mounted) return;
+      if (location != null) {
+        final accounts = RemoteStorageAccounts.instance;
+        final store = accounts.storeFor(location.accountId);
+        try {
+          await store.list(location.directory);
+        } finally {
+          accounts.release(store);
         }
-        return;
-      } finally {
-        accounts.release(store);
       }
       appdata.settings['backupWebdavSyncEnabled'] = syncEnabled;
-      appdata.settings['backupRemoteLocation'] = location.toJson();
+      if (location == null) {
+        appdata.settings.remove('backupRemoteLocation');
+        appdata.settings['backupWebdav'] = const [];
+      } else {
+        appdata.settings['backupRemoteLocation'] = location.toJson();
+      }
       await appdata.saveData(false);
       if (!mounted) return;
       context.showMessage(message: 'Saved'.tl);
       App.rootPop();
-      return;
+    } catch (error) {
+      if (mounted) context.showMessage(message: error.toString().tl);
+    } finally {
+      if (mounted) setState(() => isTesting = false);
     }
-    appdata.settings['backupWebdavSyncEnabled'] = syncEnabled;
-    appdata.settings.remove('backupRemoteLocation');
-    appdata.settings['backupWebdav'] = const [];
-    await appdata.saveData(false);
-    if (!mounted) return;
-    context.showMessage(message: 'Saved'.tl);
-    App.rootPop();
   }
 }

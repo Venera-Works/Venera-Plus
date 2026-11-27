@@ -246,6 +246,7 @@ class _FavoritesFolderSidebarState extends State<FavoritesFolderSidebar>
           Text("Network".tl),
           const Spacer(),
           IconButton(
+            tooltip: 'Settings'.tl,
             icon: const Icon(Icons.settings),
             onPressed: () {
               showPopUpWidget(App.rootContext, setFavoritesPagesWidget());

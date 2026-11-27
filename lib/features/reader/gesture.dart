@@ -2,7 +2,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:photo_view/photo_view.dart';
-import 'package:venera_plus/components/appbar.dart';
+import 'package:venera_plus/components/effects.dart';
 import 'package:venera_plus/components/loading.dart';
 import 'package:venera_plus/components/menu.dart';
 import 'package:venera_plus/features/history/history.dart';
@@ -544,7 +544,7 @@ class ReaderGestureDetectorState
           onClick: () => context.readerScaffold.openSetting(),
         ),
         MenuEntry(
-          icon: Icons.menu,
+          icon: Icons.library_books,
           text: "Chapters".tl,
           onClick: () => context.readerScaffold.openChapterDrawer(),
         ),
@@ -586,47 +586,9 @@ class ReaderGestureDetectorState
       fallbackSourceKey: ref.sourceKey ?? reader.type.sourceKey,
     );
     context.to<void>(
-      () => FutureBuilder<Uint8List>(
+      () => _ReaderOriginalImagePage(
         future: future,
-        builder: (context, snapshot) {
-          final bytes = snapshot.data;
-          final Widget body;
-          if (snapshot.hasError) {
-            body = NetworkError(
-              message: snapshot.error.toString(),
-              withAppbar: false,
-            );
-          } else if (bytes == null) {
-            body = const Center(child: CircularProgressIndicator());
-          } else {
-            body = PhotoView(
-              imageProvider: MemoryImage(bytes),
-              filterQuality: FilterQuality.medium,
-              backgroundDecoration: BoxDecoration(
-                color: context.colorScheme.surface,
-              ),
-              minScale: PhotoViewComputedScale.contained,
-              maxScale: PhotoViewComputedScale.covered * 3,
-              errorBuilder: (context, error, _, _) =>
-                  NetworkError(message: error.toString(), withAppbar: false),
-            );
-          }
-          return Scaffold(
-            appBar: Appbar(
-              title: Text("View Original Image".tl),
-              actions: [
-                IconButton(
-                  icon: const Icon(Icons.save_alt),
-                  tooltip: "Save Image".tl,
-                  onPressed: bytes == null
-                      ? null
-                      : () => _saveImage(ref, bytes: bytes),
-                ),
-              ],
-            ),
-            body: body,
-          );
-        },
+        onSave: (bytes) => _saveImage(ref, bytes: bytes),
       ),
     );
   }
@@ -673,5 +635,137 @@ class ReaderGestureDetectorState
     } catch (e) {
       if (mounted) context.showMessage(message: e.toString());
     }
+  }
+}
+
+class _ReaderOriginalImagePage extends StatefulWidget {
+  const _ReaderOriginalImagePage({required this.future, required this.onSave});
+
+  final Future<Uint8List> future;
+  final Future<void> Function(Uint8List bytes) onSave;
+
+  @override
+  State<_ReaderOriginalImagePage> createState() =>
+      _ReaderOriginalImagePageState();
+}
+
+class _ReaderOriginalImagePageState extends State<_ReaderOriginalImagePage> {
+  static const _appBarHeight = 52.0;
+  bool _showAppBar = true;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colorScheme;
+    final padding = context.padding;
+    return FutureBuilder<Uint8List>(
+      future: widget.future,
+      builder: (context, snapshot) {
+        final bytes = snapshot.data;
+        final barVisible = _showAppBar || bytes == null;
+        final Widget body;
+        if (snapshot.hasError) {
+          body = NetworkError(
+            message: snapshot.error.toString(),
+            withAppbar: false,
+          );
+        } else if (bytes == null) {
+          body = const Center(child: CircularProgressIndicator());
+        } else {
+          body = PhotoView(
+            imageProvider: MemoryImage(bytes),
+            filterQuality: FilterQuality.medium,
+            backgroundDecoration: BoxDecoration(color: colors.surface),
+            minScale: PhotoViewComputedScale.contained,
+            maxScale: PhotoViewComputedScale.covered * 3,
+            onTapUp: (_, _, _) {
+              setState(() => _showAppBar = !_showAppBar);
+            },
+            errorBuilder: (_, error, _, _) {
+              if (!_showAppBar) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted) setState(() => _showAppBar = true);
+                });
+              }
+              return NetworkError(message: error.toString(), withAppbar: false);
+            },
+          );
+        }
+
+        return Scaffold(
+          backgroundColor: colors.surface,
+          body: Stack(
+            children: [
+              Positioned.fill(child: body),
+              AnimatedPositioned(
+                top: barVisible ? 0 : -(padding.top + _appBarHeight),
+                left: 0,
+                right: 0,
+                duration: const Duration(milliseconds: 180),
+                child: IgnorePointer(
+                  ignoring: !barVisible,
+                  child: _buildAppBar(colors, padding, bytes),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildAppBar(
+    ColorScheme colors,
+    EdgeInsets padding,
+    Uint8List? bytes,
+  ) {
+    return BlurEffect(
+      child: Material(
+        color: colors.surface.withValues(alpha: 0.78),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            border: Border(
+              bottom: BorderSide(color: colors.outlineVariant, width: 0.5),
+            ),
+          ),
+          child: Padding(
+            padding: EdgeInsets.only(
+              top: padding.top,
+              left: padding.left,
+              right: padding.right,
+            ),
+            child: SizedBox(
+              height: _appBarHeight,
+              child: Row(
+                children: [
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back),
+                    tooltip: 'Back'.tl,
+                    onPressed: () => Navigator.maybePop(context),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'View Original Image'.tl,
+                      style: const TextStyle(fontSize: 18),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.save_alt),
+                    tooltip: 'Save Image'.tl,
+                    onPressed: bytes == null
+                        ? null
+                        : () => widget.onSave(bytes),
+                  ),
+                  const SizedBox(width: 8),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

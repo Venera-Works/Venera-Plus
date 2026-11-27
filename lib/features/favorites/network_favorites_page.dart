@@ -301,6 +301,19 @@ class _NormalFavoritePageState extends State<_NormalFavoritePage> {
 
   @override
   Widget build(BuildContext context) {
+    final narrow = context.width <= favoritesTwoPanelChangeWidth;
+    final leading = narrow
+        ? IconButton(
+            tooltip: 'Folders'.tl,
+            icon: const Icon(Icons.menu),
+            color: context.colorScheme.primary,
+            onPressed: widget.showFolders,
+          )
+        : const SizedBox.shrink();
+    final title = GestureDetector(
+      onTap: narrow ? widget.showFolders : null,
+      child: Text(widget.data.title),
+    );
     return AppRefreshIndicator(
       onRefresh: _refreshScope,
       child: ComicList(
@@ -310,22 +323,8 @@ class _NormalFavoritePageState extends State<_NormalFavoritePage> {
           style: context.width < changePoint
               ? AppbarStyle.shadow
               : AppbarStyle.blur,
-          leading: Tooltip(
-            message: "Folders".tl,
-            child: context.width <= favoritesTwoPanelChangeWidth
-                ? IconButton(
-                    icon: const Icon(Icons.menu),
-                    color: context.colorScheme.primary,
-                    onPressed: widget.showFolders,
-                  )
-                : null,
-          ),
-          title: GestureDetector(
-            onTap: context.width < favoritesTwoPanelChangeWidth
-                ? widget.showFolders
-                : null,
-            child: Text(widget.data.title),
-          ),
+          leading: leading,
+          title: title,
           actions: [
             const FavoriteDisplayButton(),
             Tooltip(
@@ -348,24 +347,7 @@ class _NormalFavoritePageState extends State<_NormalFavoritePage> {
             ),
           ],
         ),
-        errorLeading: Appbar(
-          leading: Tooltip(
-            message: "Folders".tl,
-            child: context.width <= favoritesTwoPanelChangeWidth
-                ? IconButton(
-                    icon: const Icon(Icons.menu),
-                    color: context.colorScheme.primary,
-                    onPressed: widget.showFolders,
-                  )
-                : null,
-          ),
-          title: GestureDetector(
-            onTap: context.width < favoritesTwoPanelChangeWidth
-                ? widget.showFolders
-                : null,
-            child: Text(widget.data.title),
-          ),
-        ),
+        errorLeading: Appbar(leading: leading, title: title),
         loadPage: widget.data.loadComic == null
             ? null
             : (i) => widget.data.loadComic!(i),
@@ -483,64 +465,36 @@ class _MultiFolderFavoritesPageState extends State<_MultiFolderFavoritesPage> {
 
   @override
   Widget build(BuildContext context) {
+    final narrow = context.width <= favoritesTwoPanelChangeWidth;
+    final leading = narrow
+        ? IconButton(
+            tooltip: 'Folders'.tl,
+            icon: const Icon(Icons.menu),
+            color: context.colorScheme.primary,
+            onPressed: widget.showFolders,
+          )
+        : const SizedBox.shrink();
+    final title = GestureDetector(
+      onTap: narrow ? widget.showFolders : null,
+      child: Text(widget.data.title),
+    );
+    final actions = [
+      IconButton(
+        tooltip: 'Refresh'.tl,
+        icon: const Icon(Icons.refresh),
+        onPressed: () => _loadFolders(invalidateCache: true),
+      ),
+    ];
     var sliverAppBar = SliverAppbar(
       style: context.width < changePoint
           ? AppbarStyle.shadow
           : AppbarStyle.blur,
-      leading: Tooltip(
-        message: "Folders".tl,
-        child: context.width <= favoritesTwoPanelChangeWidth
-            ? IconButton(
-                icon: const Icon(Icons.menu),
-                color: context.colorScheme.primary,
-                onPressed: widget.showFolders,
-              )
-            : null,
-      ),
-      title: GestureDetector(
-        onTap: context.width < favoritesTwoPanelChangeWidth
-            ? widget.showFolders
-            : null,
-        child: Text(widget.data.title),
-      ),
-      actions: [
-        Tooltip(
-          message: "Refresh".tl,
-          child: IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: () => _loadFolders(invalidateCache: true),
-          ),
-        ),
-      ],
+      leading: leading,
+      title: title,
+      actions: actions,
     );
 
-    var appBar = Appbar(
-      leading: Tooltip(
-        message: "Folders".tl,
-        child: context.width <= favoritesTwoPanelChangeWidth
-            ? IconButton(
-                icon: const Icon(Icons.menu),
-                color: context.colorScheme.primary,
-                onPressed: widget.showFolders,
-              )
-            : null,
-      ),
-      title: GestureDetector(
-        onTap: context.width < favoritesTwoPanelChangeWidth
-            ? widget.showFolders
-            : null,
-        child: Text(widget.data.title),
-      ),
-      actions: [
-        Tooltip(
-          message: "Refresh".tl,
-          child: IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: () => _loadFolders(invalidateCache: true),
-          ),
-        ),
-      ],
-    );
+    var appBar = Appbar(leading: leading, title: title, actions: actions);
 
     if (_loading && folders == null) {
       return Column(
@@ -715,6 +669,7 @@ class _FolderTile extends StatelessWidget {
               ),
               if (deleteFolder != null)
                 IconButton(
+                  tooltip: 'Delete Folder'.tl,
                   icon: const Icon(Icons.delete_outline),
                   onPressed: () => onDeleteFolder(context),
                 )

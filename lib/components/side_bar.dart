@@ -1,5 +1,4 @@
 import 'dart:math' as math;
-import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:venera_plus/foundation/app.dart';
@@ -92,7 +91,10 @@ class SideBarRoute<T> extends PopupRoute<T> {
       // 移除已由外层侧栏消费的 safe padding / view insets，避免子组件重复键盘避让
       body = MediaQuery(
         data: mediaQuery
-            .removePadding(removeTop: addTopPadding)
+            .removePadding(
+              removeTop: addTopPadding,
+              removeBottom: addBottomPadding,
+            )
             .removeViewInsets(removeBottom: addBottomPadding),
         child: body,
       );
@@ -106,45 +108,45 @@ class SideBarRoute<T> extends PopupRoute<T> {
     }
 
     final sideBarWidth = math.min(width, mediaQuery.size.width);
+    final colors = context.colorScheme;
+    final borderRadius = showSideBar
+        ? const BorderRadius.horizontal(left: Radius.circular(16))
+        : BorderRadius.zero;
 
     body = Container(
       decoration: BoxDecoration(
-        borderRadius: showSideBar
-            ? const BorderRadius.horizontal(left: Radius.circular(16))
-            : null,
-        color: Theme.of(context).colorScheme.surfaceTint,
-        boxShadow: context.brightness == ui.Brightness.dark
+        borderRadius: borderRadius,
+        boxShadow: showSideBar
             ? [
                 BoxShadow(
-                  color: Colors.white.withAlpha(50),
-                  blurRadius: 10,
-                  offset: Offset(0, 2),
+                  color: colors.shadow.withValues(alpha: 0.18),
+                  blurRadius: 16,
+                  offset: const Offset(-4, 0),
                 ),
               ]
             : null,
       ),
-      clipBehavior: Clip.antiAlias,
       constraints: BoxConstraints(maxWidth: sideBarWidth),
       height: mediaQuery.size.height,
-      child: GestureDetector(
-        child: Material(
-          child: ClipRect(
-            clipBehavior: Clip.antiAlias,
-            child: Container(
-              padding: EdgeInsets.fromLTRB(
-                0,
-                0,
-                mediaQuery.padding.right,
-                addBottomPadding
-                    ? mediaQuery.padding.bottom + mediaQuery.viewInsets.bottom
-                    : 0,
-              ),
-              color: useSurfaceTintColor
-                  ? Theme.of(context).colorScheme.surfaceTint.withAlpha(20)
-                  : null,
-              child: body,
-            ),
+      child: Material(
+        color: useSurfaceTintColor
+            ? Color.alphaBlend(colors.surfaceTint.withAlpha(20), colors.surface)
+            : colors.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: borderRadius,
+          side: showSideBar
+              ? BorderSide(color: colors.outlineVariant)
+              : BorderSide.none,
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Padding(
+          padding: EdgeInsets.only(
+            right: mediaQuery.padding.right,
+            bottom: addBottomPadding
+                ? mediaQuery.padding.bottom + mediaQuery.viewInsets.bottom
+                : 0,
           ),
+          child: body,
         ),
       ),
     );

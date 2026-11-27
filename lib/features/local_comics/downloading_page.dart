@@ -55,19 +55,22 @@ class _DownloadingPageState extends State<DownloadingPage> {
 
   @override
   Widget build(BuildContext context) {
+    final tasks = LocalManager().downloadingTasks;
     return PopUpWidgetScaffold(
-      title: "",
+      title: 'Downloading'.tl,
       body: ListView.builder(
-        itemCount: LocalManager().downloadingTasks.length + 1,
+        itemCount: tasks.length + 1,
         itemBuilder: (BuildContext context, int i) {
           if (i == 0) {
             return buildTop();
           }
-          i--;
-
-          return _DownloadTaskTile(
-            key: ValueKey(LocalManager().downloadingTasks[i]),
-            task: LocalManager().downloadingTasks[i],
+          final task = tasks[i - 1];
+          return Card(
+            key: ValueKey(task),
+            elevation: 0,
+            color: context.colorScheme.surfaceContainerLow,
+            margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            child: _DownloadTaskTile(task: task),
           );
         },
       ),
@@ -130,7 +133,7 @@ class _DownloadingPageState extends State<DownloadingPage> {
 }
 
 class _DownloadTaskTile extends StatefulWidget {
-  const _DownloadTaskTile({required this.task, super.key});
+  const _DownloadTaskTile({required this.task});
 
   final DownloadTask task;
 
@@ -254,7 +257,7 @@ class _DownloadTaskTileState extends State<_DownloadTaskTile> {
                   InkWell(
                     onTap: () => showDialog<void>(
                       context: context,
-                      builder: (_) => AlertDialog(
+                      builder: (context) => AlertDialog(
                         title: Text(task.title),
                         content: SingleChildScrollView(
                           child: SelectableText(task.message),
@@ -266,7 +269,7 @@ class _DownloadTaskTileState extends State<_DownloadTaskTile> {
                             ),
                             child: Text('Copy'.tl),
                           ),
-                          TextButton(
+                          FilledButton(
                             onPressed: () => Navigator.pop(context),
                             child: Text('Close'.tl),
                           ),

@@ -43,6 +43,7 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
   bool _isConnecting = false;
   bool _isSavingAutoSync = false;
   bool _isSavingAutoMetadataScrape = false;
+  bool _tokenVisible = false;
   late bool _connectionInvalid;
   String? _errorMessage;
 
@@ -71,6 +72,7 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
   @override
   Widget build(BuildContext context) {
     final username = _settingString('bangumiUsername');
+    final errorStyle = TextStyle(color: Theme.of(context).colorScheme.error);
     return PopUpWidgetScaffold(
       title: 'Bangumi',
       body: SingleChildScrollView(
@@ -93,10 +95,23 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
             TextField(
               key: const Key('bangumi-token-field'),
               controller: _tokenController,
-              obscureText: true,
+              obscureText: !_tokenVisible,
+              autocorrect: false,
+              enableSuggestions: false,
               decoration: InputDecoration(
                 labelText: 'Bangumi Access Token'.tl,
-                border: const OutlineInputBorder(),
+                isDense: true,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                suffixIcon: IconButton(
+                  tooltip: (_tokenVisible ? 'Hide token' : 'Show token').tl,
+                  icon: Icon(
+                    _tokenVisible ? Icons.visibility_off : Icons.visibility,
+                  ),
+                  onPressed: () =>
+                      setState(() => _tokenVisible = !_tokenVisible),
+                ),
               ),
             ),
             const SizedBox(height: 12),
@@ -136,18 +151,19 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
             if (_connectionInvalid && _errorMessage == null) ...[
               const SizedBox(height: 4),
               Align(
-                alignment: Alignment.centerLeft,
+                alignment: AlignmentDirectional.centerStart,
                 child: Text(
                   'Bangumi connection is invalid. Please check your Access Token.'
                       .tl,
+                  style: errorStyle,
                 ),
               ),
             ],
             if (_errorMessage != null) ...[
               const SizedBox(height: 4),
               Align(
-                alignment: Alignment.centerLeft,
-                child: Text(_errorMessage!),
+                alignment: AlignmentDirectional.centerStart,
+                child: Text(_errorMessage!, style: errorStyle),
               ),
             ],
             if (username.isNotEmpty && !_connectionInvalid) ...[
@@ -202,6 +218,7 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
                 ],
               ),
             ],
+            const SizedBox(height: 16),
           ],
         ).paddingHorizontal(16),
       ),
@@ -333,6 +350,7 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
       setState(() {
         _connectionInvalid = false;
         _errorMessage = null;
+        _tokenVisible = false;
       });
     } catch (error) {
       if (mounted) {

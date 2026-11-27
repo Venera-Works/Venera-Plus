@@ -210,7 +210,7 @@ class _HistoryPageState extends State<HistoryPage> {
         onPressed: invertSelection,
       ),
       IconButton(
-        icon: const Icon(Icons.delete),
+        icon: const Icon(Icons.delete_outline),
         tooltip: "Delete".tl,
         onPressed: selectedComics.isEmpty
             ? null

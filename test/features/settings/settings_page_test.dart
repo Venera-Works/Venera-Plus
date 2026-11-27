@@ -883,6 +883,8 @@ void main() {
       storage.addListener(onRemoved);
       try {
         await tester.tap(find.byIcon(Icons.delete_outline));
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
         await runWidgetIo(tester, () => removed.future);
       } finally {
         storage.removeListener(onRemoved);

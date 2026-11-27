@@ -256,13 +256,19 @@ Future<void> showConfirmDialog({
       title: title,
       content: Text(content).paddingHorizontal(16).paddingVertical(8),
       actions: [
+        TextButton(onPressed: context.pop, child: Text('Cancel'.tl)),
         FilledButton(
           onPressed: () {
             context.pop();
             onConfirm();
           },
           style: actionButtonStyle.merge(
-            FilledButton.styleFrom(backgroundColor: btnColor),
+            FilledButton.styleFrom(
+              backgroundColor: btnColor,
+              foregroundColor: btnColor == context.colorScheme.error
+                  ? context.colorScheme.onError
+                  : null,
+            ),
           ),
           child: Text(confirmText.tl),
         ),
@@ -413,6 +419,7 @@ class ContentDialog extends StatelessWidget {
             ? Appbar(
                 leading: IconButton(
                   icon: const Icon(Icons.close),
+                  tooltip: 'Close'.tl,
                   onPressed: dismissible ? context.pop : null,
                 ),
                 title: Text(title!),
@@ -428,61 +435,62 @@ class ContentDialog extends StatelessWidget {
             ),
           ),
         ),
-        const SizedBox(height: 16),
-        Theme(
-          data: theme.copyWith(
-            filledButtonTheme: FilledButtonThemeData(
-              style:
-                  theme.filledButtonTheme.style?.merge(actionButtonStyle) ??
-                  actionButtonStyle,
+        if (actions.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          Theme(
+            data: theme.copyWith(
+              filledButtonTheme: FilledButtonThemeData(
+                style:
+                    theme.filledButtonTheme.style?.merge(actionButtonStyle) ??
+                    actionButtonStyle,
+              ),
+              outlinedButtonTheme: OutlinedButtonThemeData(
+                style:
+                    theme.outlinedButtonTheme.style?.merge(actionButtonStyle) ??
+                    actionButtonStyle,
+              ),
+              textButtonTheme: TextButtonThemeData(
+                style:
+                    theme.textButtonTheme.style?.merge(actionButtonStyle) ??
+                    actionButtonStyle,
+              ),
             ),
-            outlinedButtonTheme: OutlinedButtonThemeData(
-              style:
-                  theme.outlinedButtonTheme.style?.merge(actionButtonStyle) ??
-                  actionButtonStyle,
+            child: OverflowBar(
+              alignment: MainAxisAlignment.end,
+              overflowAlignment: OverflowBarAlignment.end,
+              spacing: 8,
+              overflowSpacing: 8,
+              children: actions,
             ),
-            textButtonTheme: TextButtonThemeData(
-              style:
-                  theme.textButtonTheme.style?.merge(actionButtonStyle) ??
-                  actionButtonStyle,
-            ),
-          ),
-          child: OverflowBar(
-            alignment: MainAxisAlignment.end,
-            overflowAlignment: OverflowBarAlignment.end,
-            spacing: 8,
-            overflowSpacing: 8,
-            children: actions,
-          ),
-        ).paddingHorizontal(16),
+          ).paddingHorizontal(16),
+        ],
         const SizedBox(height: 16),
       ],
     );
     return Dialog(
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
         side: context.brightness == Brightness.dark
             ? BorderSide(color: context.colorScheme.outlineVariant)
             : BorderSide.none,
       ),
-      insetPadding: context.width < 400
-          ? const EdgeInsets.symmetric(horizontal: 4)
-          : const EdgeInsets.symmetric(horizontal: 16),
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: context.width < 400 ? 16 : 24,
+        vertical: 24,
+      ),
+      constraints: BoxConstraints(
+        minWidth: math.max(0.0, math.min(300.0, context.width - 32)),
+        maxWidth: 520,
+      ),
       elevation: 2,
       shadowColor: context.colorScheme.shadow,
       backgroundColor: context.colorScheme.surface,
       child: IntrinsicWidth(
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxWidth: 600,
-            minWidth: math.min(400, context.width - 16),
-          ),
-          child: MediaQuery.removePadding(
-            removeTop: true,
-            removeBottom: true,
-            context: context,
-            child: content,
-          ),
+        child: MediaQuery.removePadding(
+          removeTop: true,
+          removeBottom: true,
+          context: context,
+          child: content,
         ),
       ),
     );
@@ -535,6 +543,10 @@ Future<void> showInputDialog({
               ],
             ),
             actions: [
+              TextButton(
+                onPressed: isLoading ? null : context.pop,
+                child: Text(cancelText.tl),
+              ),
               FilledButton(
                 style: actionButtonStyle,
                 onPressed: isLoading
@@ -616,15 +628,18 @@ Future<int?> showSelectDialog({
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Select(
-                    current: current == null ? "" : options[current!],
-                    values: options,
-                    minWidth: 156,
-                    onTap: (i) {
-                      setState(() {
-                        current = i;
-                      });
-                    },
+                  Flexible(
+                    child: Select(
+                      current: current == null ? "" : options[current!],
+                      values: options,
+                      selectedIndex: current,
+                      minWidth: 156,
+                      onTap: (i) {
+                        setState(() {
+                          current = i;
+                        });
+                      },
+                    ),
                   ),
                 ],
               ),

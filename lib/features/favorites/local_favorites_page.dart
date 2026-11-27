@@ -96,6 +96,12 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
     });
   }
 
+  void _onSearchChanged(String value) {
+    keyword = value;
+    searchHasUpper = keyword.contains(RegExp(r'[A-Z]'));
+    updateSearchResult();
+  }
+
   bool multiSelectMode = false;
 
   FavoriteItem? lastSelectedComic;
@@ -722,20 +728,18 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
             style: context.width < changePoint
                 ? AppbarStyle.shadow
                 : AppbarStyle.blur,
-            leading: Tooltip(
-              message: (parentName == null ? 'Folders' : 'Back').tl,
-              child: narrow
-                  ? IconButton(
-                      icon: Icon(
-                        parentName == null ? Icons.menu : Icons.arrow_back,
-                      ),
-                      color: context.colorScheme.primary,
-                      onPressed: parentName == null
-                          ? widget.showFolders
-                          : () => widget.onFolderSelected(false, parentName),
-                    )
-                  : const SizedBox(),
-            ),
+            leading: narrow
+                ? IconButton(
+                    tooltip: (parentName == null ? 'Folders' : 'Back').tl,
+                    icon: Icon(
+                      parentName == null ? Icons.menu : Icons.arrow_back,
+                    ),
+                    color: context.colorScheme.primary,
+                    onPressed: parentName == null
+                        ? widget.showFolders
+                        : () => widget.onFolderSelected(false, parentName),
+                  )
+                : const SizedBox.shrink(),
             title: parentName != null && !narrow
                 ? Row(
                     children: [
@@ -816,7 +820,7 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                 child: IconButton(
                   icon: const Icon(Icons.sort_rounded),
                   color: readFilterSelect != readFilterList[0]
-                      ? context.colorScheme.primaryContainer
+                      ? context.colorScheme.primary
                       : null,
                   onPressed: () {
                     showDialog(
@@ -1121,12 +1125,20 @@ class _LocalFavoritesPageState extends State<LocalFavoritesPage> {
                 hintText: "Search".tl,
                 border: UnderlineInputBorder(),
               ),
-              onChanged: (v) {
-                keyword = v;
-                searchHasUpper = keyword.contains(RegExp(r'[A-Z]'));
-                updateSearchResult();
-              },
+              onChanged: _onSearchChanged,
             ).paddingBottom(8).paddingRight(8),
+            actions: [
+              if (_searchController.text.isNotEmpty)
+                IconButton(
+                  tooltip: 'Clear'.tl,
+                  iconSize: 20,
+                  icon: const Icon(Icons.clear),
+                  onPressed: () {
+                    _searchController.clear();
+                    _onSearchChanged('');
+                  },
+                ),
+            ],
           ),
         if (isLoading || _isFilteringReadStatus)
           SliverToBoxAdapter(
@@ -1472,12 +1484,15 @@ class _SelectUpdatePageNumState extends State<_SelectUpdatePageNum> {
     }
 
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(children: [Text(text)]),
+        Text(text),
         Row(
           children: [
-            Text("Update the page number by the latest collection".tl),
-            Spacer(),
+            Expanded(
+              child: Text("Update the page number by the latest collection".tl),
+            ),
+            const SizedBox(width: 8),
             Select(
               current: updatePageNum.toString() == '9999999'
                   ? _allPageText
@@ -1522,46 +1537,22 @@ const readFilterList = ['All', 'UnCompleted', 'Completed'];
 
 class _LocalFavoritesFilterDialogState
     extends State<_LocalFavoritesFilterDialog> {
-  List<String> optionTypes = ['Filter'];
   late var readFilter = widget.initReadFilterSelect;
   @override
   Widget build(BuildContext context) {
-    Widget tabBar = Material(
-      borderRadius: BorderRadius.circular(8),
-      child: AppTabBar(
-        key: PageStorageKey(optionTypes),
-        tabs: optionTypes.map((e) => Tab(text: e.tl, key: Key(e))).toList(),
-      ),
-    ).paddingTop(context.padding.top);
     return ContentDialog(
-      content: DefaultTabController(
-        length: 2,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            tabBar,
-            TabViewBody(
-              children: [
-                Column(
-                  children: [
-                    ListTile(
-                      title: Text("Filter reading status".tl),
-                      trailing: Select(
-                        current: readFilter.tl,
-                        values: readFilterList.map((e) => e.tl).toList(),
-                        minWidth: 64,
-                        onTap: (index) {
-                          setState(() {
-                            readFilter = readFilterList[index];
-                          });
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ],
+      title: 'Filter'.tl,
+      content: ListTile(
+        title: Text("Filter reading status".tl),
+        trailing: Select(
+          current: readFilter.tl,
+          values: readFilterList.map((e) => e.tl).toList(),
+          minWidth: 64,
+          onTap: (index) {
+            setState(() {
+              readFilter = readFilterList[index];
+            });
+          },
         ),
       ),
       actions: [

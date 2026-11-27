@@ -203,6 +203,7 @@ class _ComicCoverViewerState extends State<ComicCoverViewer> {
             children: [
               const SizedBox(width: 8),
               IconButton(
+                tooltip: 'Close'.tl,
                 icon: const Icon(Icons.close),
                 onPressed: _isUpdatingCover
                     ? null
@@ -217,6 +218,7 @@ class _ComicCoverViewerState extends State<ComicCoverViewer> {
                 ),
               ),
               IconButton(
+                tooltip: 'Save Image'.tl,
                 icon: const Icon(Icons.save_alt),
                 onPressed: _isUpdatingCover || _imageProvider == null
                     ? null

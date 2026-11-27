@@ -1,24 +1,36 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/context.dart';
-import 'package:venera_plus/foundation/widget_utils.dart';
 
 import 'effects.dart';
 import 'gesture.dart';
 
-void showMenuX(BuildContext context, Offset location, List<MenuEntry> entries) {
-  Navigator.of(
-    context,
-    rootNavigator: true,
-  ).push(_MenuRoute(entries, location));
+void showMenuX(
+  BuildContext context,
+  Offset location,
+  List<MenuEntry> entries, {
+  bool centerHorizontally = false,
+}) {
+  if (entries.isEmpty) return;
+  final navigator = Navigator.of(context, rootNavigator: true);
+  final overlay = navigator.overlay!.context.findRenderObject() as RenderBox;
+  navigator.push(
+    _MenuRoute(entries, overlay.globalToLocal(location), centerHorizontally),
+  );
 }
 
 class _MenuRoute<T> extends PopupRoute<T> {
   final List<MenuEntry> entries;
-
   final Offset location;
+  final bool centerHorizontally;
 
-  _MenuRoute(this.entries, this.location);
+  _MenuRoute(this.entries, this.location, this.centerHorizontally);
+
+  static const _menuPadding = 6.0;
+  static const _entryPadding = 12.0;
+  static const _iconWidth = 28.0;
 
   @override
   Color? get barrierColor => Colors.transparent;
@@ -37,55 +49,113 @@ class _MenuRoute<T> extends PopupRoute<T> {
     Animation<double> animation,
     Animation<double> secondaryAnimation,
   ) {
-    var width = entries.first.icon == null ? 216.0 : 242.0;
-    final size = MediaQuery.of(context).size;
-    var left = location.dx;
-    if (left < 10) {
-      left = 10;
+    final size = MediaQuery.sizeOf(context);
+    final padding = MediaQuery.paddingOf(context);
+    final safeTop = math.max(padding.top, App.isDesktop ? 36.0 : 0.0);
+    final safeBottom = padding.bottom + MediaQuery.viewInsetsOf(context).bottom;
+    final bounds = Rect.fromLTRB(
+      padding.left + 8,
+      safeTop + 8,
+      size.width - padding.right - 8,
+      size.height - safeBottom - 8,
+    );
+    if (bounds.isEmpty) return const SizedBox.shrink();
+
+    final colors = context.colorScheme;
+    final textStyle = Theme.of(
+      context,
+    ).textTheme.bodyMedium!.copyWith(fontSize: 14);
+    final hasAnyIcon = entries.any((entry) => entry.icon != null);
+    final textPainter = TextPainter(
+      textDirection: Directionality.of(context),
+      textScaler: MediaQuery.textScalerOf(context),
+      maxLines: 1,
+    );
+    var textWidth = 0.0;
+    for (final entry in entries) {
+      textPainter.text = TextSpan(text: entry.text, style: textStyle);
+      textPainter.layout();
+      textWidth = math.max(textWidth, textPainter.width);
     }
-    if (left + width > size.width - 10) {
-      left = size.width - width - 10;
-    }
-    var top = location.dy;
-    var height = 16 + entryHeight * entries.length;
-    if (top + height > size.height - 15) {
-      top = size.height - height - 15;
-    }
+    textPainter.dispose();
+
+    final maxWidth = math.min(220.0, math.min(size.width * 0.58, bounds.width));
+    final minWidth = math.min(132.0, maxWidth);
+    final contentWidth =
+        textWidth.ceilToDouble() +
+        (_menuPadding + _entryPadding) * 2 +
+        (hasAnyIcon ? _iconWidth : 0);
+    final menuWidth = contentWidth.clamp(minWidth, maxWidth);
+    final maxMenuHeight = math.min(
+      bounds.height,
+      math.max(entryHeight + _menuPadding * 2, bounds.height * 0.72),
+    );
+    final menuHeight = math.min(
+      entryHeight * entries.length + _menuPadding * 2,
+      maxMenuHeight,
+    );
+    final anchorLeft = centerHorizontally
+        ? location.dx - menuWidth / 2
+        : location.dx;
+    const borderRadius = BorderRadius.all(Radius.circular(12));
+
     return Stack(
       children: [
         Positioned(
-          left: left,
-          top: top,
-          child: Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(4),
-              border: context.brightness == Brightness.dark
-                  ? Border.all(color: context.colorScheme.outlineVariant)
-                  : null,
-              boxShadow: [
-                BoxShadow(
-                  color: context.colorScheme.shadow.toOpacity(0.2),
-                  blurRadius: 8,
-                  blurStyle: BlurStyle.outer,
-                ),
-              ],
+          left: anchorLeft.clamp(
+            bounds.left,
+            bounds.left + (bounds.width - menuWidth),
+          ),
+          top: location.dy.clamp(
+            bounds.top,
+            bounds.top + (bounds.height - menuHeight),
+          ),
+          width: menuWidth,
+          child: ScaleTransition(
+            scale: animation.drive(
+              Tween(
+                begin: 0.96,
+                end: 1.0,
+              ).chain(CurveTween(curve: Curves.ease)),
             ),
-            child: BlurEffect(
-              borderRadius: BorderRadius.circular(4),
-              child: Material(
-                color: context.colorScheme.surface.toOpacity(0.92),
-                borderRadius: BorderRadius.circular(4),
-                child: Container(
-                  width: width,
-                  padding: const EdgeInsets.symmetric(
-                    vertical: 12,
-                    horizontal: 6,
+            alignment: centerHorizontally
+                ? Alignment.topCenter
+                : Alignment.topLeft,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                borderRadius: borderRadius,
+                boxShadow: [
+                  BoxShadow(
+                    color: colors.shadow.withValues(alpha: 0.18),
+                    blurRadius: 14,
+                    offset: const Offset(0, 4),
                   ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: entries
-                        .map((e) => buildEntry(e, context))
-                        .toList(),
+                ],
+              ),
+              child: BlurEffect(
+                borderRadius: borderRadius,
+                blur: 10,
+                child: Material(
+                  color: colors.surfaceContainerHigh.withValues(alpha: 0.96),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: borderRadius,
+                    side: BorderSide(color: colors.outlineVariant),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(maxHeight: maxMenuHeight),
+                    child: SingleChildScrollView(
+                      primary: false,
+                      padding: const EdgeInsets.all(_menuPadding),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          for (final entry in entries)
+                            _buildEntry(context, entry, hasAnyIcon, textStyle),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -96,9 +166,14 @@ class _MenuRoute<T> extends PopupRoute<T> {
     );
   }
 
-  Widget buildEntry(MenuEntry entry, BuildContext context) {
+  Widget _buildEntry(
+    BuildContext context,
+    MenuEntry entry,
+    bool hasAnyIcon,
+    TextStyle textStyle,
+  ) {
     return ClickInkWell(
-      borderRadius: BorderRadius.circular(4),
+      borderRadius: BorderRadius.circular(8),
       onTap: () {
         Navigator.of(context).pop();
         entry.onClick();
@@ -106,18 +181,20 @@ class _MenuRoute<T> extends PopupRoute<T> {
       child: SizedBox(
         height: entryHeight,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
+          padding: const EdgeInsets.symmetric(horizontal: _entryPadding),
           child: Row(
             children: [
-              if (entry.icon != null)
+              if (entry.icon != null) ...[
                 Icon(entry.icon, size: 18, color: entry.color),
-              const SizedBox(width: 12),
+                const SizedBox(width: 10),
+              ] else if (hasAnyIcon)
+                const SizedBox(width: _iconWidth),
               Expanded(
                 child: Tooltip(
                   message: entry.text,
                   child: Text(
                     entry.text,
-                    style: TextStyle(color: entry.color),
+                    style: textStyle.copyWith(color: entry.color),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -141,9 +218,7 @@ class _MenuRoute<T> extends PopupRoute<T> {
     Widget child,
   ) {
     return FadeTransition(
-      opacity: animation.drive(
-        Tween<double>(begin: 0, end: 1).chain(CurveTween(curve: Curves.ease)),
-      ),
+      opacity: animation.drive(CurveTween(curve: Curves.ease)),
       child: child,
     );
   }

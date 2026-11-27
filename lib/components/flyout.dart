@@ -1,15 +1,13 @@
-import 'dart:ui' as ui;
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:venera_plus/foundation/context.dart';
-import 'package:venera_plus/foundation/widget_utils.dart';
 
 import 'consts.dart';
 import 'effects.dart';
 import 'gesture.dart';
 
-const minFlyoutWidth = 256.0;
-const minFlyoutHeight = 128.0;
+const _maxFlyoutWidth = 360.0;
 
 class FlyoutController {
   Function? _show;
@@ -103,10 +101,13 @@ class FlyoutState extends State<Flyout> {
   }
 
   void show() {
-    var renderBox = context.findRenderObject() as RenderBox;
-    var rect = renderBox.localToGlobal(Offset.zero) & renderBox.size;
-    var navigator =
+    final renderBox = context.findRenderObject() as RenderBox;
+    final navigator =
         widget.navigator ?? Navigator.of(context, rootNavigator: true);
+    final overlay = navigator.overlay!.context.findRenderObject() as RenderBox;
+    final anchor = overlay.globalToLocal(
+      renderBox.localToGlobal(renderBox.size.bottomLeft(Offset.zero)),
+    );
     navigator.push(
       PageRouteBuilder(
         fullscreenDialog: true,
@@ -115,58 +116,37 @@ class FlyoutState extends State<Flyout> {
         transitionDuration: fastAnimationDuration,
         reverseTransitionDuration: fastAnimationDuration,
         pageBuilder: (context, animation, secondaryAnimation) {
-          var left = rect.left;
-          var top = rect.bottom;
-
-          if (left + minFlyoutWidth > MediaQuery.of(context).size.width) {
-            left = MediaQuery.of(context).size.width - minFlyoutWidth;
-          }
-          if (top + minFlyoutHeight > MediaQuery.of(context).size.height) {
-            top = MediaQuery.of(context).size.height - minFlyoutHeight;
-          }
-
-          Widget transition(
-            BuildContext context,
-            Animation<double> animation,
-            Animation<double> secondaryAnimation,
-            Widget flyout,
-          ) {
-            return SlideTransition(
-              position: Tween<Offset>(
-                begin: const Offset(0, -0.05),
-                end: const Offset(0, 0),
-              ).animate(animation),
-              child: flyout,
-            );
-          }
+          final insets =
+              MediaQuery.paddingOf(context) +
+              const EdgeInsets.all(12) +
+              EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom);
 
           return Stack(
+            fit: StackFit.expand,
             children: [
-              Positioned.fill(
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: navigator.pop,
-                  child: AnimatedBuilder(
-                    animation: animation,
-                    builder: (context, builder) {
-                      return ColoredBox(
-                        color: Colors.black.toOpacity(0.3 * animation.value),
-                      );
-                    },
-                  ),
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: navigator.pop,
+                child: AnimatedBuilder(
+                  animation: animation,
+                  builder: (context, child) {
+                    return ColoredBox(
+                      color: Colors.black.withValues(
+                        alpha: 0.3 * animation.value,
+                      ),
+                    );
+                  },
                 ),
               ),
-              Positioned(
-                left: left,
-                right: 0,
-                top: top,
-                bottom: 0,
-                child: transition(
-                  context,
-                  animation,
-                  secondaryAnimation,
-                  Align(
-                    alignment: Alignment.topLeft,
+              Padding(
+                padding: insets,
+                child: CustomSingleChildLayout(
+                  delegate: _FlyoutLayout(anchor - insets.topLeft),
+                  child: SlideTransition(
+                    position: Tween<Offset>(
+                      begin: const Offset(0, -0.05),
+                      end: Offset.zero,
+                    ).animate(animation),
                     child: widget.flyoutBuilder(context),
                   ),
                 ),
@@ -177,6 +157,32 @@ class FlyoutState extends State<Flyout> {
       ),
     );
   }
+}
+
+class _FlyoutLayout extends SingleChildLayoutDelegate {
+  const _FlyoutLayout(this.anchor);
+
+  final Offset anchor;
+
+  @override
+  BoxConstraints getConstraintsForChild(BoxConstraints constraints) {
+    return BoxConstraints(
+      maxWidth: math.min(_maxFlyoutWidth, constraints.maxWidth),
+      maxHeight: constraints.maxHeight,
+    );
+  }
+
+  @override
+  Offset getPositionForChild(Size size, Size childSize) {
+    return Offset(
+      anchor.dx.clamp(0.0, size.width - childSize.width),
+      anchor.dy.clamp(0.0, size.height - childSize.height),
+    );
+  }
+
+  @override
+  bool shouldRelayout(_FlyoutLayout oldDelegate) =>
+      anchor != oldDelegate.anchor;
 }
 
 class FlyoutContent extends StatelessWidget {
@@ -195,44 +201,61 @@ class FlyoutContent extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return IntrinsicWidth(
+    final colors = context.colorScheme;
+    const borderRadius = BorderRadius.all(Radius.circular(12));
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: borderRadius,
+        boxShadow: [
+          BoxShadow(
+            color: colors.shadow.withValues(alpha: 0.18),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
       child: BlurEffect(
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: borderRadius,
+        blur: 10,
         child: Material(
-          borderRadius: BorderRadius.circular(8),
-          type: MaterialType.card,
-          color: context.colorScheme.surface.toOpacity(0.82),
-          child: Container(
-            constraints: const BoxConstraints(minWidth: minFlyoutWidth),
-            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(8),
-              border: context.brightness == ui.Brightness.dark
-                  ? Border.all(color: context.colorScheme.outlineVariant)
-                  : null,
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
+          color: colors.surfaceContainerHigh.withValues(alpha: 0.96),
+          shape: RoundedRectangleBorder(
+            borderRadius: borderRadius,
+            side: BorderSide(color: colors.outlineVariant),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: _maxFlyoutWidth),
+            child: SingleChildScrollView(
+              primary: false,
+              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
                   ),
-                ),
-                if (content != null) content!,
-                const SizedBox(height: 12),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [const Spacer(), ...actions],
-                ),
-              ],
+                  ?content,
+                  if (actions.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    OverflowBar(
+                      alignment: MainAxisAlignment.end,
+                      overflowAlignment: OverflowBarAlignment.end,
+                      spacing: 8,
+                      overflowSpacing: 8,
+                      children: actions,
+                    ),
+                  ],
+                ],
+              ),
             ),
           ),
-        ).paddingAll(4),
+        ),
       ),
     );
   }

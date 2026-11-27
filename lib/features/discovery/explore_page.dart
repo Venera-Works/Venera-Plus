@@ -313,8 +313,7 @@ class _ExplorePageState extends State<ExplorePage>
   /// on updates while preserving element states under stable ValueKeys.
   final Set<({String sourceKey, DiscoverySection section})> _visitedViews = {};
   late final AnimationController _sectionController;
-  bool showFB = true;
-  double location = 0;
+  final _refreshFabController = ScrollAutoHideFabController();
   double _contentHorizontalDragDistance = 0;
   NaviPaneState? naviPane;
 
@@ -383,6 +382,7 @@ class _ExplorePageState extends State<ExplorePage>
     if (newOrdered.isEmpty) {
       currentSourceKey = null;
       _visitedViews.clear();
+      _refreshFabController.reset();
       _resetSectionTransition();
       return;
     }
@@ -445,6 +445,7 @@ class _ExplorePageState extends State<ExplorePage>
         capabilitiesChanged ||
         previousSourceKey != currentSourceKey ||
         previousSection != currentSection) {
+      _refreshFabController.reset();
       _resetSectionTransition();
     }
   }
@@ -491,6 +492,7 @@ class _ExplorePageState extends State<ExplorePage>
           currentSection.name;
       appdata.writeImplicitData();
 
+      _refreshFabController.reset();
       _resetSectionTransition();
       _recordActiveViewVisited();
     });
@@ -503,6 +505,7 @@ class _ExplorePageState extends State<ExplorePage>
 
     setState(() {
       currentSection = section;
+      _refreshFabController.reset();
       appdata.implicitData['discovery_section_${source.key}'] = section.name;
       appdata.writeImplicitData();
 
@@ -549,30 +552,18 @@ class _ExplorePageState extends State<ExplorePage>
   }
 
   void toTop() {
-    final source = currentSource;
-    if (source == null) return;
-
     if (currentSection == DiscoverySection.browse) {
-      GlobalState.findOrNull<_SourceBrowseViewState>(
-        'browse:${source.key}',
-      )?.toTop();
+      _activeBrowseView?.toTop();
     } else {
-      GlobalState.findOrNull<SourceCategoryViewState>(
-        'category:${source.key}',
-      )?.toTop();
+      _activeCategoryView?.toTop();
     }
   }
 
   void refresh() {
-    final source = currentSource;
-    if (source == null) return;
-
     if (currentSection == DiscoverySection.browse) {
       _activeBrowseView?.refresh();
     } else {
-      GlobalState.findOrNull<SourceCategoryViewState>(
-        'category:${source.key}',
-      )?.refresh();
+      _activeCategoryView?.refresh();
     }
   }
 
@@ -580,6 +571,16 @@ class _ExplorePageState extends State<ExplorePage>
       GlobalState.findOrNull<_SourceBrowseViewState>(
         'browse:$currentSourceKey',
       );
+
+  SourceCategoryViewState? get _activeCategoryView =>
+      GlobalState.findOrNull<SourceCategoryViewState>(
+        'category:$currentSourceKey',
+      );
+
+  ScrollController? get _activeScrollController =>
+      currentSection == DiscoverySection.browse
+      ? _activeBrowseView?._activePageState?.scrollController
+      : _activeCategoryView?.scrollController;
 
   void deepRefresh() {
     if (currentSection == DiscoverySection.browse) {
@@ -612,6 +613,7 @@ class _ExplorePageState extends State<ExplorePage>
     appdata.settings.removeListener(_onSettingsOrSourcesChanged);
     ComicSourceManager().removeListener(_onSettingsOrSourcesChanged);
     naviPane?.removeNaviItemTapListener(onNaviItemTapped);
+    _refreshFabController.dispose();
     _sectionController.dispose();
     super.dispose();
   }
@@ -1025,14 +1027,23 @@ class _ExplorePageState extends State<ExplorePage>
     );
   }
 
-  Widget buildFAB() => Material(
-    color: Colors.transparent,
-    child: FloatingActionButton(
-      key: const Key("FAB"),
-      onPressed: refresh,
-      child: const Icon(Icons.refresh),
-    ),
-  );
+  Widget buildFAB() {
+    final canRefresh =
+        currentSection == DiscoverySection.browse ||
+        SourceCategoryView.canRefresh(currentSource?.categoryData);
+    return ValueListenableBuilder<bool>(
+      valueListenable: _refreshFabController,
+      builder: (_, visible, child) =>
+          AnimatedScrollFab(visible: canRefresh && visible, child: child!),
+      child: FloatingActionButton(
+        key: const Key("FAB"),
+        tooltip: 'Refresh'.tl,
+        heroTag: 'explore_refresh_fab',
+        onPressed: refresh,
+        child: const Icon(Icons.refresh),
+      ),
+    );
+  }
 
   Widget buildContentBody(BuildContext context) {
     final source = currentSource;
@@ -1059,6 +1070,12 @@ class _ExplorePageState extends State<ExplorePage>
           enabledExplorePages: _enabledExplorePages,
           sectionSwipeEnabled:
               _sourceHasBrowse(itemSource) && _sourceHasCategories(itemSource),
+          onTabChanged: () {
+            if (currentSourceKey == item.sourceKey &&
+                currentSection == DiscoverySection.browse) {
+              _refreshFabController.reset();
+            }
+          },
         );
       } else {
         final catData = itemSource.categoryData;
@@ -1161,35 +1178,12 @@ class _ExplorePageState extends State<ExplorePage>
                     onHorizontalDragStart: _onContentHorizontalDragStart,
                     onHorizontalDragUpdate: _onContentHorizontalDragUpdate,
                     onHorizontalDragEnd: _onContentHorizontalDragEnd,
-                    child: NotificationListener<ScrollNotification>(
-                      onNotification: (notifications) {
-                        if (notifications.metrics.axis == Axis.horizontal) {
-                          if (!showFB) {
-                            setState(() {
-                              showFB = true;
-                            });
-                          }
-                          return true;
-                        }
-
-                        var current = notifications.metrics.pixels;
-                        var overflow = notifications.metrics.outOfRange;
-                        if (current > location && current != 0 && showFB) {
-                          setState(() {
-                            showFB = false;
-                          });
-                        } else if ((current < location - 50 || current == 0) &&
-                            !showFB) {
-                          setState(() {
-                            showFB = true;
-                          });
-                        }
-                        if ((current > location || current < location - 50) &&
-                            !overflow) {
-                          location = current;
-                        }
-                        return false;
-                      },
+                    child: NotificationListener<Notification>(
+                      onNotification: (notification) =>
+                          _refreshFabController.handleNotification(
+                            notification,
+                            _activeScrollController,
+                          ),
                       child: MediaQuery.removePadding(
                         context: context,
                         removeTop: true,
@@ -1206,21 +1200,7 @@ class _ExplorePageState extends State<ExplorePage>
           Positioned(
             right: 16,
             bottom: context.padding.bottom + 16,
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 150),
-              reverseDuration: const Duration(milliseconds: 150),
-              child: showFB ? buildFAB() : const SizedBox(),
-              transitionBuilder: (widget, animation) {
-                var tween = Tween<Offset>(
-                  begin: const Offset(0, 1),
-                  end: const Offset(0, 0),
-                );
-                return SlideTransition(
-                  position: tween.animate(animation),
-                  child: widget,
-                );
-              },
-            ),
+            child: buildFAB(),
           ),
         ],
       ),
@@ -1237,12 +1217,14 @@ class _SourceBrowseView extends StatefulWidget {
     required this.source,
     required this.enabledExplorePages,
     required this.sectionSwipeEnabled,
+    required this.onTabChanged,
     super.key,
   });
 
   final ComicSource source;
   final List<String> enabledExplorePages;
   final bool sectionSwipeEnabled;
+  final VoidCallback onTabChanged;
 
   @override
   State<_SourceBrowseView> createState() => _SourceBrowseViewState();
@@ -1256,6 +1238,7 @@ class _SourceBrowseViewState extends AutomaticGlobalState<_SourceBrowseView>
   Object? get key => 'browse:${widget.source.key}';
 
   TabController? _tabController;
+  int _lastTabIndex = 0;
   List<ExplorePageData> _pages = const [];
 
   void _syncPagesAndController() {
@@ -1300,6 +1283,7 @@ class _SourceBrowseViewState extends AutomaticGlobalState<_SourceBrowseView>
       appdata.writeImplicitData();
     }
 
+    _lastTabIndex = initialIndex;
     if (_pages.length > 1) {
       if (_tabController == null || _tabController!.length != _pages.length) {
         _disposeTabController();
@@ -1319,12 +1303,16 @@ class _SourceBrowseViewState extends AutomaticGlobalState<_SourceBrowseView>
 
   void _onTabChanged() {
     final controller = _tabController;
-    if (controller != null && !controller.indexIsChanging) {
-      if (controller.index >= 0 && controller.index < _pages.length) {
-        appdata.implicitData['discovery_page_${widget.source.key}'] =
-            _pages[controller.index].title;
-        appdata.writeImplicitData();
-      }
+    if (controller == null) return;
+    final index = controller.index;
+    if (index != _lastTabIndex) {
+      _lastTabIndex = index;
+      widget.onTabChanged();
+    }
+    if (!controller.indexIsChanging && index >= 0 && index < _pages.length) {
+      appdata.implicitData['discovery_page_${widget.source.key}'] =
+          _pages[index].title;
+      appdata.writeImplicitData();
     }
   }
 

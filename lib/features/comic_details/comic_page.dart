@@ -108,9 +108,9 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
 
   bool showAppbarTitle = false;
 
-  var scrollController = ScrollController();
+  final scrollController = ScrollController();
 
-  bool showFAB = false;
+  bool _showTopFab = false;
 
   @override
   void onReadEnd() => _onHistoryChanged();
@@ -200,7 +200,7 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
   @override
   void dispose() {
     _historyManager.removeListener(_onHistoryChanged);
-    scrollController.removeListener(onScroll);
+    scrollController.dispose();
     super.dispose();
   }
 
@@ -233,28 +233,15 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
   ComicDetails get comic => data!;
 
   void onScroll() {
-    var offset =
-        scrollController.position.pixels -
-        scrollController.position.minScrollExtent;
-    var showFAB = offset > 0;
-    if (showFAB != this.showFAB) {
-      setState(() {
-        this.showFAB = showFAB;
-      });
-    }
-    if (offset > 100) {
-      if (!showAppbarTitle) {
-        setState(() {
-          showAppbarTitle = true;
-        });
-      }
-    } else {
-      if (showAppbarTitle) {
-        setState(() {
-          showAppbarTitle = false;
-        });
-      }
-    }
+    final position = scrollController.position;
+    final offset = position.pixels - position.minScrollExtent;
+    final showTopFab = offset > 240;
+    final showTitle = offset > 100;
+    if (showTopFab == _showTopFab && showTitle == showAppbarTitle) return;
+    setState(() {
+      _showTopFab = showTopFab;
+      showAppbarTitle = showTitle;
+    });
   }
 
   var isFirst = true;
@@ -273,18 +260,21 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
               ),
             )
           : null,
-      floatingActionButton: showFAB
-          ? FloatingActionButton(
-              onPressed: () {
-                scrollController.animateTo(
-                  0,
-                  duration: const Duration(milliseconds: 200),
-                  curve: Curves.ease,
-                );
-              },
-              child: const Icon(Icons.arrow_upward),
-            )
-          : null,
+      floatingActionButton: AnimatedScrollFab(
+        visible: _showTopFab,
+        child: FloatingActionButton(
+          tooltip: 'Back to top'.tl,
+          heroTag: 'comic_details_top_fab',
+          onPressed: () {
+            scrollController.animateTo(
+              scrollController.position.minScrollExtent,
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.ease,
+            );
+          },
+          child: const Icon(Icons.arrow_upward),
+        ),
+      ),
       body: SmoothCustomScrollView(
         controller: scrollController,
         slivers: [
@@ -308,6 +298,7 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
     );
   }
 
+  @override
   Future<Res<ComicDetails>> loadData() async {
     if (widget.sourceKey == 'local') {
       final localComic = LocalManager().find(widget.id, ComicType.local);
@@ -684,12 +675,7 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
       chapterProgress = "Chapter @ep".tlParams({"ep": currentHistory.ep});
     }
 
-    final parts = [
-      chapterProgress,
-      if (groupName != null) groupName,
-      chapterTitle,
-      "P$page",
-    ];
+    final parts = [chapterProgress, ?groupName, chapterTitle, "P$page"];
     return "${"Last Reading".tl}: ${parts.join(" - ")}";
   }
 

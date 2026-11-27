@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/foundation/reader_diagnostics.dart';
 import 'package:venera_plus/foundation/translations.dart';
 
@@ -14,8 +15,15 @@ class ReaderDiagnosticsDialog extends StatefulWidget {
 }
 
 class _ReaderDiagnosticsDialogState extends State<ReaderDiagnosticsDialog> {
+  final _previewScroll = ScrollController();
   bool _copying = false;
   String? _feedback;
+
+  @override
+  void dispose() {
+    _previewScroll.dispose();
+    super.dispose();
+  }
 
   Future<void> _copy(String report) async {
     setState(() => _copying = true);
@@ -36,12 +44,12 @@ class _ReaderDiagnosticsDialogState extends State<ReaderDiagnosticsDialog> {
       final diagnostics = widget.diagnostics;
       final report = diagnostics.hasCapture ? diagnostics.exportJson() : null;
       final lines = report?.split('\n') ?? const <String>[];
-      return AlertDialog(
-        title: Text('Reading diagnostics'.tl),
-        scrollable: true,
-        insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
-        content: SizedBox(
+      final theme = Theme.of(context);
+      return ContentDialog(
+        title: 'Reading diagnostics'.tl,
+        content: Container(
           width: 600,
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -66,7 +74,7 @@ class _ReaderDiagnosticsDialogState extends State<ReaderDiagnosticsDialog> {
                   diagnostics.isRecording
                       ? 'Capturing...'.tl
                       : 'Report preview'.tl,
-                  style: Theme.of(context).textTheme.titleSmall,
+                  style: theme.textTheme.titleSmall,
                 ),
                 const SizedBox(height: 8),
                 SizedBox(
@@ -74,15 +82,27 @@ class _ReaderDiagnosticsDialogState extends State<ReaderDiagnosticsDialog> {
                     100,
                     280,
                   ),
-                  child: Scrollbar(
-                    child: ListView.builder(
-                      key: const ValueKey('reader-diagnostic-preview'),
-                      itemCount: lines.length,
-                      itemBuilder: (context, index) => SelectableText(
-                        lines[index],
-                        textDirection: TextDirection.ltr,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          fontFamily: 'monospace',
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surfaceContainerLow,
+                      border: Border.all(
+                        color: theme.colorScheme.outlineVariant,
+                      ),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Scrollbar(
+                      controller: _previewScroll,
+                      child: ListView.builder(
+                        key: const ValueKey('reader-diagnostic-preview'),
+                        controller: _previewScroll,
+                        padding: const EdgeInsets.all(12),
+                        itemCount: lines.length,
+                        itemBuilder: (context, index) => SelectableText(
+                          lines[index],
+                          textDirection: TextDirection.ltr,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            fontFamily: 'monospace',
+                          ),
                         ),
                       ),
                     ),

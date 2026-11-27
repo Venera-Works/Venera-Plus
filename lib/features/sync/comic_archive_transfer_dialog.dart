@@ -73,10 +73,14 @@ class _TransferDialogState extends State<ComicArchiveTransferDialog> {
       canPop: !batch.running,
       child: Dialog(
         insetPadding: const EdgeInsets.all(12),
-        child: SizedBox(
-          width: 600,
-          height: MediaQuery.sizeOf(context).height * .85,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            minWidth: 600,
+            maxWidth: 600,
+            maxHeight: MediaQuery.sizeOf(context).height * 0.82,
+          ),
           child: Column(
+            mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Padding(
@@ -86,8 +90,9 @@ class _TransferDialogState extends State<ComicArchiveTransferDialog> {
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
               ),
-              Expanded(
+              Flexible(
                 child: ListView.builder(
+                  shrinkWrap: true,
                   itemCount: batch.items.length + 1,
                   itemBuilder: (context, row) {
                     if (row == 0) {

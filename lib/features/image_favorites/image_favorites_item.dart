@@ -76,20 +76,23 @@ class _ImageFavoritesItemState extends State<ImageFavoritesItem> {
   }
 
   void onLongPress() {
-    var renderBox = context.findRenderObject() as RenderBox;
-    var size = renderBox.size;
-    var location = renderBox.localToGlobal(
-      Offset((size.width - 242) / 2, size.height / 2),
+    final renderBox = context.findRenderObject() as RenderBox;
+    final location = renderBox.localToGlobal(
+      renderBox.size.center(Offset.zero),
     );
-    showMenu(location, context);
+    showMenu(location, context, centerHorizontally: true);
   }
 
   void onSecondaryTap(TapDownDetails details) {
     showMenu(details.globalPosition, context);
   }
 
-  void showMenu(Offset location, BuildContext context) {
-    showMenuX(App.rootContext, location, [
+  void showMenu(
+    Offset location,
+    BuildContext context, {
+    bool centerHorizontally = false,
+  }) {
+    final entries = [
       if (widget.imageFavoritesComic.sourceKey != 'local')
         MenuEntry(
           icon: Icons.chrome_reader_mode_outlined,
@@ -130,7 +133,13 @@ class _ImageFavoritesItemState extends State<ImageFavoritesItem> {
           );
         },
       ),
-    ]);
+    ];
+    showMenuX(
+      App.rootContext,
+      location,
+      entries,
+      centerHorizontally: centerHorizontally,
+    );
   }
 
   @override

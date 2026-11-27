@@ -9,6 +9,104 @@ import 'package:venera_plus/foundation/widget_utils.dart';
 
 import 'consts.dart';
 
+class ScrollAutoHideFabController extends ValueNotifier<bool> {
+  ScrollAutoHideFabController() : super(true);
+
+  static const _topInset = 16.0;
+  static const _scrollThreshold = 24.0;
+
+  // The nearest offset while visible, or the farthest offset while hidden.
+  double? _anchor;
+
+  void reset() {
+    _anchor = null;
+    value = true;
+  }
+
+  bool handleNotification(
+    Notification notification,
+    ScrollController? scrollController,
+  ) {
+    final scroll = switch (notification) {
+      ScrollNotification(:final metrics, :final context) => (metrics, context),
+      ScrollMetricsNotification(:final metrics, :final context) => (
+        metrics,
+        context,
+      ),
+      _ => null,
+    };
+    if (scroll == null || scrollController == null) return false;
+    final (metrics, context) = scroll;
+    if (metrics.axis != Axis.vertical ||
+        context == null ||
+        !scrollController.positions.any(
+          (position) => position.context.notificationContext == context,
+        )) {
+      return false;
+    }
+
+    if (notification is ScrollMetricsNotification &&
+        metrics.minScrollExtent == metrics.maxScrollExtent) {
+      reset();
+      return false;
+    }
+    if (metrics.outOfRange) return false;
+
+    final offset = metrics.pixels - metrics.minScrollExtent;
+    final anchor = _anchor ??= offset;
+    if (offset <= _topInset) {
+      if (!value || offset < anchor) _anchor = offset;
+      value = true;
+    } else if (notification is ScrollUpdateNotification) {
+      final distance = value ? offset - anchor : anchor - offset;
+      if (distance >= _scrollThreshold) {
+        _anchor = offset;
+        value = !value;
+      } else if (distance < 0) {
+        _anchor = offset;
+      }
+    }
+    return false;
+  }
+}
+
+class AnimatedScrollFab extends StatelessWidget {
+  const AnimatedScrollFab({
+    super.key,
+    required this.visible,
+    required this.child,
+  });
+
+  final bool visible;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    const duration = Duration(milliseconds: 180);
+    const curve = Curves.easeOutCubic;
+    return IgnorePointer(
+      ignoring: !visible,
+      child: ExcludeFocus(
+        excluding: !visible,
+        child: ExcludeSemantics(
+          excluding: !visible,
+          child: AnimatedSlide(
+            offset: visible ? Offset.zero : const Offset(0, 1.8),
+            duration: duration,
+            curve: curve,
+            child: AnimatedOpacity(
+              opacity: visible ? 1 : 0,
+              duration: duration,
+              curve: curve,
+              child: HeroMode(enabled: visible, child: child),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class MouseDragScrollRegion extends StatelessWidget {
   const MouseDragScrollRegion({super.key, required this.child});
 

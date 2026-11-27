@@ -1,4 +1,4 @@
-import 'dart:ui' as ui;
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:venera_plus/foundation/app.dart';
@@ -26,32 +26,47 @@ class PopUpWidget<T> extends PopupRoute<T> {
     Animation<double> animation,
     Animation<double> secondaryAnimation,
   ) {
-    var height = MediaQuery.of(context).size.height * 0.9;
-    bool showPopUp = MediaQuery.of(context).size.width > 500;
-    Widget body = PopupIndicatorWidget(
-      child: Container(
-        decoration: showPopUp
-            ? BoxDecoration(
-                borderRadius: BorderRadius.all(Radius.circular(12)),
-                boxShadow: context.brightness == ui.Brightness.dark
-                    ? [
-                        BoxShadow(
-                          color: Colors.white.withAlpha(50),
-                          blurRadius: 10,
-                          offset: Offset(0, 2),
-                        ),
-                      ]
-                    : null,
-              )
-            : null,
-        clipBehavior: showPopUp ? Clip.antiAlias : Clip.none,
-        width: showPopUp ? 500 : double.infinity,
-        height: showPopUp ? height : double.infinity,
-        child: ClipRect(
-          child: Navigator(
-            onGenerateRoute: (settings) =>
-                MaterialPageRoute(builder: (context) => widget),
-          ),
+    final mediaQuery = MediaQuery.of(context);
+    final showPopUp = mediaQuery.size.width > 500;
+    final centeredMargin = showPopUp ? mediaQuery.size.height * 0.05 : 0.0;
+    final insets = EdgeInsets.fromLTRB(
+      mediaQuery.padding.left,
+      showPopUp ? math.max(centeredMargin, mediaQuery.padding.top) : 0,
+      mediaQuery.padding.right,
+      math.max(
+        centeredMargin,
+        mediaQuery.padding.bottom + mediaQuery.viewInsets.bottom,
+      ),
+    );
+    final colors = context.colorScheme;
+    const borderRadius = BorderRadius.all(Radius.circular(12));
+    Widget body = Container(
+      decoration: showPopUp
+          ? BoxDecoration(
+              color: colors.surface,
+              borderRadius: borderRadius,
+              boxShadow: [
+                BoxShadow(
+                  color: colors.shadow.withValues(alpha: 0.2),
+                  blurRadius: 18,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            )
+          : null,
+      foregroundDecoration: showPopUp
+          ? BoxDecoration(
+              borderRadius: borderRadius,
+              border: Border.all(color: colors.outlineVariant),
+            )
+          : null,
+      clipBehavior: showPopUp ? Clip.antiAlias : Clip.none,
+      width: showPopUp ? 500 : double.infinity,
+      height: double.infinity,
+      child: ClipRect(
+        child: Navigator(
+          onGenerateRoute: (settings) =>
+              MaterialPageRoute(builder: (context) => widget),
         ),
       ),
     );
@@ -64,14 +79,29 @@ class PopUpWidget<T> extends PopupRoute<T> {
         child: body,
       );
     }
-    if (showPopUp) {
-      return MediaQuery.removePadding(
-        removeTop: true,
-        context: context,
-        child: Center(child: body),
-      );
-    }
-    return body;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        if (!showPopUp) IgnorePointer(child: ColoredBox(color: colors.surface)),
+        Padding(
+          padding: insets,
+          child: MediaQuery(
+            data: mediaQuery
+                .removePadding(
+                  removeTop: showPopUp,
+                  removeBottom: true,
+                  removeLeft: true,
+                  removeRight: true,
+                )
+                .removeViewInsets(removeBottom: true),
+            child: Align(
+              alignment: Alignment.topCenter,
+              child: PopupIndicatorWidget(child: body),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   @override
@@ -132,6 +162,7 @@ class _PopUpWidgetScaffoldState extends State<PopUpWidgetScaffold> {
 
   @override
   Widget build(BuildContext context) {
+    final mediaQuery = MediaQuery.of(context);
     return Material(
       child: Column(
         children: [
@@ -150,7 +181,7 @@ class _PopUpWidgetScaffoldState extends State<PopUpWidgetScaffold> {
                 Tooltip(
                   message: "Back".tl,
                   child: IconButton(
-                    icon: const Icon(Icons.arrow_back_sharp),
+                    icon: const Icon(Icons.arrow_back),
                     onPressed: () =>
                         context.canPop() ? context.pop() : App.pop(),
                   ),
@@ -162,7 +193,7 @@ class _PopUpWidgetScaffoldState extends State<PopUpWidgetScaffold> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      fontSize: 22,
+                      fontSize: 20,
                       fontWeight: FontWeight.w500,
                     ),
                   ),
@@ -192,20 +223,15 @@ class _PopUpWidgetScaffoldState extends State<PopUpWidgetScaffold> {
               }
               return false;
             },
-            child: MediaQuery.removePadding(
-              removeTop: true,
-              context: context,
+            child: MediaQuery(
+              data: mediaQuery
+                  .removePadding(removeTop: true, removeBottom: true)
+                  .removeViewInsets(removeBottom: true),
               child: Expanded(child: widget.body),
             ),
           ),
           SizedBox(
-            height:
-                MediaQuery.of(context).viewInsets.bottom -
-                        0.05 * MediaQuery.of(context).size.height >
-                    0
-                ? MediaQuery.of(context).viewInsets.bottom -
-                      0.05 * MediaQuery.of(context).size.height
-                : 0,
+            height: mediaQuery.padding.bottom + mediaQuery.viewInsets.bottom,
           ),
         ],
       ),

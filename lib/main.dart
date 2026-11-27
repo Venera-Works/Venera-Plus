@@ -14,6 +14,7 @@ import 'package:venera_plus/app_shell/app_shell.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/file_interaction.dart';
 import 'package:window_manager/window_manager.dart';
+import 'components/button.dart';
 import 'components/gesture.dart';
 import 'components/js_ui.dart';
 import 'components/message.dart';
@@ -246,35 +247,89 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         'sans-serif',
       ];
     }
-    return ThemeData(
-      colorScheme: SeedColorScheme.fromSeeds(
-        primaryKey: primary,
-        secondaryKey: secondary,
-        tertiaryKey: tertiary,
-        brightness: brightness,
-        tones: FlexTones.vividBackground(brightness),
+    final colorScheme = SeedColorScheme.fromSeeds(
+      primaryKey: primary,
+      secondaryKey: secondary,
+      tertiaryKey: tertiary,
+      brightness: brightness,
+      tones: FlexTones.vividBackground(brightness),
+    );
+    const clickableStyle = ButtonStyle(
+      mouseCursor: WidgetStateMouseCursor.clickable,
+    );
+    final buttonStyle = actionButtonStyle.copyWith(
+      mouseCursor: WidgetStateMouseCursor.clickable,
+      textStyle: WidgetStatePropertyAll(
+        actionButtonStyle.textStyle
+            ?.resolve({})
+            ?.copyWith(fontFamily: font, fontFamilyFallback: fallback),
       ),
+    );
+    return ThemeData(
+      colorScheme: colorScheme,
       fontFamily: font,
       fontFamilyFallback: fallback,
-      elevatedButtonTheme: ElevatedButtonThemeData(
-        style: ButtonStyle(
-          mouseCursor: WidgetStatePropertyAll(SystemMouseCursors.click),
+      buttonTheme: const ButtonThemeData(alignedDropdown: true),
+      filledButtonTheme: FilledButtonThemeData(style: buttonStyle),
+      elevatedButtonTheme: const ElevatedButtonThemeData(style: clickableStyle),
+      outlinedButtonTheme: OutlinedButtonThemeData(style: buttonStyle),
+      textButtonTheme: TextButtonThemeData(style: buttonStyle),
+      iconButtonTheme: const IconButtonThemeData(style: clickableStyle),
+      inputDecorationTheme: InputDecorationThemeData(
+        isDense: true,
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 12,
+          vertical: 12,
+        ),
+        // A stateful default border lets fields opt out with InputBorder.none.
+        border: WidgetStateInputBorder.resolveWith((states) {
+          final focused = states.contains(WidgetState.focused);
+          final color = switch (states) {
+            _ when states.contains(WidgetState.disabled) =>
+              colorScheme.onSurface.withValues(alpha: 0.12),
+            _ when states.contains(WidgetState.error) => colorScheme.error,
+            _ when focused => colorScheme.primary,
+            _ => colorScheme.outlineVariant,
+          };
+          return OutlineInputBorder(
+            borderRadius: const BorderRadius.all(Radius.circular(10)),
+            borderSide: BorderSide(color: color, width: focused ? 2 : 1),
+          );
+        }),
+      ),
+      dialogTheme: DialogThemeData(
+        backgroundColor: colorScheme.surfaceContainerHigh,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: brightness == Brightness.dark
+              ? BorderSide(color: colorScheme.outlineVariant)
+              : BorderSide.none,
         ),
       ),
-      outlinedButtonTheme: OutlinedButtonThemeData(
-        style: ButtonStyle(
-          mouseCursor: WidgetStatePropertyAll(SystemMouseCursors.click),
+      popupMenuTheme: PopupMenuThemeData(
+        color: colorScheme.surfaceContainerHigh,
+        elevation: 4,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(
+            color: colorScheme.outlineVariant.withValues(
+              alpha: brightness == Brightness.dark ? 1.0 : 0.6,
+            ),
+          ),
         ),
       ),
-      textButtonTheme: TextButtonThemeData(
-        style: ButtonStyle(
-          mouseCursor: WidgetStatePropertyAll(SystemMouseCursors.click),
+      bottomSheetTheme: BottomSheetThemeData(
+        backgroundColor: colorScheme.surfaceContainerLow,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
         ),
+        clipBehavior: Clip.antiAlias,
       ),
-      iconButtonTheme: IconButtonThemeData(
-        style: ButtonStyle(
-          mouseCursor: WidgetStatePropertyAll(SystemMouseCursors.click),
-        ),
+      cardTheme: CardThemeData(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        clipBehavior: Clip.antiAlias,
       ),
       listTileTheme: ListTileThemeData(),
     );

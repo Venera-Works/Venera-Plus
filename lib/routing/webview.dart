@@ -166,7 +166,8 @@ class _AppWebviewState extends State<AppWebview> {
         child: IconButton(
           icon: const Icon(Icons.more_horiz),
           onPressed: () {
-            showMenuX(context, Offset(context.width, context.padding.top), [
+            final location = Offset(context.width, context.padding.top + 52);
+            showMenuX(context, location, [
               if (widget.allowUrlSharing) ...[
                 MenuEntry(
                   icon: Icons.open_in_browser,

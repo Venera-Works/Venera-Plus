@@ -57,6 +57,8 @@ class ReaderScaffoldState extends State<ReaderScaffold>
 
   static const kBottomBarHeight = 105.0;
 
+  static const _chapterButtonSize = 56.0;
+
   bool get isOpen => _isOpen;
 
   bool get isReversed =>
@@ -70,18 +72,12 @@ class ReaderScaffoldState extends State<ReaderScaffold>
   ReaderGestureDetectorState? gestureDetectorState;
 
   void setFloatingButton(int value) {
-    lastValue = showFloatingButtonValue;
-    if (value == 0) {
-      if (showFloatingButtonValue != 0) {
-        showFloatingButtonValue = 0;
-        update();
-      }
-    }
-    if (value == 1 && showFloatingButtonValue == 0) {
-      showFloatingButtonValue = 1;
+    if (value == 0 && showFloatingButtonValue != 0) {
+      lastValue = showFloatingButtonValue;
+      showFloatingButtonValue = 0;
       update();
-    } else if (value == -1 && showFloatingButtonValue == 0) {
-      showFloatingButtonValue = -1;
+    } else if ((value == 1 || value == -1) && showFloatingButtonValue == 0) {
+      showFloatingButtonValue = value;
       update();
     }
   }
@@ -185,6 +181,7 @@ class ReaderScaffoldState extends State<ReaderScaffold>
   Widget build(BuildContext context) {
     _isOnChapterCommentsPage = context.reader.isOnChapterCommentsPage;
     final brightnessBarVisible = _isOpen && !_isOnChapterCommentsPage;
+    final padding = MediaQuery.paddingOf(context);
     return Stack(
       children: [
         Positioned.fill(
@@ -200,25 +197,21 @@ class ReaderScaffoldState extends State<ReaderScaffold>
               brightness: _readerSetting('readerBrightness'),
             ),
           ),
-        if (_readerSetting('showPageNumberInReader') == true &&
-            !_isOnChapterCommentsPage)
-          ListenableBuilder(
-            listenable: _pageChanges,
-            builder: (context, child) => buildPageInfoText(),
-          ),
-        if (!_isOnChapterCommentsPage) buildStatusInfo(),
+        if (!_isOnChapterCommentsPage) _buildReaderStatus(padding),
         AnimatedPositioned(
           duration: const Duration(milliseconds: 180),
-          right: 16,
-          bottom: showFloatingButtonValue == 0 ? -58 : 36,
+          right: 16 + padding.right,
+          bottom: showFloatingButtonValue == 0
+              ? -_chapterButtonSize
+              : 48 + padding.bottom,
           child: buildEpChangeButton(),
         ),
         AnimatedPositioned(
           duration: const Duration(milliseconds: 180),
-          top: _isOpen ? 0 : -(kTopBarHeight + context.padding.top),
+          top: _isOpen ? 0 : -(kTopBarHeight + padding.top),
           left: 0,
           right: 0,
-          height: kTopBarHeight + context.padding.top,
+          height: kTopBarHeight + padding.top,
           child: ListenableBuilder(
             listenable: _pageChanges,
             builder: (context, child) => child ?? buildTop(),
@@ -227,9 +220,7 @@ class ReaderScaffoldState extends State<ReaderScaffold>
         ),
         AnimatedPositioned(
           duration: const Duration(milliseconds: 180),
-          bottom: _isOpen
-              ? 0
-              : -(kBottomBarHeight + MediaQuery.of(context).padding.bottom),
+          bottom: _isOpen ? 0 : -(kBottomBarHeight + padding.bottom),
           left: 0,
           right: 0,
           child: ListenableBuilder(
@@ -240,10 +231,10 @@ class ReaderScaffoldState extends State<ReaderScaffold>
         ),
         if (App.isMobile)
           Positioned(
-            top: kTopBarHeight + context.padding.top + 12,
-            bottom: kBottomBarHeight + context.padding.bottom + 12,
+            top: kTopBarHeight + padding.top + 12,
+            bottom: kBottomBarHeight + padding.bottom + 12,
             // The 32px surface starts 4px from the safe edge inside its 48px touch area.
-            left: context.padding.left - 4,
+            left: padding.left - 4,
             child: ExcludeFocus(
               excluding: !brightnessBarVisible,
               child: ExcludeSemantics(
@@ -276,6 +267,7 @@ class ReaderScaffoldState extends State<ReaderScaffold>
   Widget buildTop() {
     final epName = context.reader.chapterTitle;
     final liked = isLiked();
+    final padding = MediaQuery.paddingOf(context);
     final actions = <Widget>[
       if (shouldShowChapterComments())
         Tooltip(
@@ -313,15 +305,10 @@ class ReaderScaffoldState extends State<ReaderScaffold>
     ];
     return BlurEffect(
       child: Container(
-        padding: EdgeInsets.only(top: context.padding.top),
-        decoration: BoxDecoration(
-          color: context.colorScheme.surface.toOpacity(0.92),
-        ),
+        padding: EdgeInsets.only(top: padding.top),
+        color: context.colorScheme.surface.withValues(alpha: 0.92),
         child: Padding(
-          padding: EdgeInsets.only(
-            left: context.padding.left,
-            right: context.padding.right,
-          ),
+          padding: EdgeInsets.only(left: padding.left, right: padding.right),
           child: LayoutBuilder(
             builder: (context, constraints) {
               if (constraints.maxWidth < 240) {
@@ -482,6 +469,7 @@ class ReaderScaffoldState extends State<ReaderScaffold>
   }
 
   Widget buildBottom() {
+    final padding = MediaQuery.paddingOf(context);
     final buttons = [
       if (App.isDesktop)
         Tooltip(
@@ -542,7 +530,7 @@ class ReaderScaffoldState extends State<ReaderScaffold>
       ),
     ];
 
-    Widget child = SizedBox(
+    final child = SizedBox(
       height: kBottomBarHeight,
       child: Column(
         children: [
@@ -550,44 +538,14 @@ class ReaderScaffoldState extends State<ReaderScaffold>
           Row(
             children: [
               const SizedBox(width: 8),
-              IconButton.filledTonal(
-                onPressed: () => !isReversed
-                    ? !context.reader.isFirstChapterOfGroup
-                          ? context.reader.toPrevChapter(
-                              source: ReadingNavigationSource.userSeek,
-                            )
-                          : context.reader.toPage(
-                              1,
-                              source: ReadingNavigationSource.userSeek,
-                            )
-                    : !context.reader.isLastChapterOfGroup
-                    ? context.reader.toNextChapter(
-                        source: ReadingNavigationSource.userSeek,
-                      )
-                    : context.reader.toVisualEnd(
-                        source: ReadingNavigationSource.userSeek,
-                      ),
-                icon: const Icon(Icons.first_page),
+              _buildChapterNavigationButton(
+                next: isReversed,
+                icon: Icons.first_page,
               ),
               Expanded(child: buildSlider()),
-              IconButton.filledTonal(
-                onPressed: () => !isReversed
-                    ? !context.reader.isLastChapterOfGroup
-                          ? context.reader.toNextChapter(
-                              source: ReadingNavigationSource.userSeek,
-                            )
-                          : context.reader.toVisualEnd(
-                              source: ReadingNavigationSource.userSeek,
-                            )
-                    : !context.reader.isFirstChapterOfGroup
-                    ? context.reader.toPrevChapter(
-                        source: ReadingNavigationSource.userSeek,
-                      )
-                    : context.reader.toPage(
-                        1,
-                        source: ReadingNavigationSource.userSeek,
-                      ),
-                icon: const Icon(Icons.last_page),
+              _buildChapterNavigationButton(
+                next: !isReversed,
+                icon: Icons.last_page,
               ),
               const SizedBox(width: 8),
             ],
@@ -605,25 +563,59 @@ class ReaderScaffoldState extends State<ReaderScaffold>
     return BlurEffect(
       child: Container(
         decoration: BoxDecoration(
-          color: context.colorScheme.surface.toOpacity(0.92),
+          color: context.colorScheme.surface.withValues(alpha: 0.92),
           border: isOpen
               ? Border(
                   top: BorderSide(
-                    color: Colors.grey.toOpacity(0.5),
+                    color: context.colorScheme.outlineVariant,
                     width: 0.5,
                   ),
                 )
               : null,
         ),
-        padding: EdgeInsets.only(bottom: context.padding.bottom),
-        child: Padding(
-          padding: EdgeInsets.only(
-            left: context.padding.left,
-            right: context.padding.right,
-          ),
-          child: child,
+        padding: EdgeInsets.fromLTRB(
+          padding.left,
+          0,
+          padding.right,
+          padding.bottom,
         ),
+        child: child,
       ),
+    );
+  }
+
+  String _chapterDirectionLabel(bool next) =>
+      (next ? 'Next chapter' : 'Previous chapter').tl;
+
+  Widget _buildChapterNavigationButton({
+    required bool next,
+    required IconData icon,
+  }) {
+    final reader = context.reader;
+    final atBoundary = next
+        ? reader.isLastChapterOfGroup
+        : reader.isFirstChapterOfGroup;
+    final localizations = MaterialLocalizations.of(context);
+    final pageLabel = next
+        ? localizations.lastPageTooltip
+        : localizations.firstPageTooltip;
+    return IconButton.filledTonal(
+      tooltip: atBoundary ? pageLabel : _chapterDirectionLabel(next),
+      onPressed: () {
+        const source = ReadingNavigationSource.userSeek;
+        if (next) {
+          if (reader.isLastChapterOfGroup) {
+            reader.toVisualEnd(source: source);
+          } else {
+            reader.toNextChapter(source: source);
+          }
+        } else if (reader.isFirstChapterOfGroup) {
+          reader.toPage(1, source: source);
+        } else {
+          reader.toPrevChapter(source: source);
+        }
+      },
+      icon: Icon(icon),
     );
   }
 
@@ -658,17 +650,18 @@ class ReaderScaffoldState extends State<ReaderScaffold>
 
   Widget buildSlider() {
     // Clamp page to maxPage (excluding chapter comments page)
-    final displayPage = context.reader.page.clamp(1, context.reader.maxPage);
+    final maxPage = context.reader.maxPage.clamp(1, 1 << 16);
+    final displayPage = context.reader.page.clamp(1, maxPage);
     return CustomSlider(
       focusNode: sliderFocus,
       value: displayPage.toDouble(),
       min: 1,
-      max: context.reader.maxPage.clamp(displayPage, 1 << 16).toDouble(),
+      max: maxPage.toDouble(),
       reversed: isReversed,
-      divisions: (context.reader.maxPage - 1).clamp(2, 1 << 16),
+      divisions: maxPage - 1,
       onChanged: (i) {
         context.reader.toPage(
-          i.toInt(),
+          i.round(),
           animated: false,
           source: ReadingNavigationSource.userSeek,
         );
@@ -686,43 +679,89 @@ class ReaderScaffoldState extends State<ReaderScaffold>
         ? "$epName : $pageText"
         : pageText;
 
-    return Positioned(
-      bottom: 13,
-      left: 25,
+    return _buildStatusCapsule(
       child: Stack(
         children: [
-          Text(
-            text,
-            style: TextStyle(
-              fontSize: 14,
-              foreground: Paint()
-                ..style = PaintingStyle.stroke
-                ..strokeWidth = 1.4
-                ..color = context.colorScheme.onInverseSurface,
+          ExcludeSemantics(
+            child: Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                foreground: Paint()
+                  ..style = PaintingStyle.stroke
+                  ..strokeWidth = 1.4
+                  ..color = context.colorScheme.surface,
+              ),
             ),
           ),
-          Text(text),
+          Text(text, maxLines: 1, overflow: TextOverflow.ellipsis),
         ],
       ),
     );
   }
 
-  Widget buildStatusInfo() {
-    if (_readerSetting('enableClockAndBatteryInfoInReader') == true) {
-      return Positioned(
-        bottom: 13,
-        right: 25,
+  Widget _buildReaderStatus(EdgeInsets padding) {
+    final showPageInfo = _readerSetting('showPageNumberInReader') == true;
+    final showClock =
+        _readerSetting('enableClockAndBatteryInfoInReader') == true;
+    if (!showPageInfo && !showClock) return const SizedBox.shrink();
+
+    return Positioned(
+      left: 16 + padding.left,
+      right: 16 + padding.right,
+      bottom: 12 + padding.bottom,
+      child: IgnorePointer(
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            _ClockWidget(),
-            const SizedBox(width: 10),
-            _BatteryWidget(),
+            if (showPageInfo)
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: ListenableBuilder(
+                    listenable: _pageChanges,
+                    builder: (context, child) => buildPageInfoText(),
+                  ),
+                ),
+              ),
+            if (showPageInfo && showClock) const SizedBox(width: 8),
+            if (showClock)
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: _buildStatusCapsule(
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [_ClockWidget(), _BatteryWidget()],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
           ],
         ),
-      );
-    } else {
-      return const SizedBox.shrink();
-    }
+      ),
+    );
+  }
+
+  Widget _buildStatusCapsule({required Widget child}) {
+    final colors = context.colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.surface.withValues(alpha: 0.82),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: DefaultTextStyle.merge(
+          style: TextStyle(color: colors.onSurface, fontSize: 14),
+          child: child,
+        ),
+      ),
+    );
   }
 
   void openChapterDrawer() {
@@ -928,73 +967,61 @@ class ReaderScaffoldState extends State<ReaderScaffold>
   }
 
   Widget buildEpChangeButton() {
-    final extraWidth = context.padding.left + context.padding.right;
-    if (context.reader.widget.chapters == null) return const SizedBox();
-    switch (showFloatingButtonValue) {
-      case 0:
-        return Container(
-          width: 58 + extraWidth,
-          height: 58,
-          clipBehavior: Clip.antiAlias,
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.primaryContainer,
-            borderRadius: BorderRadius.circular(16),
+    if (context.reader.widget.chapters == null) return const SizedBox.shrink();
+
+    final colors = context.colorScheme;
+    final borderRadius = BorderRadius.circular(16);
+    final value = showFloatingButtonValue;
+    final arrow = Center(
+      child: Icon(
+        _getArrowIcon(isReversed, value == 0 ? lastValue : value),
+        size: 24,
+        color: colors.onPrimaryContainer,
+      ),
+    );
+    Widget child = arrow;
+    if (value != 0) {
+      final label = _chapterDirectionLabel(value == 1);
+      child = Tooltip(
+        message: label,
+        excludeFromSemantics: true,
+        child: Semantics(
+          label: label,
+          button: true,
+          child: ClickInkWell(
+            onTap: () {
+              const source = ReadingNavigationSource.userSeek;
+              if (value == 1) {
+                context.reader.toNextChapter(source: source);
+              } else {
+                context.reader.toPrevChapter(source: source);
+              }
+              setFloatingButton(0);
+            },
+            borderRadius: borderRadius,
+            child: arrow,
           ),
-          child: Icon(
-            lastValue == 1
-                ? Icons.arrow_forward_ios
-                : Icons.arrow_back_ios_outlined,
-            size: 24,
-            color: Theme.of(context).colorScheme.onPrimaryContainer,
-          ),
-        );
-      case -1:
-      case 1:
-        return SizedBox(
-          width: 58 + extraWidth,
-          height: 58,
-          child: Material(
-            color: Theme.of(context).colorScheme.primaryContainer,
-            borderRadius: BorderRadius.circular(16),
-            elevation: 2,
-            child: ClickInkWell(
-              onTap: () {
-                if (showFloatingButtonValue == 1) {
-                  context.reader.toNextChapter(
-                    source: ReadingNavigationSource.userSeek,
-                  );
-                } else if (showFloatingButtonValue == -1) {
-                  context.reader.toPrevChapter(
-                    source: ReadingNavigationSource.userSeek,
-                  );
-                }
-                setFloatingButton(0);
-              },
-              borderRadius: BorderRadius.circular(16),
-              child: Center(
-                child: Icon(
-                  _getArrowIcon(isReversed, showFloatingButtonValue),
-                  size: 24,
-                  color: Theme.of(context).colorScheme.onPrimaryContainer,
-                ),
-              ),
-            ),
-          ),
-        );
+        ),
+      );
     }
-    return const SizedBox();
+    return SizedBox.square(
+      dimension: _chapterButtonSize,
+      child: Material(
+        color: colors.primaryContainer,
+        borderRadius: borderRadius,
+        elevation: 2,
+        clipBehavior: Clip.antiAlias,
+        child: child,
+      ),
+    );
   }
 
   IconData _getArrowIcon(bool reversed, int value) {
-    if (reversed) {
-      return value == 1
-          ? Icons.arrow_back_ios_outlined
-          : Icons.arrow_forward_ios;
-    } else {
-      return value == 1
-          ? Icons.arrow_forward_ios
-          : Icons.arrow_back_ios_outlined;
-    }
+    final next = value == 1;
+    final pointsRight = reversed ? !next : next;
+    return pointsRight
+        ? Icons.arrow_forward_ios_rounded
+        : Icons.arrow_back_ios_new_rounded;
   }
 
   /// If there is only one image on screen, return it.
@@ -1241,39 +1268,11 @@ class _BatteryWidgetState extends State<_BatteryWidget> {
     }
 
     return Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(
-          batteryIcon,
-          size: 16,
-          color: batteryColor,
-          // Stroke
-          shadows: List.generate(9, (index) {
-            if (index == 4) {
-              return null;
-            }
-            double offsetX = (index % 3 - 1) * 0.8;
-            double offsetY = ((index / 3).floor() - 1) * 0.8;
-            return Shadow(
-              color: context.colorScheme.onInverseSurface,
-              offset: Offset(offsetX, offsetY),
-            );
-          }).whereType<Shadow>().toList(),
-        ),
-        Stack(
-          children: [
-            Text(
-              '$batteryLevel%',
-              style: TextStyle(
-                fontSize: 14,
-                foreground: Paint()
-                  ..style = PaintingStyle.stroke
-                  ..strokeWidth = 1.4
-                  ..color = context.colorScheme.onInverseSurface,
-              ),
-            ),
-            Text('$batteryLevel%'),
-          ],
-        ),
+        const SizedBox(width: 8),
+        Icon(batteryIcon, size: 16, color: batteryColor),
+        Text('$batteryLevel%'),
       ],
     );
   }
@@ -1314,23 +1313,7 @@ class _ClockWidgetState extends State<_ClockWidget> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Stack(
-      children: [
-        Text(
-          _currentTime,
-          style: TextStyle(
-            fontSize: 14,
-            foreground: Paint()
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = 1.4
-              ..color = context.colorScheme.onInverseSurface,
-          ),
-        ),
-        Text(_currentTime),
-      ],
-    );
-  }
+  Widget build(BuildContext context) => Text(_currentTime);
 }
 
 class _SelectImageOverlayContent extends StatefulWidget {
@@ -1358,36 +1341,50 @@ class _SelectImageOverlayContentState
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colorScheme;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTapUp: (details) {
         widget.onTap(details.globalPosition);
       },
-      child: Container(
+      child: ColoredBox(
         color: Colors.black.withAlpha(50),
-        child: Align(
-          alignment: Alignment(0, -0.8),
-          child: Container(
-            width: 232,
-            height: 42,
-            decoration: BoxDecoration(
-              color: context.colorScheme.surface,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: context.colorScheme.outlineVariant),
-            ),
-            child: Row(
-              children: [
-                const SizedBox(width: 8),
-                const Icon(Icons.info_outline),
-                const SizedBox(width: 16),
-                Text(
-                  "Click to select an image".tl,
-                  style: TextStyle(
-                    fontSize: 16,
-                    color: context.colorScheme.onSurface,
-                  ),
+        child: SafeArea(
+          minimum: const EdgeInsets.symmetric(horizontal: 16),
+          child: Align(
+            alignment: const Alignment(0, -0.8),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: (context.width - 32).clamp(0.0, double.infinity),
+              ),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
                 ),
-              ],
+                decoration: BoxDecoration(
+                  color: colors.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: colors.outlineVariant),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.info_outline,
+                      size: 20,
+                      color: colors.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        "Click to select an image".tl,
+                        style: TextStyle(fontSize: 16, color: colors.onSurface),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
         ),

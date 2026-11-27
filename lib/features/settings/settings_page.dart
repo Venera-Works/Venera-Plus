@@ -299,7 +299,6 @@ class _SettingsPageState extends State<SettingsPage> {
         padding: const EdgeInsets.symmetric(horizontal: 12),
         decoration: BoxDecoration(
           color: selected ? colors.primaryContainer.toOpacity(0.36) : null,
-          borderRadius: BorderRadius.circular(8),
           border: Border(
             left: BorderSide(
               color: selected ? colors.primary : Colors.transparent,
@@ -341,7 +340,10 @@ class _SettingsPageState extends State<SettingsPage> {
               );
             }
           },
-          child: content,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: content,
+          ),
         ).paddingVertical(2),
       );
     }

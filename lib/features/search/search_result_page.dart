@@ -143,7 +143,7 @@ class _SearchResultPageState extends State<SearchResultPage> {
     } else if (suggestionsController.suggestions.isNotEmpty) {
       suggestionsController.entry = OverlayEntry(
         builder: (context) => Positioned(
-          top: context.padding.top + 56,
+          top: context.padding.top + SliverSearchBar.toolbarHeight,
           left: 0,
           right: 0,
           bottom: 0,
@@ -602,17 +602,16 @@ class _SearchSettingsDialogState extends State<_SearchSettingsDialog> {
             }).toList(),
           ).fixWidth(double.infinity).paddingHorizontal(16),
           if (selected != null) buildSearchOptions(selected.searchPageData),
-          const SizedBox(height: 24),
-          FilledButton(
-            onPressed: selected == null
-                ? null
-                : () {
-                    Navigator.of(context).pop((searchTarget, options));
-                  },
-            child: Text("Confirm".tl),
-          ),
         ],
       ).fixWidth(double.infinity),
+      actions: [
+        FilledButton(
+          onPressed: selected == null
+              ? null
+              : () => Navigator.of(context).pop((searchTarget, options)),
+          child: Text('Confirm'.tl),
+        ),
+      ],
     );
   }
 

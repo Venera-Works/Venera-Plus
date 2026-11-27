@@ -82,6 +82,13 @@ Future<void> showRemoteLibraryEditor(
       initial?.autoRefresh ?? RemoteLibrary.defaultAutoRefresh(account);
   var autoRefreshChosen = initial != null;
   var refreshIntervalMinutes = initial?.refreshIntervalMinutes ?? 360;
+  var showValidation = false;
+  const intervals = {
+    15: 'Every 15 minutes',
+    60: 'Every hour',
+    360: 'Every 6 hours',
+    1440: 'Every day',
+  };
   final result = await showDialog<RemoteLibrary>(
     context: context,
     builder: (context) => StatefulBuilder(
@@ -93,17 +100,40 @@ Future<void> showRemoteLibraryEditor(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               TextFormField(
                 initialValue: name,
-                onChanged: (value) => name = value,
-                decoration: InputDecoration(labelText: 'Name'.tl),
+                onChanged: (value) {
+                  name = value;
+                  if (showValidation) setDialogState(() {});
+                },
+                decoration: InputDecoration(
+                  labelText: 'Name'.tl,
+                  isDense: true,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  errorText: showValidation && name.trim().isEmpty
+                      ? 'Cannot be empty'.tl
+                      : null,
+                ),
               ),
+              const SizedBox(height: 12),
               RemoteLocationFields(
                 accountId: account?.id ?? initial?.accountId,
                 directories: directories,
                 multiSelect: true,
                 accountLocked: initial != null,
+                accountErrorText: showValidation && account == null
+                    ? (initial == null
+                              ? 'Select an account'
+                              : 'Account unavailable')
+                          .tl
+                    : null,
+                directoryErrorText: showValidation && directories.isEmpty
+                    ? 'Choose Folder'.tl
+                    : null,
                 onChanged: (value, selected) => setDialogState(() {
                   account = value;
                   directories = selected;
@@ -112,6 +142,7 @@ Future<void> showRemoteLibraryEditor(
                   }
                 }),
               ),
+              const SizedBox(height: 12),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: Text('Automatic library updates'.tl),
@@ -121,29 +152,50 @@ Future<void> showRemoteLibraryEditor(
                   autoRefreshChosen = true;
                 }),
               ),
-              if (autoRefresh)
-                DropdownButtonFormField<int>(
-                  isExpanded: true,
-                  initialValue: refreshIntervalMinutes,
-                  decoration: InputDecoration(labelText: 'Update interval'.tl),
-                  items: [
-                    DropdownMenuItem(
-                      value: 15,
-                      child: Text('Every 15 minutes'.tl),
+              if (autoRefresh) ...[
+                const SizedBox(height: 12),
+                ButtonTheme(
+                  alignedDropdown: true,
+                  child: DropdownButtonFormField<int>(
+                    isExpanded: true,
+                    isDense: true,
+                    initialValue: refreshIntervalMinutes,
+                    borderRadius: BorderRadius.circular(12),
+                    dropdownColor: Theme.of(
+                      context,
+                    ).colorScheme.surfaceContainerHigh,
+                    menuMaxHeight: 320,
+                    decoration: InputDecoration(
+                      labelText: 'Update interval'.tl,
+                      isDense: true,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
                     ),
-                    DropdownMenuItem(value: 60, child: Text('Every hour'.tl)),
-                    DropdownMenuItem(
-                      value: 360,
-                      child: Text('Every 6 hours'.tl),
-                    ),
-                    DropdownMenuItem(value: 1440, child: Text('Every day'.tl)),
-                  ],
-                  onChanged: (value) {
-                    if (value != null) {
-                      setDialogState(() => refreshIntervalMinutes = value);
-                    }
-                  },
+                    items: [
+                      for (final interval in intervals.entries)
+                        DropdownMenuItem(
+                          value: interval.key,
+                          child: Text(interval.value.tl),
+                        ),
+                      if (!intervals.containsKey(refreshIntervalMinutes))
+                        DropdownMenuItem(
+                          value: refreshIntervalMinutes,
+                          child: Text(
+                            '@minutes min'.tlParams({
+                              'minutes': '$refreshIntervalMinutes',
+                            }),
+                          ),
+                        ),
+                    ],
+                    onChanged: (value) {
+                      if (value != null) {
+                        setDialogState(() => refreshIntervalMinutes = value);
+                      }
+                    },
+                  ),
                 ),
+              ],
             ],
           ),
         ),
@@ -158,6 +210,7 @@ Future<void> showRemoteLibraryEditor(
             onPressed: () {
               final trimmed = name.trim();
               if (trimmed.isEmpty || directories.isEmpty || account == null) {
+                setDialogState(() => showValidation = true);
                 return;
               }
               final library = initial == null
@@ -211,10 +264,33 @@ class _RemoteLibrariesSliverState extends State<RemoteLibrariesSliver> {
       builder: (context, _) {
         final libraries = _storage.libraries;
         if (libraries.isEmpty) {
-          return SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Text('No Cloud Comic Libraries'.tl),
+          final theme = Theme.of(context);
+          final color = theme.colorScheme.onSurfaceVariant;
+          return SliverFillRemaining(
+            hasScrollBody: false,
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.cloud_off_outlined, size: 40, color: color),
+                    const SizedBox(height: 12),
+                    Text(
+                      'No Cloud Comic Libraries'.tl,
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Add a cloud comic library to browse comics from your cloud storage.'
+                          .tl,
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.bodyMedium?.copyWith(color: color),
+                    ),
+                  ],
+                ),
+              ),
             ),
           );
         }
@@ -256,10 +332,17 @@ class _RemoteLibrariesSliverState extends State<RemoteLibrariesSliver> {
                   IconButton(
                     tooltip: 'Delete'.tl,
                     icon: const Icon(Icons.delete_outline),
-                    onPressed: () async {
-                      _removePageVisibility(library);
-                      await _storage.removeLibrary(library.id);
-                    },
+                    onPressed: () => showConfirmDialog(
+                      context: context,
+                      title: 'Delete'.tl,
+                      content: library.name,
+                      confirmText: 'Delete',
+                      btnColor: Theme.of(context).colorScheme.error,
+                      onConfirm: () async {
+                        _removePageVisibility(library);
+                        await _storage.removeLibrary(library.id);
+                      },
+                    ),
                   ),
                 ],
               ),

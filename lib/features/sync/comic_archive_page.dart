@@ -178,6 +178,10 @@ class _ComicArchivePageState extends State<ComicArchivePage> {
             child: Text("Cancel".tl),
           ),
           FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: context.colorScheme.error,
+              foregroundColor: context.colorScheme.onError,
+            ),
             onPressed: () => Navigator.of(context).pop(true),
             child: Text("Confirm".tl),
           ),
