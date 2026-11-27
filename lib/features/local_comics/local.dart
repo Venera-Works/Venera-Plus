@@ -1178,15 +1178,22 @@ class LocalManager with ChangeNotifier {
     remove(c.id, c.comicType);
   }
 
-  void deleteComicChapters(LocalComic c, List<String> chapters) {
-    if (chapters.isEmpty) {
-      return;
-    }
-    var newDownloadedChapters = c.downloadedChapters
-        .where((e) => !chapters.contains(e))
+  void deleteComicChapters(LocalComic comic, List<String> chapters) {
+    if (chapters.isEmpty) return;
+    final current = find(comic.id, comic.comicType);
+    if (current == null) return;
+
+    final selected = {
+      ...current.downloadedChapters,
+      ...current.incompleteChapters.keys,
+    }..retainAll(chapters);
+    if (selected.isEmpty) return;
+
+    final newDownloadedChapters = current.downloadedChapters
+        .where((chapter) => !selected.contains(chapter))
         .toList();
-    final incomplete = {...c.incompleteChapters}
-      ..removeWhere((chapter, _) => chapters.contains(chapter));
+    final incomplete = {...current.incompleteChapters}
+      ..removeWhere((chapter, _) => selected.contains(chapter));
     if (newDownloadedChapters.isNotEmpty || incomplete.isNotEmpty) {
       _db.execute(
         'UPDATE comics SET downloadedChapters = ?, incomplete_pages = ? WHERE id = ? AND comic_type = ?;',
@@ -1196,20 +1203,20 @@ class LocalManager with ChangeNotifier {
             for (final entry in incomplete.entries)
               entry.key: entry.value.toJson(),
           }),
-          c.id,
-          c.comicType.value,
+          current.id,
+          current.comicType.value,
         ],
       );
     } else {
       _db.execute('DELETE FROM comics WHERE id = ? AND comic_type = ?;', [
-        c.id,
-        c.comicType.value,
+        current.id,
+        current.comicType.value,
       ]);
     }
     var shouldRemovedDirs = <String>[];
-    for (var chapter in chapters) {
+    for (final chapter in selected) {
       var dir = Directory(
-        FilePath.join(c.baseDir, getChapterDirectoryName(chapter)),
+        FilePath.join(current.baseDir, getChapterDirectoryName(chapter)),
       );
       if (dir.existsSync()) {
         shouldRemovedDirs.add(dir.path);

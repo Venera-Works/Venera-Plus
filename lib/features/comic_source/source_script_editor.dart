@@ -1,7 +1,31 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/code.dart';
+import 'package:venera_plus/foundation/app_page_route.dart';
 import 'package:venera_plus/foundation/translations.dart';
+
+class SourceScriptEditorRoute extends AppPageRoute<bool> {
+  SourceScriptEditorRoute({
+    required String script,
+    required Future<void> Function(String script) onSave,
+  }) : super(
+         builder: (_) => SourceScriptEditor(script: script, onSave: onSave),
+       );
+
+  @override
+  bool didPop(bool? result) {
+    if (result == true || popDisposition != RoutePopDisposition.doNotPop) {
+      return super.didPop(result);
+    }
+    // 桌面端的直接返回也应触发编辑器的放弃确认。
+    scheduleMicrotask(() {
+      if (isCurrent) onPopInvokedWithResult(false, result);
+    });
+    return false;
+  }
+}
 
 class SourceScriptEditor extends StatefulWidget {
   const SourceScriptEditor({
@@ -66,11 +90,11 @@ class _SourceScriptEditorState extends State<SourceScriptEditor> {
       ),
     );
     confirmingExit = false;
-    if (discard == true && mounted) Navigator.pop(context);
+    if (discard == true && mounted) Navigator.pop(context, true);
   }
 
   @override
-  Widget build(BuildContext context) => PopScope(
+  Widget build(BuildContext context) => PopScope<Object?>(
     canPop: !saving && current == saved,
     onPopInvokedWithResult: (didPop, result) {
       if (!didPop) confirmExit();

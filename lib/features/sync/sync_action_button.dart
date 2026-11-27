@@ -2,8 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/features/sync/data_sync.dart';
+import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/translations.dart';
+import 'package:venera_plus/network/remote_storage/remote_storage.dart';
+import 'package:venera_plus/network/webdav.dart';
 
 String _syncActionTimestamp(int timestamp) {
   if (timestamp <= 0) return 'Not synced yet'.tl;
@@ -57,6 +60,33 @@ class _SyncActionButtonState extends State<SyncActionButton>
     }
   }
 
+  String? _syncTarget() {
+    final rawLocation = appdata.settings['syncRemoteLocation'];
+    if (rawLocation is Map) {
+      final location = RemoteLocation.fromJson(rawLocation);
+      if (location.accountId.isNotEmpty) {
+        final account = RemoteStorageAccounts.instance.account(
+          location.accountId,
+        );
+        return '${account?.name ?? 'Account unavailable'.tl} · ${location.directory}';
+      }
+    }
+    final config = appdata.settings['webdav'];
+    if (config is! List || config.isEmpty || config.first is! String) {
+      return null;
+    }
+    final uri = Uri.tryParse(
+      normalizeWebDavEndpointUrl(config.first as String),
+    );
+    if (uri == null || uri.host.isEmpty) return null;
+    return Uri(
+      scheme: uri.scheme,
+      host: uri.host,
+      port: uri.hasPort ? uri.port : null,
+      path: uri.path,
+    ).toString();
+  }
+
   Future<void> _handlePressed() async {
     if (_sync.isSyncing) {
       context.showMessage(message: 'Sync is currently in progress'.tl);
@@ -90,7 +120,24 @@ class _SyncActionButtonState extends State<SyncActionButton>
         ],
       ),
     );
-    if (action == null) return;
+    if (action == null || !mounted) return;
+    if (action == _SyncAction.download) {
+      final target = _syncTarget();
+      var confirmed = false;
+      await showConfirmDialog(
+        context: context,
+        title: 'Restore from Cloud'.tl,
+        content: [
+          if (target != null)
+            'Sync target: @target'.tlParams({'target': target}),
+          'Restoring the cloud snapshot will overwrite local app data, including reading history and local favorites.'
+              .tl,
+        ].join('\n\n'),
+        btnColor: context.colorScheme.error,
+        onConfirm: () => confirmed = true,
+      );
+      if (!confirmed || !mounted) return;
+    }
     final result = switch (action) {
       _SyncAction.upload => await _sync.uploadData(),
       _SyncAction.download => await _sync.downloadData(),

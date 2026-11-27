@@ -124,6 +124,12 @@ void main() {
     await tester.runAsync(() async {
       await tester.tap(find.text('Download'));
       await Future<void>.delayed(Duration.zero);
+    });
+    await tester.pumpAndSettle();
+    expect(find.text('Restore from Cloud'), findsOneWidget);
+    await tester.runAsync(() async {
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
+      await Future<void>.delayed(Duration.zero);
       await DataSync().waitForDownload();
       await appdata.saveData(false);
     });

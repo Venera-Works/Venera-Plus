@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import 'package:venera_plus/components/appbar.dart';
@@ -15,6 +17,8 @@ import 'package:venera_plus/foundation/image_provider/cached_image.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 import 'package:venera_plus/foundation/keyword_filter.dart';
+
+import 'reader_page.dart';
 
 KeywordFilter _commentFilter() => KeywordFilter.fromSettings({
   'blockedCommentWords': appdata.settings['blockedCommentWords'],
@@ -45,6 +49,7 @@ class ChapterCommentsPage extends StatefulWidget {
 
 class _ChapterCommentsPageState extends State<ChapterCommentsPage> {
   bool _loading = true;
+  bool _firstLoadInProgress = false;
   List<Comment>? _comments;
   final List<Comment> _allComments = [];
   String? _error;
@@ -77,28 +82,28 @@ class _ChapterCommentsPageState extends State<ChapterCommentsPage> {
         .toList();
   }
 
-  void firstLoad() async {
-    var res = await widget.source.chapterCommentsLoader!(
+  Future<void> firstLoad() async {
+    if (_firstLoadInProgress) return;
+    _firstLoadInProgress = true;
+    final res = await widget.source.chapterCommentsLoader!(
       widget.comicId,
       widget.epId,
       1,
       widget.replyComment?.id,
     );
-    if (res.error) {
-      setState(() {
-        _error = res.errorMessage;
-        _loading = false;
-      });
-    } else if (mounted) {
-      setState(() {
+    if (!mounted) return;
+    setState(() {
+      _firstLoadInProgress = false;
+      _loading = false;
+      _error = res.error ? res.errorMessage ?? 'Error'.tl : null;
+      if (res.success) {
         _allComments
           ..clear()
           ..addAll(res.data);
         _filterComments();
-        _loading = false;
         maxPage = res.subData;
-      });
-    }
+      }
+    });
   }
 
   void loadMore() async {
@@ -109,7 +114,7 @@ class _ChapterCommentsPageState extends State<ChapterCommentsPage> {
       widget.replyComment?.id,
     );
     if (res.error) {
-      context.showMessage(message: res.errorMessage ?? "Unknown Error");
+      context.showMessage(message: res.errorMessage ?? 'Error'.tl);
     } else {
       setState(() {
         _allComments.addAll(res.data);
@@ -151,6 +156,7 @@ class _ChapterCommentsPageState extends State<ChapterCommentsPage> {
         retry: () {
           setState(() {
             _loading = true;
+            _error = null;
           });
         },
         withAppbar: false,
@@ -490,7 +496,7 @@ class _ChapterCommentTileState extends State<_ChapterCommentTile> {
             isLiked = !isLiked;
             likes += isLiked ? 1 : -1;
           } else {
-            context.showMessage(message: res.errorMessage ?? "Error");
+            context.showMessage(message: res.errorMessage ?? 'Error'.tl);
           }
           setState(() {
             isLiking = false;
@@ -555,7 +561,7 @@ class _ChapterCommentTileState extends State<_ChapterCommentTile> {
       widget.comment.voteStatus = voteStatus;
       widget.comment.score = res.data ?? widget.comment.score;
     } else {
-      context.showMessage(message: res.errorMessage ?? "Error");
+      context.showMessage(message: res.errorMessage ?? 'Error'.tl);
     }
     setState(() {
       isVotingUp = false;
@@ -655,10 +661,26 @@ class _EmbeddedChapterCommentsPageState
   int? maxPage;
   var textController = TextEditingController();
   bool sending = false;
+  final _inputFocusNode = FocusNode();
+  late final _inputPauseReason = ('chapter_comment_input', _inputFocusNode);
+  late final ReaderState? _reader;
+  bool _pausedForInput = false;
+
   @override
   void initState() {
     super.initState();
+    _reader = context.findAncestorStateOfType<ReaderState>();
+    _inputFocusNode.addListener(_updateAutoReadingPause);
     appdata.settings.addListener(_onKeywordSettingsChanged);
+  }
+
+  void _updateAutoReadingPause() {
+    final reader = _reader;
+    if (reader == null) return;
+    final shouldPause = _inputFocusNode.hasFocus || sending;
+    if (_pausedForInput == shouldPause) return;
+    _pausedForInput = shouldPause;
+    reader.autoReading.pause(_inputPauseReason, shouldPause);
   }
 
   void _onKeywordSettingsChanged() {
@@ -675,6 +697,17 @@ class _EmbeddedChapterCommentsPageState
   @override
   void dispose() {
     appdata.settings.removeListener(_onKeywordSettingsChanged);
+    _inputFocusNode.dispose();
+    final reader = _reader;
+    if (_pausedForInput && reader != null) {
+      final pauseReason = _inputPauseReason;
+      // 释放暂停会通知阅读器重建，等组件树解锁后再执行。
+      scheduleMicrotask(() {
+        if (reader.mounted) {
+          reader.autoReading.pause(pauseReason, false);
+        }
+      });
+    }
     textController.dispose();
     super.dispose();
   }
@@ -689,7 +722,7 @@ class _EmbeddedChapterCommentsPageState
     if (res.error) {
       if (mounted) {
         setState(() {
-          _error = res.errorMessage;
+          _error = res.errorMessage ?? 'Error'.tl;
           _loading = false;
         });
       }
@@ -714,7 +747,7 @@ class _EmbeddedChapterCommentsPageState
     );
     if (res.error) {
       if (mounted) {
-        context.showMessage(message: res.errorMessage ?? "Unknown Error");
+        context.showMessage(message: res.errorMessage ?? 'Error'.tl);
       }
     } else if (mounted) {
       setState(() {
@@ -845,6 +878,37 @@ class _EmbeddedChapterCommentsPageState
     );
   }
 
+  Future<void> _sendComment() async {
+    if (sending || textController.text.isEmpty) return;
+    setState(() => sending = true);
+    _updateAutoReadingPause();
+    try {
+      final result = await widget.source.sendChapterCommentFunc!(
+        widget.comicId,
+        widget.epId,
+        textController.text,
+        null,
+      );
+      if (!mounted) return;
+      if (result.error) {
+        context.showMessage(message: result.errorMessage ?? 'Error'.tl);
+        return;
+      }
+      textController.clear();
+      setState(() {
+        _loading = true;
+        _comments?.clear();
+        _page = 1;
+        maxPage = null;
+      });
+    } finally {
+      if (mounted) {
+        setState(() => sending = false);
+        _updateAutoReadingPause();
+      }
+    }
+  }
+
   Widget _buildBottom() {
     if (widget.source.sendChapterCommentFunc == null) {
       return const SizedBox(height: 0);
@@ -868,6 +932,7 @@ class _EmbeddedChapterCommentsPageState
             Expanded(
               child: TextField(
                 controller: textController,
+                focusNode: _inputFocusNode,
                 decoration: InputDecoration(
                   border: InputBorder.none,
                   isCollapsed: true,
@@ -889,37 +954,7 @@ class _EmbeddedChapterCommentsPageState
             else
               IconButton(
                 tooltip: 'Submit'.tl,
-                onPressed: () async {
-                  if (textController.text.isEmpty) {
-                    return;
-                  }
-                  setState(() {
-                    sending = true;
-                  });
-                  var b = await widget.source.sendChapterCommentFunc!(
-                    widget.comicId,
-                    widget.epId,
-                    textController.text,
-                    null,
-                  );
-                  if (!b.error) {
-                    textController.text = "";
-                    setState(() {
-                      sending = false;
-                      _loading = true;
-                      _comments?.clear();
-                      _page = 1;
-                      maxPage = null;
-                    });
-                  } else {
-                    if (mounted) {
-                      context.showMessage(message: b.errorMessage ?? "Error");
-                    }
-                    setState(() {
-                      sending = false;
-                    });
-                  }
-                },
+                onPressed: _sendComment,
                 icon: Icon(
                   Icons.send,
                   color: Theme.of(context).colorScheme.secondary,

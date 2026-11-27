@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:shimmer_animation/shimmer_animation.dart';
 import 'package:venera_plus/components/appbar.dart';
+import 'package:venera_plus/components/loading.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/foundation/app.dart';
@@ -182,7 +183,8 @@ class _NetworkSectionState extends State<_NetworkSection> {
   bool isLoading = false;
   Map<String, String>? folders;
   var addedFolders = <String>{};
-  var isLoadingFolders = true;
+  var isLoadingFolders = false;
+  String? folderLoadError;
   bool? localIsFavorite;
   final Map<String, bool> _itemLoading = {};
   late List<double> _skeletonWidths;
@@ -197,37 +199,28 @@ class _NetworkSectionState extends State<_NetworkSection> {
     );
     if (widget.comicSource.favoriteData!.loadFolders != null) {
       loadFolders();
-    } else {
-      isLoadingFolders = false;
     }
   }
 
   void loadFolders() async {
-    var res = await widget.comicSource.favoriteData!.loadFolders!(widget.cid);
-    if (res.error) {
-      context.showMessage(message: res.errorMessage!);
-      setState(() {
-        isLoadingFolders = false;
-      });
-    } else {
-      folders = res.data;
-      if (res.subData is List) {
-        final list = List<String>.from(res.subData);
-        if (list.isNotEmpty) {
-          addedFolders = list.toSet();
-          localIsFavorite = true;
-        } else {
-          addedFolders.clear();
-          localIsFavorite = false;
-        }
-      } else {
-        addedFolders.clear();
-        localIsFavorite = false;
+    if (!mounted || isLoadingFolders) return;
+    setState(() {
+      isLoadingFolders = true;
+      folderLoadError = null;
+    });
+    final res = await widget.comicSource.favoriteData!.loadFolders!(widget.cid);
+    if (!mounted) return;
+    setState(() {
+      isLoadingFolders = false;
+      if (res.error) {
+        folderLoadError = res.errorMessage ?? 'Error'.tl;
+        return;
       }
-      setState(() {
-        isLoadingFolders = false;
-      });
-    }
+      folders = res.data;
+      final added = res.subData;
+      addedFolders = added is List ? Set<String>.from(added) : <String>{};
+      localIsFavorite = addedFolders.isNotEmpty;
+    });
   }
 
   Widget _buildLoadingSkeleton() {
@@ -357,7 +350,9 @@ class _NetworkSectionState extends State<_NetworkSection> {
                         context.pop();
                       }
                     } else {
-                      context.showMessage(message: res.errorMessage!);
+                      context.showMessage(
+                        message: res.errorMessage ?? 'Error'.tl,
+                      );
                     }
                     setState(() {
                       isLoading = false;
@@ -383,90 +378,104 @@ class _NetworkSectionState extends State<_NetworkSection> {
             ),
           ),
         ),
-        ...folders!.entries.map((entry) {
-          var name = entry.value;
-          var id = entry.key;
-          var isAdded = addedFolders.contains(id);
-          // When `singleFolderForSingleComic` is `false`, all add and remove buttons are clickable.
-          // When `singleFolderForSingleComic` is `true`, the remove button is always clickable,
-          // while the add button is only clickable if the comic has not been added to any list.
-          var enabled =
-              !(widget.comicSource.favoriteData!.singleFolderForSingleComic &&
-                  addedFolders.isNotEmpty &&
-                  !isAdded);
-
-          return ListTile(
-            title: Row(
-              children: [
-                Flexible(
-                  child: Text(
-                    name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                if (isAdded) ...[
-                  const SizedBox(width: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: context.colorScheme.primaryContainer,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text("Added".tl, style: ts.s12),
-                  ),
-                ],
-              ],
+        if (folderLoadError case final error?)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: NetworkError(
+              message: error,
+              retry: loadFolders,
+              withAppbar: false,
             ),
-            trailing: (_itemLoading[id] ?? false)
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : _HoverButton(
-                    isFavorite: isAdded,
-                    enabled: enabled,
-                    onTap: () async {
-                      setState(() {
-                        _itemLoading[id] = true;
-                      });
-                      var res = await widget
-                          .comicSource
-                          .favoriteData!
-                          .addOrDelFavorite!(widget.cid, id, !isAdded, null);
-                      if (res.success) {
-                        // Invalidate network cache so folders/pages reload with fresh data
-                        NetworkCacheManager().clear();
-                        setState(() {
-                          if (isAdded) {
-                            addedFolders.remove(id);
-                          } else {
-                            addedFolders.add(id);
-                          }
-                          // sync local flag for single-folder-per-comic logic and parent
-                          localIsFavorite = addedFolders.isNotEmpty;
-                        });
-                        // notify parent so page state updates when closing and reopening panel
-                        widget.onFavorite(addedFolders.isNotEmpty);
-                        context.showMessage(message: "Success".tl);
-                        if (appdata.settings['autoCloseFavoritePanel'] ??
-                            false) {
-                          context.pop();
-                        }
-                      } else {
-                        context.showMessage(message: res.errorMessage!);
-                      }
-                      setState(() {
-                        _itemLoading[id] = false;
-                      });
-                    },
+          )
+        else if (folders?.isEmpty == true)
+          ListTile(title: Text("No folders available".tl))
+        else
+          ...?folders?.entries.map((entry) {
+            var name = entry.value;
+            var id = entry.key;
+            var isAdded = addedFolders.contains(id);
+            // When `singleFolderForSingleComic` is `false`, all add and remove buttons are clickable.
+            // When `singleFolderForSingleComic` is `true`, the remove button is always clickable,
+            // while the add button is only clickable if the comic has not been added to any list.
+            var enabled =
+                !(widget.comicSource.favoriteData!.singleFolderForSingleComic &&
+                    addedFolders.isNotEmpty &&
+                    !isAdded);
+
+            return ListTile(
+              title: Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
-          );
-        }),
+                  if (isAdded) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: context.colorScheme.primaryContainer,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text("Added".tl, style: ts.s12),
+                    ),
+                  ],
+                ],
+              ),
+              trailing: (_itemLoading[id] ?? false)
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : _HoverButton(
+                      isFavorite: isAdded,
+                      enabled: enabled,
+                      onTap: () async {
+                        setState(() {
+                          _itemLoading[id] = true;
+                        });
+                        var res = await widget
+                            .comicSource
+                            .favoriteData!
+                            .addOrDelFavorite!(widget.cid, id, !isAdded, null);
+                        if (res.success) {
+                          // Invalidate network cache so folders/pages reload with fresh data
+                          NetworkCacheManager().clear();
+                          setState(() {
+                            if (isAdded) {
+                              addedFolders.remove(id);
+                            } else {
+                              addedFolders.add(id);
+                            }
+                            // sync local flag for single-folder-per-comic logic and parent
+                            localIsFavorite = addedFolders.isNotEmpty;
+                          });
+                          // notify parent so page state updates when closing and reopening panel
+                          widget.onFavorite(addedFolders.isNotEmpty);
+                          context.showMessage(message: "Success".tl);
+                          if (appdata.settings['autoCloseFavoritePanel'] ??
+                              false) {
+                            context.pop();
+                          }
+                        } else {
+                          context.showMessage(
+                            message: res.errorMessage ?? 'Error'.tl,
+                          );
+                        }
+                        setState(() {
+                          _itemLoading[id] = false;
+                        });
+                      },
+                    ),
+            );
+          }),
       ],
     );
   }

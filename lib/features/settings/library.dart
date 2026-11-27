@@ -85,10 +85,32 @@ class LibrarySettings extends StatelessWidget {
           valueFormatter: (value) => value.round() == 0
               ? 'Off'.tl
               : '@days days'.tlParams({'days': value.round()}),
-          onChanged: () {
-            final retentionDays =
+          onCommit: (value) async {
+            final retentionDays = value.round();
+            final previousDays =
                 (appdata.settings['historyRetentionDays'] as num).round();
-            HistoryManager().clearExpiredHistory(retentionDays);
+            if (retentionDays == previousDays) return;
+            final shouldClear =
+                retentionDays > 0 &&
+                (previousDays == 0 || retentionDays < previousDays);
+            if (shouldClear) {
+              var confirmed = false;
+              await showConfirmDialog(
+                context: context,
+                title: 'Clear History'.tl,
+                content:
+                    'History records older than @days days will be permanently deleted.'
+                        .tlParams({'days': retentionDays}),
+                btnColor: context.colorScheme.error,
+                onConfirm: () => confirmed = true,
+              );
+              if (!confirmed || !context.mounted) return;
+            }
+            appdata.settings['historyRetentionDays'] = retentionDays;
+            await appdata.saveData();
+            if (shouldClear) {
+              HistoryManager().clearExpiredHistory(retentionDays);
+            }
           },
         ).toSliver(),
       ],

@@ -35,8 +35,6 @@ class ImageFavoritesItem extends StatefulWidget {
 }
 
 class _ImageFavoritesItemState extends State<ImageFavoritesItem> {
-  late final imageFavorites = widget.imageFavoritesComic.images.toList();
-
   void goComicInfo(ImageFavoritesComic comic) {
     if (comic.sourceKey == 'local') {
       App.rootContext.to(() => ImageFavoritesGalleryPage(comic: comic));
@@ -144,6 +142,7 @@ class _ImageFavoritesItemState extends State<ImageFavoritesItem> {
 
   @override
   Widget build(BuildContext context) {
+    final imageFavorites = widget.imageFavoritesComic.images.toList();
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
       decoration: BoxDecoration(
@@ -170,12 +169,13 @@ class _ImageFavoritesItemState extends State<ImageFavoritesItem> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            buildTop(),
+            buildTop(imageFavorites.length),
             SizedBox(
               height: 145,
               child: ListView.builder(
                 scrollDirection: Axis.horizontal,
-                itemBuilder: buildItem,
+                itemBuilder: (context, index) =>
+                    buildItem(context, imageFavorites[index]),
                 itemCount: imageFavorites.length,
               ),
             ).paddingHorizontal(8),
@@ -186,8 +186,7 @@ class _ImageFavoritesItemState extends State<ImageFavoritesItem> {
     );
   }
 
-  Widget buildItem(BuildContext context, int index) {
-    var image = imageFavorites[index];
+  Widget buildItem(BuildContext context, ImageFavorite image) {
     bool isSelected = widget.selectedImageFavorites[image] ?? false;
     int curPage = image.page;
     String pageText = curPage == firstPage
@@ -249,7 +248,7 @@ class _ImageFavoritesItemState extends State<ImageFavoritesItem> {
     ).paddingHorizontal(4);
   }
 
-  Widget buildTop() {
+  Widget buildTop(int imageCount) {
     return Row(
       children: [
         Expanded(
@@ -280,7 +279,7 @@ class _ImageFavoritesItemState extends State<ImageFavoritesItem> {
             borderRadius: BorderRadius.circular(8),
           ),
           child: Text(
-            "${imageFavorites.length}/${widget.imageFavoritesComic.maxPageFromEp}",
+            "$imageCount/${widget.imageFavoritesComic.maxPageFromEp}",
             style: ts.s12,
           ),
         ),

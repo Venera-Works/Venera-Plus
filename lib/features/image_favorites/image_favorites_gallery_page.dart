@@ -23,29 +23,34 @@ class ImageFavoritesGalleryPage extends StatefulWidget {
 }
 
 class _ImageFavoritesGalleryPageState extends State<ImageFavoritesGalleryPage> {
-  late ImageFavoritesComic comic;
+  late ImageFavoritesComic? comic = widget.comic;
 
-  List<ImageFavorite> get images => comic.images.toList();
+  List<ImageFavorite> get images => comic?.images.toList() ?? [];
 
   @override
   void initState() {
     super.initState();
-    comic = widget.comic;
     ImageFavoriteManager().addListener(_onDataChanged);
   }
 
   void _onDataChanged() {
     if (!mounted) return;
-    final updated = ImageFavoriteManager().find(comic.id, comic.sourceKey);
-    if (updated == null) {
-      Navigator.of(context).pop();
-      return;
-    }
+    final updated = ImageFavoriteManager().find(
+      widget.comic.id,
+      widget.comic.sourceKey,
+    );
     setState(() {
       comic = updated;
       selectedImages.clear();
       multiSelectMode = false;
     });
+    if (updated == null && ModalRoute.of(context)?.isCurrent == true) {
+      final navigator = Navigator.of(context);
+      // 阅读器走根导航，画廊位于子导航时也要检查外层路由。
+      if (ModalRoute.of(navigator.context)?.isCurrent != false) {
+        navigator.pop();
+      }
+    }
   }
 
   bool multiSelectMode = false;
@@ -85,6 +90,8 @@ class _ImageFavoritesGalleryPageState extends State<ImageFavoritesGalleryPage> {
   }
 
   void goPhotoView(ImageFavorite image) {
+    final comic = this.comic;
+    if (comic == null) return;
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) =>
@@ -148,19 +155,20 @@ class _ImageFavoritesGalleryPageState extends State<ImageFavoritesGalleryPage> {
       }
 
       return SliverAppbar(
-        title: Text(comic.title),
+        title: Text(comic?.title ?? widget.comic.title),
         actions: [
-          Tooltip(
-            message: "Multi-Select".tl,
-            child: IconButton(
-              icon: const Icon(Icons.checklist),
-              onPressed: () {
-                setState(() {
-                  multiSelectMode = true;
-                });
-              },
+          if (imgList.isNotEmpty)
+            Tooltip(
+              message: "Multi-Select".tl,
+              child: IconButton(
+                icon: const Icon(Icons.checklist),
+                onPressed: () {
+                  setState(() {
+                    multiSelectMode = true;
+                  });
+                },
+              ),
             ),
-          ),
         ],
       );
     }
@@ -281,6 +289,12 @@ class _ImageFavoritesGalleryPageState extends State<ImageFavoritesGalleryPage> {
         buildSliverAppBar(),
         SliverLayoutBuilder(
           builder: (context, constraints) {
+            if (imgList.isEmpty) {
+              return SliverFillRemaining(
+                hasScrollBody: false,
+                child: Center(child: Text("Empty".tl)),
+              );
+            }
             const spacing = 6.0;
             const itemWidth = 120.0;
             final crossCount = (() {

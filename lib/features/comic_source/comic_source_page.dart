@@ -5,7 +5,6 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/button.dart';
-import 'package:venera_plus/components/code.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/components/scroll.dart';
@@ -28,6 +27,7 @@ import 'source_repositories.dart';
 import 'source_import_dialog.dart';
 import 'source_installation_widgets.dart';
 import 'source_repository_page.dart';
+import 'source_script_editor.dart';
 import 'parser.dart' show compareSemVer;
 
 class ComicSourcePage extends StatelessWidget {
@@ -40,10 +40,14 @@ class ComicSourcePage extends StatelessWidget {
 
   static final _updating = <String, CancelToken>{};
 
-  static Future<void> update(
-    ComicSource source, [
-    bool showLoading = true,
-  ]) async {
+  static Future<void> update(ComicSource source, [bool showLoading = true]) =>
+      _update(source, showLoading: showLoading);
+
+  static Future<void> _update(
+    ComicSource source, {
+    required bool showLoading,
+    CancelToken? cancelToken,
+  }) async {
     if (_updating.containsKey(source.key)) {
       // An interactive duplicate tap stays silent because the loading dialog
       // already owns the update. A batch caller must not mistake the skipped
@@ -51,8 +55,9 @@ class ComicSourcePage extends StatelessWidget {
       if (!showLoading) throw 'Update already in progress'.tl;
       return;
     }
-    final token = CancelToken();
+    final token = cancelToken ?? CancelToken();
     _updating[source.key] = token;
+    var publishing = false;
     Dio? dio;
     LoadingDialogController? controller;
     final loadingContext = showLoading ? App.rootContext : null;
@@ -82,7 +87,7 @@ class ComicSourcePage extends StatelessWidget {
         client: dio,
         cancelToken: token,
       );
-      if (token.isCancelled) return;
+      if (token.isCancelled) throw token.cancelError!;
       final res = await dio.get<String>(
         url,
         cancelToken: token,
@@ -91,12 +96,12 @@ class ComicSourcePage extends StatelessWidget {
           headers: {'cache-time': 'no'},
         ),
       );
-      if (token.isCancelled) return;
+      if (token.isCancelled) throw token.cancelError!;
       await ComicSourceManager().replaceScript(
         source,
         res.data!,
         validate: () {
-          if (token.isCancelled) throw token.cancelError!;
+          if (!publishing && token.isCancelled) throw token.cancelError!;
           if (store.originFor(source.key)?.repositoryId !=
                   origin?.repositoryId ||
               store.originFor(source.key)?.url != origin?.url ||
@@ -105,9 +110,11 @@ class ComicSourcePage extends StatelessWidget {
                   store.find(repository.id)?.url != repository.url)) {
             throw 'Repository changed. Refresh the list and try again.'.tl;
           }
-          // Once the serialized commit begins, the script must be replaced
-          // atomically. Cancellation is available while downloading or queued.
-          if (loadingContext?.mounted ?? false) controller?.close();
+          // 排队时仍可取消，开始替换后让当前事务完整结束。
+          if (!publishing) {
+            publishing = true;
+            controller?.close();
+          }
         },
         origin: repository == null
             ? null
@@ -119,21 +126,20 @@ class ComicSourcePage extends StatelessWidget {
               ),
       );
     } catch (e, stack) {
-      if (!token.isCancelled) {
-        Log.error('Update comic source', '$e\n$stack');
-        if (showLoading) {
-          final context = App.rootNavigatorKey.currentContext;
-          if (context != null && context.mounted) {
-            context.showMessage(
-              message: e is DioException ? 'Network error'.tl : e.toString(),
-            );
-          }
-        } else {
-          rethrow;
-        }
+      if (!publishing && token.isCancelled) {
+        if (!showLoading) throw token.cancelError!;
+        return;
+      }
+      Log.error('Update comic source', e, stack);
+      if (!showLoading) rethrow;
+      final context = App.rootNavigatorKey.currentContext;
+      if (context != null && context.mounted) {
+        context.showMessage(
+          message: e is DioException ? 'Network error'.tl : e.toString(),
+        );
       }
     } finally {
-      if (loadingContext?.mounted ?? false) controller?.close();
+      controller?.close();
       dio?.close();
       releaseUpdate();
     }
@@ -339,10 +345,19 @@ class _ComicSourcesSliverListState extends State<ComicSourcesSliverList> {
     );
   }
 
-  void edit(ComicSource source) async {
+  Future<void> edit(ComicSource source) async {
     if (App.isDesktop) {
+      var openedExternally = false;
       try {
-        await Process.run("code", [source.filePath], runInShell: true);
+        final result = await Process.run("code", [
+          source.filePath,
+        ], runInShell: true);
+        openedExternally = result.exitCode == 0;
+      } on ProcessException {
+        // 外部编辑器无法启动时使用内置编辑器。
+      }
+      if (!mounted) return;
+      if (openedExternally) {
         await showDialog(
           context: App.rootContext,
           builder: (context) => AlertDialog(
@@ -364,15 +379,25 @@ class _ComicSourcesSliverListState extends State<ComicSourcesSliverList> {
           ),
         );
         return;
-      } catch (e) {
-        //
       }
     }
-    context.to(
-      () => _EditFilePage(source.filePath, () async {
-        await ComicSourceManager().reload();
-        if (mounted) setState(() {});
-      }),
+
+    final String script;
+    try {
+      script = await File(source.filePath).readAsString();
+    } catch (error) {
+      if (mounted) {
+        context.showMessage(message: "${'Failed to load source'.tl}: $error");
+      }
+      return;
+    }
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      SourceScriptEditorRoute(
+        script: script,
+        onSave: (draft) =>
+            ComicSourceManager().replaceScript(source, draft, validate: () {}),
+      ),
     );
   }
 
@@ -424,88 +449,6 @@ void _validatePages() {
   appdata.saveData();
 }
 
-class _EditFilePage extends StatefulWidget {
-  const _EditFilePage(this.path, this.onExit);
-
-  final String path;
-
-  final void Function() onExit;
-
-  @override
-  State<_EditFilePage> createState() => __EditFilePageState();
-}
-
-class __EditFilePageState extends State<_EditFilePage> {
-  var _initial = '';
-  var current = '';
-  var _loaded = false;
-  String? _loadError;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadFile();
-  }
-
-  Future<void> _loadFile() async {
-    try {
-      final content = await File(widget.path).readAsString();
-      if (!mounted) return;
-      setState(() {
-        _initial = content;
-        current = content;
-        _loaded = true;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _loadError = e.toString());
-    }
-  }
-
-  @override
-  void dispose() {
-    if (_loaded && current != _initial) {
-      File(widget.path).writeAsStringSync(current);
-      widget.onExit();
-    }
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    Widget content;
-    if (_loadError != null) {
-      content = Center(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Text(_loadError!),
-        ),
-      );
-    } else if (!_loaded) {
-      content = const Center(
-        child: SizedBox.square(
-          dimension: 32,
-          child: CircularProgressIndicator(strokeWidth: 2),
-        ),
-      );
-    } else {
-      content = CodeEditor(
-        initialValue: current,
-        onChanged: (value) => current = value,
-      );
-    }
-    return Scaffold(
-      appBar: Appbar(title: Text("Edit".tl)),
-      body: Column(
-        children: [
-          Container(height: 0.6, color: context.colorScheme.outlineVariant),
-          Expanded(child: content),
-        ],
-      ),
-    );
-  }
-}
-
 class _CheckUpdatesButton extends StatefulWidget {
   const _CheckUpdatesButton();
 
@@ -546,13 +489,17 @@ class _CheckUpdatesButtonState extends State<_CheckUpdatesButton> {
   }
 
   Future<void> showUpdateDialog() async {
-    var text = ComicSourceManager().availableUpdates.entries
-        .map((e) {
-          return "${ComicSource.find(e.key)!.name}: ${e.value}";
-        })
+    final manager = ComicSourceManager();
+    final updates = [
+      for (final entry in manager.availableUpdates.entries)
+        if (ComicSource.find(entry.key) case final ComicSource source)
+          (source: source, version: entry.value),
+    ];
+    if (updates.isEmpty) return;
+    final text = updates
+        .map((update) => "${update.source.name}: ${update.version}")
         .join("\n");
-    bool doUpdate = false;
-    await showDialog(
+    final confirmed = await showDialog<bool>(
       context: App.rootContext,
       builder: (context) {
         return ContentDialog(
@@ -560,37 +507,56 @@ class _CheckUpdatesButtonState extends State<_CheckUpdatesButton> {
           content: Text(text).paddingHorizontal(16),
           actions: [
             FilledButton(
-              onPressed: () {
-                doUpdate = true;
-                context.pop();
-              },
+              onPressed: () => context.pop(true),
               child: Text("Update".tl),
             ),
           ],
         );
       },
     );
-    if (doUpdate) {
-      var loadingController = showLoadingDialog(
-        context,
-        message: "Updating".tl,
-        withProgress: true,
-      );
-      int current = 0;
-      int total = ComicSourceManager().availableUpdates.length;
-      try {
-        var shouldUpdate = ComicSourceManager().availableUpdates.keys.toList();
-        for (var key in shouldUpdate) {
-          var source = ComicSource.find(key)!;
-          await ComicSourcePage.update(source, false);
-          current++;
-          loadingController.setProgress(current / total);
+    if (confirmed != true || !mounted) return;
+    final token = CancelToken();
+    final controller = showLoadingDialog(
+      context,
+      message: 'Updating'.tl,
+      withProgress: true,
+      closeOnCancel: false,
+      onCancel: token.cancel,
+    );
+    var updated = 0;
+    final failures = <String>[];
+    try {
+      for (final update in updates) {
+        if (token.isCancelled) break;
+        try {
+          await ComicSourcePage._update(
+            update.source,
+            showLoading: false,
+            cancelToken: token,
+          );
+          updated++;
+        } catch (error) {
+          if (identical(error, token.cancelError)) break;
+          final reason = error is DioException ? 'Network error'.tl : error;
+          failures.add('${update.source.name}: $reason');
         }
-      } catch (e) {
-        context.showMessage(message: e.toString());
+        controller.setProgress((updated + failures.length) / updates.length);
       }
-      loadingController.close();
+    } finally {
+      controller.close();
+      manager.notifyStateChange();
     }
+    if (!mounted) return;
+    context.showMessage(
+      message: [
+        'Updated: @a, Failed: @b, Cancelled: @c'.tlParams({
+          'a': updated,
+          'b': failures.length,
+          'c': updates.length - updated - failures.length,
+        }),
+        ...failures,
+      ].join('\n'),
+    );
   }
 
   @override

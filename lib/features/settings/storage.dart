@@ -9,6 +9,7 @@ import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/cache_manager.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/file_interaction.dart';
+import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 
@@ -44,25 +45,36 @@ class _StorageSettingsState extends State<StorageSettings> {
           title: 'Change Storage Path'.tl,
           actionTitle: 'Set'.tl,
           callback: () async {
-            String? path;
-            if (App.isAndroid) {
-              path = (await DirectoryPicker().pickDirectory())?.path;
-            } else if (App.isIOS) {
-              path = await selectDirectoryIOS();
-            } else {
-              path = await selectDirectory();
+            LoadingDialogController? loadingDialog;
+            String? error;
+            try {
+              final String? path;
+              if (App.isAndroid) {
+                path = (await DirectoryPicker().pickDirectory())?.path;
+              } else if (App.isIOS) {
+                path = await selectDirectoryIOS();
+              } else {
+                path = await selectDirectory();
+              }
+              if (path == null || !mounted) return;
+              loadingDialog = showLoadingDialog(
+                App.rootContext,
+                allowCancel: false,
+              );
+              error = await LocalManager().setNewPath(path);
+            } catch (exception, stack) {
+              Log.error('Change storage path', exception, stack);
+              error = exception.toString();
+            } finally {
+              loadingDialog?.close();
             }
-            if (path == null || !mounted) return;
-            final loadingDialog = showLoadingDialog(
-              App.rootContext,
-              barrierDismissible: false,
-              allowCancel: false,
-            );
-            final error = await LocalManager().setNewPath(path);
-            loadingDialog.close();
             if (!mounted) return;
             if (error != null) {
-              context.showMessage(message: error);
+              context.showMessage(
+                message: 'Failed to change storage path: @error'.tlParams({
+                  'error': error,
+                }),
+              );
             } else {
               context.showMessage(message: 'Path set successfully'.tl);
               setState(() {});
@@ -95,13 +107,23 @@ class _StorageSettingsState extends State<StorageSettings> {
           callback: () async {
             final loadingDialog = showLoadingDialog(
               App.rootContext,
-              barrierDismissible: false,
               allowCancel: false,
             );
-            await CacheManager().clear();
-            loadingDialog.close();
+            Object? error;
+            try {
+              await CacheManager().clear();
+            } catch (exception, stack) {
+              Log.error('Clear cache', exception, stack);
+              error = exception;
+            } finally {
+              loadingDialog.close();
+            }
             if (!mounted) return;
-            context.showMessage(message: 'Cache cleared'.tl);
+            context.showMessage(
+              message: error == null
+                  ? 'Cache cleared'.tl
+                  : 'Failed to clear cache: @error'.tlParams({'error': error}),
+            );
             setState(() {});
           },
         ).toSliver(),

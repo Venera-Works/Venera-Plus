@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/button.dart';
@@ -470,30 +471,34 @@ Future<void> importNetworkFolder(
       folderID ?? "",
     );
   }
-  bool isOldToNewSort = comicSource.favoriteData?.isOldToNewSort ?? false;
+  final favoriteData = comicSource.favoriteData;
+  final isOldToNewSort = favoriteData?.isOldToNewSort ?? false;
+  final loadComic = favoriteData?.loadComic;
+  final loadNext = favoriteData?.loadNext;
   var current = 0;
   int receivedComics = 0;
   int requestCount = 0;
   var isFinished = false;
-  int maxPage = 1;
+  var pagesToLoad = updatePageNum;
   List<FavoriteItem> comics = [];
   String? next;
-  // 如果是从旧到新, 先取一下maxPage
-  if (isOldToNewSort) {
-    var res = await comicSource.favoriteData?.loadComic!(1, folderID);
-    maxPage = res?.subData ?? 1;
-  }
   Future<void> fetchNext() async {
     var retry = 3;
-    while (updatePageNum > requestCount && !isFinished) {
+    while (requestCount < pagesToLoad && !isFinished) {
       try {
-        if (comicSource.favoriteData?.loadComic != null) {
-          // 从旧到新的情况下, 假设有10页, 更新3页, 则从第8页开始, 8, 9, 10 三页
-          next ??= isOldToNewSort
-              ? (maxPage - updatePageNum + 1).toString()
-              : '1';
-          var page = int.parse(next!);
-          var res = await comicSource.favoriteData!.loadComic!(page, folderID);
+        if (loadComic != null) {
+          if (isOldToNewSort && next == null) {
+            final probe = await loadComic(1, folderID);
+            final maxPage = probe.subData;
+            if (probe.error || maxPage is! int || maxPage <= 0) {
+              throw probe.errorMessage ?? "Failed to load comics".tl;
+            }
+            pagesToLoad = min(updatePageNum, maxPage);
+            // 正序同步取末尾几页，例如共十页、同步三页时从第八页开始。
+            next = (maxPage - pagesToLoad + 1).toString();
+          }
+          final page = int.parse(next ?? '1');
+          final res = await loadComic(page, folderID);
           var count = 0;
           receivedComics += res.data.length;
           for (var c in res.data) {
@@ -523,8 +528,8 @@ Future<void> importNetworkFolder(
           } else {
             next = (page + 1).toString();
           }
-        } else if (comicSource.favoriteData?.loadNext != null) {
-          var res = await comicSource.favoriteData!.loadNext!(next, folderID);
+        } else if (loadNext != null) {
+          var res = await loadNext(next, folderID);
           var count = 0;
           receivedComics += res.data.length;
           for (var c in res.data) {

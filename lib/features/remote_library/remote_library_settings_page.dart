@@ -71,6 +71,8 @@ Future<void> showRemoteLibraryEditor(
   final existingAccount = initial == null
       ? null
       : _storage.account(initial.accountId);
+  final needsRebinding = initial != null && existingAccount == null;
+  var accountLocked = existingAccount != null;
   StorageAccount? account =
       existingAccount ??
       (initial == null
@@ -121,15 +123,17 @@ Future<void> showRemoteLibraryEditor(
               ),
               const SizedBox(height: 12),
               RemoteLocationFields(
-                accountId: account?.id ?? initial?.accountId,
+                accountId: account?.id,
                 directories: directories,
                 multiSelect: true,
-                accountLocked: initial != null,
-                accountErrorText: showValidation && account == null
-                    ? (initial == null
-                              ? 'Select an account'
-                              : 'Account unavailable')
+                accountLocked: accountLocked,
+                accountErrorText: account != null
+                    ? null
+                    : needsRebinding
+                    ? 'The original cloud storage account is missing. Select an account and choose the folders again.'
                           .tl
+                    : showValidation
+                    ? 'Select an account'.tl
                     : null,
                 directoryErrorText: showValidation && directories.isEmpty
                     ? 'Choose Folder'.tl
@@ -142,6 +146,16 @@ Future<void> showRemoteLibraryEditor(
                   }
                 }),
               ),
+              if (accountLocked)
+                Align(
+                  alignment: AlignmentDirectional.centerEnd,
+                  child: TextButton(
+                    style: actionButtonStyle,
+                    onPressed: () =>
+                        setDialogState(() => accountLocked = false),
+                    child: Text('Rebind account'.tl),
+                  ),
+                ),
               const SizedBox(height: 12),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
@@ -209,20 +223,26 @@ Future<void> showRemoteLibraryEditor(
             style: actionButtonStyle,
             onPressed: () {
               final trimmed = name.trim();
-              if (trimmed.isEmpty || directories.isEmpty || account == null) {
+              final selectedAccount = account;
+              if (trimmed.isEmpty ||
+                  directories.isEmpty ||
+                  selectedAccount == null) {
                 setDialogState(() => showValidation = true);
                 return;
               }
               final library = initial == null
                   ? RemoteComicLibraryRegistry.create(
-                      accountId: account!.id,
+                      accountId: selectedAccount.id,
                       directories: directories,
                       name: trimmed,
                     ).copyWith(
                       autoRefresh: autoRefresh,
                       refreshIntervalMinutes: refreshIntervalMinutes,
                     )
-                  : initial.copyWith(
+                  : RemoteLibrary(
+                      id: initial.id,
+                      sourceKey: initial.sourceKey,
+                      accountId: selectedAccount.id,
                       name: trimmed,
                       directories: directories,
                       autoRefresh: autoRefresh,

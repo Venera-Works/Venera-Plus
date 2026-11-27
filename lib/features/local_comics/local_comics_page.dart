@@ -1001,7 +1001,14 @@ Future<void> openComicFolder(LocalComic comic) async {
   }
 }
 
-void showDeleteChaptersPopWindow(BuildContext context, LocalComic comic) {
+void showDeleteChaptersPopWindow(
+  BuildContext context,
+  LocalComic selectedComic,
+) {
+  final manager = LocalManager();
+  final comic = manager.find(selectedComic.id, selectedComic.comicType);
+  if (comic == null) return;
+
   var selectedChapters = <String>[];
   final available = {
     ...comic.downloadedChapters,
@@ -1054,17 +1061,8 @@ void showDeleteChaptersPopWindow(BuildContext context, LocalComic comic) {
                   children: [
                     FilledButton(
                       onPressed: () {
-                        Future.delayed(const Duration(milliseconds: 200), () {
-                          LocalManager().deleteComicChapters(
-                            comic,
-                            selectedChapters,
-                          );
-                        });
-                        if (App.rootNavigatorKey.currentContext != null) {
-                          App.rootContext.pop();
-                        } else {
-                          context.pop();
-                        }
+                        Navigator.of(context, rootNavigator: true).pop();
+                        manager.deleteComicChapters(comic, selectedChapters);
                       },
                       child: Text("Submit".tl),
                     ),

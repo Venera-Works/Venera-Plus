@@ -1,5 +1,3 @@
-import 'package:venera_plus/foundation/extensions.dart';
-
 enum ImageFavoriteSortType {
   title("Title"),
   timeAsc("Time Asc"),
@@ -15,13 +13,12 @@ enum ImageFavoriteSortType {
 const numFilterList = [0, 1, 2, 5, 10, 20, 50, 100];
 
 class TimeRange {
-  /// End of the range, null means now
+  /// 自定义范围的结束边界（不含），为空时表示相对范围。
   final DateTime? end;
 
-  /// Duration of the range
+  /// 区间的实际时长。
   final Duration duration;
 
-  /// Create a time range
   const TimeRange({this.end, required this.duration});
 
   static const all = TimeRange(end: null, duration: Duration.zero);
@@ -39,37 +36,45 @@ class TimeRange {
 
   @override
   String toString() {
-    return "${end?.millisecond}:${duration.inMilliseconds}";
+    return "${end?.millisecondsSinceEpoch}:${duration.inMilliseconds}";
   }
 
-  /// Parse a time range from a string, return [TimeRange.all] if failed
+  /// 解析失败时恢复为全部时间。
   factory TimeRange.fromString(String? str) {
-    if (str == null) {
-      return TimeRange.all;
+    final parts = str?.split(':');
+    if (parts == null || parts.length != 2) return all;
+
+    const maxDateTimeMs = 8_640_000_000_000_000;
+    final durationMs = int.tryParse(parts[1]);
+    if (durationMs == null || durationMs < 0 || durationMs > maxDateTimeMs) {
+      return all;
     }
-    final parts = str.split(":");
-    if (parts.length != 2 || !parts[0].isInt || !parts[1].isInt) {
-      return TimeRange.all;
+    final duration = Duration(milliseconds: durationMs);
+    if (parts[0] == 'null') return TimeRange(duration: duration);
+
+    final endMs = int.tryParse(parts[0]);
+    // 旧版仅保存了毫秒分量，无法恢复结束日期。
+    if (endMs == null ||
+        endMs < 1000 ||
+        endMs > maxDateTimeMs ||
+        durationMs == 0) {
+      return all;
     }
-    final end = parts[0] == "null"
-        ? null
-        : DateTime.fromMillisecondsSinceEpoch(int.parse(parts[0]));
-    final duration = Duration(milliseconds: int.parse(parts[1]));
-    return TimeRange(end: end, duration: duration);
+    return TimeRange(
+      end: DateTime.fromMillisecondsSinceEpoch(endMs),
+      duration: duration,
+    );
   }
 
-  /// Check if a time is in the range
   bool contains(DateTime time) {
-    if (end != null && time.isAfter(end!)) {
-      return false;
+    final end = this.end;
+    if (end != null) {
+      return !time.isBefore(end.subtract(duration)) && time.isBefore(end);
     }
-    if (duration == Duration.zero) {
-      return true;
-    }
-    final start = end == null
-        ? DateTime.now().subtract(duration)
-        : end!.subtract(duration);
-    return time.isAfter(start);
+    if (duration == Duration.zero) return true;
+
+    final now = DateTime.now();
+    return !time.isBefore(now.subtract(duration)) && !time.isAfter(now);
   }
 
   @override

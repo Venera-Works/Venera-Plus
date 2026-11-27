@@ -43,7 +43,7 @@ class CommentsPage extends StatefulWidget {
 }
 
 class _CommentsPageState extends State<CommentsPage> {
-  bool _loading = true;
+  bool _loading = false;
   List<Comment>? _comments;
   final List<Comment> _allComments = [];
   String? _error;
@@ -59,6 +59,7 @@ class _CommentsPageState extends State<CommentsPage> {
     super.initState();
     _focusNode = FocusNode();
     appdata.settings.addListener(_onKeywordSettingsChanged);
+    firstLoad();
   }
 
   @override
@@ -81,38 +82,43 @@ class _CommentsPageState extends State<CommentsPage> {
   }
 
   void firstLoad() async {
-    var res = await widget.source.commentsLoader!(
+    if (!mounted || _loading) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    final res = await widget.source.commentsLoader!(
       widget.data.comicId,
       widget.data.subId,
       1,
       widget.replyComment?.id,
     );
-    if (res.error) {
-      setState(() {
-        _error = res.errorMessage;
-        _loading = false;
-      });
-    } else if (mounted) {
-      setState(() {
+    if (!mounted) return;
+    setState(() {
+      _loading = false;
+      if (res.error) {
+        _error = res.errorMessage ?? 'Error'.tl;
+      } else {
         _allComments
           ..clear()
           ..addAll(res.data);
         _filterComments();
-        _loading = false;
         maxPage = res.subData;
-      });
-    }
+      }
+    });
   }
 
   void loadMore() async {
+    if (!mounted) return;
     var res = await widget.source.commentsLoader!(
       widget.data.comicId,
       widget.data.subId,
       _page + 1,
       widget.replyComment?.id,
     );
+    if (!mounted) return;
     if (res.error) {
-      context.showMessage(message: res.errorMessage ?? "Unknown error".tl);
+      context.showMessage(message: res.errorMessage ?? 'Error'.tl);
     } else {
       setState(() {
         _allComments.addAll(res.data);
@@ -136,16 +142,11 @@ class _CommentsPageState extends State<CommentsPage> {
 
   Widget buildBody(BuildContext context) {
     if (_loading) {
-      firstLoad();
       return const Center(child: CircularProgressIndicator());
     } else if (_error != null) {
       return NetworkError(
         message: _error!,
-        retry: () {
-          setState(() {
-            _loading = true;
-          });
-        },
+        retry: firstLoad,
         withAppbar: false,
       );
     } else {
@@ -363,16 +364,17 @@ class _CommentsPageState extends State<CommentsPage> {
                           widget.replyComment?.id,
                         );
                       }
+                      if (!mounted) return;
                       if (!b.error) {
                         controller.text = "";
                         setState(() {
                           sending = false;
                           _replyTarget = null;
-                          _loading = true;
                           _comments?.clear();
                           _page = 1;
                           maxPage = null;
                         });
+                        firstLoad();
                       } else {
                         context.showMessage(
                           message: b.errorMessage ?? "Error".tl,

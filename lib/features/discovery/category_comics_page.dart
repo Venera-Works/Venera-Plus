@@ -36,6 +36,7 @@ class _CategoryComicsPageState extends State<CategoryComicsPage> {
   late List<String> optionsValue;
   late String sourceKey;
   String? error;
+  bool _loadingOptions = false;
 
   void findData() {
     for (final source in ComicSource.all()) {
@@ -84,29 +85,33 @@ class _CategoryComicsPageState extends State<CategoryComicsPage> {
   }
 
   void loadOptions() async {
+    if (!mounted || _loadingOptions) return;
+    setState(() {
+      _loadingOptions = true;
+      error = null;
+    });
     final res = await optionsLoader!(widget.category, widget.param);
-    if (res.error) {
-      setState(() {
-        error = res.errorMessage;
-      });
-    } else {
-      setState(() {
+    if (!mounted) return;
+    setState(() {
+      _loadingOptions = false;
+      if (res.error) {
+        error = res.errorMessage ?? 'Error'.tl;
+      } else {
         options = res.data;
         resetOptionsValue();
-        error = null;
-      });
-    }
+      }
+    });
   }
 
   @override
   void initState() {
+    super.initState();
     if (widget.options != null) {
       optionsValue = widget.options!;
     } else {
       optionsValue = [];
     }
     findData();
-    super.initState();
   }
 
   @override
@@ -115,18 +120,10 @@ class _CategoryComicsPageState extends State<CategoryComicsPage> {
 
     Widget body;
 
-    if (options == null) {
-      body = Center(child: CircularProgressIndicator());
-    } else if (error != null) {
-      body = NetworkError(
-        message: error!,
-        retry: () {
-          setState(() {
-            error = null;
-          });
-          loadOptions();
-        },
-      );
+    if (error != null) {
+      body = NetworkError(message: error!, retry: loadOptions);
+    } else if (options == null) {
+      body = const Center(child: CircularProgressIndicator());
     } else {
       body = ComicList(
         key: Key(widget.category + optionsValue.toString()),

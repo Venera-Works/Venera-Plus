@@ -40,6 +40,11 @@ class _ReaderSettingsState extends State<ReaderSettings> {
     final useDeviceSpecificSettings =
         !isEnabledSpecificSettings &&
         appdata.settings.isDeviceSpecificSettingsEnabled();
+    final comicModeOverride = comicId != null && sourceKey != null
+        ? appdata.settings.comicReaderModeOverride(comicId, sourceKey)
+        : null;
+    final useComicReaderMode =
+        isEnabledSpecificSettings || comicModeOverride != null;
 
     dynamic settingValue(String settingKey) {
       if (isEnabledSpecificSettings) {
@@ -52,7 +57,9 @@ class _ReaderSettingsState extends State<ReaderSettings> {
       return appdata.settings.getDeviceReaderSetting(settingKey);
     }
 
-    final effectiveReaderMode = settingValue('readerMode') as String;
+    final effectiveReaderMode = comicId != null && sourceKey != null
+        ? appdata.settings.resolveReaderMode(comicId, sourceKey)
+        : settingValue('readerMode') as String;
     final isGalleryMode = effectiveReaderMode.startsWith('gallery');
     final isContinuousMode = effectiveReaderMode.startsWith('continuous');
     final isHorizontalGalleryMode =
@@ -90,6 +97,8 @@ class _ReaderSettingsState extends State<ReaderSettings> {
                       setState(() {
                         appdata.settings.resetComicReaderSettings(key);
                       });
+                      appdata.saveData();
+                      widget.onChanged?.call('readerMode');
                     },
                     child: Text(
                       "Clear specific reader settings for this comic".tl,
@@ -134,6 +143,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
           title: "Reading mode".tl,
           settingKey: "readerMode",
           optionTranslation: {
+            if (useComicReaderMode) 'default': 'Follow default'.tl,
             "waterfallTopToBottom": "Waterfall (Top to Bottom)".tl,
             "galleryLeftToRight": "Gallery (Left to Right)".tl,
             "galleryRightToLeft": "Gallery (Right to Left)".tl,
@@ -144,8 +154,11 @@ class _ReaderSettingsState extends State<ReaderSettings> {
           },
           onChanged: () {
             setState(() {});
-            final mode = settingValue('readerMode') as String;
-            if (mode.startsWith('continuous')) {
+            final mode = useComicReaderMode
+                ? appdata.settings.comicReaderModeOverride(comicId!, sourceKey!)
+                : settingValue('readerMode') as String;
+            if (mode?.startsWith('continuous') == true &&
+                (!useComicReaderMode || isEnabledSpecificSettings)) {
               for (final key in [
                 'readerScreenPicNumberForLandscape',
                 'readerScreenPicNumberForPortrait',
@@ -162,8 +175,8 @@ class _ReaderSettingsState extends State<ReaderSettings> {
             }
             widget.onChanged?.call("readerMode");
           },
-          comicId: isEnabledSpecificSettings ? widget.comicId : null,
-          comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
+          comicId: useComicReaderMode ? comicId : null,
+          comicSource: useComicReaderMode ? sourceKey : null,
           useDeviceSettings: useDeviceSpecificSettings,
         ).toSliver(),
         SliverAnimatedVisibility(

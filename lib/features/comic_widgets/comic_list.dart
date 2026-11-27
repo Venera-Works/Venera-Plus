@@ -1378,6 +1378,7 @@ class ComicListState extends State<ComicList> {
     }
     final pages = _data.keys.where((page) => page >= _firstPage).toList()
       ..sort();
+    final lastPage = pages.isNotEmpty ? pages.last : null;
     if (_tracksPages) _schedulePageReveal();
     return SmoothCustomScrollView(
       key: enablePageStorage ? PageStorageKey('scroll$_page') : null,
@@ -1428,9 +1429,6 @@ class ComicListState extends State<ComicList> {
                 badgeBuilder: widget.badgeBuilder,
                 useFavoriteDisplaySettings: widget.useFavoriteDisplaySettings,
                 hideFavoriteBadge: widget.hideFavoriteBadge,
-                onLastItemBuild: page == pages.last
-                    ? () => _preloadAfter(page)
-                    : null,
               ),
             ),
           ]
@@ -1443,7 +1441,6 @@ class ComicListState extends State<ComicList> {
             badgeBuilder: widget.badgeBuilder,
             useFavoriteDisplaySettings: widget.useFavoriteDisplaySettings,
             hideFavoriteBadge: widget.hideFavoriteBadge,
-            onLastItemBuild: () => _preloadAfter(_data.length),
           ),
         if (_error != null)
           SliverToBoxAdapter(
@@ -1471,16 +1468,25 @@ class ComicListState extends State<ComicList> {
               ],
             ).paddingHorizontal(16).paddingVertical(8),
           )
-        else if (_maxPage == null ||
-            (pages.isNotEmpty && pages.last < _maxPage!))
-          const SliverListLoadingIndicator(),
-        if (_tracksPages && pages.isNotEmpty)
+        else if (lastPage != null && (_maxPage == null || lastPage < _maxPage!))
+          SliverLayoutBuilder(
+            builder: (context, constraints) {
+              if (constraints.remainingCacheExtent > 0) {
+                final generation = _generation;
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  unawaited(_preloadAfter(lastPage, generation));
+                });
+              }
+              return const SliverListLoadingIndicator();
+            },
+          ),
+        if (_tracksPages && lastPage != null)
           SliverLayoutBuilder(
             builder: (context, constraints) {
               // Even a short last page can be restored below the pinned toolbar.
               final pageExtent =
                   constraints.precedingScrollExtent -
-                  (_pageStarts[pages.last] ?? 0);
+                  (_pageStarts[lastPage] ?? 0);
               final padding = (constraints.viewportMainAxisExtent - pageExtent)
                   .clamp(0.0, constraints.viewportMainAxisExtent)
                   .toDouble();
@@ -1492,9 +1498,25 @@ class ComicListState extends State<ComicList> {
     );
   }
 
-  void _preloadAfter(int page) {
-    if (_error == null && (_maxPage == null || page < _maxPage!)) {
-      _loadPage(page + 1);
+  Future<void> _preloadAfter(int page, int generation) async {
+    while (_isCurrent(generation) &&
+        _error == null &&
+        appdata.settings['comicListDisplayMode'] != 'paging' &&
+        (_maxPage == null || page < _maxPage!)) {
+      page++;
+      if (_data.containsKey(page)) return;
+      await _loadPage(page);
+      if (!_tracksPages || !_isCurrent(generation)) return;
+      final comics = _data[page];
+      if (comics == null) return;
+      final filter = comicKeywordFilter();
+      if (comics.any(
+        (comic) => matchComicKeyword(comic, filter: filter) == null,
+      )) {
+        return;
+      }
+      // 页码分隔线可能把页尾推离预加载范围，空页仍需继续翻页。
+      await WidgetsBinding.instance.endOfFrame;
     }
   }
 }

@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/loading.dart';
@@ -8,6 +6,7 @@ import 'package:venera_plus/features/sync/comic_backup.dart';
 import 'comic_archive_transfer_dialog.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/file_system.dart';
+import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 
@@ -188,120 +187,58 @@ class _ComicArchivePageState extends State<ComicArchivePage> {
         ],
       ),
     );
-    if (confirmed != true) return;
-    final result = await showArchiveProgressDialog(
-      title: "Delete".tl,
-      total: targets.length,
-      task: (onProgress, isCancelled) async {
-        var success = 0;
-        var failed = 0;
-        final errors = <String>[];
-        for (var i = 0; i < targets.length; i++) {
-          if (isCancelled()) break;
-          final file = targets[i];
-          onProgress(i + 1, targets.length, file.name);
+    if (confirmed != true || !mounted) return;
+    setState(() => isWorking = true);
+    var cancelled = false;
+    var deleted = 0;
+    var failed = 0;
+    var currentTitle = '';
+    final controller = showLoadingDialog(
+      context,
+      message: 'Delete'.tl,
+      withProgress: true,
+      barrierDismissible: false,
+      closeOnCancel: false,
+      onCancel: () => cancelled = true,
+      progressDetails: (context) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text("${deleted + failed} / ${targets.length}"),
+          const SizedBox(height: 8),
+          Text(currentTitle, overflow: TextOverflow.ellipsis),
+        ],
+      ),
+    );
+    try {
+      for (final file in targets) {
+        if (cancelled) break;
+        currentTitle = file.name;
+        controller.setProgress((deleted + failed) / targets.length);
+        try {
           final result = await ComicBackupManager.deleteBackup(file);
           if (result.error) {
             failed++;
-            errors.add('${file.name}: ${result.errorMessage}');
           } else {
-            success++;
+            deleted++;
           }
+        } catch (error, stack) {
+          failed++;
+          Log.error('Delete archive file', error, stack);
         }
-        return BackupResult(
-          success: success,
-          skipped: 0,
-          failed: failed,
-          errors: errors,
-        );
-      },
-    );
-    if (!mounted || result == null) return;
+      }
+    } finally {
+      controller.close();
+      if (mounted) setState(() => isWorking = false);
+    }
+    if (!mounted) return;
     context.showMessage(
-      message: 'Deleted: @a, Failed: @b'.tlParams({
-        'a': result.success,
-        'b': result.failed,
+      message: 'Deleted: @a, Failed: @b, Not started: @c'.tlParams({
+        'a': deleted,
+        'b': failed,
+        'c': targets.length - deleted - failed,
       }),
     );
     await refresh();
-  }
-
-  Future<BackupResult?> showArchiveProgressDialog({
-    required String title,
-    required int total,
-    required Future<BackupResult> Function(
-      void Function(int current, int total, String currentTitle) onProgress,
-      bool Function() isCancelled,
-    )
-    task,
-  }) async {
-    var current = 0;
-    var currentTitle = "";
-    var cancelled = false;
-    var started = false;
-    BackupResult? result;
-    setState(() {
-      isWorking = true;
-    });
-    await showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) {
-        return StatefulBuilder(
-          builder: (context, setState) {
-            if (!started) {
-              started = true;
-              Future.microtask(() async {
-                final taskResult = await task((progress, totalCount, title) {
-                  if (!context.mounted) return;
-                  setState(() {
-                    current = progress;
-                    currentTitle = title;
-                  });
-                }, () => cancelled);
-                if (!context.mounted) return;
-                result = taskResult;
-                Navigator.of(dialogContext).pop();
-              });
-            }
-            return ContentDialog(
-              title: title,
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  LinearProgressIndicator(
-                    value: total > 0 ? current / total : null,
-                  ),
-                  const SizedBox(height: 16),
-                  Text("$current / $total"),
-                  if (currentTitle.isNotEmpty) ...[
-                    const SizedBox(height: 8),
-                    Text(currentTitle, overflow: TextOverflow.ellipsis),
-                  ],
-                ],
-              ).paddingHorizontal(16),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    setState(() {
-                      cancelled = true;
-                    });
-                    unawaited(ComicBackupManager.cancelActiveTasks());
-                  },
-                  child: Text("Cancel".tl),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-    if (mounted) {
-      setState(() {
-        isWorking = false;
-      });
-    }
-    return result;
   }
 
   static String _formatTime(DateTime time) {

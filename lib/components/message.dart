@@ -284,9 +284,7 @@ class LoadingDialogController {
 
   void Function()? _closeDialog;
 
-  void Function(double? value)? _serProgress;
-
-  void Function(String message)? _setMessage;
+  VoidCallback? _refresh;
 
   bool closed = false;
 
@@ -295,25 +293,23 @@ class LoadingDialogController {
       return;
     }
     closed = true;
-    if (_closeDialog == null) {
-      Future.microtask(_closeDialog!);
-    } else {
-      _closeDialog!();
-    }
+    _closeDialog?.call();
   }
 
   void setProgress(double? value) {
     if (closed) {
       return;
     }
-    _serProgress?.call(value);
+    _progress = value;
+    _refresh?.call();
   }
 
   void setMessage(String message) {
     if (closed) {
       return;
     }
-    _setMessage?.call(message);
+    _message = message;
+    _refresh?.call();
   }
 }
 
@@ -325,46 +321,68 @@ LoadingDialogController showLoadingDialog(
   String? message,
   String cancelButtonText = "Cancel",
   bool withProgress = false,
+  bool closeOnCancel = true,
+  WidgetBuilder? progressDetails,
 }) {
-  var controller = LoadingDialogController();
-  controller._message = message;
+  final controller = LoadingDialogController()
+    .._message = message
+    .._progress = withProgress ? 0 : null;
+  final canPop = allowCancel && closeOnCancel;
+  var cancelRequested = false;
 
-  if (withProgress) {
-    controller._progress = 0;
+  void requestCancel() {
+    if (!allowCancel || controller.closed || cancelRequested) return;
+    cancelRequested = true;
+    if (closeOnCancel) {
+      controller.close();
+    } else {
+      controller._refresh?.call();
+    }
+    onCancel?.call();
   }
 
-  var loadingDialogRoute = DialogRoute(
+  final loadingDialogRoute = _LoadingDialogRoute(
     context: context,
-    barrierDismissible: barrierDismissible,
-    builder: (BuildContext context) {
-      return PopScope(
-        canPop: barrierDismissible,
+    barrierDismissible: allowCancel && barrierDismissible,
+    allowUserPop: canPop,
+    onBlockedPop: allowCancel ? requestCancel : null,
+    builder: (context) {
+      return PopScope<void>(
+        canPop: canPop,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) requestCancel();
+        },
         child: StatefulBuilder(
           builder: (context, setState) {
-            controller._serProgress = (value) {
-              setState(() {
-                controller._progress = value;
-              });
-            };
-            controller._setMessage = (message) {
-              setState(() {
-                controller._message = message;
-              });
-            };
+            controller._refresh = () => setState(() {});
+            final canCancel = allowCancel && !cancelRequested;
             return ContentDialog(
               title: controller._message ?? 'Loading'.tl,
-              content: LinearProgressIndicator(
-                value: controller._progress,
-                backgroundColor: context.colorScheme.surfaceContainer,
+              dismissible: canCancel,
+              onClose: requestCancel,
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  LinearProgressIndicator(
+                    value: controller._progress,
+                    backgroundColor: context.colorScheme.surfaceContainer,
+                  ),
+                  if (progressDetails != null) ...[
+                    const SizedBox(height: 16),
+                    progressDetails(context),
+                  ],
+                  if (cancelRequested && !closeOnCancel) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      'Cancellation requested. Waiting for the current operation to finish safely.'
+                          .tl,
+                    ),
+                  ],
+                ],
               ).paddingHorizontal(16).paddingVertical(16),
               actions: [
                 FilledButton(
-                  onPressed: allowCancel
-                      ? () {
-                          controller.close();
-                          onCancel?.call();
-                        }
-                      : null,
+                  onPressed: canCancel ? requestCancel : null,
                   child: Text(cancelButtonText.tl),
                 ),
               ],
@@ -375,20 +393,41 @@ LoadingDialogController showLoadingDialog(
     },
   );
 
-  var navigator = Navigator.of(context, rootNavigator: true);
-
-  navigator.push(loadingDialogRoute).then((value) {
-    final wasClosed = controller.closed;
-    controller.closed = true;
-    // Back and barrier dismissal must cancel the work just like the button.
-    if (!wasClosed) onCancel?.call();
-  });
-
+  final navigator = Navigator.of(context, rootNavigator: true);
   controller._closeDialog = () {
-    navigator.removeRoute(loadingDialogRoute);
+    if (loadingDialogRoute.isActive) navigator.removeRoute(loadingDialogRoute);
   };
+  unawaited(
+    navigator.push(loadingDialogRoute).then((_) {
+      controller._refresh = null;
+      requestCancel();
+      controller.closed = true;
+    }),
+  );
 
   return controller;
+}
+
+class _LoadingDialogRoute extends DialogRoute<void> {
+  _LoadingDialogRoute({
+    required super.context,
+    required super.builder,
+    required super.barrierDismissible,
+    required this.allowUserPop,
+    this.onBlockedPop,
+  });
+
+  final bool allowUserPop;
+  final VoidCallback? onBlockedPop;
+
+  @override
+  bool didPop(void result) {
+    if (allowUserPop) return super.didPop(result);
+    // 桌面端返回会直接调用 Navigator.pop，绕过 PopScope。
+    final callback = onBlockedPop;
+    if (callback != null) scheduleMicrotask(callback);
+    return false;
+  }
 }
 
 class ContentDialog extends StatelessWidget {
@@ -397,6 +436,7 @@ class ContentDialog extends StatelessWidget {
     this.title, // 如果不传 title 将不会展示
     required this.content,
     this.dismissible = true,
+    this.onClose,
     this.actions = const [],
   });
 
@@ -407,6 +447,7 @@ class ContentDialog extends StatelessWidget {
   final List<Widget> actions;
 
   final bool dismissible;
+  final VoidCallback? onClose;
 
   @override
   Widget build(BuildContext context) {
@@ -420,7 +461,7 @@ class ContentDialog extends StatelessWidget {
                 leading: IconButton(
                   icon: const Icon(Icons.close),
                   tooltip: 'Close'.tl,
-                  onPressed: dismissible ? context.pop : null,
+                  onPressed: dismissible ? onClose ?? context.pop : null,
                 ),
                 title: Text(title!),
                 backgroundColor: Colors.transparent,

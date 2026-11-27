@@ -83,22 +83,83 @@ class StorageAccountsPage extends StatefulWidget {
 class _StorageAccountsPageState extends State<StorageAccountsPage> {
   final _testingIds = <String>{};
 
+  List<RemoteLibrary> _libraryReferences(String accountId) => widget
+      .accounts
+      .libraries
+      .where((library) => library.accountId == accountId)
+      .toList();
+
+  List<String> _locationReferences(String accountId) => [
+    for (final (key, title) in const [
+      ('syncRemoteLocation', 'App Data Sync'),
+      ('backupRemoteLocation', 'Comic Archive Backup'),
+    ])
+      if (appdata.settings[key] is Map &&
+          appdata.settings[key]['accountId'] == accountId)
+        title.tl,
+  ];
+
   String _usage(StorageAccount account) {
-    final libraries = widget.accounts.libraries
-        .where((library) => library.accountId == account.id)
-        .length;
+    final libraries = _libraryReferences(account.id);
     final uses = <String>[
-      if (libraries > 0)
-        '@count comic libraries'.tlParams({'count': libraries}),
-      for (final (key, title) in [
-        ('syncRemoteLocation', 'App Data Sync'),
-        ('backupRemoteLocation', 'Comic Archive Backup'),
-      ])
-        if (appdata.settings[key] is Map &&
-            appdata.settings[key]['accountId'] == account.id)
-          title.tl,
+      if (libraries.isNotEmpty)
+        '@count comic libraries'.tlParams({'count': libraries.length}),
+      ..._locationReferences(account.id),
     ];
     return uses.isEmpty ? 'Not in use'.tl : uses.join(' · ');
+  }
+
+  Future<bool> _showReferencedLibraries(String accountId) async {
+    final libraries = _libraryReferences(accountId);
+    if (libraries.isEmpty) return false;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => ContentDialog(
+        title: 'Cloud Comic Libraries'.tl,
+        content: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text(
+            [
+              'These cloud comic libraries use this account.'.tl,
+              [for (final library in libraries) '• ${library.name}'].join('\n'),
+              'Delete or rebind these libraries in Cloud Comic Libraries before deleting this account.'
+                  .tl,
+            ].join('\n\n'),
+          ),
+        ),
+        actions: [
+          FilledButton(
+            style: actionButtonStyle,
+            onPressed: context.pop,
+            child: Text('OK'.tl),
+          ),
+        ],
+      ),
+    );
+    return true;
+  }
+
+  Future<void> _remove(StorageAccount account) async {
+    if (await _showReferencedLibraries(account.id) || !mounted) return;
+    final uses = _locationReferences(account.id);
+    await showConfirmDialog(
+      context: context,
+      title: 'Delete'.tl,
+      content: [
+        account.name,
+        if (uses.isNotEmpty) ...[
+          'The following configurations will also be cleared.'.tl,
+          [for (final use in uses) '• $use'].join('\n'),
+        ],
+      ].join('\n\n'),
+      confirmText: 'Delete',
+      btnColor: context.colorScheme.error,
+      onConfirm: () async {
+        if (!mounted || await _showReferencedLibraries(account.id)) return;
+        await widget.accounts.remove(account.id);
+        if (mounted) setState(() {});
+      },
+    );
   }
 
   Future<void> _test(StorageAccount account) async {
@@ -241,19 +302,7 @@ class _StorageAccountsPageState extends State<StorageAccountsPage> {
                       trailing: IconButton(
                         tooltip: 'Delete'.tl,
                         icon: const Icon(Icons.delete_outline),
-                        onPressed: testing
-                            ? null
-                            : () => showConfirmDialog(
-                                context: context,
-                                title: 'Delete'.tl,
-                                content: account.name,
-                                confirmText: 'Delete',
-                                btnColor: colors.error,
-                                onConfirm: () async {
-                                  await widget.accounts.remove(account.id);
-                                  if (mounted) setState(() {});
-                                },
-                              ),
+                        onPressed: testing ? null : () => _remove(account),
                       ),
                       leading: IconButton(
                         icon: testing
