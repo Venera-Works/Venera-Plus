@@ -163,40 +163,43 @@ class _StorageAccountsPageState extends State<StorageAccountsPage> {
       onPressed: _edit,
       child: const Icon(Icons.add),
     ),
-    body: ListView(
-      children: [
-        for (final account in widget.accounts.accounts)
-          ListTile(
-            title: Text(account.name),
-            subtitle: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  account.statusMessage?.tl ??
-                      '${account.driver.tl} · ${switch (account.status) {
-                        StorageAuthorizationStatus.valid => 'Connected'.tl,
-                        StorageAuthorizationStatus.invalid => 'Authorization invalid'.tl,
-                        StorageAuthorizationStatus.unknown => 'Connection not verified'.tl,
-                      }}',
-                ),
-                Text(_usage(account)),
-              ],
+    body: ListenableBuilder(
+      listenable: widget.accounts,
+      builder: (context, _) => ListView(
+        children: [
+          for (final account in widget.accounts.accounts)
+            ListTile(
+              title: Text(account.name),
+              subtitle: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    account.statusMessage?.tl ??
+                        '${account.driver.tl} · ${switch (account.status) {
+                          StorageAuthorizationStatus.valid => 'Connected'.tl,
+                          StorageAuthorizationStatus.invalid => 'Authorization invalid'.tl,
+                          StorageAuthorizationStatus.unknown => 'Connection not verified'.tl,
+                        }}',
+                  ),
+                  Text(_usage(account)),
+                ],
+              ),
+              trailing: IconButton(
+                icon: const Icon(Icons.delete_outline),
+                onPressed: () async {
+                  await widget.accounts.remove(account.id);
+                  if (mounted) setState(() {});
+                },
+              ),
+              leading: IconButton(
+                icon: const Icon(Icons.refresh),
+                tooltip: 'Test connection'.tl,
+                onPressed: () => _test(account),
+              ),
+              onTap: () => _edit(account),
             ),
-            trailing: IconButton(
-              icon: const Icon(Icons.delete_outline),
-              onPressed: () async {
-                await widget.accounts.remove(account.id);
-                if (mounted) setState(() {});
-              },
-            ),
-            leading: IconButton(
-              icon: const Icon(Icons.refresh),
-              tooltip: 'Test connection'.tl,
-              onPressed: () => _test(account),
-            ),
-            onTap: () => _edit(account),
-          ),
-      ],
+        ],
+      ),
     ),
   );
 }

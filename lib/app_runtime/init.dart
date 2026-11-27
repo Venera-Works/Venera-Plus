@@ -118,6 +118,7 @@ List<ComicSource> _runtimeRemoteComicSources() {
 }
 
 Future<void> _refreshRemoteComicLibrariesAfterSettingsImport() async {
+  _remoteLibraryConfigurationSignature = _remoteLibrarySignature();
   await RemoteLibraryEngines.cancelAll();
   _remoteComicLibrarySources.clear();
   await ComicSourceManager().reload();
@@ -146,6 +147,7 @@ Future<void> shutdownRemoteComicLibraryRuntime() async {
 void _watchRemoteLibraryConfiguration(RemoteStorageAccounts accounts) {
   _remoteLibraryConfigurationSignature = _remoteLibrarySignature();
   accounts.addListener(() {
+    if (isAppDataImporting) return;
     final signature = _remoteLibrarySignature();
     if (signature == _remoteLibraryConfigurationSignature) return;
     _remoteLibraryConfigurationSignature = signature;

@@ -375,17 +375,10 @@ class RemoteStorageAccounts with ChangeNotifier {
       }
     }
     await _cancelStores(id);
+    _readSchedulers.remove('${App.dataPath}:$id');
     final rpc = _openListRpc;
     if (previous?.backend == StorageBackend.openlist && rpc != null) {
-      try {
-        await _pendingNativeWrites[id];
-      } on RemoteStorageException {
-        // 即使应用待更新授权失败，仍可删除网盘账号。
-      }
-      try {
-        _throwRpcError(await rpc.invoke('cancelAccount', {'accountId': id}));
-        _throwRpcError(await rpc.invoke('deleteAccount', {'id': id}));
-      } catch (_) {}
+      await _deleteNativeAccount(rpc, id);
     }
     final pending = _pendingNativeAccounts;
     if (pending.remove(id) != null) _writePendingNativeAccounts(pending);
@@ -515,6 +508,18 @@ class RemoteStorageAccounts with ChangeNotifier {
     final stores =
         _activeStores.remove(accountId)?.toList() ?? const <RemoteFileStore>[];
     await Future.wait(stores.map((store) => store.cancelAll()));
+  }
+
+  Future<void> _deleteNativeAccount(OpenListRpcClient rpc, String id) async {
+    try {
+      await _pendingNativeWrites[id];
+    } on RemoteStorageException {
+      // 即使应用待更新授权失败，仍可删除网盘账号。
+    }
+    try {
+      _throwRpcError(await rpc.invoke('cancelAccount', {'accountId': id}));
+      _throwRpcError(await rpc.invoke('deleteAccount', {'id': id}));
+    } catch (_) {}
   }
 
   /// 快照使用本机授权，并在内核就绪时读取它已保存的最新令牌。
@@ -735,7 +740,17 @@ class RemoteStorageAccounts with ChangeNotifier {
       local,
       incoming,
       idAliases: aliases,
+      replaceUnmatchedLocal: true,
+      preservedLocalIds: _syncLocationAccountIds(),
     );
+    final mergedIds = merged.map((item) => item.id).toSet();
+    final removed = local
+        .where(
+          (item) =>
+              !mergedIds.contains(item.id) && !aliases.containsKey(item.id),
+        )
+        .toList();
+    final removedIds = removed.map((item) => item.id).toSet();
     final remapped = aliases.entries.where((entry) => entry.key != entry.value);
     final replacedIds = remapped.map((entry) => entry.value).toSet();
     final openListAccounts = merged.where(
@@ -745,7 +760,18 @@ class RemoteStorageAccounts with ChangeNotifier {
     for (final entry in remapped) {
       if (!openListIds.contains(entry.value)) await _cancelStores(entry.key);
     }
+    for (final item in removed) {
+      await _cancelStores(item.id);
+      _readSchedulers.remove('${App.dataPath}:${item.id}');
+    }
     final pending = _pendingNativeAccounts;
+    final removedNativeIds = {
+      for (final item in removed)
+        if (item.backend == StorageBackend.openlist) ...{
+          item.id,
+          ...?pending[item.id],
+        },
+    };
     for (final value in openListAccounts) {
       final existing = _accountById(local, value.id);
       if (existing == null ||
@@ -762,12 +788,34 @@ class RemoteStorageAccounts with ChangeNotifier {
       }
     }
     pending.removeWhere((id, _) => !openListIds.contains(id));
+    removedNativeIds
+      ..removeAll(openListIds)
+      ..removeAll(pending.values.expand((ids) => ids));
     _remapAccountReferences(aliases);
+    final backupLocation = appdata.settings['backupRemoteLocation'];
+    if (backupLocation is Map &&
+        removedIds.contains(backupLocation['accountId'])) {
+      appdata.settings['backupRemoteLocation'] = null;
+    }
     appdata.settings[remoteStorageAccountsSetting] = merged
         .map((item) => item.toJson())
         .toList();
     _writePendingNativeAccounts(pending);
     await appdata.saveData(false);
+
+    final rpc = _openListRpc;
+    if (_openListReady && rpc != null) {
+      for (final id in removedNativeIds) {
+        await _deleteNativeAccount(rpc, id);
+      }
+    }
+    notifyListeners();
+  }
+
+  Set<String> _syncLocationAccountIds() {
+    final location = appdata.settings['syncRemoteLocation'];
+    final id = location is Map ? location['accountId'] : null;
+    return id is String && id.isNotEmpty ? {id} : const {};
   }
 
   void _remapAccountReferences(Map<String, String> aliases) {
@@ -841,10 +889,16 @@ List<StorageAccount> mergeRemoteStorageAccounts(
   Iterable<StorageAccount> local,
   Iterable<StorageAccount> incoming, {
   Map<String, String>? idAliases,
+  bool replaceUnmatchedLocal = false,
+  Set<String> preservedLocalIds = const {},
 }) {
+  final incomingAccounts = incoming.toList();
+  final effectiveLocal = replaceUnmatchedLocal
+      ? _filterRetainedLocalAccounts(local, incomingAccounts, preservedLocalIds)
+      : local;
   final merged = <StorageAccount>[];
   final aliases = idAliases ?? <String, String>{};
-  for (final value in [...local, ...incoming]) {
+  for (final value in [...effectiveLocal, ...incomingAccounts]) {
     var index = merged.indexWhere(
       (item) => item.id == (aliases[value.id] ?? value.id),
     );
@@ -904,6 +958,38 @@ List<StorageAccount> mergeRemoteStorageAccounts(
     named.add(value.copyWith(name: _availableAccountName(value.name, named)));
   }
   return named;
+}
+
+Iterable<StorageAccount> _filterRetainedLocalAccounts(
+  Iterable<StorageAccount> local,
+  List<StorageAccount> incoming,
+  Set<String> preservedLocalIds,
+) {
+  final idMatchedIncomingIds = {
+    for (final remote in incoming)
+      if (local.any(
+        (item) =>
+            item.id == remote.id &&
+            item.backend == remote.backend &&
+            item.driver == remote.driver,
+      ))
+        remote.id,
+  };
+  // 按 ID 匹配的账号可能改成刚删除的账号的名称。
+  final unmatchedIncoming = incoming.where(
+    (item) => !idMatchedIncomingIds.contains(item.id),
+  );
+  return local.where((item) {
+    return preservedLocalIds.contains(item.id) ||
+        idMatchedIncomingIds.contains(item.id) ||
+        (item.name.trim().isNotEmpty &&
+            unmatchedIncoming.any(
+              (remote) =>
+                  _accountNameKey(remote.name) == _accountNameKey(item.name) &&
+                  remote.backend == item.backend &&
+                  remote.driver == item.driver,
+            ));
+  });
 }
 
 String _accountNameKey(String name) => name.trim().toLowerCase();

@@ -311,7 +311,8 @@ Future<void> importAppData(
       } else {
         appdata.settings['syncRemoteLocation'] = localSyncLocation;
       }
-      if (importedAccounts != null) {
+      if (importedAccounts != null &&
+          appdata.isSettingSyncAllowed(remoteStorageAccountsSetting)) {
         await RemoteStorageAccounts.instance.mergeImportedSettings(
           importedAccounts,
         );

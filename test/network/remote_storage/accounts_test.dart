@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -5,12 +6,20 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:venera_plus/features/remote_library/remote_library.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
+import 'package:venera_plus/foundation/appdata_sync_policy.dart';
 import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 
 void main() {
   late Directory dataDir;
   late RemoteStorageAccounts storage;
   late Map<String, dynamic> previousImplicitData;
+  final cancelled = throwsA(
+    isA<RemoteStorageException>().having(
+      (error) => error.code,
+      'code',
+      'cancelled',
+    ),
+  );
 
   setUp(() {
     dataDir = Directory.systemTemp.createTempSync('venera-remote-accounts-');
@@ -255,6 +264,170 @@ void main() {
       },
     );
   }
+
+  test('恢复快照会移除已删除的账号、连接、备份引用和内核挂载', () async {
+    final retained = _account.copyWith(id: 'retained', name: 'Retained');
+    final listStarted = Completer<String>();
+    final listResponse = Completer<Map<String, dynamic>>();
+    final rpc =
+        _MergeRpc(
+            onList: (request) {
+              listStarted.complete(request['taskId'] as String);
+              return listResponse.future;
+            },
+          )
+          ..values.addAll({
+            _account.id: _account.authorization,
+            retained.id: retained.authorization,
+          });
+    storage.configureOpenList(rpc, dataDir: dataDir.path);
+    appdata.settings[remoteStorageAccountsSetting] = [
+      _account.toJson(),
+      retained.toJson(),
+    ];
+    await storage.ensureInitialized();
+    final scheduler = storage.readSchedulerFor(_account);
+    final listing = expectLater(
+      storage.storeFor(_account.id).list('/'),
+      cancelled,
+    );
+    final taskId = await listStarted.future;
+    try {
+      rpc.calls.clear();
+      rpc.values.addAll({
+        'deleted-alias': _account.authorization,
+        'retained-alias': retained.authorization,
+      });
+      appdata.settings[appdataPendingOpenListAccountsKey] = {
+        _account.id: ['deleted-alias', 'retained-alias'],
+        retained.id: ['retained-alias'],
+      };
+      appdata.settings['backupRemoteLocation'] = {
+        'accountId': _account.id,
+        'directory': '/Backup/',
+      };
+      final changes = <List<String>>[];
+      storage.addListener(() {
+        changes.add(storage.accounts.map((item) => item.id).toList());
+      });
+
+      await storage.mergeImportedSettings([retained.toJson()]);
+
+      expect(storage.accounts.single.toJson(), retained.toJson());
+      expect(storage.readSchedulerFor(_account), isNot(same(scheduler)));
+      expect(appdata.settings['backupRemoteLocation'], isNull);
+      expect(changes, [
+        [retained.id],
+      ]);
+      expect(rpc.calls.map((call) => [call.$1, call.$2]), [
+        [
+          'cancel',
+          {'accountId': _account.id, 'taskId': taskId},
+        ],
+        [
+          'cancelAccount',
+          {'accountId': _account.id},
+        ],
+        [
+          'deleteAccount',
+          {'id': _account.id},
+        ],
+        [
+          'cancelAccount',
+          {'accountId': 'deleted-alias'},
+        ],
+        [
+          'deleteAccount',
+          {'id': 'deleted-alias'},
+        ],
+      ]);
+      expect(rpc.values.keys, unorderedEquals([retained.id, 'retained-alias']));
+      expect(appdata.settings[appdataPendingOpenListAccountsKey], {
+        retained.id: ['retained-alias'],
+      });
+      await appdata.loadDataForTesting(dataDir.path);
+      expect(storage.accounts.single.toJson(), retained.toJson());
+      expect(appdata.settings['backupRemoteLocation'], isNull);
+    } finally {
+      listResponse.complete(const {'data': {}});
+      await listing;
+    }
+  });
+
+  test('删除账号的快照在内核初始化期间也能导入并取消等待中的操作', () async {
+    final initializationGate = Completer<void>();
+    final rpc = _MergeRpc(initializationGate: initializationGate.future)
+      ..values[_account.id] = _account.authorization;
+    storage.configureOpenList(rpc, dataDir: dataDir.path);
+    appdata.settings[remoteStorageAccountsSetting] = [_account.toJson()];
+    final initialized = storage.ensureInitialized();
+    final listing = expectLater(
+      storage.storeFor(_account.id).list('/'),
+      cancelled,
+    );
+    const timeout = Duration(seconds: 3);
+    try {
+      await storage.mergeImportedSettings([]).timeout(timeout);
+      await listing.timeout(timeout);
+      expect(storage.accounts, isEmpty);
+      expect(rpc.calls.map((call) => call.$1), ['initialize']);
+    } finally {
+      initializationGate.complete();
+      await initialized;
+    }
+    expect(rpc.calls.map((call) => call.$1), [
+      'initialize',
+      'accounts',
+      'deleteAccount',
+    ]);
+    expect(rpc.values, isEmpty);
+  });
+
+  for (final hasIncomingAccount in [false, true]) {
+    test('恢复快照时保留本机同步账号，快照有账号=$hasIncomingAccount', () async {
+      final localSync = _account.copyWith(id: 'local-sync', name: 'Local sync');
+      final remote = _account.copyWith(id: 'remote', name: 'Remote');
+      final syncLocation = {'accountId': localSync.id, 'directory': '/Sync/'};
+      appdata.settings[remoteStorageAccountsSetting] = [
+        localSync.toJson(),
+        _account.toJson(),
+      ];
+      appdata.settings['syncRemoteLocation'] = syncLocation;
+
+      await storage.mergeImportedSettings([
+        if (hasIncomingAccount) remote.toJson(),
+      ]);
+
+      expect(storage.accounts.map((item) => item.toJson()), [
+        localSync.toJson(),
+        if (hasIncomingAccount) remote.toJson(),
+      ]);
+      expect(appdata.settings['syncRemoteLocation'], syncLocation);
+    });
+  }
+
+  test('快照中的账号改名时按 ID 匹配并移除本机同名旧账号', () async {
+    final alpha = _account.copyWith(id: 'x', name: 'Alpha');
+    final beta = _account.copyWith(
+      id: 'y',
+      name: 'Beta',
+      authorization: {'refresh_token': 'other'},
+    );
+    appdata.settings[remoteStorageAccountsSetting] = [
+      alpha.toJson(),
+      beta.toJson(),
+    ];
+    appdata.settings['backupRemoteLocation'] = {
+      'accountId': beta.id,
+      'directory': '/Backup/',
+    };
+    final renamed = alpha.copyWith(name: 'Beta');
+
+    await storage.mergeImportedSettings([renamed.toJson()]);
+
+    expect(storage.accounts.single.toJson(), renamed.toJson());
+    expect(appdata.settings['backupRemoteLocation'], isNull);
+  });
 
   test('恢复后的账号在首次使用时应用最新授权并清理旧挂载', () async {
     const local = StorageAccount(
@@ -583,13 +756,22 @@ class _CachedDirectoryRpc implements OpenListRpcClient {
 }
 
 class _MergeRpc implements OpenListRpcClient {
+  _MergeRpc({this.initializationGate, this.onList});
+
+  final Future<void>? initializationGate;
+  final Future<Map<String, dynamic>> Function(Map<String, dynamic>)? onList;
   final values = <String, Map<String, dynamic>>{};
+  final calls = <(String, Map<String, dynamic>)>[];
 
   @override
   Future<Map<String, dynamic>> invoke(
     String method,
     Map<String, dynamic> request,
   ) async {
+    calls.add((method, request));
+    if (method == 'initialize') await initializationGate;
+    final list = onList;
+    if (method == 'list' && list != null) return list(request);
     if (method == 'accounts') {
       return {
         'data': {
