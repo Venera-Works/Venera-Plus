@@ -369,7 +369,7 @@ class _ComicSourcesSliverListState extends State<ComicSourcesSliverList> {
     context.to(
       () => _EditFilePage(source.filePath, () async {
         await ComicSourceManager().reload();
-        setState(() {});
+        if (mounted) setState(() {});
       }),
     );
   }
@@ -434,34 +434,70 @@ class _EditFilePage extends StatefulWidget {
 }
 
 class __EditFilePageState extends State<_EditFilePage> {
+  var _initial = '';
   var current = '';
+  var _loaded = false;
+  String? _loadError;
 
   @override
   void initState() {
     super.initState();
-    current = File(widget.path).readAsStringSync();
+    _loadFile();
+  }
+
+  Future<void> _loadFile() async {
+    try {
+      final content = await File(widget.path).readAsString();
+      if (!mounted) return;
+      setState(() {
+        _initial = content;
+        current = content;
+        _loaded = true;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loadError = e.toString());
+    }
   }
 
   @override
   void dispose() {
-    File(widget.path).writeAsStringSync(current);
-    widget.onExit();
+    if (_loaded && current != _initial) {
+      File(widget.path).writeAsStringSync(current);
+      widget.onExit();
+    }
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    Widget content;
+    if (_loadError != null) {
+      content = Center(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text(_loadError!),
+        ),
+      );
+    } else if (!_loaded) {
+      content = const Center(
+        child: SizedBox.square(
+          dimension: 32,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      );
+    } else {
+      content = CodeEditor(
+        initialValue: current,
+        onChanged: (value) => current = value,
+      );
+    }
     return Scaffold(
       appBar: Appbar(title: Text("Edit".tl)),
       body: Column(
         children: [
           Container(height: 0.6, color: context.colorScheme.outlineVariant),
-          Expanded(
-            child: CodeEditor(
-              initialValue: current,
-              onChanged: (value) => current = value,
-            ),
-          ),
+          Expanded(child: content),
         ],
       ),
     );

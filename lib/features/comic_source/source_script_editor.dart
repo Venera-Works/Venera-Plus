@@ -105,7 +105,13 @@ class _SourceScriptEditorState extends State<SourceScriptEditor> {
             Expanded(
               child: CodeEditor(
                 initialValue: widget.script,
-                onChanged: (value) => setState(() => current = value),
+                onChanged: (value) {
+                  final wasDirty = current != saved;
+                  current = value;
+                  if (wasDirty != (current != saved)) {
+                    setState(() {});
+                  }
+                },
               ),
             ),
           ],
