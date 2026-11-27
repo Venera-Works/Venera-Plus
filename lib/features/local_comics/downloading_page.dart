@@ -2,6 +2,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/menu.dart';
+import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/image_provider/cached_image.dart';
@@ -123,7 +124,7 @@ class _DownloadingPageState extends State<DownloadingPage> {
                 ],
               ),
               onPressed: () {
-                first.pause();
+                LocalManager().pauseTask(first);
               },
             ),
         ],
@@ -169,6 +170,30 @@ class _DownloadTaskTileState extends State<_DownloadTaskTile> {
 
   void update() {
     setState(() {});
+  }
+
+  void _cancelTask() {
+    final task = this.task;
+    if (!task.mayDeletePartialOutput) {
+      task.cancel();
+      return;
+    }
+    showConfirmDialog(
+      context: context,
+      title: 'Cancel download'.tl,
+      content:
+          'Cancelling deletes unfinished download progress. Pause to keep your progress.'
+              .tl,
+      confirmText: 'Cancel download',
+      btnColor: context.colorScheme.error,
+      onConfirm: () {
+        if (LocalManager().downloadingTasks.any(
+          (queued) => identical(queued, task),
+        )) {
+          task.cancel();
+        }
+      },
+    );
   }
 
   @override
@@ -227,9 +252,7 @@ class _DownloadTaskTileState extends State<_DownloadTaskTile> {
                                       ? 'Remove from queue'
                                       : 'Cancel')
                                   .tl,
-                          onClick: () {
-                            widget.task.cancel();
-                          },
+                          onClick: _cancelTask,
                         ),
                         MenuEntry(
                           icon: Icons.vertical_align_top,

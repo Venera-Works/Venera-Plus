@@ -3,6 +3,7 @@ import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/code.dart';
 import 'package:venera_plus/components/layout.dart';
+import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/reader/brightness.dart';
 import 'package:venera_plus/features/reader/orientation.dart';
@@ -111,13 +112,21 @@ class _ReaderSettingsState extends State<ReaderSettings> {
                 Center(
                   child: TextButton(
                     style: actionButtonStyle,
-                    onPressed: () {
-                      setState(() {
-                        appdata.settings.resetComicReaderSettings(key);
-                      });
-                      appdata.saveData();
-                      widget.onChanged?.call('readerMode');
-                    },
+                    onPressed: () => showConfirmDialog(
+                      context: context,
+                      title: 'Reset'.tl,
+                      content:
+                          'Clear specific reader settings for this comic'.tl,
+                      confirmText: 'Reset',
+                      onConfirm: () async {
+                        setState(() {
+                          appdata.settings.resetComicReaderSettings(key);
+                        });
+                        final saved = appdata.saveData();
+                        widget.onChanged?.call('readerMode');
+                        await saved;
+                      },
+                    ),
                     child: Text(
                       "Clear specific reader settings for this comic".tl,
                     ),
@@ -172,25 +181,6 @@ class _ReaderSettingsState extends State<ReaderSettings> {
           },
           onChanged: () {
             setState(() {});
-            final mode = useComicReaderMode
-                ? appdata.settings.comicReaderModeOverride(comicId!, sourceKey!)
-                : settingValue('readerMode') as String;
-            if (mode?.startsWith('continuous') == true &&
-                (!useComicReaderMode || isEnabledSpecificSettings)) {
-              for (final key in [
-                'readerScreenPicNumberForLandscape',
-                'readerScreenPicNumberForPortrait',
-              ]) {
-                appdata.settings.setActiveReaderSetting(
-                  comicId,
-                  sourceKey,
-                  key,
-                  1,
-                );
-                widget.onChanged?.call(key);
-              }
-              appdata.saveData();
-            }
             widget.onChanged?.call("readerMode");
           },
           comicId: useComicReaderMode ? comicId : null,
@@ -676,12 +666,20 @@ class __CustomImageProcessingState extends State<_CustomImageProcessing> {
         actions: [
           TextButton(
             style: actionButtonStyle,
-            onPressed: () {
-              current = defaultCustomImageProcessing;
-              appdata.settings['customImageProcessing'] = current;
-              resetKey++;
-              setState(() {});
-            },
+            onPressed: () => showConfirmDialog(
+              context: context,
+              title: 'Reset'.tl,
+              content: 'Restore the default image processing script?'.tl,
+              confirmText: 'Reset',
+              onConfirm: () async {
+                setState(() {
+                  current = defaultCustomImageProcessing;
+                  appdata.settings['customImageProcessing'] = current;
+                  resetKey++;
+                });
+                await appdata.saveData();
+              },
+            ),
             child: Text("Reset".tl),
           ),
         ],

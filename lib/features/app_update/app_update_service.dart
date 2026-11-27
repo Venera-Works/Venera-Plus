@@ -5,6 +5,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/network/app_dio.dart';
 
 import 'app_release.dart';
@@ -122,16 +123,25 @@ class AppUpdateService {
         )) {
       return null;
     }
-    final assets = await _client.get<String>(
-      '$githubReleaseBase/expanded_assets/${Uri.encodeComponent(release.tag)}',
-      options: options,
-    );
-    return AppRelease(
-      tag: release.tag,
-      notes: release.notes,
-      pageUrl: release.pageUrl,
-      assets: parseGitHubReleaseAssets(assets.data!, release),
-    );
+    try {
+      final assets = await _client.get<String>(
+        '$githubReleaseBase/expanded_assets/${Uri.encodeComponent(release.tag)}',
+        options: options,
+      );
+      final status = assets.statusCode;
+      final contents = assets.data;
+      if (status != null && status >= 200 && status < 300 && contents != null) {
+        return AppRelease(
+          tag: release.tag,
+          notes: release.notes,
+          pageUrl: release.pageUrl,
+          assets: parseGitHubReleaseAssets(contents, release),
+        );
+      }
+    } on DioException catch (error) {
+      Log.warning('App Update', 'Failed to load release assets: $error');
+    }
+    return release;
   }
 
   Future<List<String>> supportedAbis() async =>

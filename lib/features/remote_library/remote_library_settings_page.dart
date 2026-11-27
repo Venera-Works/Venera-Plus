@@ -10,13 +10,13 @@ import 'package:venera_plus/network/remote_storage/remote_storage.dart';
 
 final _storage = RemoteStorageAccounts.instance;
 
-bool _isPageTitleUsedElsewhere(String title, RemoteLibrary library) =>
+bool _isPageTitleUsedElsewhere(String title, RemoteLibrary? library) =>
     _storage.libraries.any(
-      (item) => item.id != library.id && item.name == title,
+      (item) => item.id != library?.id && item.name == title,
     ) ||
     ComicSourceManager().all().any(
       (source) =>
-          source.key != library.sourceKey &&
+          source.key != library?.sourceKey &&
           source.explorePages.any((page) => page.title == title),
     );
 
@@ -85,6 +85,16 @@ Future<void> showRemoteLibraryEditor(
   var autoRefreshChosen = initial != null;
   var refreshIntervalMinutes = initial?.refreshIntervalMinutes ?? 360;
   var showValidation = false;
+  String? nameError() {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return 'Cannot be empty'.tl;
+    if (trimmed != initial?.name &&
+        _isPageTitleUsedElsewhere(trimmed, initial)) {
+      return 'Choose a unique name for this library.'.tl;
+    }
+    return null;
+  }
+
   const intervals = {
     15: 'Every 15 minutes',
     60: 'Every hour',
@@ -116,9 +126,7 @@ Future<void> showRemoteLibraryEditor(
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  errorText: showValidation && name.trim().isEmpty
-                      ? 'Cannot be empty'.tl
-                      : null,
+                  errorText: showValidation ? nameError() : null,
                 ),
               ),
               const SizedBox(height: 12),
@@ -224,7 +232,7 @@ Future<void> showRemoteLibraryEditor(
             onPressed: () {
               final trimmed = name.trim();
               final selectedAccount = account;
-              if (trimmed.isEmpty ||
+              if (nameError() != null ||
                   directories.isEmpty ||
                   selectedAccount == null) {
                 setDialogState(() => showValidation = true);
@@ -269,18 +277,36 @@ class RemoteLibrariesSliver extends StatefulWidget {
 }
 
 class _RemoteLibrariesSliverState extends State<RemoteLibrariesSliver> {
+  final _refreshing = <String>{};
+  final _refreshErrors = <String, String>{};
+
   Future<void> _refresh(
+    String libraryId,
     RemoteLibraryEngine engine, {
     required bool deep,
   }) async {
-    await engine.synchronize(force: true, deep: deep);
-    if (mounted) setState(() {});
+    if (_refreshing.contains(libraryId) || engine.syncStatus.value.isSyncing) {
+      return;
+    }
+    setState(() {
+      _refreshing.add(libraryId);
+      _refreshErrors.remove(libraryId);
+    });
+    try {
+      final result = await engine.synchronize(force: true, deep: deep);
+      if (result.error && engine.syncStatus.value.errorMessage == null) {
+        _refreshErrors[libraryId] = result.errorMessage ?? 'Failed';
+      }
+    } finally {
+      _refreshing.remove(libraryId);
+      if (mounted) setState(() {});
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: _storage,
+      listenable: Listenable.merge([_storage, ComicSourceManager()]),
       builder: (context, _) {
         final libraries = _storage.libraries;
         if (libraries.isEmpty) {
@@ -320,53 +346,90 @@ class _RemoteLibrariesSliverState extends State<RemoteLibrariesSliver> {
             final library = libraries[index];
             final account = _storage.account(library.accountId);
             final engine = RemoteLibraryEngines.find(library.sourceKey);
-            final failures = engine?.failedRoots ?? const <String, String>{};
-            return ListTile(
-              leading: const Icon(Icons.folder_open_outlined),
-              title: Text(library.name),
-              subtitle: Text(
-                '${account?.name ?? library.accountId}\n'
-                '${library.directories.join('\n')}'
-                '${failures.isEmpty ? '' : '\n${'Failed'.tl}: ${failures.keys.join(', ')}'}',
-              ),
-              isThreeLine:
-                  library.directories.length > 1 || failures.isNotEmpty,
-              onTap: () => showRemoteLibraryEditor(context, initial: library),
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    tooltip: 'Refresh'.tl,
-                    icon: const Icon(Icons.refresh),
-                    onPressed: engine == null
-                        ? null
-                        : () => _refresh(engine, deep: false),
-                  ),
-                  IconButton(
-                    tooltip: 'Full refresh'.tl,
-                    icon: const Icon(Icons.sync),
-                    onPressed: engine == null
-                        ? null
-                        : () => _refresh(engine, deep: true),
-                  ),
-                  IconButton(
-                    tooltip: 'Delete'.tl,
-                    icon: const Icon(Icons.delete_outline),
-                    onPressed: () => showConfirmDialog(
-                      context: context,
-                      title: 'Delete'.tl,
-                      content: library.name,
-                      confirmText: 'Delete',
-                      btnColor: Theme.of(context).colorScheme.error,
-                      onConfirm: () async {
-                        _removePageVisibility(library);
-                        await _storage.removeLibrary(library.id);
-                      },
+            Widget buildTile(BuildContext context) {
+              final status = engine?.syncStatus.value;
+              final refreshing =
+                  (status?.isSyncing ?? false) ||
+                  _refreshing.contains(library.id);
+              final failures = engine?.failedRoots ?? const <String, String>{};
+              final error = status?.errorMessage ?? _refreshErrors[library.id];
+              return ListTile(
+                leading: const Icon(Icons.folder_open_outlined),
+                title: Text(library.name),
+                subtitle: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${account?.name ?? library.accountId}\n${library.directories.join('\n')}',
                     ),
-                  ),
-                ],
-              ),
-            );
+                    if (refreshing) ...[
+                      const SizedBox(height: 4),
+                      const LinearProgressIndicator(),
+                      Text(engine?.statusMessage ?? 'Syncing Data'.tl),
+                    ] else if (error != null || failures.isNotEmpty)
+                      Text(
+                        [
+                          if (failures.isNotEmpty) engine!.statusMessage!,
+                          if (error != null) error.tl,
+                        ].join('\n'),
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                  ],
+                ),
+                isThreeLine:
+                    library.directories.length > 1 ||
+                    refreshing ||
+                    error != null ||
+                    failures.isNotEmpty,
+                onTap: () => showRemoteLibraryEditor(context, initial: library),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      tooltip: 'Refresh'.tl,
+                      icon: const Icon(Icons.refresh),
+                      onPressed: engine == null || refreshing
+                          ? null
+                          : () => _refresh(library.id, engine, deep: false),
+                    ),
+                    IconButton(
+                      tooltip: 'Full refresh'.tl,
+                      icon: const Icon(Icons.sync),
+                      onPressed: engine == null || refreshing
+                          ? null
+                          : () => _refresh(library.id, engine, deep: true),
+                    ),
+                    IconButton(
+                      tooltip: 'Delete'.tl,
+                      icon: const Icon(Icons.delete_outline),
+                      onPressed: () => showConfirmDialog(
+                        context: context,
+                        title: 'Delete'.tl,
+                        content: library.name,
+                        confirmText: 'Delete',
+                        btnColor: Theme.of(context).colorScheme.error,
+                        onConfirm: () async {
+                          _removePageVisibility(library);
+                          await _storage.removeLibrary(library.id);
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }
+
+            return engine == null
+                ? buildTile(context)
+                : ListenableBuilder(
+                    key: ValueKey(library.id),
+                    listenable: engine.syncStatus,
+                    builder: (context, _) => buildTile(context),
+                  );
           },
         );
       },

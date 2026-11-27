@@ -207,18 +207,18 @@ class _BangumiServerListState extends State<_BangumiServerList> {
   }
 
   Future<void> _edit([BangumiServer? previous]) async {
+    final occupiedApiUrls = {
+      for (final item in _servers)
+        if (item != previous) item.apiUrl,
+    };
     final server = await showDialog<BangumiServer>(
       context: context,
-      builder: (_) => _BangumiServerEditor(initial: previous),
+      builder: (_) => _BangumiServerEditor(
+        initial: previous,
+        occupiedApiUrls: occupiedApiUrls,
+      ),
     );
     if (server == null || !mounted) return;
-    final duplicate = _servers.indexWhere(
-      (item) => item.apiUrl == server.apiUrl,
-    );
-    if (duplicate >= 0 && _servers[duplicate].apiUrl != previous?.apiUrl) {
-      setState(() => _error = 'This API address is already in the list'.tl);
-      return;
-    }
     final servers = List<BangumiServer>.of(_servers);
     if (previous == null) {
       servers.add(server);
@@ -343,9 +343,10 @@ class _BangumiServerListState extends State<_BangumiServerList> {
 }
 
 class _BangumiServerEditor extends StatefulWidget {
-  const _BangumiServerEditor({this.initial});
+  const _BangumiServerEditor({this.initial, required this.occupiedApiUrls});
 
   final BangumiServer? initial;
+  final Set<String> occupiedApiUrls;
 
   @override
   State<_BangumiServerEditor> createState() => _BangumiServerEditorState();
@@ -360,6 +361,7 @@ class _BangumiServerEditorState extends State<_BangumiServerEditor> {
   late final _token = TextEditingController(
     text: widget.initial?.tokenUrl ?? '',
   );
+  String? _apiError;
   String? _error;
 
   @override
@@ -372,27 +374,34 @@ class _BangumiServerEditorState extends State<_BangumiServerEditor> {
   }
 
   void _submit() {
-    // A known domain selects its stored endpoint mapping; custom hosts stay literal.
-    for (final preset in bangumiPresetServers) {
-      if (_api.text.trim().toLowerCase() == preset.name &&
-          _images.text.trim().isEmpty &&
-          _token.text.trim().isEmpty) {
-        Navigator.of(context).pop(preset);
-        return;
-      }
+    final api = _api.text.trim();
+    final domain = api.toLowerCase();
+    final preset = _images.text.trim().isEmpty && _token.text.trim().isEmpty
+        ? bangumiPresetServers.where((item) => item.name == domain).firstOrNull
+        : null;
+    final server =
+        preset ??
+        BangumiServer.fromJson({
+          'name': _name.text,
+          'apiUrl': api,
+          'imageUrl': _images.text,
+          'tokenUrl': _token.text,
+        });
+    final apiUrl = server?.apiUrl ?? normalizeBangumiUrl(api);
+    if (widget.occupiedApiUrls.contains(apiUrl)) {
+      setState(() {
+        _apiError = 'This API address is already in the list'.tl;
+        _error = null;
+      });
+      return;
     }
-    final server = BangumiServer.fromJson({
-      'name': _name.text,
-      'apiUrl': _api.text,
-      'imageUrl': _images.text,
-      'tokenUrl': _token.text,
-    });
     if (server == null) {
-      setState(
-        () => _error =
+      setState(() {
+        _apiError = null;
+        _error =
             'Enter valid HTTPS addresses without query parameters or fragments'
-                .tl,
-      );
+                .tl;
+      });
       return;
     }
     Navigator.of(context).pop(server);
@@ -431,9 +440,14 @@ class _BangumiServerEditorState extends State<_BangumiServerEditor> {
                 controller: _api,
                 keyboardType: TextInputType.url,
                 autocorrect: false,
+                onChanged: (_) {
+                  if (_apiError != null) setState(() => _apiError = null);
+                },
                 decoration: decoration.copyWith(
                   labelText: 'API address'.tl,
                   hintText: 'api.example.com',
+                  errorText: _apiError,
+                  errorMaxLines: 2,
                 ),
               ),
               const SizedBox(height: 12),

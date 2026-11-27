@@ -61,7 +61,7 @@ class _TransferDialogState extends State<ComicArchiveTransferDialog> {
     ArchiveItemState.pending => 'Not started',
     ArchiveItemState.working => 'In progress',
     ArchiveItemState.success => 'Success',
-    ArchiveItemState.skipped => 'Skipped (not verified)',
+    ArchiveItemState.skipped => 'Already archived',
     ArchiveItemState.failed => 'Failed',
     ArchiveItemState.cancelled => 'Cancelled',
   };
@@ -155,11 +155,6 @@ class _TransferDialogState extends State<ComicArchiveTransferDialog> {
                                   : colors.onSurface,
                             ),
                           ),
-                          if (item.state == ArchiveItemState.skipped)
-                            Text(
-                              'Remote name already exists. Contents were not verified or overwritten.'
-                                  .tl,
-                            ),
                           if (item.error case final error?) ...[
                             SelectableText(batch.errorText(error).tl),
                             if (!item.canRetry)

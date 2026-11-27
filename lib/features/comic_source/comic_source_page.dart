@@ -146,40 +146,19 @@ class ComicSourcePage extends StatelessWidget {
   }
 
   static Future<int> checkComicSourceUpdate() async {
-    if (ComicSource.all().isEmpty) {
-      return 0;
+    final result = await _checkSourceUpdates();
+    if (result.failures.isNotEmpty) {
+      Log.warning('Check Comic Source Updates', result.failures.join('\n'));
     }
-    final sourceListUrl = appdata.settings['comicSourceListUrl']
-        ?.toString()
-        .trim();
-    if (sourceListUrl == null || sourceListUrl.isEmpty) {
-      return 0;
-    }
-    var dio = AppDio();
-    var res = await dio.get<String>(sourceListUrl);
-    if (res.statusCode != 200) {
-      return -1;
-    }
-    var list = jsonDecode(res.data!) as List;
-    var versions = <String, String>{};
-    for (var source in list) {
-      versions[source['key']] = source['version'];
-    }
-    var shouldUpdate = <String>[];
-    for (var source in ComicSource.all()) {
-      if (versions.containsKey(source.key) &&
-          compareSemVer(versions[source.key]!, source.version)) {
-        shouldUpdate.add(source.key);
-      }
-    }
-    if (shouldUpdate.isNotEmpty) {
-      var updates = <String, String>{};
-      for (var key in shouldUpdate) {
-        updates[key] = versions[key]!;
-      }
-      ComicSourceManager().updateAvailableUpdates(updates);
-    }
-    return shouldUpdate.length;
+    return result.updates.length;
+  }
+
+  static Future<SourceUpdateCheck> _checkSourceUpdates() async {
+    final result = await SourceRepositories.instance.checkUpdates(
+      ComicSource.all().where((source) => source.filePath.isNotEmpty).toList(),
+    );
+    ComicSourceManager().updateAvailableUpdates(result.updates);
+    return result;
   }
 
   @override
@@ -335,10 +314,18 @@ class _ComicSourcesSliverListState extends State<ComicSourcesSliverList> {
       title: "Delete".tl,
       content: "Delete comic source '@n' ?".tlParams({"n": source.name}),
       btnColor: context.colorScheme.error,
-      onConfirm: () {
-        var file = File(source.filePath);
-        file.delete();
-        ComicSourceManager().remove(source.key);
+      onConfirm: () async {
+        try {
+          await ComicSourceManager().uninstallScript(source);
+        } catch (error, stack) {
+          Log.error('Delete comic source', error, stack);
+          if (mounted) {
+            context.showMessage(
+              message: "${'Failed to delete comic source'.tl}: $error",
+            );
+          }
+          return;
+        }
         _validatePages();
         App.forceRebuild();
       },
@@ -462,12 +449,7 @@ class _CheckUpdatesButtonState extends State<_CheckUpdatesButton> {
   void check() async {
     setState(() => isLoading = true);
     try {
-      final result = await SourceRepositories.instance.checkUpdates(
-        ComicSource.all()
-            .where((source) => source.filePath.isNotEmpty)
-            .toList(),
-      );
-      ComicSourceManager().updateAvailableUpdates(result.updates);
+      final result = await ComicSourcePage._checkSourceUpdates();
       if (!mounted) return;
       if (result.failures.isNotEmpty) {
         context.showMessage(message: result.failures.join('\n'));
@@ -746,34 +728,33 @@ class _SliverComicSourceState extends State<_SliverComicSource> {
       String type = item.value['type'];
       try {
         if (type == "select") {
-          var current = source.data['settings'][key];
-          if (current == null) {
-            var d = item.value['default'];
-            for (var option in item.value['options']) {
-              if (option['value'] == d) {
-                current = option['text'] ?? option['value'];
-                break;
-              }
-            }
-          } else {
-            current =
-                item.value['options'].firstWhere(
-                  (e) => e['value'] == current,
-                )['text'] ??
-                current;
+          final options = item.value['options'] as List;
+          final defaultValue = item.value['default'];
+          final savedValue = source.data['settings'][key] ?? defaultValue;
+          var index = options.indexWhere(
+            (option) => option['value'] == savedValue,
+          );
+          if (index < 0) {
+            index = options.indexWhere(
+              (option) => option['value'] == defaultValue,
+            );
           }
+          if (index < 0) index = 0;
+          final labels = options
+              .map<String>(
+                (option) => ((option['text'] ?? option['value']) as String).ts(
+                  source.key,
+                ),
+              )
+              .toList();
           yield ListTile(
             title: Text((item.value['title'] as String).ts(source.key)),
             trailing: Select(
-              current: (current as String).ts(source.key),
-              values: (item.value['options'] as List)
-                  .map<String>(
-                    (e) => ((e['text'] ?? e['value']) as String).ts(source.key),
-                  )
-                  .toList(),
+              current: labels.isEmpty ? null : labels[index],
+              selectedIndex: index,
+              values: labels,
               onTap: (i) {
-                source.data['settings'][key] =
-                    item.value['options'][i]['value'];
+                source.data['settings'][key] = options[i]['value'];
                 source.saveData();
                 setState(() {});
               },
@@ -831,9 +812,32 @@ class _SliverComicSourceState extends State<_SliverComicSource> {
     }
   }
 
-  final _reLogin = <String, bool>{};
+  static final _reLoginInProgress = <String>{};
+
+  Future<void> _reLogin(ComicSource source) async {
+    final account = source.data['account'];
+    final login = source.account?.login;
+    if (account is! List || login == null) {
+      context.showMessage(message: 'No data'.tl);
+      return;
+    }
+    if (!_reLoginInProgress.add(source.key)) return;
+    final manager = ComicSourceManager();
+    manager.notifyStateChange();
+    try {
+      final result = await login(account[0], account[1]);
+      if (!mounted || !identical(source, this.source)) return;
+      context.showMessage(
+        message: result.error ? result.errorMessage! : 'Success'.tl,
+      );
+    } finally {
+      _reLoginInProgress.remove(source.key);
+      manager.notifyStateChange();
+    }
+  }
 
   Iterable<Widget> _buildAccount() sync* {
+    final source = this.source;
     if (source.account == null) return;
     final bool logged = source.isLogged;
     if (!logged) {
@@ -845,11 +849,12 @@ class _SliverComicSourceState extends State<_SliverComicSource> {
             () => _LoginPage(config: source.account!, source: source),
           );
           source.saveData();
-          setState(() {});
+          if (mounted) setState(() {});
         },
       );
     }
     if (logged) {
+      final reLoggingIn = _reLoginInProgress.contains(source.key);
       for (var item in source.account!.infoItems) {
         if (item.builder != null) {
           yield item.builder!(context);
@@ -862,30 +867,11 @@ class _SliverComicSourceState extends State<_SliverComicSource> {
         }
       }
       if (source.data["account"] is List) {
-        bool loading = _reLogin[source.key] == true;
         yield ListTile(
           title: Text("Re-login".tl),
           subtitle: Text("Click if login expired".tl),
-          onTap: () async {
-            if (source.data["account"] == null) {
-              context.showMessage(message: "No data".tl);
-              return;
-            }
-            setState(() {
-              _reLogin[source.key] = true;
-            });
-            final List account = source.data["account"];
-            var res = await source.account!.login!(account[0], account[1]);
-            if (res.error) {
-              context.showMessage(message: res.errorMessage!);
-            } else {
-              context.showMessage(message: "Success".tl);
-            }
-            setState(() {
-              _reLogin[source.key] = false;
-            });
-          },
-          trailing: loading
+          onTap: reLoggingIn ? null : () => _reLogin(source),
+          trailing: reLoggingIn
               ? const SizedBox.square(
                   dimension: 24,
                   child: CircularProgressIndicator(strokeWidth: 2),
@@ -895,13 +881,15 @@ class _SliverComicSourceState extends State<_SliverComicSource> {
       }
       yield ListTile(
         title: Text("Log out".tl),
-        onTap: () {
-          source.data["account"] = null;
-          source.account?.logout();
-          source.saveData();
-          ComicSourceManager().notifyStateChange();
-          setState(() {});
-        },
+        onTap: reLoggingIn
+            ? null
+            : () {
+                if (_reLoginInProgress.contains(source.key)) return;
+                source.data["account"] = null;
+                source.account?.logout();
+                source.saveData();
+                ComicSourceManager().notifyStateChange();
+              },
         trailing: const Icon(Icons.logout),
       );
     }
@@ -924,6 +912,7 @@ class _LoginPageState extends State<_LoginPage> {
   String password = "";
   bool loading = false;
   bool _obscurePassword = true;
+  bool _webviewLoginHandled = false;
 
   final Map<String, String> _cookies = {};
 
@@ -1148,8 +1137,11 @@ class _LoginPageState extends State<_LoginPage> {
 
   // for linux
   void loginWithWebview2() async {
-    if (!await DesktopWebview.isAvailable()) {
+    final available = await DesktopWebview.isAvailable();
+    if (!mounted) return;
+    if (!available) {
       context.showMessage(message: "Webview is not available".tl);
+      return;
     }
 
     var url = widget.config.loginWebsite!;
@@ -1157,11 +1149,11 @@ class _LoginPageState extends State<_LoginPage> {
     bool success = false;
 
     void onClose() {
-      if (success) {
-        widget.source.data['account'] = 'ok';
-        widget.source.saveData();
-        context.pop();
-      }
+      if (!success || !mounted || _webviewLoginHandled) return;
+      _webviewLoginHandled = true;
+      widget.source.data['account'] = 'ok';
+      widget.source.saveData();
+      if (ModalRoute.isCurrentOf(context) == true) context.pop();
     }
 
     void validate(DesktopWebview webview) async {

@@ -143,7 +143,7 @@ void main() {
     );
     expect(appdata.settings['bangumiAccessToken'], 'saved-token');
     expect(appdata.settings['bangumiUsername'], 'alice');
-    expect(find.text('Failed to connect to Bangumi'), findsOneWidget);
+    expect(find.text('alice'), findsOneWidget);
     expect(
       find.textContaining('Failed to connect to Bangumi:'),
       findsOneWidget,
@@ -195,6 +195,16 @@ void main() {
 
     expect(appdata.settings['bangumiAccessToken'], 'saved-token');
     expect(appdata.settings['bangumiUsername'], 'alice');
+    expect(find.text('Invalid Access Token'), findsOneWidget);
+    expect(find.text('alice'), findsOneWidget);
+
+    await tester.enterText(
+      find.byKey(const Key('bangumi-token-field')),
+      'saved-token',
+    );
+    await tester.tap(find.byKey(const Key('bangumi-connect')));
+    await tester.pumpAndSettle();
+
     expect(
       find.text(
         'Bangumi connection is invalid. Please check your Access Token.',

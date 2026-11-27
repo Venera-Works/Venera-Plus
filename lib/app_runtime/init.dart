@@ -590,7 +590,7 @@ Future<void> _checkComicSourceUpdates() async {
 }
 
 void checkUpdates() {
-  unawaited(_checkComicSourceUpdates());
+  unawaited(_checkComicSourceUpdates().wait());
   if (appdata.settings['checkUpdateOnStart']) {
     unawaited(appUpdatePrompt.check(manual: false, delay: true));
   }

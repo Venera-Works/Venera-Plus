@@ -961,10 +961,20 @@ class LocalManager with ChangeNotifier {
       .where((task) => !task.isAwaitingMissingPages)
       .firstOrNull;
 
+  void _resumeCurrentDownloadTask() {
+    final task = currentDownloadTask;
+    if (task != null && !task.isPausedByUser) task.resume();
+  }
+
+  void pauseTask(DownloadTask task) {
+    task.isPausedByUser = true;
+    task.pause();
+  }
+
   Future<void> retainIncompleteTask(DownloadTask task) async {
     _writeComic(task.toLocalComic(), null);
     _downloadTransition = task.pendingCleanup;
-    currentDownloadTask?.resume();
+    _resumeCurrentDownloadTask();
     notifyListeners();
     await saveCurrentDownloadingTasks();
   }
@@ -981,6 +991,7 @@ class LocalManager with ChangeNotifier {
     if (!downloadingTasks.contains(task)) return;
     downloadingTasks.remove(task);
     downloadingTasks.insert(0, task);
+    task.isPausedByUser = false;
     task.resume();
     notifyListeners();
   }
@@ -1027,7 +1038,7 @@ class LocalManager with ChangeNotifier {
       rethrow;
     }
     _downloadTransition = task.pendingCleanup;
-    currentDownloadTask?.resume();
+    _resumeCurrentDownloadTask();
   }
 
   void removeTask(DownloadTask task) {
@@ -1095,7 +1106,7 @@ class LocalManager with ChangeNotifier {
       downloadingTasks.insert(0, task);
       notifyListeners();
       saveCurrentDownloadingTasks();
-      if (shouldResume) {
+      if (shouldResume && !task.isPausedByUser) {
         resumeTask(task);
       }
     }
@@ -1155,10 +1166,11 @@ class LocalManager with ChangeNotifier {
   }
 
   void addTask(DownloadTask task) {
+    final keepPaused = currentDownloadTask?.isPausedByUser == true;
     downloadingTasks.add(task);
     notifyListeners();
     saveCurrentDownloadingTasks();
-    currentDownloadTask?.resume();
+    if (!keepPaused) _resumeCurrentDownloadTask();
   }
 
   void deleteComic(LocalComic c, [bool removeFileOnDisk = true]) {

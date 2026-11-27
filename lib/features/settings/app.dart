@@ -35,6 +35,7 @@ class SyncSettings extends StatefulWidget {
 class _SyncSettingsState extends State<SyncSettings> {
   final _storage = RemoteStorageAccounts.instance;
   final _sync = DataSync();
+  bool _importing = false;
 
   Future<void> _manageAccounts() async {
     final result = await context.to<(StorageAccount, StorageAccountPurpose)>(
@@ -61,6 +62,62 @@ class _SyncSettingsState extends State<SyncSettings> {
     final location = RemoteLocation.fromJson(raw);
     final account = _storage.account(location.accountId);
     return '${account?.name ?? 'Account unavailable'.tl} · ${location.directory}';
+  }
+
+  Future<void> _importData() async {
+    if (_importing) return;
+    _importing = true;
+    Directory? workspace;
+    LoadingDialogController? progress;
+    var reload = false;
+    String? message;
+    try {
+      final source = await selectFile(ext: ['venera', 'picadata']);
+      if (source == null || !mounted) return;
+      final pica = source.name.toLowerCase().endsWith('.picadata');
+      var confirmed = false;
+      await showConfirmDialog(
+        context: context,
+        title: 'Import App Data'.tl,
+        content: [
+          source.name,
+          if (pica)
+            'This backup merges local favorites and image favorites and may update matching reading history.'
+                .tl
+          else
+            'This backup can replace app settings, reading history, local favorites, login cookies and comic sources.'
+                .tl,
+        ].join('\n\n'),
+        confirmText: 'Import',
+        btnColor: context.colorScheme.error,
+        onConfirm: () => confirmed = true,
+      );
+      if (!confirmed || !mounted) return;
+      progress = showLoadingDialog(
+        context,
+        allowCancel: false,
+        barrierDismissible: false,
+      );
+      workspace = await Directory(App.cachePath).createTemp('import-data-');
+      final copy = File(FilePath.join(workspace.path, 'backup'));
+      await source.saveTo(copy.path);
+      reload = true;
+      if (pica) {
+        await importPicaData(copy);
+      } else {
+        await importAppData(copy);
+      }
+      message = 'Import complete'.tl;
+    } catch (error, stack) {
+      Log.error('Import data', error.toString(), stack);
+      message = 'Failed to import data'.tl;
+    } finally {
+      await workspace?.deleteIgnoreError(recursive: true);
+      progress?.close();
+      _importing = false;
+      if (message != null && mounted) context.showMessage(message: message);
+      if (reload) App.forceRebuild();
+    }
   }
 
   @override
@@ -169,35 +226,7 @@ class _SyncSettingsState extends State<SyncSettings> {
             ).toSliver(),
             CallbackSetting(
               title: 'Import App Data'.tl,
-              subtitle:
-                  'This overwrites local app data. If import fails, already-applied changes are not rolled back.'
-                      .tl,
-              callback: () async {
-                final controller = showLoadingDialog(context);
-                final file = await selectFile(ext: ['venera', 'picadata']);
-                if (file != null) {
-                  final cacheFile = File(
-                    FilePath.join(App.cachePath, 'import_data_temp'),
-                  );
-                  await file.saveTo(cacheFile.path);
-                  try {
-                    if (file.name.endsWith('picadata')) {
-                      await importPicaData(cacheFile);
-                    } else {
-                      await importAppData(cacheFile);
-                    }
-                  } catch (e, s) {
-                    Log.error('Import data', e.toString(), s);
-                    if (context.mounted) {
-                      context.showMessage(message: 'Failed to import data'.tl);
-                    }
-                  } finally {
-                    cacheFile.deleteIgnoreError();
-                    App.forceRebuild();
-                  }
-                }
-                controller.close();
-              },
+              callback: _importData,
               actionTitle: 'Import'.tl,
             ).toSliver(),
           ],
@@ -270,6 +299,26 @@ class _WebdavSettingState extends State<_WebdavSetting> {
   StorageAccount? remoteAccount;
   String remoteDirectory = '/VeneraPlus/';
 
+  RemoteLocation? get _location {
+    final account = remoteAccount;
+    return account == null
+        ? null
+        : RemoteLocation(
+            accountId: account.id,
+            directory: remoteDirectory,
+          ).normalized();
+  }
+
+  bool get _needsInitialTransfer {
+    final location = _location;
+    if (location == null || syncMode == DataSyncMode.manual) return false;
+    final raw = appdata.settings['syncRemoteLocation'];
+    final previous = raw is Map ? RemoteLocation.fromJson(raw) : null;
+    return DataSync.mode == DataSyncMode.manual ||
+        previous?.accountId != location.accountId ||
+        previous?.directory != location.directory;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -328,7 +377,7 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                 onIntervalChanged: (value) =>
                     setState(() => syncInterval = value),
               ),
-              if (syncMode != DataSyncMode.manual) ...[
+              if (_needsInitialTransfer) ...[
                 const SizedBox(height: 12),
                 SwitchListTile.adaptive(
                   contentPadding: EdgeInsets.zero,
@@ -438,40 +487,7 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                 child: FilledButton(
                   style: actionButtonStyle,
                   key: const Key('data-sync-save'),
-                  onPressed: isTesting
-                      ? null
-                      : () async {
-                          if (isTesting) return;
-                          setState(() {
-                            isTesting = true;
-                          });
-                          if (!mounted) return;
-                          final testResult = await DataSync().configure(
-                            config: const [],
-                            excludedFields: disableSync,
-                            syncMode: syncMode,
-                            minutes: syncInterval,
-                            initialUpload: initialUpload,
-                            remoteLocation: remoteAccount == null
-                                ? null
-                                : RemoteLocation(
-                                    accountId: remoteAccount!.id,
-                                    directory: remoteDirectory,
-                                  ),
-                          );
-                          if (!mounted) return;
-                          setState(() => isTesting = false);
-                          if (testResult.error) {
-                            context.showMessage(
-                              message:
-                                  testResult.errorMessage?.tl ??
-                                  'Saved Failed'.tl,
-                            );
-                          } else {
-                            context.showMessage(message: "Saved".tl);
-                            App.rootPop();
-                          }
-                        },
+                  onPressed: isTesting ? null : _save,
                   child: ButtonLoadingContent(
                     isLoading: isTesting,
                     child: Text("Save".tl),
@@ -483,6 +499,89 @@ class _WebdavSettingState extends State<_WebdavSetting> {
         ),
       ),
     );
+  }
+
+  Future<void> _save() async {
+    if (isTesting) return;
+    setState(() => isTesting = true);
+    try {
+      final location = _location;
+      final needsInitialTransfer = _needsInitialTransfer;
+      if (needsInitialTransfer && !initialUpload) {
+        var confirmed = false;
+        await showConfirmDialog(
+          context: context,
+          title: 'Restore from Cloud'.tl,
+          content: [
+            'Sync target: @target'.tlParams({
+              'target': '${remoteAccount!.name} · ${location!.directory}',
+            }),
+            'Restoring the cloud snapshot will overwrite local app data, including reading history and local favorites.'
+                .tl,
+          ].join('\n\n'),
+          btnColor: context.colorScheme.error,
+          onConfirm: () => confirmed = true,
+        );
+        if (!confirmed || !mounted) return;
+      }
+      final sync = DataSync();
+      if (sync.isSyncing) {
+        context.showMessage(message: 'Sync is currently in progress'.tl);
+        return;
+      }
+      if (location != null &&
+          syncMode != DataSyncMode.manual &&
+          !needsInitialTransfer &&
+          sync.hasConfiguration) {
+        await _saveAutomaticOptions(sync);
+      } else {
+        final result = await sync.configure(
+          config: const [],
+          excludedFields: disableSync,
+          syncMode: syncMode,
+          minutes: syncInterval,
+          initialUpload: initialUpload,
+          remoteLocation: location,
+        );
+        if (!mounted) return;
+        if (result.error) {
+          context.showMessage(
+            message: result.errorMessage?.tl ?? 'Saved Failed'.tl,
+          );
+          return;
+        }
+      }
+      if (!mounted) return;
+      context.showMessage(message: 'Saved'.tl);
+      Navigator.of(context, rootNavigator: true).pop();
+    } catch (error, stack) {
+      Log.error('Data Sync', error.toString(), stack);
+      if (mounted) context.showMessage(message: 'Saved Failed'.tl);
+    } finally {
+      if (mounted) setState(() => isTesting = false);
+    }
+  }
+
+  Future<void> _saveAutomaticOptions(DataSync sync) async {
+    final previousMode = DataSync.mode;
+    final implicit = appdata.implicitData;
+    // 重设现有定时任务时，从保存时刻起等待完整的间隔。
+    if (syncMode == DataSyncMode.scheduled) {
+      implicit['webdavSyncLastAttempt'] = DateTime.now().millisecondsSinceEpoch;
+    } else if (previousMode == DataSyncMode.scheduled) {
+      // 同步检查先取消定时器。在手动模式下调用时不会发起传输。
+      implicit['webdavSyncMode'] = DataSyncMode.manual.name;
+      sync.checkForAutomaticSync();
+    }
+    implicit['webdavSyncMode'] = syncMode.name;
+    implicit['webdavAutoSync'] = true;
+    implicit['webdavSyncIntervalMinutes'] = syncInterval;
+    appdata.settings['disableSyncFields'] = disableSync;
+    if (syncMode == DataSyncMode.scheduled) {
+      sync.checkForAutomaticSync();
+    }
+    await appdata.writeImplicitData();
+    await appdata.saveData(false);
   }
 
   Future<void> testConnection() async {

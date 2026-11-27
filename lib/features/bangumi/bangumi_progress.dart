@@ -88,20 +88,21 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
     super.dispose();
   }
 
-  void _loadBinding() {
+  void _loadBinding({bool progressOnly = false}) {
     final binding = _binding;
     if (binding == null) return;
     _mode = binding.progressMode;
-    _status = binding.collectionStatus;
-    _loadedStatus = binding.collectionStatus;
     final progressText = _remoteProgress(
       binding,
       _manualField(binding),
     ).toString();
-    final ratingText = binding.rating.toString();
     _progressController.text = progressText;
-    _ratingController.text = ratingText;
     _loadedProgressText = progressText;
+    if (progressOnly) return;
+    _status = binding.collectionStatus;
+    _loadedStatus = binding.collectionStatus;
+    final ratingText = binding.rating.toString();
+    _ratingController.text = ratingText;
     _loadedRatingText = ratingText;
   }
 
@@ -284,7 +285,7 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
             OutlinedButton.styleFrom(foregroundColor: colors.error),
           ),
           key: const Key('bangumi-unbind'),
-          onPressed: _loading ? null : _unbind,
+          onPressed: _loading ? null : () => _confirmUnbind(binding),
           child: Text('Unbind'.tl),
         ),
       ],
@@ -444,6 +445,8 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
     if (query.isEmpty) return;
     setState(() {
       _loading = true;
+      _results = null;
+      _selected = null;
       _error = null;
     });
     try {
@@ -510,7 +513,7 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
     try {
       await _service.updateMode(widget.sourceKey, widget.comicId, mode);
       if (mounted) {
-        _loadBinding();
+        _loadBinding(progressOnly: true);
         setState(() => _error = null);
       }
     } catch (error) {
@@ -613,9 +616,23 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
     }
   }
 
-  Future<void> _syncNow() async {
-    final binding = _binding;
-    if (_loading || binding == null) return;
+  Future<void> _syncNow({bool discardChanges = false}) async {
+    if (!mounted || _loading || _binding == null) return;
+    if (!discardChanges &&
+        (_progressController.text != _loadedProgressText ||
+            _ratingController.text != _loadedRatingText ||
+            _status != _loadedStatus)) {
+      await showConfirmDialog(
+        context: context,
+        title: 'Discard unsaved changes?'.tl,
+        content:
+            'Refreshing or syncing Bangumi will discard your unsaved changes.'
+                .tl,
+        confirmText: 'Refresh / Sync now',
+        onConfirm: () => _syncNow(discardChanges: true),
+      );
+      return;
+    }
     setState(() {
       _loading = true;
       _error = null;
@@ -645,8 +662,21 @@ class _BangumiProgressPanelState extends State<BangumiProgressPanel> {
     }
   }
 
+  Future<void> _confirmUnbind(BangumiBinding binding) => showConfirmDialog(
+    context: context,
+    title: 'Unbind from Bangumi?'.tl,
+    content: [
+      binding.subjectTitle,
+      if (_service.hasPendingProgress(widget.sourceKey, widget.comicId))
+        'Pending Bangumi progress will also be discarded.'.tl,
+    ].join('\n\n'),
+    confirmText: 'Unbind',
+    btnColor: Theme.of(context).colorScheme.error,
+    onConfirm: _unbind,
+  );
+
   Future<void> _unbind() async {
-    if (_loading) return;
+    if (!mounted || _loading) return;
     setState(() {
       _loading = true;
       _error = null;

@@ -6,6 +6,7 @@ import 'package:venera_plus/components/select.dart';
 import 'package:venera_plus/features/favorites/favorites.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/context.dart';
+import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
 
@@ -42,12 +43,6 @@ class _ImportComicsDialogState extends State<ImportComicsDialog> {
   String? selectedFolder;
 
   bool copyToLocalFolder = true;
-
-  @override
-  void dispose() {
-    loading = false;
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -163,34 +158,37 @@ class _ImportComicsDialogState extends State<ImportComicsDialog> {
     );
   }
 
-  void selectAndImport() async {
+  Future<void> selectAndImport() async {
+    if (loading) return;
     height = key.currentContext!.size!.height;
 
     setState(() {
       loading = true;
     });
-    var importer = ImportComic(
-      selectedFolder: selectedFolder,
-      copyToLocal: copyToLocalFolder,
-    );
-    var result = switch (type) {
-      0 => await importer.directory(true),
-      1 => await importer.directory(false),
-      2 => await importer.cbz(),
-      3 => await importer.multipleCbz(),
-      4 => await importer.pdf(),
-      5 => await importer.epub(),
-      6 => await importer.ehViewer(),
-      7 => await importer.localDownloads(),
-      int() => true,
-    };
-    if (!mounted) return;
-    if (result) {
-      context.pop();
-    } else {
-      setState(() {
-        loading = false;
-      });
+    try {
+      final importer = ImportComic(
+        selectedFolder: selectedFolder,
+        copyToLocal: copyToLocalFolder,
+      );
+      final imported = switch (type) {
+        0 => await importer.directory(true),
+        1 => await importer.directory(false),
+        2 => await importer.cbz(),
+        3 => await importer.multipleCbz(),
+        4 => await importer.pdf(),
+        5 => await importer.epub(),
+        6 => await importer.ehViewer(),
+        7 => await importer.localDownloads(),
+        int() => true,
+      };
+      if (mounted && imported) context.pop();
+    } catch (error, stack) {
+      Log.error('Import Comics', error, stack);
+      if (mounted) {
+        context.showMessage(message: "${'Failed to import'.tl}: $error");
+      }
+    } finally {
+      if (mounted) setState(() => loading = false);
     }
   }
 }

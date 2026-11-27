@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/res.dart';
 import 'package:venera_plus/foundation/appdata.dart';
@@ -225,16 +227,26 @@ class _RemoteComicBackupOps implements ComicBackupWebDavOps {
 
   Future<T> _run<T>(
     BackupConfig config,
-    Future<T> Function(RemoteFileStore store) action,
-  ) async {
+    Future<T> Function(RemoteFileStore store) action, {
+    bool createOnly = false,
+  }) async {
     final accounts = RemoteStorageAccounts.instance;
-    final store = accounts.storeFor(config.location!.accountId);
+    final id = config.location!.accountId;
+    final account = createOnly ? accounts.account(id) : null;
+    final webdav = account?.backend == StorageBackend.webdav
+        ? WebDavFileStore(account!)
+        : null;
+    final store = webdav ?? accounts.storeFor(id);
     _active.add(store);
     try {
       return await action(store);
     } finally {
       _active.remove(store);
-      accounts.release(store);
+      if (webdav == null) {
+        accounts.release(store);
+      } else {
+        webdav.close();
+      }
     }
   }
 
@@ -244,7 +256,10 @@ class _RemoteComicBackupOps implements ComicBackupWebDavOps {
 
   @override
   Future<List<BackupFile>> list(BackupConfig config) async =>
-      (await _run(config, (store) => store.list(config.remotePath)))
+      (await _run(
+            config,
+            (store) => store.list(config.remotePath, refresh: true),
+          ))
           .where((entry) => !entry.isDirectory)
           .map(
             (entry) => BackupFile(
@@ -261,7 +276,7 @@ class _RemoteComicBackupOps implements ComicBackupWebDavOps {
   Future<bool> exists(BackupConfig config, String remotePath) async =>
       (await _run(
         config,
-        (store) => store.list(config.remotePath),
+        (store) => store.list(config.remotePath, refresh: true),
       )).any((entry) => entry.name == remotePath.split('/').last);
 
   @override
@@ -278,6 +293,7 @@ class _RemoteComicBackupOps implements ComicBackupWebDavOps {
     (store) => store is WebDavFileStore
         ? store.uploadCreateOnly(localPath, remotePath)
         : store.upload(localPath, remotePath),
+    createOnly: true,
   );
 
   @override
@@ -438,10 +454,11 @@ class ComicBackupManager {
         if (retry) setup = null;
         await (setup ??= initialize());
         if (stopped()) return ArchiveItemState.cancelled;
-        final remote = config.remoteFilePath(items[index].fileName);
+        final item = items[index];
+        final remote = config.remoteFilePath(item.fileName);
         final exists = retry || remoteNames == null
             ? await operations.exists(config, remote)
-            : remoteNames!.contains(items[index].fileName);
+            : remoteNames!.contains(item.fileName);
         if (stopped()) return ArchiveItemState.cancelled;
         if (exists && !retry) return ArchiveItemState.skipped;
         final workspace = await Directory(cache).createTemp('comic-backup-');
@@ -460,6 +477,7 @@ class ComicBackupManager {
                 'Remote archive conflicts with this transfer. No file was overwritten.',
               );
             }
+            remoteNames?.add(item.fileName);
             return ArchiveItemState.success;
           }
           if (exporter != null) {
@@ -470,9 +488,21 @@ class ComicBackupManager {
           if (stopped()) return ArchiveItemState.cancelled;
           uploadedDigests[index] = await sha256.bind(file.openRead()).first;
           if (stopped()) return ArchiveItemState.cancelled;
+          if (config.location case final location?) {
+            final backend = RemoteStorageAccounts.instance
+                .account(location.accountId)
+                ?.backend;
+            if (backend == StorageBackend.openlist &&
+                await operations.exists(config, remote)) {
+              return stopped()
+                  ? ArchiveItemState.cancelled
+                  : ArchiveItemState.skipped;
+            }
+          }
+          if (stopped()) return ArchiveItemState.cancelled;
           await operations.uploadFile(config, file.path, remote);
           if (epoch != _taskEpoch) return ArchiveItemState.cancelled;
-          remoteNames?.add(items[index].fileName);
+          remoteNames?.add(item.fileName);
           return ArchiveItemState.success;
         } finally {
           await workspace.deleteIgnoreError(recursive: true);
@@ -610,7 +640,11 @@ class ComicBackupManager {
     final now = DateTime.now();
     final timestamp =
         '${now.year}-${_twoDigits(now.month)}-${_twoDigits(now.day)}';
-    return '${name}_$timestamp.cbz';
+    final identity = sha256.convert(
+      utf8.encode(jsonEncode([comic.comicType.value, comic.id])),
+    );
+    final suffix = identity.toString().substring(0, 16);
+    return '${name}_${timestamp}_$suffix.cbz';
   }
 
   static String _twoDigits(int value) => value.toString().padLeft(2, '0');

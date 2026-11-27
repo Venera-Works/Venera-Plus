@@ -16,18 +16,16 @@ Future<String?> getProxy() async {
       DateTime.now().difference(_cachedProxyTime!).inSeconds < 1) {
     return _cachedProxy;
   }
-  String? proxy = await _getProxy();
+  final proxy = await _getProxy(setting);
   _cachedProxy = proxy;
   _cachedProxyTime = DateTime.now();
   _cachedProxySetting = setting;
   return proxy;
 }
 
-Future<String?> _getProxy() async {
-  if ((appdata.settings['proxy'] as String).removeAllBlank == "direct") {
-    return null;
-  }
-  if (appdata.settings['proxy'] != "system") return appdata.settings['proxy'];
+Future<String?> _getProxy(String setting) async {
+  if (setting.removeAllBlank == 'direct') return null;
+  if (setting != 'system') return setting;
 
   String res;
   if (!App.isLinux) {

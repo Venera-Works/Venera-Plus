@@ -17,6 +17,8 @@ import 'quark_login.dart';
 
 enum StorageAccountPurpose { library, sync, archive }
 
+typedef _AccountDraft = ({StorageAccount account, bool testAfterSave});
+
 Future<StorageAccount?> showStorageAccountEditor(
   BuildContext context, {
   StorageAccount? initial,
@@ -39,14 +41,11 @@ Future<StorageAccount?> showStorageAccountEditor(
       ? await Navigator.of(
           context,
           rootNavigator: true,
-        ).push<StorageAccount>(AppPageRoute(builder: (_) => page))
-      : await context.to<StorageAccount>(
-          () => page,
-          animatePreviousPage: false,
-        );
+        ).push<_AccountDraft>(AppPageRoute(builder: (_) => page))
+      : await context.to<_AccountDraft>(() => page, animatePreviousPage: false);
   if (result == null) return null;
-  var saved = await storage.save(result);
-  if (saved.statusMessage != null) return saved;
+  var saved = await storage.save(result.account);
+  if (!result.testAfterSave || saved.statusMessage != null) return saved;
   final store = storage.storeFor(saved.id);
   try {
     await store.test();
@@ -354,7 +353,7 @@ class _StorageProviderPage extends StatelessWidget {
                   }),
                   trailing: const Icon(Icons.arrow_right),
                   onTap: () async {
-                    final result = await context.to<StorageAccount>(
+                    final result = await context.to<_AccountDraft>(
                       () => _StorageAccountPage(
                         accounts: accounts,
                         driver: driver,
@@ -432,8 +431,17 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
       _driver == 'Quark' || openListLoginDrivers.containsKey(_driver);
   bool get _autoSaveAfterLogin =>
       _isGoogleDrive || (widget.initial == null && _hasProviderLogin);
+  bool get _canRenameGoogleDrive =>
+      _isGoogleDrive &&
+      widget.initial != null &&
+      _clientId.text.trim() ==
+          (_googleCredentials['client_id'] as String? ?? '').trim() &&
+      _clientSecret.text.trim() ==
+          (_googleCredentials['client_secret'] as String? ?? '').trim();
   String? _error;
+  String? _urlError;
   bool _loggingIn = false;
+  bool _testingConnection = false;
   CancelToken? _googleLogin;
   final _visibleSecrets = <TextEditingController>{};
 
@@ -516,22 +524,34 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                 children: [
                   TextField(
                     controller: _name,
-                    readOnly: _isGoogleDrive && _loggingIn,
+                    readOnly:
+                        (_isGoogleDrive && _loggingIn) || _testingConnection,
                     decoration: _fieldDecoration('Name'),
                   ),
                   const SizedBox(height: 16),
                   if (webdav) ...[
                     TextField(
                       controller: _url,
-                      decoration: _fieldDecoration('URL'),
+                      readOnly: _testingConnection,
+                      decoration: _fieldDecoration(
+                        'URL',
+                      ).copyWith(errorText: _urlError),
+                      onChanged: (_) {
+                        if (_urlError != null) setState(() => _urlError = null);
+                      },
                     ),
                     const SizedBox(height: 16),
                     TextField(
                       controller: _user,
+                      readOnly: _testingConnection,
                       decoration: _fieldDecoration('Username'),
                     ),
                     const SizedBox(height: 16),
-                    _secretField(_password, 'Password'),
+                    _secretField(
+                      _password,
+                      'Password',
+                      readOnly: _testingConnection,
+                    ),
                   ] else ...[
                     if (_isGoogleDrive) ...[
                       TextField(
@@ -539,6 +559,7 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                         readOnly: _loggingIn,
                         autocorrect: false,
                         enableSuggestions: false,
+                        onChanged: (_) => setState(() {}),
                         decoration: _fieldDecoration('Client ID'),
                       ),
                       const SizedBox(height: 16),
@@ -546,6 +567,7 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                         _clientSecret,
                         'Client Secret',
                         readOnly: _loggingIn,
+                        onChanged: (_) => setState(() {}),
                       ),
                     ],
                     if (_hasProviderLogin) ...[
@@ -599,14 +621,24 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
                       ),
                     ),
                   ],
-                  if (!_autoSaveAfterLogin) ...[
+                  if (!_autoSaveAfterLogin || _canRenameGoogleDrive) ...[
                     const SizedBox(height: 16),
                     SizedBox(
                       width: double.infinity,
                       child: FilledButton(
                         style: actionButtonStyle,
-                        onPressed: _loggingIn ? null : _save,
-                        child: Text('Save and test connection'.tl),
+                        onPressed: _loggingIn || _testingConnection
+                            ? null
+                            : _save,
+                        child: ButtonLoadingContent(
+                          isLoading: _testingConnection,
+                          child: Text(
+                            (_isGoogleDrive
+                                    ? 'Save'
+                                    : 'Save and test connection')
+                                .tl,
+                          ),
+                        ),
                       ),
                     ),
                   ],
@@ -619,11 +651,37 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
     );
   }
 
-  void _save({String? refreshToken}) {
+  Future<void> _save({String? refreshToken}) async {
+    if (_testingConnection) return;
     final webdav = _driver == 'WebDAV';
     final quark = _driver == 'Quark';
     try {
       final name = _validatedName();
+      if (refreshToken == null && _canRenameGoogleDrive) {
+        final current =
+            widget.accounts.account(widget.initial!.id) ?? widget.initial!;
+        Navigator.pop(context, (
+          account: current.copyWith(name: name),
+          testAfterSave: false,
+        ));
+        return;
+      }
+      final url = _url.text.trim();
+      if (webdav) {
+        final uri = Uri.tryParse(url);
+        if (uri == null ||
+            (!uri.isScheme('http') && !uri.isScheme('https')) ||
+            uri.host.isEmpty ||
+            uri.port < 1 ||
+            uri.port > 65535 ||
+            RegExp(r'\s').hasMatch(url)) {
+          setState(() {
+            _error = null;
+            _urlError = 'Enter a valid HTTP or HTTPS URL.'.tl;
+          });
+          return;
+        }
+      }
       if (quark) {
         if (_cookie.text.trim().isEmpty) {
           throw const FormatException('Cookie is required');
@@ -648,7 +706,7 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
       }
       final auth = webdav
           ? <String, dynamic>{
-              'url': _url.text.trim(),
+              'url': url,
               'user': _user.text.trim(),
               'password': _password.text,
             }
@@ -661,19 +719,48 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
               cookie: _cookie.text,
               authorization: _authorization,
             );
-      Navigator.pop(
-        context,
-        StorageAccount(
-          id: widget.initial?.id ?? '',
-          backend: webdav ? StorageBackend.webdav : StorageBackend.openlist,
-          driver: webdav ? widget.initial?.driver ?? 'webdav' : _driver,
-          name: name,
-          oauthCallbackUrl: widget.initial?.oauthCallbackUrl ?? '',
-          authorization: auth,
-        ),
+      var candidate = StorageAccount(
+        id: widget.initial?.id ?? '',
+        backend: webdav ? StorageBackend.webdav : StorageBackend.openlist,
+        driver: webdav ? widget.initial?.driver ?? 'webdav' : _driver,
+        name: name,
+        oauthCallbackUrl: widget.initial?.oauthCallbackUrl ?? '',
+        authorization: auth,
       );
+      final testInEditor = webdav && widget.initial != null;
+      if (testInEditor) {
+        setState(() {
+          _error = null;
+          _testingConnection = true;
+        });
+        // 测试草稿时不更新已保存账号的连接状态。
+        final store = WebDavFileStore(candidate);
+        try {
+          await store.test();
+          candidate = candidate.copyWith(
+            status: StorageAuthorizationStatus.valid,
+          );
+        } catch (error) {
+          if (mounted) {
+            setState(() {
+              _error = error is RemoteStorageException
+                  ? error.message
+                  : 'Connection test failed.';
+            });
+          }
+          return;
+        } finally {
+          store.close();
+          if (mounted) setState(() => _testingConnection = false);
+        }
+      }
+      if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
+      Navigator.pop(context, (
+        account: candidate,
+        testAfterSave: !testInEditor,
+      ));
     } on FormatException catch (error) {
-      setState(() => _error = error.message);
+      if (mounted) setState(() => _error = error.message);
     }
   }
 
@@ -725,7 +812,7 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
           cancelToken?.isCancelled != true &&
           refreshToken != null &&
           ModalRoute.of(context)?.isCurrent == true) {
-        _save(refreshToken: refreshToken);
+        await _save(refreshToken: refreshToken);
       }
     } on FormatException catch (error) {
       if (mounted) setState(() => _error = error.message);
@@ -765,7 +852,7 @@ class _StorageAccountPageState extends State<_StorageAccountPage> {
           : await showOpenListLogin(context, driver: _driver);
       if (mounted && authorization != null) {
         _applyAuthorization({..._authorization, ...authorization});
-        if (_autoSaveAfterLogin) _save();
+        if (_autoSaveAfterLogin) await _save();
       }
     } catch (error) {
       if (mounted) {

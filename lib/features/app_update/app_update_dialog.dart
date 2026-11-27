@@ -18,6 +18,7 @@ import 'app_release.dart';
 import 'app_update_service.dart';
 
 final appUpdatePrompt = AppUpdatePrompt();
+const _ignoredAppReleaseTag = 'ignoredAppReleaseTag';
 
 class AppUpdatePrompt {
   AppUpdatePrompt({AppUpdateService? service})
@@ -47,6 +48,10 @@ class AppUpdatePrompt {
       }
       if (release == null) {
         if (manual) _message('No new version available'.tl);
+        return;
+      }
+      if (!manual &&
+          appdata.implicitData[_ignoredAppReleaseTag] == release.tag) {
         return;
       }
       while (_dialog != null) {
@@ -122,6 +127,7 @@ class AppUpdateDialog extends StatefulWidget {
 class _AppUpdateDialogState extends State<AppUpdateDialog> {
   AppReleaseAsset? _apk;
   bool _loadingApk = false;
+  bool _savingIgnoredVersion = false;
   bool _downloaded = false;
   _UpdateStage _stage = _UpdateStage.ready;
   CancelToken? _cancelToken;
@@ -158,7 +164,9 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
 
   Future<void> _downloadAndInstall() async {
     final apk = _apk;
-    if (apk == null || _stage != _UpdateStage.ready) return;
+    if (apk == null || _stage != _UpdateStage.ready || _savingIgnoredVersion) {
+      return;
+    }
     final token = CancelToken();
     _cancelToken = token;
     setState(() {
@@ -223,6 +231,34 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
     } catch (error, stack) {
       Log.error('App Update', error.toString(), stack);
       if (mounted) setState(() => _error = 'Failed to open link'.tl);
+    }
+  }
+
+  Future<void> _ignoreVersion() async {
+    if (_savingIgnoredVersion || _stage != _UpdateStage.ready) return;
+    setState(() {
+      _savingIgnoredVersion = true;
+      _error = null;
+    });
+    final previous = appdata.implicitData[_ignoredAppReleaseTag];
+    appdata.implicitData[_ignoredAppReleaseTag] = widget.release.tag;
+    try {
+      await appdata.writeImplicitData();
+      if (mounted && ModalRoute.isCurrentOf(context) == true) {
+        Navigator.pop(context);
+      }
+    } catch (error, stack) {
+      if (previous == null) {
+        appdata.implicitData.remove(_ignoredAppReleaseTag);
+      } else {
+        appdata.implicitData[_ignoredAppReleaseTag] = previous;
+      }
+      Log.error('App Update', error, stack);
+      if (mounted) {
+        setState(() => _error = 'Failed to ignore this version'.tl);
+      }
+    } finally {
+      if (mounted) setState(() => _savingIgnoredVersion = false);
     }
   }
 
@@ -354,6 +390,14 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
                     runSpacing: 8,
                     children: [
                       TextButton(
+                        onPressed:
+                            _stage == _UpdateStage.ready &&
+                                !_savingIgnoredVersion
+                            ? _ignoreVersion
+                            : null,
+                        child: Text('Ignore this version'.tl),
+                      ),
+                      TextButton(
                         onPressed: () => _openUrl(widget.release.pageUrl),
                         child: Text('View release'.tl),
                       ),
@@ -368,7 +412,9 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
                         else
                           FilledButton(
                             onPressed:
-                                _apk != null && _stage == _UpdateStage.ready
+                                _apk != null &&
+                                    _stage == _UpdateStage.ready &&
+                                    !_savingIgnoredVersion
                                 ? _downloadAndInstall
                                 : null,
                             child: _stage == _UpdateStage.installing

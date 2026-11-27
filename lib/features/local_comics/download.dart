@@ -26,6 +26,7 @@ import 'package:zip_flutter/zip_flutter.dart';
 
 abstract class DownloadTask with ChangeNotifier {
   bool get isAwaitingMissingPages => false;
+  bool get mayDeletePartialOutput => false;
   Future<void> get pendingCleanup => Future.value();
   bool get isWaitingToRetry => false;
   void retryNow() {}
@@ -36,6 +37,7 @@ abstract class DownloadTask with ChangeNotifier {
   bool get isError;
 
   bool get isPaused;
+  bool isPausedByUser = false;
 
   /// bytes per second
   int get speed;
@@ -190,6 +192,16 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
           'c': missingImageCount,
         });
 
+  bool _keepsOutput(LocalComic? local) =>
+      _keepDownloadedFiles || local?.isIncomplete == true;
+
+  @override
+  bool get mayDeletePartialOutput {
+    if (path == null && _resumeFuture == null) return false;
+    final local = LocalManager().find(id, comicType);
+    return !_keepsOutput(local) && (local == null || chapters != null);
+  }
+
   @override
   void cancel() {
     if (_cancelled) return;
@@ -201,7 +213,7 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
       stopped: _resumeFuture,
       cleanOutput: (output) async {
         final local = manager.find(id, comicType);
-        if (_keepDownloadedFiles || local?.isIncomplete == true) return;
+        if (_keepsOutput(local)) return;
         if (local == null) {
           await Directory(output).delete(recursive: true);
         } else if (chapters != null) {
@@ -949,6 +961,11 @@ class ArchiveDownloadTask extends DownloadTask {
     notifyListeners();
     Log.error("Download", message);
   }
+
+  @override
+  bool get mayDeletePartialOutput =>
+      (path != null || _resumeFuture != null) &&
+      LocalManager().find(id, comicType) == null;
 
   @override
   void cancel() {

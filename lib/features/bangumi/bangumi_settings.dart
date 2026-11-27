@@ -44,7 +44,8 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
   bool _isSavingAutoSync = false;
   bool _isSavingAutoMetadataScrape = false;
   bool _tokenVisible = false;
-  late bool _connectionInvalid;
+  late bool _savedConnectionInvalid;
+  String? _tokenError;
   String? _errorMessage;
 
   BangumiService get _service => widget.service ?? BangumiService();
@@ -60,7 +61,7 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
       'bangumiAutoMetadataScrapeEnabled',
       false,
     );
-    _connectionInvalid = _service.isAuthenticationPaused;
+    _savedConnectionInvalid = _service.isAuthenticationPaused;
   }
 
   @override
@@ -86,7 +87,8 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
               onChanged: () {
                 if (!mounted) return;
                 setState(() {
-                  _connectionInvalid = _service.isAuthenticationPaused;
+                  _savedConnectionInvalid = _service.isAuthenticationPaused;
+                  _tokenError = null;
                   _errorMessage = null;
                 });
               },
@@ -95,11 +97,17 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
             TextField(
               key: const Key('bangumi-token-field'),
               controller: _tokenController,
+              enabled: !_isConnecting,
               obscureText: !_tokenVisible,
               autocorrect: false,
               enableSuggestions: false,
+              onChanged: (_) {
+                if (_tokenError != null) setState(() => _tokenError = null);
+              },
               decoration: InputDecoration(
                 labelText: 'Bangumi Access Token'.tl,
+                errorText: _tokenError,
+                errorMaxLines: 3,
                 isDense: true,
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(10),
@@ -148,7 +156,7 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
                   ? null
                   : _setAutoMetadataScrapeEnabled,
             ),
-            if (_connectionInvalid && _errorMessage == null) ...[
+            if (_savedConnectionInvalid) ...[
               const SizedBox(height: 4),
               Align(
                 alignment: AlignmentDirectional.centerStart,
@@ -166,7 +174,7 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
                 child: Text(_errorMessage!, style: errorStyle),
               ),
             ],
-            if (username.isNotEmpty && !_connectionInvalid) ...[
+            if (username.isNotEmpty && !_savedConnectionInvalid) ...[
               const SizedBox(height: 4),
               Align(
                 alignment: Alignment.centerLeft,
@@ -227,38 +235,41 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
 
   Future<void> _connect() async {
     if (_isConnecting) return;
-    if (_tokenController.text.trim().isEmpty) {
-      setState(() => _errorMessage = 'Access Token cannot be empty'.tl);
-      context.showMessage(message: _errorMessage!);
+    final token = _tokenController.text.trim();
+    if (token.isEmpty) {
+      setState(() => _tokenError = 'Access Token cannot be empty'.tl);
       return;
     }
-    setState(() => _isConnecting = true);
+    setState(() {
+      _isConnecting = true;
+      _tokenError = null;
+      _errorMessage = null;
+    });
     try {
-      await _service.connect(_tokenController.text.trim());
+      await _service.connect(token);
       widget.onConnectionChanged?.call();
       if (mounted) {
-        setState(() {
-          _connectionInvalid = false;
-          _errorMessage = null;
-        });
+        setState(() => _savedConnectionInvalid = false);
         context.showMessage(message: 'Connection successful'.tl);
       }
     } catch (error) {
       if (!mounted) return;
-      if (error is BangumiApiException &&
-          (error.statusCode == 401 || error.statusCode == 403)) {
-        setState(() {
-          _connectionInvalid = true;
-          _errorMessage =
-              'Bangumi connection is invalid. Please check your Access Token.'
-                  .tl;
-        });
-      } else {
-        setState(() {
-          _errorMessage = '${'Failed to connect to Bangumi'.tl}: $error';
-        });
+      final isSavedToken = token == _settingString('bangumiAccessToken').trim();
+      setState(() {
+        if (error is BangumiApiException &&
+            (error.statusCode == 401 || error.statusCode == 403)) {
+          if (isSavedToken) {
+            _savedConnectionInvalid = true;
+          } else {
+            _tokenError = 'Invalid Access Token'.tl;
+          }
+        } else {
+          _tokenError = '${'Failed to connect to Bangumi'.tl}: $error';
+        }
+      });
+      if (isSavedToken) {
+        context.showMessage(message: 'Failed to connect to Bangumi'.tl);
       }
-      context.showMessage(message: 'Failed to connect to Bangumi'.tl);
     } finally {
       if (mounted) setState(() => _isConnecting = false);
     }
@@ -348,7 +359,8 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
       if (!mounted) return;
       _tokenController.clear();
       setState(() {
-        _connectionInvalid = false;
+        _savedConnectionInvalid = false;
+        _tokenError = null;
         _errorMessage = null;
         _tokenVisible = false;
       });

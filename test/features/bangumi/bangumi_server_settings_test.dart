@@ -248,6 +248,8 @@ void main() {
           find.text('This API address is already in the list'),
           findsOneWidget,
         );
+        await tester.tap(find.text('Cancel'));
+        await tester.pumpAndSettle();
       }
       fail = true;
       await tester.tap(_entry(bangumiPresetServers[1]));

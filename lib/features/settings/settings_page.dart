@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/gesture.dart';
+import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/settings/about.dart';
 import 'package:venera_plus/features/settings/app.dart';
@@ -12,6 +13,7 @@ import 'package:venera_plus/features/settings/library.dart';
 import 'package:venera_plus/features/settings/network.dart';
 import 'package:venera_plus/features/settings/reader.dart';
 import 'package:venera_plus/features/settings/storage.dart';
+import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/widget_utils.dart';
@@ -31,18 +33,19 @@ enum SettingsDestination {
 }
 
 Widget _buildSettingsContent(SettingsDestination destination) {
+  final key = ValueKey(destination);
   final content = switch (destination) {
-    SettingsDestination.general => const GeneralSettings(),
-    SettingsDestination.appearance => const AppearanceSettings(),
-    SettingsDestination.reader => const ReaderSettings(),
-    SettingsDestination.library => const LibrarySettings(),
-    SettingsDestination.explore => const ExploreSettings(),
-    SettingsDestination.sources => const ContentSourcesPage(),
-    SettingsDestination.storage => const StorageSettings(),
-    SettingsDestination.sync => const SyncSettings(),
-    SettingsDestination.network => const NetworkSettings(),
-    SettingsDestination.advanced => const AdvancedSettings(),
-    SettingsDestination.about => const AboutSettings(),
+    SettingsDestination.general => GeneralSettings(key: key),
+    SettingsDestination.appearance => AppearanceSettings(key: key),
+    SettingsDestination.reader => ReaderSettings(key: key),
+    SettingsDestination.library => LibrarySettings(key: key),
+    SettingsDestination.explore => ExploreSettings(key: key),
+    SettingsDestination.sources => ContentSourcesPage(key: key),
+    SettingsDestination.storage => StorageSettings(key: key),
+    SettingsDestination.sync => SyncSettings(key: key),
+    SettingsDestination.network => NetworkSettings(key: key),
+    SettingsDestination.advanced => AdvancedSettings(key: key),
+    SettingsDestination.about => AboutSettings(key: key),
   };
   return MouseDragScrollRegion(child: content);
 }
@@ -85,7 +88,9 @@ class _SettingsItem {
 class _SettingsPageState extends State<SettingsPage> {
   SettingsDestination? currentPage;
   GlobalKey<NavigatorState> _detailNavKey = GlobalKey<NavigatorState>();
+  List<Page<void>> _detailPages = const [];
   bool _innerCanPop = false;
+  bool _confirmingDestination = false;
 
   ColorScheme get colors => Theme.of(context).colorScheme;
 
@@ -95,19 +100,33 @@ class _SettingsPageState extends State<SettingsPage> {
   void initState() {
     super.initState();
     currentPage = widget.initialDestination;
-    if (widget.initialDestination != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && !enableTwoViews && widget.initialDestination != null) {
-          context.to(
-            () => _SettingsDetailPage(destination: widget.initialDestination!),
-          );
-        }
-      });
-    }
   }
 
-  void _selectDestination(SettingsDestination destination) {
-    if (currentPage == destination) return;
+  Future<void> _selectDestination(SettingsDestination destination) async {
+    if (currentPage == destination || _confirmingDestination) return;
+    if (!App.isDesktop && !enableTwoViews && currentPage == null) {
+      await context.to(
+        () => Material(child: _buildSettingsContent(destination)),
+      );
+      return;
+    }
+    if (_innerCanPop || _detailNavKey.currentState?.canPop() == true) {
+      var confirmed = false;
+      _confirmingDestination = true;
+      try {
+        await showConfirmDialog(
+          context: context,
+          title: 'Discard unsaved changes?'.tl,
+          content:
+              'Changing settings categories will close the current page.'.tl,
+          confirmText: 'Discard changes',
+          onConfirm: () => confirmed = true,
+        );
+      } finally {
+        _confirmingDestination = false;
+      }
+      if (!mounted || !confirmed) return;
+    }
     setState(() {
       _detailNavKey = GlobalKey<NavigatorState>();
       currentPage = destination;
@@ -116,13 +135,13 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _handleBack() async {
-    if (enableTwoViews) {
+    if (currentPage != null) {
       final innerNav = _detailNavKey.currentState;
       if (innerNav != null && (_innerCanPop || innerNav.canPop())) {
         final didPop = await innerNav.maybePop();
-        if (didPop) return;
+        if (didPop || !mounted) return;
       }
-      if (currentPage != null && widget.initialDestination == null) {
+      if (!enableTwoViews || widget.initialDestination == null) {
         setState(() {
           currentPage = null;
           _innerCanPop = false;
@@ -139,10 +158,12 @@ class _SettingsPageState extends State<SettingsPage> {
     return PopScope(
       canPop:
           !widget.isActive ||
-          !enableTwoViews ||
-          (!_innerCanPop &&
+          currentPage == null ||
+          (enableTwoViews &&
+              widget.initialDestination != null &&
+              !_innerCanPop &&
               (_detailNavKey.currentState?.canPop() != true) &&
-              (currentPage == null || widget.initialDestination != null)),
+              !_confirmingDestination),
       onPopInvokedWithResult: (didPop, result) {
         if (didPop || !widget.isActive) return;
         _handleBack();
@@ -152,9 +173,10 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget buildBody() {
-    if (enableTwoViews) {
-      return Row(
-        children: [
+    if (!enableTwoViews && currentPage == null) return buildLeft();
+    return Row(
+      children: [
+        if (enableTwoViews) ...[
           SizedBox(width: 280, height: double.infinity, child: buildLeft()),
           Container(
             height: double.infinity,
@@ -167,12 +189,10 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ),
           ),
-          Expanded(child: buildRight()),
         ],
-      );
-    } else {
-      return buildLeft();
-    }
+        Expanded(key: const ValueKey('settings-detail'), child: buildRight()),
+      ],
+    );
   }
 
   Widget buildLeft() {
@@ -331,15 +351,7 @@ class _SettingsPageState extends State<SettingsPage> {
             : const EdgeInsets.symmetric(horizontal: 8),
         child: ClickInkWell(
           borderRadius: BorderRadius.circular(8),
-          onTap: () {
-            if (enableTwoViews) {
-              _selectDestination(item.destination);
-            } else {
-              context.to(
-                () => _SettingsDetailPage(destination: item.destination),
-              );
-            }
-          },
+          onTap: () => _selectDestination(item.destination),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(8),
             child: content,
@@ -377,6 +389,23 @@ class _SettingsPageState extends State<SettingsPage> {
     if (destination == null) {
       return const SizedBox();
     }
+    final compact = !enableTwoViews;
+    final pageKey = ValueKey(destination);
+    // 只在布局或分类实际变化时更新页面列表，避免返回状态通知反复重建路由。
+    if (_detailPages.length != (compact ? 2 : 1) ||
+        _detailPages.last.key != pageKey) {
+      _detailPages = [
+        if (compact)
+          const MaterialPage<void>(
+            key: ValueKey('settings-list'),
+            child: SizedBox.shrink(),
+          ),
+        MaterialPage<void>(
+          key: pageKey,
+          child: _buildSettingsContent(destination),
+        ),
+      ];
+    }
     return NotificationListener<NavigationNotification>(
       onNotification: (notification) {
         if (_innerCanPop != notification.canHandlePop) {
@@ -388,26 +417,16 @@ class _SettingsPageState extends State<SettingsPage> {
       },
       child: Navigator(
         key: _detailNavKey,
-        onGenerateRoute: (settings) {
-          return PageRouteBuilder(
-            pageBuilder: (context, animation, secondaryAnimation) {
-              return _buildSettingsContent(destination);
-            },
-            transitionDuration: Duration.zero,
-          );
+        pages: _detailPages,
+        onDidRemovePage: (page) {
+          if (page.key == pageKey && currentPage == destination) {
+            setState(() {
+              currentPage = null;
+              _innerCanPop = false;
+            });
+          }
         },
       ),
     );
-  }
-}
-
-class _SettingsDetailPage extends StatelessWidget {
-  const _SettingsDetailPage({required this.destination});
-
-  final SettingsDestination destination;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(child: _buildSettingsContent(destination));
   }
 }

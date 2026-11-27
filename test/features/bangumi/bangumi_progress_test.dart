@@ -638,6 +638,11 @@ void main() {
     await tester.tap(find.byKey(const Key('bangumi-unbind')));
     await tester.pumpAndSettle();
 
+    expect(find.text('Unbind from Bangumi?'), findsOneWidget);
+    expect(appdata.settings['bangumiBindings'], isNotEmpty);
+    await tester.tap(find.text('Unbind').last);
+    await tester.pumpAndSettle();
+
     expect(gateway.patches, isEmpty);
     expect(appdata.settings['bangumiBindings'], isEmpty);
   });

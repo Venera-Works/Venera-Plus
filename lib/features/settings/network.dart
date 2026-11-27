@@ -1,4 +1,4 @@
-import 'dart:async';
+import 'dart:io' show InternetAddress;
 
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/button.dart';
@@ -74,15 +74,16 @@ class _ProxySettingViewState extends State<_ProxySettingView> {
   final _formKey = GlobalKey<FormState>();
   bool _passwordVisible = false;
 
-  // USERNAME:PASSWORD@HOST:PORT
+  // [USERNAME[:PASSWORD]@]HOST[:PORT]
   String toProxyStr() {
     if (type == 'direct') {
       return 'direct';
     } else if (type == 'system') {
       return 'system';
     }
-    final host = _hostController.text;
-    final port = _portController.text;
+    final host = _hostController.text.trim();
+    final rawPort = _portController.text.trim();
+    final port = rawPort.isEmpty ? '' : int.parse(rawPort).toString();
     final username = _usernameController.text;
     final password = _passwordController.text;
     var res = '';
@@ -109,25 +110,27 @@ class _ProxySettingViewState extends State<_ProxySettingView> {
       return;
     }
     type = 'manual';
-    var parts = proxy.split('@');
-    if (parts.length == 2) {
-      var auth = parts[0].split(':');
-      if (auth.length == 2) {
-        _usernameController.text = auth[0];
-        _passwordController.text = auth[1];
-      }
-      parts = parts[1].split(':');
-      if (parts.length == 2) {
-        _hostController.text = parts[0];
-        _portController.text = parts[1];
-      }
-    } else {
-      parts = proxy.split(':');
-      if (parts.length == 2) {
-        _hostController.text = parts[0];
-        _portController.text = parts[1];
-      }
+    final at = proxy.lastIndexOf('@');
+    if (at >= 0) {
+      final auth = proxy.substring(0, at);
+      final separator = auth.indexOf(':');
+      _usernameController.text = separator < 0
+          ? auth
+          : auth.substring(0, separator);
+      _passwordController.text = separator < 0
+          ? ''
+          : auth.substring(separator + 1);
     }
+    final address = proxy.substring(at + 1);
+    final separator = address.startsWith('[')
+        ? address.indexOf(':', address.indexOf(']') + 1)
+        : address.indexOf(':');
+    _hostController.text = separator < 0
+        ? address
+        : address.substring(0, separator);
+    _portController.text = separator < 0
+        ? ''
+        : address.substring(separator + 1);
   }
 
   @override
@@ -195,7 +198,7 @@ class _ProxySettingViewState extends State<_ProxySettingView> {
             decoration: _proxyFieldDecoration('Host'),
             controller: _hostController,
             validator: (v) {
-              if (v?.isEmpty ?? false) {
+              if (v == null || v.trim().isEmpty) {
                 return "Host cannot be empty".tl;
               }
               return null;
@@ -206,11 +209,11 @@ class _ProxySettingViewState extends State<_ProxySettingView> {
             decoration: _proxyFieldDecoration('Port'),
             controller: _portController,
             validator: (v) {
-              if (v?.isEmpty ?? true) {
-                return null;
-              }
-              if (int.tryParse(v!) == null) {
-                return "Port must be a number".tl;
+              final value = v?.trim() ?? '';
+              if (value.isEmpty) return null;
+              final port = int.tryParse(value, radix: 10);
+              if (port == null || port < 1 || port > 65535) {
+                return 'Port must be between 1 and 65535.'.tl;
               }
               return null;
             },
@@ -272,7 +275,15 @@ class _DNSOverrides extends StatefulWidget {
 }
 
 class __DNSOverridesState extends State<_DNSOverrides> {
-  var overrides = <(TextEditingController, TextEditingController)>[];
+  static final _domainPattern = RegExp(
+    r'^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$',
+  );
+  final overrides = <(TextEditingController, TextEditingController)>[];
+  final _formKey = GlobalKey<FormState>();
+  final _duplicates = <String>{};
+  late bool _enabled = appdata.settings['enableDnsOverrides'] == true;
+  late bool _sni = appdata.settings['sni'] != false;
+  bool _saving = false;
 
   @override
   void initState() {
@@ -289,17 +300,43 @@ class __DNSOverridesState extends State<_DNSOverrides> {
 
   @override
   void dispose() {
-    var map = <String, String>{};
-    for (var entry in overrides) {
-      map[entry.$1.text] = entry.$2.text;
+    for (final (domain, ip) in overrides) {
+      domain.dispose();
+      ip.dispose();
     }
-    // Updating the setting notifies the overview after the widget tree unlocks.
-    scheduleMicrotask(() {
-      appdata.settings['dnsOverrides'] = map;
-      appdata.saveData();
-      JsEngine().resetDio();
-    });
     super.dispose();
+  }
+
+  String _domainKey(String input) =>
+      input.trim().toLowerCase().replaceFirst(RegExp(r'\.$'), '');
+
+  bool _isBlank((TextEditingController, TextEditingController) entry) =>
+      entry.$1.text.trim().isEmpty && entry.$2.text.trim().isEmpty;
+
+  Future<void> _save() async {
+    if (_saving) return;
+    _duplicates.clear();
+    final rules = <String, String>{};
+    for (final entry in overrides) {
+      if (_isBlank(entry)) continue;
+      final domain = _domainKey(entry.$1.text);
+      if (rules.containsKey(domain)) _duplicates.add(domain);
+      rules[domain] = entry.$2.text.trim();
+    }
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _saving = true);
+    appdata.settings['dnsOverrides'] = rules;
+    appdata.settings['enableDnsOverrides'] = _enabled;
+    appdata.settings['sni'] = _sni;
+    try {
+      await appdata.saveData();
+      JsEngine().resetDio();
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+    } catch (_) {
+      if (mounted) context.showMessage(message: 'Saved Failed'.tl);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 
   @override
@@ -307,49 +344,62 @@ class __DNSOverridesState extends State<_DNSOverrides> {
     return PopUpWidgetScaffold(
       title: "DNS Overrides".tl,
       body: SingleChildScrollView(
-        child: Column(
-          children: [
-            SwitchSetting(
-              title: "Enable DNS Overrides".tl,
-              settingKey: "enableDnsOverrides",
-            ),
-            SwitchSetting(
-              title: 'Server Name Indication'.tl,
-              settingKey: 'sni',
-            ),
-            const SizedBox(height: 8),
-            Container(
-              height: 1,
-              margin: EdgeInsets.symmetric(horizontal: 8),
-              color: context.colorScheme.outlineVariant,
-            ),
-            for (var i = 0; i < overrides.length; i++) buildOverride(i),
-            const SizedBox(height: 8),
-            TextButton.icon(
-              style: actionButtonStyle,
-              onPressed: () {
-                setState(() {
-                  overrides.add((
-                    TextEditingController(),
-                    TextEditingController(),
-                  ));
-                });
-              },
-              icon: const Icon(Icons.add),
-              label: Text("Add".tl),
-            ),
-          ],
+        child: Form(
+          key: _formKey,
+          child: Column(
+            children: [
+              SwitchListTile(
+                title: Text('Enable DNS Overrides'.tl),
+                value: _enabled,
+                onChanged: (value) => setState(() => _enabled = value),
+              ),
+              SwitchListTile(
+                title: Text('Server Name Indication'.tl),
+                value: _sni,
+                onChanged: (value) => setState(() => _sni = value),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                height: 1,
+                margin: const EdgeInsets.symmetric(horizontal: 8),
+                color: context.colorScheme.outlineVariant,
+              ),
+              for (final entry in overrides) buildOverride(entry),
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    TextButton.icon(
+                      style: actionButtonStyle,
+                      onPressed: () => setState(() {
+                        overrides.add((
+                          TextEditingController(),
+                          TextEditingController(),
+                        ));
+                      }),
+                      icon: const Icon(Icons.add),
+                      label: Text('Add'.tl),
+                    ),
+                    FilledButton(
+                      style: actionButtonStyle,
+                      onPressed: _saving ? null : _save,
+                      child: Text('Save'.tl),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  Widget buildOverride(int index) {
-    var entry = overrides[index];
+  Widget buildOverride((TextEditingController, TextEditingController) entry) {
     return Container(
-      key: ValueKey(index),
-      height: 48,
-      margin: EdgeInsets.symmetric(horizontal: 8),
+      key: ObjectKey(entry.$1),
+      margin: const EdgeInsets.symmetric(horizontal: 8),
       decoration: BoxDecoration(
         border: Border(
           bottom: BorderSide(color: context.colorScheme.outlineVariant),
@@ -360,31 +410,48 @@ class __DNSOverridesState extends State<_DNSOverrides> {
       child: Row(
         children: [
           Expanded(
-            child: TextField(
+            child: TextFormField(
               decoration: InputDecoration(
                 border: InputBorder.none,
                 hintText: "Domain".tl,
               ),
               controller: entry.$1,
+              validator: (_) {
+                if (_isBlank(entry)) return null;
+                final domain = _domainKey(entry.$1.text);
+                if (domain.length > 253 || !_domainPattern.hasMatch(domain)) {
+                  return 'Enter a valid domain name.'.tl;
+                }
+                if (_duplicates.contains(domain)) {
+                  return 'Duplicate domain name.'.tl;
+                }
+                return null;
+              },
             ).paddingHorizontal(8),
           ),
-          Container(width: 1, color: context.colorScheme.outlineVariant),
           Expanded(
-            child: TextField(
+            child: TextFormField(
               decoration: InputDecoration(
                 border: InputBorder.none,
                 hintText: "IP".tl,
               ),
               controller: entry.$2,
+              validator: (_) {
+                if (_isBlank(entry)) return null;
+                if (InternetAddress.tryParse(entry.$2.text.trim()) == null) {
+                  return 'Enter a valid IP address.'.tl;
+                }
+                return null;
+              },
             ).paddingHorizontal(8),
           ),
-          Container(width: 1, color: context.colorScheme.outlineVariant),
           IconButton(
+            tooltip: 'Delete'.tl,
             icon: const Icon(Icons.delete_outline),
             onPressed: () {
-              setState(() {
-                overrides.removeAt(index);
-              });
+              setState(() => overrides.remove(entry));
+              entry.$1.dispose();
+              entry.$2.dispose();
             },
           ),
         ],
