@@ -291,20 +291,34 @@ class ComicSourceParser {
     );
   }
 
-  JSInvokable? _restore;
+  String? _rollbackToken;
 
   /// Restore the previous runtime object if a later disk commit fails.
   void rollback() {
+    final token = _rollbackToken;
+    if (token == null) return;
     try {
-      _restore?.invoke([]);
+      JsEngine().runCode('''(() => {
+        const slot = ComicSource._rollbackSlots?.[${jsonEncode(token)}];
+        if (slot == null) return;
+        if (slot.hasPrevious) ComicSource.sources[slot.key] = slot.previous;
+        else delete ComicSource.sources[slot.key];
+      })()''');
     } finally {
       commit();
     }
   }
 
   void commit() {
-    _restore?.free();
-    _restore = null;
+    final token = _rollbackToken;
+    if (token == null) return;
+    try {
+      JsEngine().runCode(
+        'delete ComicSource._rollbackSlots?.[${jsonEncode(token)}];',
+      );
+    } finally {
+      _rollbackToken = null;
+    }
   }
 
   /// comic source key
@@ -479,19 +493,18 @@ class ComicSourceParser {
     _key = key;
     _checkKeyValidation();
 
-    _restore =
-        JsEngine().runCode('''(() => {
-      const previous = ComicSource.sources[${jsonEncode(key)}];
-      return () => {
-        if (previous === undefined) delete ComicSource.sources[${jsonEncode(key)}];
-        else ComicSource.sources[${jsonEncode(key)}] = previous;
+    final token = const Uuid().v4();
+    _rollbackToken = token;
+    JsEngine().runCode('''(() => {
+      const key = ${jsonEncode(key)};
+      const slots = ComicSource._rollbackSlots ??= Object.create(null);
+      slots[${jsonEncode(token)}] = {
+        key,
+        hasPrevious: Object.prototype.hasOwnProperty.call(ComicSource.sources, key),
+        previous: ComicSource.sources[key],
       };
-    })()''')
-            as JSInvokable;
-
-    JsEngine().runCode("""
-      void (ComicSource.sources.$_key = this['temp']);
-    """);
+      ComicSource.sources[key] = this['temp'];
+    })()''');
 
     var source = ComicSource(
       _name!,
@@ -536,7 +549,7 @@ class ComicSourceParser {
     return source;
   }
 
-  _checkKeyValidation() {
+  void _checkKeyValidation() {
     // 仅允许数字和字母以及下划线
     if (!_key!.contains(RegExp(r"^[a-zA-Z_][a-zA-Z0-9_]*$"))) {
       throw ComicSourceParseException("key $_key is invalid");
@@ -796,31 +809,57 @@ class ComicSourceParser {
   }
 
   CategoryData? _loadCategoryData() {
-    var doc = _getValue("category");
-
-    if (doc?["title"] == null) {
-      return null;
+    final sourceKey = _key!;
+    final doc = JsEngine().runCode('''(() => {
+      const category = ComicSource.sources[${jsonEncode(sourceKey)}]?.category;
+      const title = category?.title;
+      if (title == null) return null;
+      return JSON.stringify({
+        title,
+        enableRankingPage: category.enableRankingPage,
+        parts: category.parts.map(part => {
+          if (part == null || typeof part !== 'object') return null;
+          const categories = part.categories;
+          if (categories != null && !Array.isArray(categories)) return null;
+          return {
+            name: part.name,
+            type: part.type,
+            categories,
+            randomNumber: part.randomNumber,
+            itemType: part.itemType,
+            categoryParams: part.categoryParams,
+            groupParam: part.groupParam,
+            hasLoader: typeof part.loader === 'function',
+          };
+        }),
+      }, (_, value) => value ?? null);
+    })()''');
+    final Map<String, dynamic> category;
+    try {
+      if (doc == null) return null;
+      category = jsonDecode(doc as String) as Map<String, dynamic>;
+    } finally {
+      JSRef.freeRecursive(doc);
     }
 
-    final String title = doc["title"];
-    final bool? enableRankingPage = doc["enableRankingPage"];
+    final String title = category["title"];
+    final bool? enableRankingPage = category["enableRankingPage"];
+    final parts = category["parts"] as List;
+    final categoryParts = <BaseCategoryPart>[];
 
-    var categoryParts = <BaseCategoryPart>[];
-
-    for (var c in doc["parts"]) {
-      if (c["categories"] != null && c["categories"] is! List) {
-        continue;
-      }
-      List? categories = c["categories"];
-      if (categories == null || categories[0] is Map) {
-        // new format
-        final String name = c["name"];
-        final String type = c["type"];
+    for (var partIndex = 0; partIndex < parts.length; partIndex++) {
+      final c = parts[partIndex];
+      if (c is! Map) continue;
+      final List? categories = c["categories"];
+      final String name = c["name"];
+      final String type = c["type"];
+      if (categories == null || categories.isEmpty || categories.first is Map) {
+        // 新格式
         final cs = categories
             ?.map(
               (e) => CategoryItem(
                 e['label'],
-                PageJumpTarget.parse(_key!, e['target']),
+                PageJumpTarget.parse(sourceKey, e['target']),
               ),
             )
             .toList();
@@ -834,19 +873,20 @@ class ComicSourceParser {
             RandomCategoryPart(name, cs!, c["randomNumber"] ?? 1),
           );
         } else if (type == "dynamic" && categories == null) {
-          var loader = c["loader"];
-          if (loader is! JSInvokable) {
+          if (c["hasLoader"] != true) {
             throw "DynamicCategoryPart loader must be a function";
           }
           categoryParts.add(
-            DynamicCategoryPart(name, JSAutoFreeFunction(loader), _key!),
+            DynamicCategoryPart(
+              name,
+              (_) => _invokeDynamicCategoryLoader(sourceKey, partIndex),
+              sourceKey,
+            ),
           );
         }
       } else {
-        // old format
-        final String name = c["name"];
-        final String type = c["type"];
-        final List<String> tags = List.from(c["categories"]);
+        // 旧格式
+        final List<String> tags = List.from(categories);
         final String itemType = c["itemType"];
         List<String>? categoryParams = ListOrNull.from(c["categoryParams"]);
         final String? groupParam = c["groupParam"];
@@ -857,18 +897,18 @@ class ComicSourceParser {
         for (int i = 0; i < tags.length; i++) {
           PageJumpTarget target;
           if (itemType == 'category') {
-            target = PageJumpTarget(_key!, 'category', {
+            target = PageJumpTarget(sourceKey, 'category', {
               "category": tags[i],
               "param": categoryParams?.elementAtOrNull(i),
             });
           } else if (itemType == 'search') {
-            target = PageJumpTarget(_key!, 'search', {"keyword": tags[i]});
+            target = PageJumpTarget(sourceKey, 'search', {"keyword": tags[i]});
           } else if (itemType == 'search_with_namespace') {
-            target = PageJumpTarget(_key!, 'search', {
+            target = PageJumpTarget(sourceKey, 'search', {
               "keyword": "$name:$tags[i]",
             });
           } else {
-            target = PageJumpTarget(_key!, itemType, null);
+            target = PageJumpTarget(sourceKey, itemType, null);
           }
           cs.add(CategoryItem(tags[i], target));
         }
@@ -888,6 +928,17 @@ class ComicSourceParser {
       enableRankingPage: enableRankingPage ?? false,
       key: title,
     );
+  }
+
+  static dynamic _invokeDynamicCategoryLoader(String sourceKey, int partIndex) {
+    return JsEngine().runCode('''(() => {
+      const part = ComicSource.sources[${jsonEncode(sourceKey)}]?.category?.parts?.[$partIndex];
+      const loader = part?.loader;
+      if (typeof loader !== 'function') {
+        throw new TypeError('DynamicCategoryPart loader must be a function');
+      }
+      return loader.call(part);
+    })()''');
   }
 
   CategoryComicsData? _loadCategoryComicsData() {
@@ -1523,8 +1574,7 @@ class ComicSourceParser {
   }
 
   Map<String, Map<String, dynamic>> _parseSettings() {
-    var value = _getValue("settings");
-    return normalizeComicSourceSettings(value) ?? {};
+    return loadComicSourceSettings(_key!) ?? {};
   }
 
   RegExp? _parseIdMatch() {

@@ -5,7 +5,6 @@ import 'dart:io';
 
 import 'package:flutter/widgets.dart';
 import 'package:venera_plus/foundation/app.dart';
-import 'package:venera_plus/foundation/js_engine.dart';
 import 'package:venera_plus/foundation/log.dart';
 import 'package:venera_plus/foundation/res.dart';
 
@@ -294,8 +293,7 @@ class ComicSource {
   /// This allows sources to use getters for dynamic settings that can change at runtime.
   Map<String, Map<String, dynamic>>? getSettingsDynamic() {
     try {
-      var value = JsEngine().runCode("ComicSource.sources.$key.settings");
-      return normalizeComicSourceSettings(value);
+      return loadComicSourceSettings(key);
     } catch (e) {
       Log.error("ComicSource", "Failed to get dynamic settings: $e");
       return settings;

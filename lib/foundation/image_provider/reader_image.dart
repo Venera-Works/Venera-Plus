@@ -321,41 +321,49 @@ class ReaderImageProvider
         })()
       ''');
         if (func is JSInvokable) {
-          var autoFreeFunc = JSAutoFreeFunction(func);
-          var result = autoFreeFunc([imageBytes, cid, eid, page, sourceKey]);
-          if (result is Uint8List) {
-            imageBytes = result;
-          } else if (result is Future) {
-            var futureResult = await result;
-            if (futureResult is Uint8List) {
-              imageBytes = futureResult;
-            }
-          } else if (result is Map) {
-            var image = result['image'];
-            if (image is Uint8List) {
-              imageBytes = image;
-            } else if (image is Future) {
-              JSAutoFreeFunction? onCancel;
-              if (result['onCancel'] is JSInvokable) {
-                onCancel = JSAutoFreeFunction(result['onCancel']);
+          final autoFreeFunc = JSAutoFreeFunction(func);
+          try {
+            final result = autoFreeFunc([
+              imageBytes,
+              cid,
+              eid,
+              page,
+              sourceKey,
+            ]);
+            if (result is Uint8List) {
+              imageBytes = result;
+            } else if (result is Future) {
+              final futureResult = await result;
+              if (futureResult is Uint8List) {
+                imageBytes = futureResult;
               }
-              if (onCancel == null) {
-                var futureImage = await image;
-                if (futureImage is Uint8List) {
-                  imageBytes = futureImage;
-                }
-              } else {
-                final cancelImageProcessing = onCancel;
-                final futureImage = await _waitForReaderImageProcessingResult(
-                  image,
-                  () => cancelImageProcessing([]),
-                  checkStop,
-                );
-                if (futureImage is Uint8List) {
-                  imageBytes = futureImage;
+            } else if (result is Map) {
+              final image = result['image'];
+              if (image is Uint8List) {
+                imageBytes = image;
+              } else if (image is Future) {
+                final cancel = result['onCancel'];
+                final onCancel = cancel is JSInvokable
+                    ? JSAutoFreeFunction(cancel)
+                    : null;
+                try {
+                  final futureImage = onCancel == null
+                      ? await image
+                      : await _waitForReaderImageProcessingResult(
+                          image,
+                          () => onCancel([]),
+                          checkStop,
+                        );
+                  if (futureImage is Uint8List) {
+                    imageBytes = futureImage;
+                  }
+                } finally {
+                  onCancel?.dispose();
                 }
               }
             }
+          } finally {
+            autoFreeFunc.dispose();
           }
         }
       }

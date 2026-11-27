@@ -883,15 +883,23 @@ class DocumentWrapper {
 
 class JSAutoFreeFunction {
   final JSInvokable func;
+  bool _disposed = false;
 
   /// Automatically free the function when it's not used anymore
   JSAutoFreeFunction(this.func) {
     func.dup();
-    finalizer.attach(this, func);
+    finalizer.attach(this, func, detach: this);
   }
 
   dynamic call(List<dynamic> args) {
     return func(args);
+  }
+
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    finalizer.detach(this);
+    func.destroy();
   }
 
   static final finalizer = Finalizer<JSInvokable>((func) {

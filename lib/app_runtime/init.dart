@@ -121,7 +121,7 @@ Future<void> _refreshRemoteComicLibrariesAfterSettingsImport() async {
   _remoteLibraryConfigurationSignature = _remoteLibrarySignature();
   await RemoteLibraryEngines.cancelAll();
   _remoteComicLibrarySources.clear();
-  await ComicSourceManager().reload();
+  await ComicSourceManager().refreshRuntimeSources();
   RemoteLibraryEngines.checkAllAutomaticSync();
 }
 

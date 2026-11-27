@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_qjs/flutter_qjs.dart';
 import 'package:venera_plus/foundation/js_engine.dart';
 
@@ -185,4 +187,52 @@ Map<String, Map<String, dynamic>>? normalizeComicSourceSettings(dynamic value) {
     newMap[key] = v;
   }
   return newMap;
+}
+
+Map<String, Map<String, dynamic>>? loadComicSourceSettings(String sourceKey) {
+  final jsSourceKey = jsonEncode(sourceKey);
+  final raw = JsEngine().runCode('''(() => {
+    const settings = ComicSource.sources[$jsSourceKey]?.settings;
+    if (settings == null || typeof settings !== 'object') return null;
+
+    const data = Object.create(null);
+    const callbacks = Object.create(null);
+    for (const [settingKey, group] of Object.entries(settings)) {
+      if (group == null || typeof group !== 'object') continue;
+      const values = data[settingKey] = Object.create(null);
+      for (const [itemKey, value] of Object.entries(group)) {
+        if (typeof value === 'function') {
+          (callbacks[settingKey] ??= []).push(itemKey);
+        } else {
+          values[itemKey] = value;
+        }
+      }
+    }
+    return JSON.stringify({ data, callbacks }, (_, value) => value ?? null);
+  })()''');
+  try {
+    if (raw == null) return null;
+    final snapshot = jsonDecode(raw as String) as Map<String, dynamic>;
+    final settings = normalizeComicSourceSettings(snapshot['data']);
+    if (settings == null) return null;
+
+    final callbacks = snapshot['callbacks'] as Map<String, dynamic>;
+    for (final entry in callbacks.entries) {
+      final group = settings[entry.key]!;
+      final jsSettingKey = jsonEncode(entry.key);
+      for (final String itemKey in entry.value as List) {
+        final jsItemKey = jsonEncode(itemKey);
+        group[itemKey] = (List<dynamic> args) {
+          final arguments = args.isEmpty ? '' : '...${jsonEncode(args)}';
+          return JsEngine().runCode('''(() => {
+            const fn = ComicSource.sources[$jsSourceKey]?.settings?.[$jsSettingKey]?.[$jsItemKey];
+            return fn($arguments);
+          })()''');
+        };
+      }
+    }
+    return settings;
+  } finally {
+    JSRef.freeRecursive(raw);
+  }
 }
