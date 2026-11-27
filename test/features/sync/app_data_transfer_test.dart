@@ -741,6 +741,103 @@ void main() {
       );
 
       test(
+        'a deleted cloud account stays deleted through a two-device snapshot round trip',
+        () async {
+          const syncA = StorageAccount(
+            id: 'sync-a',
+            backend: StorageBackend.webdav,
+            driver: 'webdav',
+            name: 'Sync A',
+            authorization: {'url': 'https://example.com/dav/'},
+          );
+          final syncB = syncA.copyWith(id: 'sync-b', name: 'Sync B');
+          final deleted = syncA.copyWith(id: 'deleted', name: 'Deleted');
+          final locationA = {'accountId': syncA.id, 'directory': '/Device A/'};
+          final locationB = {'accountId': syncB.id, 'directory': '/Device B/'};
+          final storage = RemoteStorageAccounts.instance;
+          appdata.settings['syncRemoteLocation'] = locationA;
+          appdata.settings[remoteStorageAccountsSetting] = [
+            syncA.toJson(),
+            deleted.toJson(),
+          ];
+
+          await storage.remove(deleted.id);
+          final snapshotA = await exportAppData();
+
+          appdata.settings['syncRemoteLocation'] = locationB;
+          appdata.settings[remoteStorageAccountsSetting] = [
+            syncB.toJson(),
+            deleted.toJson(),
+          ];
+          await appdata.saveData(false);
+          await importAppData(snapshotA);
+
+          expect(storage.accounts.map((item) => item.id), [syncB.id, syncA.id]);
+          expect(storage.account(syncB.id)?.toJson(), syncB.toJson());
+          expect(appdata.settings['syncRemoteLocation'], locationB);
+          final snapshotB = await exportAppData();
+
+          appdata.settings['syncRemoteLocation'] = locationA;
+          appdata.settings[remoteStorageAccountsSetting] = [syncA.toJson()];
+          await appdata.saveData(false);
+          await importAppData(snapshotB);
+
+          expect(
+            storage.accounts.map((item) => item.id),
+            unorderedEquals([syncA.id, syncB.id]),
+          );
+          expect(appdata.settings['syncRemoteLocation'], locationA);
+          expect(storage.account(deleted.id), isNull);
+        },
+      );
+
+      test(
+        'excluding cloud accounts from sync preserves local accounts and credentials',
+        () async {
+          const local = StorageAccount(
+            id: 'local',
+            backend: StorageBackend.openlist,
+            driver: 'GoogleDrive',
+            name: 'Local drive',
+            authorization: {'refresh_token': 'local-token'},
+            status: StorageAuthorizationStatus.invalid,
+          );
+          final localOnly = local.copyWith(
+            id: 'local-only',
+            name: 'Local only',
+          );
+          final incoming = local.copyWith(
+            name: 'Remote name',
+            authorization: {'refresh_token': 'remote-token'},
+            status: StorageAuthorizationStatus.valid,
+          );
+          final localAccounts = [local.toJson(), localOnly.toJson()];
+          appdata.settings['disableSyncFields'] = remoteStorageAccountsSetting;
+          appdata.settings[remoteStorageAccountsSetting] = localAccounts;
+          await appdata.saveData(false);
+          final archive = await _createArchive(
+            root,
+            textEntries: {
+              'appdata.json': jsonEncode({
+                'settings': {
+                  remoteStorageAccountsSetting: [incoming.toJson()],
+                },
+              }),
+            },
+          );
+
+          await importAppData(archive);
+
+          expect(
+            RemoteStorageAccounts.instance.accounts.map(
+              (item) => item.toJson(),
+            ),
+            localAccounts,
+          );
+        },
+      );
+
+      test(
         'checkVersion skips backups no newer than the installed data version',
         () async {
           appdata.settings['dataVersion'] = 7;

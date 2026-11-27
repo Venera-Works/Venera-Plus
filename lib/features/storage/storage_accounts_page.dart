@@ -167,7 +167,6 @@ class _StorageAccountsPageState extends State<StorageAccountsPage> {
 
   @override
   Widget build(BuildContext context) {
-    final accounts = widget.accounts.accounts;
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
     return Scaffold(
@@ -178,92 +177,102 @@ class _StorageAccountsPageState extends State<StorageAccountsPage> {
         onPressed: _edit,
         child: const Icon(Icons.add),
       ),
-      body: accounts.isEmpty
-          ? Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.cloud_outlined,
-                      size: 40,
-                      color: colors.onSurfaceVariant,
+      body: ListenableBuilder(
+        listenable: widget.accounts,
+        builder: (context, _) {
+          final accounts = widget.accounts.accounts;
+          return accounts.isEmpty
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.cloud_outlined,
+                          size: 40,
+                          color: colors.onSurfaceVariant,
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          'No cloud storage accounts'.tl,
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Add an account to browse cloud comics, sync app data or back up archives.'
+                              .tl,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: colors.onSurfaceVariant),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 12),
-                    Text(
-                      'No cloud storage accounts'.tl,
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Add an account to browse cloud comics, sync app data or back up archives.'
-                          .tl,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: colors.onSurfaceVariant),
-                    ),
-                  ],
-                ),
-              ),
-            )
-          : ListView.builder(
-              padding: const EdgeInsets.only(bottom: 96),
-              itemCount: accounts.length,
-              itemBuilder: (context, index) {
-                final account = accounts[index];
-                final testing = _testingIds.contains(account.id);
-                final hasError =
-                    account.statusMessage != null ||
-                    account.status == StorageAuthorizationStatus.invalid;
-                return ListTile(
-                  title: Text(account.name),
-                  subtitle: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        account.statusMessage?.tl ??
-                            '${account.driver.tl} · ${switch (account.status) {
-                              StorageAuthorizationStatus.valid => 'Connected'.tl,
-                              StorageAuthorizationStatus.invalid => 'Authorization invalid'.tl,
-                              StorageAuthorizationStatus.unknown => 'Connection not verified'.tl,
-                            }}',
-                        style: hasError ? TextStyle(color: colors.error) : null,
-                      ),
-                      Text(_usage(account)),
-                    ],
                   ),
-                  trailing: IconButton(
-                    tooltip: 'Delete'.tl,
-                    icon: const Icon(Icons.delete_outline),
-                    onPressed: testing
-                        ? null
-                        : () => showConfirmDialog(
-                            context: context,
-                            title: 'Delete'.tl,
-                            content: account.name,
-                            confirmText: 'Delete',
-                            btnColor: colors.error,
-                            onConfirm: () async {
-                              await widget.accounts.remove(account.id);
-                              if (mounted) setState(() {});
-                            },
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.only(bottom: 96),
+                  itemCount: accounts.length,
+                  itemBuilder: (context, index) {
+                    final account = accounts[index];
+                    final testing = _testingIds.contains(account.id);
+                    final hasError =
+                        account.statusMessage != null ||
+                        account.status == StorageAuthorizationStatus.invalid;
+                    return ListTile(
+                      title: Text(account.name),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            account.statusMessage?.tl ??
+                                '${account.driver.tl} · ${switch (account.status) {
+                                  StorageAuthorizationStatus.valid => 'Connected'.tl,
+                                  StorageAuthorizationStatus.invalid => 'Authorization invalid'.tl,
+                                  StorageAuthorizationStatus.unknown => 'Connection not verified'.tl,
+                                }}',
+                            style: hasError
+                                ? TextStyle(color: colors.error)
+                                : null,
                           ),
-                  ),
-                  leading: IconButton(
-                    icon: testing
-                        ? const SizedBox.square(
-                            dimension: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.refresh),
-                    tooltip: (testing ? 'Testing…' : 'Test connection').tl,
-                    onPressed: testing ? null : () => _test(account),
-                  ),
-                  onTap: testing ? null : () => _edit(account),
+                          Text(_usage(account)),
+                        ],
+                      ),
+                      trailing: IconButton(
+                        tooltip: 'Delete'.tl,
+                        icon: const Icon(Icons.delete_outline),
+                        onPressed: testing
+                            ? null
+                            : () => showConfirmDialog(
+                                context: context,
+                                title: 'Delete'.tl,
+                                content: account.name,
+                                confirmText: 'Delete',
+                                btnColor: colors.error,
+                                onConfirm: () async {
+                                  await widget.accounts.remove(account.id);
+                                  if (mounted) setState(() {});
+                                },
+                              ),
+                      ),
+                      leading: IconButton(
+                        icon: testing
+                            ? const SizedBox.square(
+                                dimension: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.refresh),
+                        tooltip: (testing ? 'Testing…' : 'Test connection').tl,
+                        onPressed: testing ? null : () => _test(account),
+                      ),
+                      onTap: testing ? null : () => _edit(account),
+                    );
+                  },
                 );
-              },
-            ),
+        },
+      ),
     );
   }
 }
