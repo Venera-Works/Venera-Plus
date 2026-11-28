@@ -70,7 +70,9 @@ class _ContentSourcesPageState extends State<ContentSourcesPage>
     return Scaffold(
       appBar: Appbar(
         title: Text('Sources'.tl),
-        leading: Navigator.of(context).canPop() ? null : const SizedBox(),
+        leading: Navigator.of(context).canPop()
+            ? null
+            : AppbarLeadingScope.maybeOf(context) ?? const SizedBox(),
         actions: [
           TextButton.icon(
             style: actionButtonStyle,

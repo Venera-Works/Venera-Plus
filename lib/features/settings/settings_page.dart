@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/gesture.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/scroll.dart';
@@ -195,29 +196,30 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  Widget _buildBackButton() => IconButton(
+    key: const Key('settings-back-button'),
+    tooltip: 'Back'.tl,
+    icon: const Icon(Icons.arrow_back),
+    onPressed: _handleBack,
+  );
+
   Widget buildLeft() {
-    final showHeader =
-        !widget.isRoot || (enableTwoViews && currentPage != null);
     return Material(
       child: Column(
         children: [
-          if (showHeader) ...[
+          if (!widget.isRoot) ...[
             SizedBox(height: MediaQuery.of(context).padding.top),
             SizedBox(
               height: 56,
               child: Row(
                 children: [
-                  const SizedBox(width: 8),
-                  Tooltip(
-                    message: "Back".tl,
-                    child: IconButton(
-                      key: const Key('settings-back-button'),
-                      icon: const Icon(Icons.arrow_back),
-                      onPressed: _handleBack,
-                    ),
-                  ),
-                  const SizedBox(width: 24),
-                  if (!widget.isRoot) Text("Settings".tl, style: ts.s20),
+                  if (currentPage == null) ...[
+                    const SizedBox(width: 8),
+                    _buildBackButton(),
+                    const SizedBox(width: 24),
+                  ] else
+                    const SizedBox(width: 16),
+                  Text("Settings".tl, style: ts.s20),
                 ],
               ),
             ),
@@ -415,17 +417,20 @@ class _SettingsPageState extends State<SettingsPage> {
         }
         return false;
       },
-      child: Navigator(
-        key: _detailNavKey,
-        pages: _detailPages,
-        onDidRemovePage: (page) {
-          if (page.key == pageKey && currentPage == destination) {
-            setState(() {
-              currentPage = null;
-              _innerCanPop = false;
-            });
-          }
-        },
+      child: AppbarLeadingScope(
+        leading: compact ? null : _buildBackButton(),
+        child: Navigator(
+          key: _detailNavKey,
+          pages: _detailPages,
+          onDidRemovePage: (page) {
+            if (page.key == pageKey && currentPage == destination) {
+              setState(() {
+                currentPage = null;
+                _innerCanPop = false;
+              });
+            }
+          },
+        ),
       ),
     );
   }

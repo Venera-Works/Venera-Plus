@@ -9,6 +9,23 @@ import 'effects.dart';
 import 'gesture.dart';
 import 'scroll.dart';
 
+class AppbarLeadingScope extends InheritedWidget {
+  const AppbarLeadingScope({
+    super.key,
+    required this.leading,
+    required super.child,
+  });
+
+  final Widget? leading;
+
+  static Widget? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<AppbarLeadingScope>()?.leading;
+
+  @override
+  bool updateShouldNotify(AppbarLeadingScope oldWidget) =>
+      leading != oldWidget.leading;
+}
+
 class Appbar extends StatefulWidget implements PreferredSizeWidget {
   const Appbar({
     required this.title,
@@ -97,6 +114,7 @@ class _AppbarState extends State<Appbar> {
         children: [
           const SizedBox(width: 8),
           widget.leading ??
+              AppbarLeadingScope.maybeOf(context) ??
               Tooltip(
                 message: "Back".tl,
                 child: IconButton(
@@ -157,7 +175,7 @@ class SliverAppbar extends StatelessWidget {
     return SliverPersistentHeader(
       pinned: true,
       delegate: _MySliverAppBarDelegate(
-        leading: leading,
+        leading: leading ?? AppbarLeadingScope.maybeOf(context),
         title: title,
         actions: actions,
         topPadding: MediaQuery.of(context).padding.top,
