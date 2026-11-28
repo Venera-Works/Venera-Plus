@@ -55,10 +55,6 @@ class _AboutSettingsState extends State<AboutSettings> {
             const SizedBox(height: 8),
           ],
         ).toSliver(),
-        SettingPartTitle(
-          title: 'Updates'.tl,
-          icon: Icons.system_update_outlined,
-        ),
         ListTile(
           title: Text("Check for updates".tl),
           trailing: FilledButton(
@@ -90,7 +86,6 @@ class _AboutSettingsState extends State<AboutSettings> {
           settingKey: 'appUpdateChannel',
           optionTranslation: {'stable': 'Stable'.tl, 'beta': 'Beta'.tl},
         ).toSliver(),
-        SettingPartTitle(title: 'Information'.tl, icon: Icons.info_outline),
         ListTile(
           title: Text('Changelog'.tl),
           trailing: const Icon(Icons.arrow_right),

@@ -4,7 +4,6 @@ import 'package:flutter/services.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/message.dart';
-import 'package:venera_plus/components/setting_tile.dart';
 import 'package:venera_plus/foundation/app_page_route.dart';
 import 'package:venera_plus/foundation/context.dart';
 import 'package:venera_plus/foundation/translations.dart';
@@ -343,17 +342,7 @@ class _StorageProviderPage extends StatelessWidget {
             children: [
               for (final driver in [...openListSupportedDrivers, 'WebDAV'])
                 ListTile(
-                  title: SettingTitle(
-                    title: driver.tl,
-                    help: switch (driver) {
-                      'WebDAV' =>
-                        'Connect with a server address, username and password.'
-                            .tl,
-                      'GoogleDrive' =>
-                        'Connect with your own Google OAuth credentials.'.tl,
-                      _ => 'Log in to authorize and save automatically.'.tl,
-                    },
-                  ),
+                  title: Text(driver.tl),
                   trailing: const Icon(Icons.arrow_right),
                   onTap: () async {
                     final result = await context.to<_AccountDraft>(
