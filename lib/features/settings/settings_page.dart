@@ -4,7 +4,6 @@ import 'package:venera_plus/components/gesture.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/features/history/history.dart';
-import 'package:venera_plus/features/local_comics/local_comics.dart';
 import 'package:venera_plus/features/settings/about.dart';
 import 'package:venera_plus/features/settings/app.dart';
 import 'package:venera_plus/features/settings/appearance.dart';
@@ -31,7 +30,6 @@ enum SettingsDestination {
   storage,
   sync,
   readingStats,
-  downloadQueue,
   network,
   advanced,
   about,
@@ -49,7 +47,6 @@ Widget _buildSettingsContent(SettingsDestination destination) {
     SettingsDestination.storage => StorageSettings(key: key),
     SettingsDestination.sync => SyncSettings(key: key),
     SettingsDestination.readingStats => ReadingStatsPage(key: key),
-    SettingsDestination.downloadQueue => DownloadingPage(key: key),
     SettingsDestination.network => NetworkSettings(key: key),
     SettingsDestination.advanced => AdvancedSettings(key: key),
     SettingsDestination.about => AboutSettings(key: key),
@@ -296,11 +293,6 @@ class _SettingsPageState extends State<SettingsPage> {
             destination: SettingsDestination.readingStats,
             title: 'Reading statistics'.tl,
             icon: Icons.query_stats,
-          ),
-          _SettingsItem(
-            destination: SettingsDestination.downloadQueue,
-            title: 'Download queue'.tl,
-            icon: Icons.download_outlined,
           ),
         ],
       ),

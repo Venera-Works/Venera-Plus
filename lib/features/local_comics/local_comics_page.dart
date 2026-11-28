@@ -405,6 +405,11 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
     ];
 
     final isWide = context.width >= 600;
+    final downloadingButton = IconButton(
+      tooltip: 'Downloading'.tl,
+      icon: const Icon(Icons.download),
+      onPressed: () => showPopUpWidget(context, const DownloadingPage()),
+    );
 
     List<Widget> normalActions;
     if (isWide) {
@@ -425,15 +430,7 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
           message: "Sort".tl,
           child: IconButton(icon: const Icon(Icons.sort), onPressed: sort),
         ),
-        Tooltip(
-          message: "Downloading".tl,
-          child: IconButton(
-            icon: const Icon(Icons.download),
-            onPressed: () {
-              showPopUpWidget(context, const DownloadingPage());
-            },
-          ),
-        ),
+        downloadingButton,
         if (BackupConfig.fromSettings().isValid)
           Tooltip(
             message: "Archive".tl,
@@ -468,6 +465,7 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
             },
           ),
         ),
+        downloadingButton,
         Tooltip(
           message: "Import".tl,
           child: IconButton(
@@ -480,13 +478,6 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
         MenuButton(
           entries: [
             MenuEntry(icon: Icons.sort, text: "Sort".tl, onClick: sort),
-            MenuEntry(
-              icon: Icons.download,
-              text: "Downloading".tl,
-              onClick: () {
-                showPopUpWidget(context, const DownloadingPage());
-              },
-            ),
             if (BackupConfig.fromSettings().isValid)
               MenuEntry(
                 icon: Icons.archive_outlined,

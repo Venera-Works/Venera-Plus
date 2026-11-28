@@ -1,6 +1,5 @@
 import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
-import 'package:venera_plus/components/appbar.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/menu.dart';
 import 'package:venera_plus/components/message.dart';
@@ -58,28 +57,24 @@ class _DownloadingPageState extends State<DownloadingPage> {
   @override
   Widget build(BuildContext context) {
     final tasks = LocalManager().downloadingTasks;
-    final body = ListView.builder(
-      itemCount: tasks.length + 1,
-      itemBuilder: (BuildContext context, int i) {
-        if (i == 0) {
-          return buildTop();
-        }
-        final task = tasks[i - 1];
-        return Card(
-          key: ValueKey(task),
-          elevation: 0,
-          color: context.colorScheme.surfaceContainerLow,
-          margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-          child: _DownloadTaskTile(task: task),
-        );
-      },
-    );
-    if (PopupIndicatorWidget.maybeOf(context) != null) {
-      return PopUpWidgetScaffold(title: 'Downloading'.tl, body: body);
-    }
-    return Scaffold(
-      appBar: Appbar(title: Text('Download queue'.tl)),
-      body: SafeArea(top: false, child: body),
+    return PopUpWidgetScaffold(
+      title: 'Downloading'.tl,
+      body: ListView.builder(
+        itemCount: tasks.length + 1,
+        itemBuilder: (BuildContext context, int i) {
+          if (i == 0) {
+            return buildTop();
+          }
+          final task = tasks[i - 1];
+          return Card(
+            key: ValueKey(task),
+            elevation: 0,
+            color: context.colorScheme.surfaceContainerLow,
+            margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            child: _DownloadTaskTile(task: task),
+          );
+        },
+      ),
     );
   }
 

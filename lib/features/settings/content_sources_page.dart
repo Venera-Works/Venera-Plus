@@ -71,23 +71,23 @@ class _ContentSourcesPageState extends State<ContentSourcesPage>
                 ? null
                 : AppbarLeadingScope.maybeOf(context) ?? const SizedBox(),
             actions: [
-              if (!showingCloudLibraries)
-                TextButton.icon(
-                  style: actionButtonStyle,
-                  key: const Key('add-content-source'),
-                  onPressed: () => showAddWebsiteSource(context),
-                  icon: const Icon(Icons.add),
-                  label: Text('Add'.tl),
-                ),
+              TextButton.icon(
+                style: actionButtonStyle,
+                key: const Key('add-content-source'),
+                onPressed: showingCloudLibraries
+                    ? () => showRemoteLibraryEditor(context)
+                    : () => showAddWebsiteSource(context),
+                icon: const Icon(Icons.add),
+                label: Text('Add'.tl),
+              ),
             ],
           ),
           floatingActionButton: showingCloudLibraries
-              ? FloatingActionButton.extended(
-                  key: const Key('add-content-source'),
+              ? FloatingActionButton(
                   heroTag: 'cloud_libraries_fab',
+                  tooltip: 'Add Cloud Comic Library'.tl,
                   onPressed: () => showRemoteLibraryEditor(context),
-                  icon: const Icon(Icons.add),
-                  label: Text('Add Cloud Comic Library'.tl),
+                  child: const Icon(Icons.add),
                 )
               : null,
           body: body,

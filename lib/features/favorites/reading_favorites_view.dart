@@ -8,6 +8,7 @@ import 'package:venera_plus/features/comic_details/comic_details.dart';
 import 'package:venera_plus/features/comic_source/comic_source.dart';
 import 'package:venera_plus/features/comic_widgets/comic_widgets.dart';
 import 'package:venera_plus/features/favorites/favorite_actions.dart';
+import 'package:venera_plus/features/favorites/favorites_display.dart';
 import 'package:venera_plus/features/favorites/favorites_manager.dart';
 import 'package:venera_plus/features/favorites/reorder_comics_page.dart';
 import 'package:venera_plus/features/follow_updates/follow_updates.dart';
@@ -104,13 +105,18 @@ class _ReadingFavoritesMenuButtonState
     if (mounted) setState(() {});
   }
 
-  List<MenuEntry> _buildFolderMenu() {
+  List<MenuEntry> _buildMenu() {
     final readingFolder = _manager.readingFolder;
     return [
       MenuEntry(
         icon: Icons.folder_open,
         text: "Folders".tl,
         onClick: _showReadingFolderSelector,
+      ),
+      MenuEntry(
+        icon: Icons.grid_view,
+        text: 'Favorite display mode'.tl,
+        onClick: () => showFavoriteDisplayMenu(context),
       ),
       if (readingFolder != null)
         MenuEntry(
@@ -130,7 +136,7 @@ class _ReadingFavoritesMenuButtonState
   }
 
   @override
-  Widget build(BuildContext context) => MenuButton(entries: _buildFolderMenu());
+  Widget build(BuildContext context) => MenuButton(entries: _buildMenu());
 }
 
 /// Home page view displaying the bound local favorite folder.

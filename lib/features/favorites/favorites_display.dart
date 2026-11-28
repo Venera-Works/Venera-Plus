@@ -50,6 +50,44 @@ void setFavoriteGalleryColumns(int columns) {
   appdata.saveData();
 }
 
+void showFavoriteDisplayMenu(BuildContext context) {
+  final gallery = isFavoriteGalleryMode();
+  final columns = favoriteGalleryColumns();
+  final renderBox = context.findRenderObject() as RenderBox;
+  final offset = renderBox.localToGlobal(Offset.zero);
+  showMenuX(context, offset, [
+    MenuEntry(
+      icon: gallery ? Icons.view_list : Icons.check,
+      text: 'List'.tl,
+      onClick: () => setFavoriteDisplayMode(favoriteDisplayList),
+    ),
+    MenuEntry(
+      icon: gallery ? Icons.check : Icons.grid_view,
+      text: 'Gallery'.tl,
+      onClick: () => setFavoriteDisplayMode(favoriteDisplayGallery),
+    ),
+    if (gallery) ...[
+      MenuEntry(
+        icon: columns == favoriteGalleryAutoColumns
+            ? Icons.check
+            : Icons.auto_awesome_mosaic_outlined,
+        text: 'Auto'.tl,
+        onClick: () => setFavoriteGalleryColumns(favoriteGalleryAutoColumns),
+      ),
+      for (
+        var count = favoriteGalleryMinColumns;
+        count <= favoriteGalleryMaxColumns;
+        count++
+      )
+        MenuEntry(
+          icon: columns == count ? Icons.check : Icons.grid_view_outlined,
+          text: '@c columns'.tlParams({'c': count}),
+          onClick: () => setFavoriteGalleryColumns(count),
+        ),
+    ],
+  ]);
+}
+
 class FavoriteDisplayButton extends StatefulWidget {
   const FavoriteDisplayButton({super.key});
 
@@ -82,46 +120,7 @@ class _FavoriteDisplayButtonState extends State<FavoriteDisplayButton> {
     return Button.icon(
       icon: Icon(gallery ? Icons.grid_view : Icons.view_list),
       tooltip: 'Favorite display mode'.tl,
-      onPressed: () {
-        final renderBox = context.findRenderObject() as RenderBox;
-        final offset = renderBox.localToGlobal(Offset.zero);
-        showMenuX(context, offset, _buildEntries(gallery));
-      },
+      onPressed: () => showFavoriteDisplayMenu(context),
     );
-  }
-
-  List<MenuEntry> _buildEntries(bool gallery) {
-    final columns = favoriteGalleryColumns();
-    return [
-      MenuEntry(
-        icon: gallery ? Icons.view_list : Icons.check,
-        text: 'List'.tl,
-        onClick: () => setFavoriteDisplayMode(favoriteDisplayList),
-      ),
-      MenuEntry(
-        icon: gallery ? Icons.check : Icons.grid_view,
-        text: 'Gallery'.tl,
-        onClick: () => setFavoriteDisplayMode(favoriteDisplayGallery),
-      ),
-      if (gallery) ...[
-        MenuEntry(
-          icon: columns == favoriteGalleryAutoColumns
-              ? Icons.check
-              : Icons.auto_awesome_mosaic_outlined,
-          text: 'Auto'.tl,
-          onClick: () => setFavoriteGalleryColumns(favoriteGalleryAutoColumns),
-        ),
-        for (
-          var count = favoriteGalleryMinColumns;
-          count <= favoriteGalleryMaxColumns;
-          count++
-        )
-          MenuEntry(
-            icon: columns == count ? Icons.check : Icons.grid_view_outlined,
-            text: '@c columns'.tlParams({'c': count}),
-            onClick: () => setFavoriteGalleryColumns(count),
-          ),
-      ],
-    ];
   }
 }
