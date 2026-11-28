@@ -90,7 +90,10 @@ class _ReaderSettingsState extends State<ReaderSettings> {
 
     return SmoothCustomScrollView(
       slivers: [
-        SliverAppbar(title: Text('Reader'.tl)),
+        SliverAppbar(
+          title: Text('Reader'.tl),
+          style: App.isAndroid ? AppbarStyle.shadow : AppbarStyle.blur,
+        ),
         if (comicId != null && sourceKey != null)
           SliverMainAxisGroup(
             slivers: [
