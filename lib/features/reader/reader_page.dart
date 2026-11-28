@@ -1966,7 +1966,9 @@ mixin class ReaderWindow {
     await windowManager.setFullScreen(!isFullscreen);
     await windowManager.show();
     isFullscreen = !isFullscreen;
-    WindowFrame.of(App.rootContext).setWindowFrame(!isFullscreen);
+    if (!App.isMacOS) {
+      WindowFrame.of(App.rootContext).setWindowFrame(!isFullscreen);
+    }
   }
 
   bool onWindowClose() {

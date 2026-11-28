@@ -66,10 +66,28 @@ class WindowFrame extends StatefulWidget {
 
 typedef WindowCloseListener = bool Function();
 
-class _WindowFrameState extends State<WindowFrame> {
+class _WindowFrameState extends State<WindowFrame> with WindowListener {
   bool isWindowFrameHidden = false;
   bool useDarkTheme = false;
   var closeListeners = <WindowCloseListener>[];
+
+  @override
+  void initState() {
+    super.initState();
+    if (App.isMacOS) windowManager.addListener(this);
+  }
+
+  @override
+  void dispose() {
+    if (App.isMacOS) windowManager.removeListener(this);
+    super.dispose();
+  }
+
+  @override
+  void onWindowEnterFullScreen() => setWindowFrame(false);
+
+  @override
+  void onWindowLeaveFullScreen() => setWindowFrame(true);
 
   /// Sets the visibility of the window frame.
   void setWindowFrame(bool show) {
