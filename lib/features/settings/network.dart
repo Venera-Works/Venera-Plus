@@ -46,7 +46,7 @@ class NetworkSettings extends StatelessWidget {
             ).toSliver(),
             SwitchSetting(
               title: 'Ignore Certificate Errors'.tl,
-              subtitle:
+              help:
                   'Skip HTTPS certificate verification. Enable only if needed.'
                       .tl,
               settingKey: 'ignoreBadCertificate',

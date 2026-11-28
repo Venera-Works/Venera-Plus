@@ -7,6 +7,7 @@ import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/components/select.dart';
+import 'package:venera_plus/components/setting_tile.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/context.dart';
@@ -19,7 +20,7 @@ class SwitchSetting extends StatefulWidget {
     required this.title,
     required this.settingKey,
     this.onChanged,
-    this.subtitle,
+    this.help,
     this.comicId,
     this.comicSource,
     this.useDeviceSettings = false,
@@ -32,7 +33,7 @@ class SwitchSetting extends StatefulWidget {
 
   final VoidCallback? onChanged;
 
-  final String? subtitle;
+  final String? help;
 
   final String? comicId;
 
@@ -63,8 +64,7 @@ class _SwitchSettingState extends State<SwitchSetting> {
 
     return ListTile(
       enabled: widget.enabled,
-      title: Text(widget.title),
-      subtitle: widget.subtitle == null ? null : Text(widget.subtitle!),
+      title: SettingTitle(title: widget.title, help: widget.help),
       trailing: Switch(
         value: value,
         onChanged: widget.enabled ? _changeValue : null,
@@ -219,37 +219,7 @@ class _DoubleLineSelectSettingsState extends State<_DoubleLineSelectSettings> {
     final value = widget.getValue();
 
     return ListTile(
-      title: Row(
-        children: [
-          Flexible(child: Text(widget.title)),
-          const SizedBox(width: 4),
-          if (widget.help != null)
-            Button.icon(
-              size: 18,
-              icon: const Icon(Icons.help_outline),
-              onPressed: () {
-                showDialog(
-                  context: context,
-                  builder: (context) {
-                    return ContentDialog(
-                      title: "Help".tl,
-                      content: Text(
-                        widget.help!,
-                      ).paddingHorizontal(16).fixWidth(double.infinity),
-                      actions: [
-                        FilledButton(
-                          style: actionButtonStyle,
-                          onPressed: context.pop,
-                          child: Text("OK".tl),
-                        ),
-                      ],
-                    );
-                  },
-                );
-              },
-            ),
-        ],
-      ),
+      title: SettingTitle(title: widget.title, help: widget.help),
       subtitle: Text(widget.optionTranslation[value] ?? 'None'.tl),
       trailing: const Icon(Icons.arrow_drop_down),
       onTap: widget.optionTranslation.isEmpty
@@ -347,37 +317,7 @@ class _EndSelectorSelectSettingState extends State<_EndSelectorSelectSetting> {
     final options = widget.optionTranslation;
     final value = widget.getValue();
     return ListTile(
-      title: Row(
-        children: [
-          Flexible(child: Text(widget.title)),
-          const SizedBox(width: 4),
-          if (widget.help != null)
-            Button.icon(
-              size: 18,
-              icon: const Icon(Icons.help_outline),
-              onPressed: () {
-                showDialog(
-                  context: context,
-                  builder: (context) {
-                    return ContentDialog(
-                      title: "Help".tl,
-                      content: Text(
-                        widget.help!,
-                      ).paddingHorizontal(16).fixWidth(double.infinity),
-                      actions: [
-                        FilledButton(
-                          style: actionButtonStyle,
-                          onPressed: context.pop,
-                          child: Text("OK".tl),
-                        ),
-                      ],
-                    );
-                  },
-                );
-              },
-            ),
-        ],
-      ),
+      title: SettingTitle(title: widget.title, help: widget.help),
       trailing: Select(
         current: options[value],
         values: options.values.toList(),

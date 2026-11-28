@@ -7,6 +7,7 @@ import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/components/scroll.dart';
+import 'package:venera_plus/components/setting_tile.dart';
 import 'package:venera_plus/features/bangumi/bangumi.dart';
 import 'package:venera_plus/features/remote_library/remote_library.dart';
 import 'package:venera_plus/features/storage/storage.dart';
@@ -379,13 +380,13 @@ class _WebdavSettingState extends State<_WebdavSetting> {
               ),
               if (_needsInitialTransfer) ...[
                 const SizedBox(height: 12),
-                SwitchListTile.adaptive(
+                SettingSwitchTile(
+                  adaptive: true,
                   contentPadding: EdgeInsets.zero,
-                  title: Text('Upload local data first'.tl),
-                  subtitle: Text(
-                    'For the first automatic sync, choose whether to upload local data or download remote data.'
-                        .tl,
-                  ),
+                  title: 'Upload local data first'.tl,
+                  help:
+                      'For the first automatic sync, choose whether to upload local data or download remote data.'
+                          .tl,
                   value: initialUpload,
                   onChanged: (value) => setState(() => initialUpload = value),
                 ),
@@ -679,8 +680,10 @@ class _BackupWebdavSettingState extends State<_BackupWebdavSetting> {
               ListTile(
                 contentPadding: EdgeInsets.zero,
                 leading: const Icon(Icons.archive_outlined),
-                title: Text('Browse Backed-up Comics'.tl),
-                subtitle: Text('Use the saved backup location.'.tl),
+                title: SettingTitle(
+                  title: 'Browse Backed-up Comics'.tl,
+                  help: 'Use the saved backup location.'.tl,
+                ),
                 trailing: const Icon(Icons.arrow_right),
                 enabled: canBrowseBackups,
                 onTap: canBrowseBackups
@@ -690,9 +693,10 @@ class _BackupWebdavSettingState extends State<_BackupWebdavSetting> {
               const SizedBox(height: 12),
               ListTile(
                 leading: Icon(Icons.sync),
-                title: Text("Sync archive config".tl),
-                subtitle: Text(
-                  "Sync the archive account and directory with app data.".tl,
+                title: SettingTitle(
+                  title: "Sync archive config".tl,
+                  help: "Sync the archive account and directory with app data."
+                      .tl,
                 ),
                 trailing: Switch(
                   value: syncEnabled,

@@ -40,7 +40,7 @@ void main() {
       expect(saved.hotkey?.keyCode, 0x4a);
       expect(saved.enabled, isFalse);
       expect(backend.suspended, isFalse);
-      await tester.tap(find.byType(SwitchListTile));
+      await tester.tap(find.text('Global hide/restore shortcut'));
       await tester.pumpAndSettle();
       expect(saved.enabled, isTrue);
       expect(backend.current, saved.hotkey);

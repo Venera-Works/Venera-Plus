@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:flutter/services.dart';
 import 'package:venera_plus/components/message.dart';
+import 'package:venera_plus/components/setting_tile.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/foundation/window_hotkey.dart';
 import 'package:venera_plus/foundation/window_hotkey_controller.dart';
@@ -66,9 +67,9 @@ class _WindowHotkeySettingState extends State<WindowHotkeySetting> {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          SwitchListTile(
-            title: Text('Global hide/restore shortcut'.tl),
-            subtitle: Text('Only the main window. Stored on this device.'.tl),
+          SettingSwitchTile(
+            title: 'Global hide/restore shortcut'.tl,
+            help: 'Only the main window. Stored on this device.'.tl,
             value: config.enabled,
             onChanged: ready
                 ? (enabled) {

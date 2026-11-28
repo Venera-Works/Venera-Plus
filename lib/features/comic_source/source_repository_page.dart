@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:dio/dio.dart' show CancelToken;
 import 'package:venera_plus/components/pop_up_widget.dart';
+import 'package:venera_plus/components/setting_tile.dart';
 import 'package:venera_plus/foundation/translations.dart';
 
 import 'comic_source_manager.dart';
@@ -241,10 +242,11 @@ class _RepositoryEditorState extends State<_RepositoryEditor> {
                 decoration: InputDecoration(
                   labelText: 'Source list URL'.tl,
                   hintText: 'https://example.com/index.json',
-                  helperText:
-                      'Use the JSON source list address, not a single script link.'
-                          .tl,
-                  helperMaxLines: 3,
+                  suffixIcon: SettingHelpButton(
+                    help:
+                        'Use the JSON source list address, not a single script link.'
+                            .tl,
+                  ),
                 ),
               ),
               if (widget.repository != null)

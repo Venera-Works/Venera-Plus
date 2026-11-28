@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/pop_up_widget.dart';
+import 'package:venera_plus/components/setting_tile.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/keyword_filter.dart';
 import 'package:venera_plus/foundation/keyword_settings_store.dart';
@@ -419,6 +420,9 @@ class _KeywordRuleEditorState extends State<KeywordRuleEditor> {
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(10),
               ),
+              suffixIcon: SettingHelpButton(
+                help: 'Keywords are literal text, not regular expressions.'.tl,
+              ),
             ),
             onSubmitted: (_) => _save(),
             onChanged: (_) => setState(() {
@@ -480,10 +484,6 @@ class _KeywordRuleEditorState extends State<KeywordRuleEditor> {
                 : (value) => setState(() {
                     _sensitive = !value;
                   }),
-          ),
-          Text(
-            'Keywords are literal text, not regular expressions.'.tl,
-            style: _hintStyle,
           ),
           Align(
             alignment: AlignmentDirectional.centerStart,

@@ -397,11 +397,28 @@ void main() {
       ),
     );
 
-    final scrapeSwitch = tester.widget<SwitchListTile>(
-      find.byKey(const Key('bangumi-auto-metadata-scrape')),
+    final scrapeTile = find.byKey(const Key('bangumi-auto-metadata-scrape'));
+    final scrapeSwitch = find.descendant(
+      of: scrapeTile,
+      matching: find.byType(Switch),
     );
-    expect(scrapeSwitch.value, isFalse);
-    expect(scrapeSwitch.title, isA<Text>());
+    expect(tester.widget<Switch>(scrapeSwitch).value, isFalse);
+    expect(find.text('Automatic metadata scraping'), findsOneWidget);
+
+    const helpText =
+        'When enabled, Bangumi will be used to scrape comic metadata.';
+    expect(find.text(helpText), findsNothing);
+    await tester.tap(
+      find.descendant(
+        of: scrapeTile,
+        matching: find.byIcon(Icons.help_outline),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(ContentDialog, helpText), findsOneWidget);
+    await tester.tap(find.text('OK'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<Switch>(scrapeSwitch).value, isFalse);
   });
 
   testWidgets(
@@ -429,10 +446,11 @@ void main() {
       expect(saved, isTrue);
       expect(appdata.settings['bangumiAutoMetadataScrapeEnabled'], isTrue);
 
-      final scrapeSwitch = tester.widget<SwitchListTile>(
-        find.byKey(const Key('bangumi-auto-metadata-scrape')),
+      final scrapeSwitch = find.descendant(
+        of: find.byKey(const Key('bangumi-auto-metadata-scrape')),
+        matching: find.byType(Switch),
       );
-      expect(scrapeSwitch.value, isTrue);
+      expect(tester.widget<Switch>(scrapeSwitch).value, isTrue);
     },
   );
 

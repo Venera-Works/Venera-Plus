@@ -9,6 +9,7 @@ import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/pop_up_widget.dart';
 import 'package:venera_plus/components/scroll.dart';
 import 'package:venera_plus/components/select.dart';
+import 'package:venera_plus/components/setting_tile.dart';
 import 'package:venera_plus/foundation/app.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/features/comic_source/comic_source_manager.dart';
@@ -201,8 +202,10 @@ Future<void> showAddWebsiteSource(BuildContext context) async {
           onPressed: () => Navigator.pop(context, true),
           child: ListTile(
             leading: const Icon(Icons.inventory_2_outlined),
-            title: Text('Source Repositories'.tl),
-            subtitle: Text('Browse sources'.tl),
+            title: SettingTitle(
+              title: 'Source Repositories'.tl,
+              help: 'Browse sources'.tl,
+            ),
           ),
         ),
         SimpleDialogOption(
@@ -868,8 +871,10 @@ class _SliverComicSourceState extends State<_SliverComicSource> {
       }
       if (source.data["account"] is List) {
         yield ListTile(
-          title: Text("Re-login".tl),
-          subtitle: Text("Click if login expired".tl),
+          title: SettingTitle(
+            title: 'Re-login'.tl,
+            help: 'Click if login expired'.tl,
+          ),
           onTap: reLoggingIn ? null : () => _reLogin(source),
           trailing: reLoggingIn
               ? const SizedBox.square(

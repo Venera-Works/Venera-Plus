@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/pop_up_widget.dart';
+import 'package:venera_plus/components/setting_tile.dart';
 import 'package:venera_plus/features/bangumi/bangumi_api.dart';
 import 'package:venera_plus/features/bangumi/bangumi_service.dart';
 import 'package:venera_plus/features/bangumi/bangumi_server.dart';
@@ -143,14 +144,13 @@ class _BangumiSettingsPageState extends State<BangumiSettingsPage> {
               value: _autoSyncEnabled,
               onChanged: _isSavingAutoSync ? null : _setAutoSyncEnabled,
             ),
-            SwitchListTile(
+            SettingSwitchTile(
               key: const Key('bangumi-auto-metadata-scrape'),
               contentPadding: EdgeInsets.zero,
-              title: Text('Automatic metadata scraping'.tl),
-              subtitle: Text(
-                'When enabled, Bangumi will be used to scrape comic metadata.'
-                    .tl,
-              ),
+              title: 'Automatic metadata scraping'.tl,
+              help:
+                  'When enabled, Bangumi will be used to scrape comic metadata.'
+                      .tl,
               value: _autoMetadataScrapeEnabled,
               onChanged: _isSavingAutoMetadataScrape
                   ? null

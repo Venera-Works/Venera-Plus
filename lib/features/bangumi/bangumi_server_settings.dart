@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:venera_plus/components/button.dart';
 import 'package:venera_plus/components/message.dart';
+import 'package:venera_plus/components/setting_tile.dart';
 import 'package:venera_plus/foundation/appdata.dart';
 import 'package:venera_plus/foundation/translations.dart';
 import 'package:venera_plus/network/app_dio.dart';
@@ -458,10 +459,11 @@ class _BangumiServerEditorState extends State<_BangumiServerEditor> {
                 autocorrect: false,
                 decoration: decoration.copyWith(
                   labelText: 'Image proxy (optional)'.tl,
-                  helperText:
-                      'Leave empty to use image addresses returned by the API'
-                          .tl,
-                  helperMaxLines: 3,
+                  suffixIcon: SettingHelpButton(
+                    help:
+                        'Leave empty to use image addresses returned by the API'
+                            .tl,
+                  ),
                 ),
               ),
               const SizedBox(height: 12),
@@ -472,9 +474,10 @@ class _BangumiServerEditorState extends State<_BangumiServerEditor> {
                 autocorrect: false,
                 decoration: decoration.copyWith(
                   labelText: 'Access Token page (optional)'.tl,
-                  helperText:
-                      'Leave empty to use the official Access Token page'.tl,
-                  helperMaxLines: 3,
+                  suffixIcon: SettingHelpButton(
+                    help:
+                        'Leave empty to use the official Access Token page'.tl,
+                  ),
                 ),
               ),
               const SizedBox(height: 12),

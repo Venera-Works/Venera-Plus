@@ -5,6 +5,7 @@ import 'package:venera_plus/components/code.dart';
 import 'package:venera_plus/components/layout.dart';
 import 'package:venera_plus/components/message.dart';
 import 'package:venera_plus/components/scroll.dart';
+import 'package:venera_plus/components/setting_tile.dart';
 import 'package:venera_plus/features/reader/brightness.dart';
 import 'package:venera_plus/features/reader/orientation.dart';
 import 'package:venera_plus/features/settings/setting_components.dart';
@@ -38,9 +39,9 @@ class _ReaderSettingsState extends State<ReaderSettings> {
       builder: (context, snapshot) {
         if (!readerRequiresEdgeToEdge(snapshot.data)) return setting;
         return ListTile(
-          title: Text(setting.title),
-          subtitle: Text(
-            'Android 16 and later keep the system status bar visible.'.tl,
+          title: SettingTitle(
+            title: setting.title,
+            help: 'Android 16 and later keep the system status bar visible.'.tl,
           ),
           trailing: const Switch(value: true, onChanged: null),
         );
@@ -242,7 +243,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
         ),
         SwitchSetting(
           title: 'Split dual pages'.tl,
-          subtitle:
+          help:
               'Splits dual pages into separate pages in Gallery single-image mode and vertical flow modes. Does not split when displaying multiple images per screen.'
                   .tl,
           settingKey: 'splitDualPage',
@@ -258,7 +259,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
           visible: settingValue('splitDualPage') == true,
           child: SwitchSetting(
             title: 'Swap split dual page order'.tl,
-            subtitle:
+            help:
                 'Turn this on when the split page order does not match the reading direction'
                     .tl,
             settingKey: 'splitDualPageInvert',
@@ -272,7 +273,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
         ),
         SwitchSetting(
           title: 'Limit image width'.tl,
-          subtitle: 'Only applies to Continuous (Top to Bottom) mode'.tl,
+          help: 'Only applies to Continuous (Top to Bottom) mode'.tl,
           settingKey: 'limitImageWidth',
           onChanged: () {
             widget.onChanged?.call('limitImageWidth');
@@ -325,7 +326,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
                 ).toSliver(),
                 SwitchSetting(
                   title: "One-handed mode".tl,
-                  subtitle:
+                  help:
                       'Tap the edges to go to the next page. Tap the center to toggle the toolbar.'
                           .tl,
                   settingKey: "oneHandedMode",
@@ -513,7 +514,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
         ).toSliver(),
         SwitchSetting(
           title: "E-Ink display refresh".tl,
-          subtitle:
+          help:
               "Flash the screen after page changes to reduce ghosting on E-Ink displays. Only applies to Gallery modes."
                   .tl,
           settingKey: "eInkRefreshEnabled",
