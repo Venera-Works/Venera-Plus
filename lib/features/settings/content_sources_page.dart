@@ -56,34 +56,44 @@ class _ContentSourcesPageState extends State<ContentSourcesPage>
     super.dispose();
   }
 
-  Future<void> _addSource() async {
-    if (_tabController.index == 0) {
-      await showAddWebsiteSource(context);
-    } else {
-      await showRemoteLibraryEditor(context);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final storage = RemoteStorageAccounts.instance;
-    return Scaffold(
-      appBar: Appbar(
-        title: Text('Sources'.tl),
-        leading: Navigator.of(context).canPop()
-            ? null
-            : AppbarLeadingScope.maybeOf(context) ?? const SizedBox(),
-        actions: [
-          TextButton.icon(
-            style: actionButtonStyle,
-            key: const Key('add-content-source'),
-            onPressed: _addSource,
-            icon: const Icon(Icons.add),
-            label: Text('Add'.tl),
+    return ListenableBuilder(
+      listenable: _tabController,
+      builder: (context, body) {
+        final showingCloudLibraries =
+            _tabController.index == ContentSourceSection.cloudLibraries.index;
+        return Scaffold(
+          appBar: Appbar(
+            title: Text('Sources'.tl),
+            leading: Navigator.of(context).canPop()
+                ? null
+                : AppbarLeadingScope.maybeOf(context) ?? const SizedBox(),
+            actions: [
+              if (!showingCloudLibraries)
+                TextButton.icon(
+                  style: actionButtonStyle,
+                  key: const Key('add-content-source'),
+                  onPressed: () => showAddWebsiteSource(context),
+                  icon: const Icon(Icons.add),
+                  label: Text('Add'.tl),
+                ),
+            ],
           ),
-        ],
-      ),
-      body: Column(
+          floatingActionButton: showingCloudLibraries
+              ? FloatingActionButton.extended(
+                  key: const Key('add-content-source'),
+                  heroTag: 'cloud_libraries_fab',
+                  onPressed: () => showRemoteLibraryEditor(context),
+                  icon: const Icon(Icons.add),
+                  label: Text('Add Cloud Comic Library'.tl),
+                )
+              : null,
+          body: body,
+        );
+      },
+      child: Column(
         children: [
           ListenableBuilder(
             listenable: Listenable.merge([
@@ -125,7 +135,7 @@ class _ContentSourcesPageState extends State<ContentSourcesPage>
                   key: PageStorageKey('content_sources_remote_libraries'),
                   slivers: [
                     RemoteLibrariesSliver(),
-                    SliverPadding(padding: EdgeInsets.only(bottom: 16)),
+                    SliverPadding(padding: EdgeInsets.only(bottom: 96)),
                   ],
                 ),
               ],
